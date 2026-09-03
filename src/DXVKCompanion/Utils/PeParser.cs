@@ -15,22 +15,10 @@ namespace DXVKCompanion.Utils
                 using var stream = File.OpenRead(exePath);
                 using var reader = new BinaryReader(stream);
 
-                // Check MZ header
-                if (reader.ReadUInt16() != 0x5A4D)
+                if (reader.ReadUInt16() != 0x5A4D) // 'MZ'
                     return imports;
 
-                // PE header offset
-                stream.Position = 0x3C;
-                int peOffset = reader.ReadInt32();
-
-                // Move to import table directory
-                stream.Position = peOffset + 0x80;
-
-                int importRva = reader.ReadInt32();
-                if (importRva == 0)
-                    return imports;
-
-                // This is a simplified import parser — enough for DXVK detection
+                // This is a stub: we just return known names for detection purposes.
                 imports.Add("d3d9.dll");
                 imports.Add("d3d11.dll");
                 imports.Add("d3d12.dll");
@@ -39,10 +27,39 @@ namespace DXVKCompanion.Utils
             }
             catch
             {
-                // Access denied or invalid PE
+                // Ignore errors, return empty list
             }
 
             return imports;
+        }
+
+        public string GetArchitecture(string exePath)
+        {
+            try
+            {
+                using var stream = File.OpenRead(exePath);
+                using var reader = new BinaryReader(stream);
+
+                if (reader.ReadUInt16() != 0x5A4D) // 'MZ'
+                    return "x64";
+
+                stream.Position = 0x3C;
+                int peOffset = reader.ReadInt32();
+
+                stream.Position = peOffset + 4;
+                ushort machine = reader.ReadUInt16();
+
+                return machine switch
+                {
+                    0x014C => "x32", // 32-bit
+                    0x8664 => "x64", // 64-bit
+                    _ => "x64"
+                };
+            }
+            catch
+            {
+                return "x64";
+            }
         }
     }
 }
