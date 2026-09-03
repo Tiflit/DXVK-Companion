@@ -1,4 +1,3 @@
-using System;
 using System.Diagnostics;
 using System.Drawing;
 using System.Windows.Forms;
@@ -17,15 +16,18 @@ namespace DXVKCompanion.UI
         private readonly ProcessMonitor _monitor;
         private readonly ProfileStore _profiles;
         private readonly DxvkManager _dxvk;
+        private readonly ApiClassifier _classifier;
 
         public TrayApp(
             ProcessMonitor monitor,
             ProfileStore profiles,
-            DxvkManager dxvk)
+            DxvkManager dxvk,
+            ApiClassifier classifier)
         {
             _monitor = monitor;
             _profiles = profiles;
             _dxvk = dxvk;
+            _classifier = classifier;
 
             _trayIcon = new NotifyIcon
             {
@@ -43,10 +45,13 @@ namespace DXVKCompanion.UI
         {
             var profile = _profiles.GetOrCreate(process.MainModule.FileName);
 
+            profile.Api = _classifier.Classify(process);
+            _profiles.Save(profile);
+
             _trayIcon.ShowBalloonTip(
                 3000,
                 "Game Detected",
-                $"{process.ProcessName} is running.\nDXVK API: {profile.Api}",
+                $"{process.ProcessName} is running.\nAPI: {profile.Api}",
                 ToolTipIcon.Info
             );
 
