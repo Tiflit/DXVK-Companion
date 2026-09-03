@@ -5,20 +5,36 @@ namespace DXVKCompanion.Storage
 {
     public static class Paths
     {
-        public static string AppDataRoot =>
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                         "DXVK-Companion");
+        private static readonly string Root =
+            AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar);
+
+        public static string ProfilesDir =>
+            Path.Combine(Root, "Profiles");
+
+        public static string CacheDir =>
+            Path.Combine(Root, "Cache");
+
+        public static string LogsDir =>
+            Path.Combine(Root, "Logs");
+
+        public static string DxvkDir =>
+            Path.Combine(Root, "DXVK");
 
         public static string ProfilesFile =>
-            Path.Combine(AppDataRoot, "games.json");
+            Path.Combine(ProfilesDir, "games.json");
 
         public static string CacheFile =>
-            Path.Combine(AppDataRoot, "cache.json");
+            Path.Combine(CacheDir, "cache.json");
+
+        public static string LogFile =>
+            Path.Combine(LogsDir, "companion.log");
 
         public static void EnsureDirectories()
         {
-            if (!Directory.Exists(AppDataRoot))
-                Directory.CreateDirectory(AppDataRoot);
+            Directory.CreateDirectory(ProfilesDir);
+            Directory.CreateDirectory(CacheDir);
+            Directory.CreateDirectory(LogsDir);
+            Directory.CreateDirectory(DxvkDir);
         }
     }
 }
