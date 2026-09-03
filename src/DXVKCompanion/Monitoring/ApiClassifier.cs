@@ -24,9 +24,11 @@ namespace DXVKCompanion.Monitoring
 
         public GraphicsApi Classify(Process process)
         {
+            // First try loaded modules
             if (_scanner.UsesDirectX(process))
-                return GraphicsApi.DX11; // Most DXVK-compatible games load DX11 dynamically
+                return GraphicsApi.DX11;
 
+            // Fallback to PE imports
             var imports = _parser.GetImports(process.MainModule.FileName);
 
             if (imports.Contains("d3d9.dll"))
