@@ -18,7 +18,7 @@ namespace DXVKCompanion
 
             ApplicationConfiguration.Initialize();
 
-            // --- Monitoring Layer ---
+            // Monitoring
             var detector = new GameDetector();
             var exitHandler = new ProcessExitHandler();
             var moduleScanner = new ModuleScanner();
@@ -26,11 +26,11 @@ namespace DXVKCompanion
             var classifier = new ApiClassifier(moduleScanner, peParser);
             var monitor = new ProcessMonitor(detector, exitHandler);
 
-            // --- Storage Layer ---
+            // Storage
             var profiles = new ProfileStore();
             var cacheStore = new CacheStore();
 
-            // --- DXVK Layer ---
+            // DXVK
             var configManager = new DxvkConfigManager();
             var fileUtils = new FileUtils();
             var installer = new DxvkInstaller(fileUtils, configManager);
@@ -39,8 +39,8 @@ namespace DXVKCompanion
             var cache = new DxvkReleaseCache(cacheStore);
             var dxvkManager = new DxvkManager(installer, rollback, github, cache, profiles);
 
-            // --- UI Layer ---
-            var trayApp = new TrayApp(monitor, profiles, dxvkManager);
+            // UI
+            var trayApp = new TrayApp(monitor, profiles, dxvkManager, classifier);
 
             Application.Run();
         }
