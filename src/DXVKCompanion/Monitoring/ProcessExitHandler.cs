@@ -16,7 +16,7 @@ namespace DXVKCompanion.Monitoring
             }
             catch
             {
-                // Some protected processes cannot be hooked
+                // Some processes cannot be hooked; ignore
             }
         }
     }
