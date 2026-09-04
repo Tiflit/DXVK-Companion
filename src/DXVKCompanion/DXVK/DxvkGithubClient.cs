@@ -31,7 +31,10 @@ namespace DXVKCompanion.DXVK
             try
             {
                 if (cached != null && !cached.IsExpired())
+                {
+                    Logger.Log($"DxvkGithubClient: using cached release {cached.Release.Version} (cached at {cached.CachedAt:u}).");
                     return cached.Release;
+                }
 
                 var request = new HttpRequestMessage(HttpMethod.Get, ApiUrl);
 
