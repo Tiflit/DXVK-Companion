@@ -1,121 +1,58 @@
+using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 
 namespace DXVKCompanion.Monitoring
 {
+    /// <summary>
+    /// Enumerates a process's loaded modules ONCE per call and checks every tracked
+    /// graphics-API DLL against that single snapshot — replacing six near-identical methods
+    /// that each independently re-enumerated process.Modules (a real syscall, not a free
+    /// property read) whenever ApiClassifier called more than one of them per process.
+    /// </summary>
     public class ModuleScanner
     {
-        public bool UsesDirectX(Process process)
+        private static readonly string[] TrackedModules =
         {
+            "d3d8.dll", "d3d9.dll", "d3d10.dll", "d3d11.dll", "d3d12.dll",
+            "dxgi.dll", "vulkan-1.dll", "opengl32.dll", "ddraw.dll", "dgvoodoo.dll"
+        };
+
+        public HashSet<string> GetLoadedGraphicsModules(Process process)
+        {
+            var found = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
             try
             {
                 foreach (ProcessModule module in process.Modules)
                 {
                     string name = module.ModuleName.ToLowerInvariant();
-                    if (name.Contains("d3d9.dll") || name.Contains("d3d10.dll") ||
-                        name.Contains("d3d11.dll") || name.Contains("dxgi.dll"))
-                        return true;
+                    foreach (var tracked in TrackedModules)
+                        if (name.Contains(tracked))
+                            found.Add(tracked);
                 }
             }
-            catch { }
-
-            return false;
-        }
-
-        public bool UsesDx9(Process process)
-        {
-            try
+            catch
             {
-                foreach (ProcessModule module in process.Modules)
-                    if (module.ModuleName.ToLowerInvariant().Contains("d3d9.dll"))
-                        return true;
+                // Access denied — return whatever was found before the failure (often nothing).
             }
-            catch { }
 
-            return false;
+            return found;
         }
 
-        public bool UsesDx10(Process process)
-        {
-            try
-            {
-                foreach (ProcessModule module in process.Modules)
-                    if (module.ModuleName.ToLowerInvariant().Contains("d3d10.dll"))
-                        return true;
-            }
-            catch { }
-
-            return false;
-        }
-
-        public bool UsesDx11(Process process)
-        {
-            try
-            {
-                // Requires d3d11.dll specifically — dxgi.dll alone is also loaded by DX10
-                // and DX12 titles, which was previously causing DX12 games to be
-                // misclassified as DX11.
-                foreach (ProcessModule module in process.Modules)
-                    if (module.ModuleName.ToLowerInvariant().Contains("d3d11.dll"))
-                        return true;
-            }
-            catch { }
-
-            return false;
-        }
-
-        public bool UsesDx12(Process process)
-        {
-            try
-            {
-                foreach (ProcessModule module in process.Modules)
-                    if (module.ModuleName.ToLowerInvariant().Contains("d3d12.dll"))
-                        return true;
-            }
-            catch { }
-
-            return false;
-        }
-
-        public bool UsesVulkan(Process process)
-        {
-            try
-            {
-                foreach (ProcessModule module in process.Modules)
-                    if (module.ModuleName.ToLowerInvariant().Contains("vulkan-1.dll"))
-                        return true;
-            }
-            catch { }
-
-            return false;
-        }
-
-        public bool UsesOpenGL(Process process)
-        {
-            try
-            {
-                foreach (ProcessModule module in process.Modules)
-                    if (module.ModuleName.ToLowerInvariant().Contains("opengl32.dll"))
-                        return true;
-            }
-            catch { }
-
-            return false;
-        }
+        // Kept for any external/future callers that only care about one specific API —
+        // internally, ApiClassifier now calls GetLoadedGraphicsModules directly instead.
+        public bool UsesDx9(Process process) => GetLoadedGraphicsModules(process).Contains("d3d9.dll");
+        public bool UsesDx10(Process process) => GetLoadedGraphicsModules(process).Contains("d3d10.dll");
+        public bool UsesDx11(Process process) => GetLoadedGraphicsModules(process).Contains("d3d11.dll");
+        public bool UsesDx12(Process process) => GetLoadedGraphicsModules(process).Contains("d3d12.dll");
+        public bool UsesVulkan(Process process) => GetLoadedGraphicsModules(process).Contains("vulkan-1.dll");
+        public bool UsesOpenGL(Process process) => GetLoadedGraphicsModules(process).Contains("opengl32.dll");
 
         public bool UsesDgVoodoo(Process process)
         {
-            try
-            {
-                foreach (ProcessModule module in process.Modules)
-                {
-                    string name = module.ModuleName.ToLowerInvariant();
-                    if (name.Contains("dgvoodoo.dll") || name.Contains("ddraw.dll") || name.Contains("d3d8.dll"))
-                        return true;
-                }
-            }
-            catch { }
-
-            return false;
+            var m = GetLoadedGraphicsModules(process);
+            return m.Contains("dgvoodoo.dll") || m.Contains("ddraw.dll") || m.Contains("d3d8.dll");
         }
     }
 }
