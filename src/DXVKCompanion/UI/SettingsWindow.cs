@@ -9,6 +9,8 @@ namespace DXVKCompanion.UI
             Text = "DXVK Companion Settings";
             Width = 400;
             Height = 300;
+            FormBorderStyle = FormBorderStyle.FixedDialog;
+            MaximizeBox = false;
 
             var label = new Label
             {
