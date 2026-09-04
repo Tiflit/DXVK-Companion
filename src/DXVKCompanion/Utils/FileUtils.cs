@@ -40,7 +40,7 @@ namespace DXVKCompanion.Utils
             File.WriteAllBytes(dst, bytes);
         }
 
-        public async Task SafeReplaceWithBackupAsync(string targetPath, string sourcePath)
+        public async Task<bool> SafeReplaceWithBackupAsync(string targetPath, string sourcePath)
         {
             int maxRetries = 5;
             int delayMs = 500;
@@ -53,21 +53,30 @@ namespace DXVKCompanion.Utils
 
                     if (File.Exists(targetPath) && !File.Exists(backupPath))
                     {
+                        // copy existing file to .bak (do not overwrite an existing .bak)
                         File.Copy(targetPath, backupPath, overwrite: false);
                     }
 
+                    // Copy new file into place
                     File.Copy(sourcePath, targetPath, overwrite: true);
-                    return;
+                    return true;
                 }
                 catch (IOException)
                 {
                     await Task.Delay(delayMs);
                     delayMs *= 2;
                 }
+                catch (UnauthorizedAccessException)
+                {
+                    // Permission denied — do not keep retrying silently
+                    return false;
+                }
             }
+
+            return false;
         }
 
-        public async Task SafeReplaceAsync(string targetPath, string sourcePath)
+        public async Task<bool> SafeReplaceAsync(string targetPath, string sourcePath)
         {
             int maxRetries = 5;
             int delayMs = 500;
@@ -80,14 +89,20 @@ namespace DXVKCompanion.Utils
                         File.Delete(targetPath);
 
                     File.Move(sourcePath, targetPath);
-                    return;
+                    return true;
                 }
                 catch (IOException)
                 {
                     await Task.Delay(delayMs);
                     delayMs *= 2;
                 }
+                catch (UnauthorizedAccessException)
+                {
+                    return false;
+                }
             }
+
+            return false;
         }
     }
 }
