@@ -31,13 +31,22 @@ namespace DXVKCompanion.DXVK
                 string dxgiBak = dxgi + ".bak";
 
                 if (File.Exists(d3d9Bak))
-                    await _files.SafeReplaceAsync(d3d9, d3d9Bak);
+                {
+                    bool ok = await _files.SafeReplaceAsync(d3d9, d3d9Bak);
+                    if (!ok) return false;
+                }
 
                 if (File.Exists(d3d11Bak))
-                    await _files.SafeReplaceAsync(d3d11, d3d11Bak);
+                {
+                    bool ok = await _files.SafeReplaceAsync(d3d11, d3d11Bak);
+                    if (!ok) return false;
+                }
 
                 if (File.Exists(dxgiBak))
-                    await _files.SafeReplaceAsync(dxgi, dxgiBak);
+                {
+                    bool ok = await _files.SafeReplaceAsync(dxgi, dxgiBak);
+                    if (!ok) return false;
+                }
 
                 string confPath = Path.Combine(gameDir, "dxvk.conf");
                 if (File.Exists(confPath))
