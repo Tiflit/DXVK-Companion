@@ -28,7 +28,7 @@ namespace DXVKCompanion.Storage
 
         public void Save(GameProfile profile)
         {
-            _profiles[profile.ExePath] = profile;
+            _profiles[profile.ExecutablePath] = profile;
             WriteAll();
         }
 
@@ -39,14 +39,21 @@ namespace DXVKCompanion.Storage
             if (!File.Exists(Paths.ProfilesFile))
                 return;
 
-            var json = File.ReadAllText(Paths.ProfilesFile);
-            var list = JsonSerializer.Deserialize<List<GameProfile>>(json);
+            try
+            {
+                var json = File.ReadAllText(Paths.ProfilesFile);
+                var list = JsonSerializer.Deserialize<List<GameProfile>>(json);
 
-            if (list == null)
-                return;
+                if (list == null)
+                    return;
 
-            foreach (var p in list)
-                _profiles[p.ExePath] = p;
+                foreach (var p in list)
+                    _profiles[p.ExecutablePath] = p;
+            }
+            catch
+            {
+                // Corrupted profile file → ignore and start fresh
+            }
         }
 
         private void WriteAll()
@@ -54,6 +61,7 @@ namespace DXVKCompanion.Storage
             Paths.EnsureDirectories();
 
             var list = new List<GameProfile>(_profiles.Values);
+
             var json = JsonSerializer.Serialize(list, new JsonSerializerOptions
             {
                 WriteIndented = true
