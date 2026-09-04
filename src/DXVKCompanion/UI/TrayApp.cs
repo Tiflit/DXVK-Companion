@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.Drawing;
+using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -23,7 +24,7 @@ namespace DXVKCompanion.UI
         private readonly ApiClassifier _classifier;
         private readonly GameDetector _detector;
         private readonly SettingsStore _settings;
-        private readonly Logger _logger;
+        private readonly HttpClient _httpClient;
         private readonly SynchronizationContext _syncContext;
 
         public TrayApp(
@@ -31,16 +32,17 @@ namespace DXVKCompanion.UI
             ProfileStore profiles,
             DxvkManager dxvk,
             ApiClassifier classifier,
-            SettingsStore settings)
+            SettingsStore settings,
+            HttpClient httpClient)
         {
             _monitor = monitor;
             _profiles = profiles;
             _dxvk = dxvk;
             _classifier = classifier;
             _settings = settings;
+            _httpClient = httpClient;
 
             _detector = new GameDetector();
-            _logger = new Logger();
             _syncContext = SynchronizationContext.Current ?? new SynchronizationContext();
 
             _trayIcon = new NotifyIcon
@@ -53,6 +55,7 @@ namespace DXVKCompanion.UI
             _menu = new TrayMenu(_trayIcon, profiles, dxvk, settings);
 
             _monitor.OnGameDetected += HandleGameDetected;
+            _monitor.OnGameExited += async exePath => await _dxvk.ApplyPendingAsync(exePath);
 
             _ = CheckDxvkUpdateOnStartup();
             _ = CheckCompanionUpdateOnStartup();
@@ -61,11 +64,9 @@ namespace DXVKCompanion.UI
         private async Task CheckDxvkUpdateOnStartup()
         {
             var latest = await _dxvk.GetLatestReleaseAsync();
-            if (latest == null)
-                return;
+            if (latest == null) return;
 
             bool anyOutdated = false;
-
             foreach (var profile in _profiles.GetAll())
             {
                 if (profile.DxvkEnabled && _dxvk.UpdateAvailable(profile, latest))
@@ -79,24 +80,19 @@ namespace DXVKCompanion.UI
             {
                 _syncContext.Post(_ =>
                 {
-                    _trayIcon.ShowBalloonTip(
-                        5000,
-                        "DXVK Update Available",
-                        $"A new DXVK version ({latest.Version}) is available.",
-                        ToolTipIcon.Info
-                    );
+                    _trayIcon.ShowBalloonTip(5000, "DXVK Update Available",
+                        $"A new DXVK version ({latest.Version}) is available.", ToolTipIcon.Info);
                 }, null);
             }
         }
 
         private async Task CheckCompanionUpdateOnStartup()
         {
-            var checker = new CompanionUpdateChecker(_dxvk.HttpClient);
+            var checker = new CompanionUpdateChecker(_httpClient);
             var latest = await checker.GetLatestVersionAsync();
-            if (latest == null)
-                return;
+            if (latest == null) return;
 
-            var localVersion = "1.0.0"; // placeholder
+            var localVersion = "1.0.0"; // placeholder — wire up to the real assembly version
 
             if (localVersion != latest)
             {
@@ -111,12 +107,8 @@ namespace DXVKCompanion.UI
                         });
                     };
 
-                    _trayIcon.ShowBalloonTip(
-                        5000,
-                        "DXVK Companion Update Available",
-                        $"A new DXVK Companion version ({latest}) is available.\nClick to open releases.",
-                        ToolTipIcon.Info
-                    );
+                    _trayIcon.ShowBalloonTip(5000, "DXVK Companion Update Available",
+                        $"A new DXVK Companion version ({latest}) is available.\nClick to open releases.", ToolTipIcon.Info);
                 }, null);
             }
         }
@@ -124,21 +116,12 @@ namespace DXVKCompanion.UI
         private async void HandleGameDetected(Process process)
         {
             string exePath;
+            try { exePath = process.MainModule.FileName; }
+            catch { return; }
 
             try
             {
-                exePath = process.MainModule.FileName;
-            }
-            catch
-            {
-                return;
-            }
-
-            GameProfile profile;
-
-            try
-            {
-                profile = _profiles.GetOrCreate(exePath);
+                var profile = _profiles.GetOrCreate(exePath);
 
                 profile.Api = _classifier.Classify(process);
 
@@ -146,29 +129,23 @@ namespace DXVKCompanion.UI
                 profile.Architecture = parser.GetArchitecture(exePath);
 
                 bool antiCheat = _detector.HasAntiCheatRisk(process);
-
                 var latest = await _dxvk.GetLatestReleaseAsync();
 
-                string localVersion = string.IsNullOrWhiteSpace(profile.DxvkVersion)
-                    ? "None"
-                    : profile.DxvkVersion;
+                string localVersion = string.IsNullOrWhiteSpace(profile.DxvkVersion) ? "None" : profile.DxvkVersion;
 
-                bool dxvkCompatible =
-                    profile.Api == GraphicsApi.DX9 ||
-                    profile.Api == GraphicsApi.DX11 ||
-                    profile.Api == GraphicsApi.ModernAPI;
+                bool dxvkCompatible = profile.Api == GraphicsApi.DX9 ||
+                                      profile.Api == GraphicsApi.DX11 ||
+                                      profile.Api == GraphicsApi.ModernAPI;
 
-                bool updateAvailable = latest != null &&
-                                       profile.DxvkEnabled &&
-                                       _dxvk.UpdateAvailable(profile, latest);
+                bool updateAvailable = latest != null && profile.DxvkEnabled && _dxvk.UpdateAvailable(profile, latest);
 
                 if (_settings.AutoEnableDxvkForNewGames &&
-                    dxvkCompatible &&
-                    !antiCheat &&
-                    !profile.DxvkEnabled &&
+                    dxvkCompatible && !antiCheat && !profile.DxvkEnabled &&
                     string.IsNullOrWhiteSpace(profile.DxvkVersion))
                 {
-                    await _dxvk.EnableDxvkAsync(profile);
+                    // Queued, not applied immediately — the game we just detected is,
+                    // by definition, currently running.
+                    await _dxvk.RequestEnableAsync(profile, process);
                 }
 
                 _profiles.Save(profile);
@@ -177,13 +154,8 @@ namespace DXVKCompanion.UI
 
                 _syncContext.Post(_ =>
                 {
-                    _trayIcon.ShowBalloonTip(
-                        5000,
-                        "Game Detected",
-                        message,
-                        antiCheat ? ToolTipIcon.Warning : ToolTipIcon.Info
-                    );
-
+                    _trayIcon.ShowBalloonTip(5000, "Game Detected", message,
+                        antiCheat ? ToolTipIcon.Warning : ToolTipIcon.Info);
                     _menu.SetActiveGame(process, profile);
                 }, null);
             }
@@ -194,13 +166,8 @@ namespace DXVKCompanion.UI
         }
 
         private string BuildNotificationMessage(
-            Process process,
-            GameProfile profile,
-            bool antiCheat,
-            ReleaseInfo? latest,
-            string localVersion,
-            bool dxvkCompatible,
-            bool updateAvailable)
+            Process process, GameProfile profile, bool antiCheat, ReleaseInfo? latest,
+            string localVersion, bool dxvkCompatible, bool updateAvailable)
         {
             var msg = $"{process.ProcessName} is running.\n" +
                       $"API: {profile.Api} ({profile.Architecture})\n" +
@@ -217,7 +184,7 @@ namespace DXVKCompanion.UI
             else
             {
                 if (!profile.DxvkEnabled)
-                    msg += "DXVK is available for this game. Enable it from the tray menu (applies on next launch).\n";
+                    msg += "DXVK is available for this game. Enable it from the tray menu (applies once the game closes).\n";
                 else if (updateAvailable)
                     msg += "A newer DXVK version is available. You can update it from the tray menu.\n";
                 else
