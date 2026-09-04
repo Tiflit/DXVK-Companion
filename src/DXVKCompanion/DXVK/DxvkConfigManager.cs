@@ -1,24 +1,15 @@
-using System;
 using System.IO;
 using DXVKCompanion.Models;
-using DXVKCompanion.Storage;
 
 namespace DXVKCompanion.DXVK
 {
     public class DxvkConfigManager
     {
-        private readonly Paths _paths;
-
-        public DxvkConfigManager()
-        {
-            _paths = new Paths();
-        }
-
         public void WriteConfig(GameProfile profile)
         {
             try
             {
-                string gameDir = Path.GetDirectoryName(profile.ExecutablePath) ?? string.Empty;
+                string gameDir = Path.GetDirectoryName(profile.ExePath) ?? string.Empty;
                 if (string.IsNullOrWhiteSpace(gameDir))
                     return;
 
@@ -30,7 +21,7 @@ namespace DXVKCompanion.DXVK
                     writer.WriteLine("dxvk.hud = fps,devinfo");
 
                 if (profile.FrameLimit > 0)
-                    writer.WriteLine($"dxvk.maxfps = {profile.FrameLimit}");
+                    writer.WriteLine($"dxvk.maxFrameRate = {profile.FrameLimit}");
             }
             catch
             {
