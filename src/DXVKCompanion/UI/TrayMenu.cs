@@ -48,40 +48,39 @@ namespace DXVKCompanion.UI
             return menu;
         }
 
+        private void ShowResult(DxvkActionResult result, string appliedTitle, string actionDescription)
+        {
+            switch (result)
+            {
+                case DxvkActionResult.Applied:
+                    _tray.ShowBalloonTip(3000, appliedTitle, "Done.", ToolTipIcon.Info);
+                    break;
+                case DxvkActionResult.Queued:
+                    _tray.ShowBalloonTip(3000, "Queued", $"{actionDescription} will apply automatically once the game closes.", ToolTipIcon.Info);
+                    break;
+                case DxvkActionResult.Failed:
+                    _tray.ShowBalloonTip(3000, "DXVK Error", $"Failed: {actionDescription}.", ToolTipIcon.Error);
+                    break;
+            }
+        }
+
         private async Task EnableDXVK()
         {
-            if (_activeProfile == null)
-                return;
-
-            bool ok = await _dxvk.EnableDxvkAsync(_activeProfile);
-
-            _tray.ShowBalloonTip(
-                3000,
-                ok ? "DXVK Enabled" : "DXVK Error",
-                ok ? "DXVK will apply on next launch." : "Failed to enable DXVK.",
-                ok ? ToolTipIcon.Info : ToolTipIcon.Error
-            );
+            if (_activeProfile == null || _activeProcess == null) return;
+            var result = await _dxvk.RequestEnableAsync(_activeProfile, _activeProcess);
+            ShowResult(result, "DXVK Enabled", "Enabling DXVK");
         }
 
         private async Task DisableDXVK()
         {
-            if (_activeProfile == null)
-                return;
-
-            bool ok = await _dxvk.DisableDxvkAsync(_activeProfile);
-
-            _tray.ShowBalloonTip(
-                3000,
-                ok ? "DXVK Disabled" : "DXVK Error",
-                ok ? "DXVK removed from game folder." : "Failed to disable DXVK.",
-                ok ? ToolTipIcon.Info : ToolTipIcon.Error
-            );
+            if (_activeProfile == null || _activeProcess == null) return;
+            var result = await _dxvk.RequestDisableAsync(_activeProfile, _activeProcess);
+            ShowResult(result, "DXVK Disabled", "Disabling DXVK");
         }
 
         private async Task UpdateDXVK()
         {
-            if (_activeProfile == null)
-                return;
+            if (_activeProfile == null || _activeProcess == null) return;
 
             var latest = await _dxvk.GetLatestReleaseAsync();
             if (latest == null)
@@ -96,29 +95,16 @@ namespace DXVKCompanion.UI
                 return;
             }
 
-            bool ok = await _dxvk.EnableDxvkAsync(_activeProfile);
-
-            _tray.ShowBalloonTip(
-                3000,
-                ok ? "DXVK Updated" : "DXVK Error",
-                ok ? "DXVK will apply on next launch." : "Failed to update DXVK.",
-                ok ? ToolTipIcon.Info : ToolTipIcon.Error
-            );
+            var result = await _dxvk.RequestUpdateAsync(_activeProfile, _activeProcess);
+            ShowResult(result, "DXVK Updated", "Updating DXVK");
         }
 
         private void OpenGameDetails()
         {
-            if (_activeProfile == null)
-                return;
-
-            var window = new GameDetailsWindow(_activeProfile, _profiles);
-            window.Show();
+            if (_activeProfile == null) return;
+            new GameDetailsWindow(_activeProfile, _profiles).Show();
         }
 
-        private void OpenSettings()
-        {
-            var window = new SettingsWindow(_settings);
-            window.Show();
-        }
+        private void OpenSettings() => new SettingsWindow(_settings).Show();
     }
 }
