@@ -5,7 +5,7 @@ namespace DXVKCompanion.Storage
 {
     public static class Paths
     {
-        private static readonly string Root =
+        public static readonly string Root =
             AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar);
 
         public static string ProfilesDir => Path.Combine(Root, "Profiles");
