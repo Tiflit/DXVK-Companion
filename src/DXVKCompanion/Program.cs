@@ -1,11 +1,12 @@
 using System;
+using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Windows.Forms;
 using DXVKCompanion.Monitoring;
 using DXVKCompanion.Storage;
 using DXVKCompanion.DXVK;
 using DXVKCompanion.Utils;
 using DXVKCompanion.UI;
-using System.Net.Http;
 
 namespace DXVKCompanion
 {
@@ -19,6 +20,15 @@ namespace DXVKCompanion
 
             ApplicationConfiguration.Initialize();
 
+            // One shared HttpClient for every GitHub call and download in the app.
+            var httpClient = new HttpClient();
+            httpClient.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("DXVK-Companion", "1.0"));
+
+            // Storage
+            var profiles = new ProfileStore();
+            var cacheStore = new CacheStore();
+            var settings = SettingsStore.Load();
+
             // Monitoring
             var detector = new GameDetector();
             var exitHandler = new ProcessExitHandler();
@@ -27,25 +37,15 @@ namespace DXVKCompanion
             var classifier = new ApiClassifier(moduleScanner, peParser);
             var monitor = new ProcessMonitor(detector, exitHandler);
 
-            // Storage
-            var profiles = new ProfileStore();
-            var cacheStore = new CacheStore();
-
             // DXVK
-            var configManager = new DxvkConfigManager();
             var fileUtils = new FileUtils();
-
-            // Create a shared HttpClient for the installer (and other components if you want to reuse it)
-            var httpClient = new HttpClient();
-
             var installer = new DxvkInstaller(fileUtils, httpClient);
             var rollback = new DxvkRollback(fileUtils);
-            var github = new DxvkGithubClient();
-            var cache = new DxvkReleaseCache(cacheStore);
-            var dxvkManager = new DxvkManager(installer, rollback, github, cache, profiles);
+            var github = new DxvkGithubClient(httpClient, cacheStore);
+            var dxvkManager = new DxvkManager(installer, rollback, github, profiles);
 
             // UI
-            var trayApp = new TrayApp(monitor, profiles, dxvkManager, classifier);
+            var trayApp = new TrayApp(monitor, profiles, dxvkManager, classifier, settings, httpClient);
 
             Application.Run();
         }
