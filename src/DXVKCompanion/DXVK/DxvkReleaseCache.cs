@@ -1,6 +1,3 @@
-using System;
-using System.IO;
-using System.Text.Json;
 using DXVKCompanion.Models;
 using DXVKCompanion.Storage;
 
@@ -8,33 +5,25 @@ namespace DXVKCompanion.DXVK
 {
     public class DxvkReleaseCache
     {
-        private readonly CacheStore _store;
+        private readonly CacheStore _cacheStore;
 
-        public DxvkReleaseCache(CacheStore store)
+        public DxvkReleaseCache(CacheStore cacheStore)
         {
-            _store = store;
+            _cacheStore = cacheStore;
         }
 
         public ReleaseInfo? GetLatestRelease()
         {
-            var cached = _store.Load();
-
-            if (cached == null)
-                return null;
-
-            if (DateTime.UtcNow - cached.Timestamp > TimeSpan.FromHours(24))
+            var cached = _cacheStore.LoadCachedRelease();
+            if (cached == null || cached.IsExpired())
                 return null;
 
             return cached.Release;
         }
 
-        public void Save(ReleaseInfo release)
+        public void Save(ReleaseInfo release, string? etag = null)
         {
-            _store.Save(new CachedRelease
-            {
-                Release = release,
-                Timestamp = DateTime.UtcNow
-            });
+            _cacheStore.SaveCachedRelease(release, etag);
         }
     }
 }
