@@ -28,9 +28,11 @@ namespace DXVKCompanion.Storage
 
         public void Save(GameProfile profile)
         {
-            _profiles[profile.ExecutablePath] = profile;
+            _profiles[profile.ExePath] = profile;
             WriteAll();
         }
+
+        public IEnumerable<GameProfile> GetAll() => _profiles.Values;
 
         private void Load()
         {
@@ -48,7 +50,7 @@ namespace DXVKCompanion.Storage
                     return;
 
                 foreach (var p in list)
-                    _profiles[p.ExecutablePath] = p;
+                    _profiles[p.ExePath] = p;
             }
             catch
             {
