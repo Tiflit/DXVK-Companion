@@ -22,9 +22,10 @@ namespace DXVKCompanion.DXVK
 
         public async Task<ReleaseInfo?> FetchLatestReleaseAsync()
         {
+            var cached = _cacheStore.LoadCachedRelease();
+
             try
             {
-                var cached = _cacheStore.LoadCachedRelease();
                 if (cached != null && !cached.IsExpired())
                     return cached.Release;
 
@@ -37,9 +38,6 @@ namespace DXVKCompanion.DXVK
 
                 if (response.StatusCode == System.Net.HttpStatusCode.NotModified && cached != null)
                 {
-                    // Refresh the cached timestamp even on a 304 — otherwise the TTL window
-                    // never actually extends and every launch after the first expiry hits
-                    // the network again despite always getting "not modified" back.
                     _cacheStore.SaveCachedRelease(cached.Release, cached.ETag);
                     return cached.Release;
                 }
@@ -71,7 +69,9 @@ namespace DXVKCompanion.DXVK
             }
             catch
             {
-                return null;
+                // Network failure — fall back to a stale cached release rather than nothing at
+                // all, so the app stays usable (if slightly out of date) while offline.
+                return cached?.Release;
             }
         }
     }
