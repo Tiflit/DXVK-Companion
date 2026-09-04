@@ -12,15 +12,17 @@ namespace DXVKCompanion.UI
         private readonly NotifyIcon _tray;
         private readonly ProfileStore _profiles;
         private readonly DxvkManager _dxvk;
+        private readonly SettingsStore _settings;
 
         private Process? _activeProcess;
         private GameProfile? _activeProfile;
 
-        public TrayMenu(NotifyIcon tray, ProfileStore profiles, DxvkManager dxvk)
+        public TrayMenu(NotifyIcon tray, ProfileStore profiles, DxvkManager dxvk, SettingsStore settings)
         {
             _tray = tray;
             _profiles = profiles;
             _dxvk = dxvk;
+            _settings = settings;
 
             _tray.ContextMenuStrip = BuildMenu();
         }
@@ -41,70 +43,39 @@ namespace DXVKCompanion.UI
             menu.Items.Add("Game Details", null, (_, _) => OpenGameDetails());
             menu.Items.Add("Settings", null, (_, _) => OpenSettings());
             menu.Items.Add(new ToolStripSeparator());
-            menu.Items.Add("Exit", null, (_, _) => Application.Exit());
+            menu.Items.Add("Exit DXVK Companion", null, (_, _) => Application.Exit());
 
             return menu;
         }
 
         private async Task EnableDXVK()
         {
-            if (_activeProcess == null || _activeProfile == null)
+            if (_activeProfile == null)
                 return;
-
-            var latest = await _dxvk.GetLatestReleaseAsync();
-            if (latest == null)
-            {
-                _tray.ShowBalloonTip(3000, "DXVK Error", "Failed to fetch DXVK release.", ToolTipIcon.Error);
-                return;
-            }
 
             bool ok = await _dxvk.EnableDxvkAsync(_activeProfile);
 
-            if (ok)
-            {
-                _tray.ShowBalloonTip(
-                    3000,
-                    "DXVK Enabled",
-                    "DXVK will apply on next launch.",
-                    ToolTipIcon.Info
-                );
-            }
-            else
-            {
-                _tray.ShowBalloonTip(
-                    3000,
-                    "DXVK Error",
-                    "Failed to enable DXVK.",
-                    ToolTipIcon.Error
-                );
-            }
+            _tray.ShowBalloonTip(
+                3000,
+                ok ? "DXVK Enabled" : "DXVK Error",
+                ok ? "DXVK will apply on next launch." : "Failed to enable DXVK.",
+                ok ? ToolTipIcon.Info : ToolTipIcon.Error
+            );
         }
 
         private async Task DisableDXVK()
         {
-            if (_activeProcess == null || _activeProfile == null)
+            if (_activeProfile == null)
                 return;
 
             bool ok = await _dxvk.DisableDxvkAsync(_activeProfile);
 
-            if (ok)
-            {
-                _tray.ShowBalloonTip(
-                    3000,
-                    "DXVK Disabled",
-                    "DXVK removed from game folder.",
-                    ToolTipIcon.Info
-                );
-            }
-            else
-            {
-                _tray.ShowBalloonTip(
-                    3000,
-                    "DXVK Error",
-                    "Failed to disable DXVK.",
-                    ToolTipIcon.Error
-                );
-            }
+            _tray.ShowBalloonTip(
+                3000,
+                ok ? "DXVK Disabled" : "DXVK Error",
+                ok ? "DXVK removed from game folder." : "Failed to disable DXVK.",
+                ok ? ToolTipIcon.Info : ToolTipIcon.Error
+            );
         }
 
         private async Task UpdateDXVK()
@@ -127,24 +98,12 @@ namespace DXVKCompanion.UI
 
             bool ok = await _dxvk.EnableDxvkAsync(_activeProfile);
 
-            if (ok)
-            {
-                _tray.ShowBalloonTip(
-                    3000,
-                    "DXVK Updated",
-                    "DXVK will apply on next launch.",
-                    ToolTipIcon.Info
-                );
-            }
-            else
-            {
-                _tray.ShowBalloonTip(
-                    3000,
-                    "DXVK Error",
-                    "Failed to update DXVK.",
-                    ToolTipIcon.Error
-                );
-            }
+            _tray.ShowBalloonTip(
+                3000,
+                ok ? "DXVK Updated" : "DXVK Error",
+                ok ? "DXVK will apply on next launch." : "Failed to update DXVK.",
+                ok ? ToolTipIcon.Info : ToolTipIcon.Error
+            );
         }
 
         private void OpenGameDetails()
@@ -158,7 +117,7 @@ namespace DXVKCompanion.UI
 
         private void OpenSettings()
         {
-            var window = new SettingsWindow();
+            var window = new SettingsWindow(_settings);
             window.Show();
         }
     }
