@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics;
+using System.Linq;
 
 namespace DXVKCompanion.Monitoring
 {
@@ -7,22 +8,13 @@ namespace DXVKCompanion.Monitoring
     {
         private static readonly string[] AntiCheatModules =
         {
-            "easyanticheat.dll",
-            "eac.dll",
-            "battleye.dll",
-            "bedaisy.sys",
-            "riotclientservices.exe",
-            "vgk.sys",
-            "nvanti.dll"
+            "easyanticheat.dll", "eac.dll", "battleye.dll", "bedaisy.sys",
+            "riotclientservices.exe", "vgk.sys", "nvanti.dll"
         };
 
         private static readonly string[] LauncherNames =
         {
-            "steam.exe",
-            "epicgameslauncher.exe",
-            "origin.exe",
-            "uplay.exe",
-            "goggalaxy.exe"
+            "steam.exe", "epicgameslauncher.exe", "origin.exe", "uplay.exe", "goggalaxy.exe"
         };
 
         public bool IsGameProcess(Process process)
@@ -35,6 +27,12 @@ namespace DXVKCompanion.Monitoring
                     return false;
 
                 if (name == "explorer" || name == "system" || name == "idle")
+                    return false;
+
+                // Requires a visible top-level window. Filters out most background
+                // processes/services, which were previously able to silently become the
+                // tray menu's "active game" just by being launched while a real game was running.
+                if (process.MainWindowHandle == IntPtr.Zero)
                     return false;
 
                 return true;
@@ -52,12 +50,9 @@ namespace DXVKCompanion.Monitoring
                 foreach (ProcessModule module in process.Modules)
                 {
                     string name = module.ModuleName.ToLowerInvariant();
-
                     foreach (var ac in AntiCheatModules)
-                    {
                         if (name.Contains(ac))
                             return true;
-                    }
                 }
             }
             catch
