@@ -1,29 +1,32 @@
 using System;
 using System.IO;
+using System.Text;
 using DXVKCompanion.Storage;
 
 namespace DXVKCompanion.Utils
 {
-    public static class Logger
+    public class Logger
     {
-        private static readonly object _lock = new();
+        private readonly object _lock = new();
 
-        public static void Log(string message)
+        public void Log(string message)
         {
             try
             {
                 Paths.EnsureDirectories();
 
-                string line = $"{DateTime.Now:yyyy-MM-dd HH:mm:ss}  {message}";
-
                 lock (_lock)
                 {
-                    File.AppendAllText(Paths.LogFile, line + Environment.NewLine);
+                    File.AppendAllText(
+                        Paths.LogFile,
+                        $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - {message}{Environment.NewLine}",
+                        Encoding.UTF8
+                    );
                 }
             }
             catch
             {
-                // Logging must never crash the app
+                // Ignore logging failures
             }
         }
     }
