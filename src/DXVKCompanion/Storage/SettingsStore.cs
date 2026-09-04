@@ -5,37 +5,27 @@ namespace DXVKCompanion.Storage
 {
     public class SettingsStore
     {
-        private const string SettingsFileName = "settings.json";
-
         public bool AutoEnableDxvkForNewGames { get; set; } = false;
         public bool LaunchOnStartup { get; set; } = false;
 
-        private string SettingsFilePath => Path.Combine(Paths.Root, SettingsFileName);
+        private static string SettingsPath =>
+            Path.Combine(Paths.Root, "settings.json");
 
-        public SettingsStore()
-        {
-            Load();
-        }
-
-        public void Load()
+        public static SettingsStore Load()
         {
             try
             {
-                if (!File.Exists(SettingsFilePath))
-                    return;
+                if (!File.Exists(SettingsPath))
+                    return new SettingsStore();
 
-                var json = File.ReadAllText(SettingsFilePath);
+                var json = File.ReadAllText(SettingsPath);
                 var settings = JsonSerializer.Deserialize<SettingsStore>(json);
 
-                if (settings == null)
-                    return;
-
-                AutoEnableDxvkForNewGames = settings.AutoEnableDxvkForNewGames;
-                LaunchOnStartup = settings.LaunchOnStartup;
+                return settings ?? new SettingsStore();
             }
             catch
             {
-                // Ignore corrupted settings
+                return new SettingsStore();
             }
         }
 
@@ -48,7 +38,7 @@ namespace DXVKCompanion.Storage
                     WriteIndented = true
                 });
 
-                File.WriteAllText(SettingsFilePath, json);
+                File.WriteAllText(SettingsPath, json);
             }
             catch
             {
