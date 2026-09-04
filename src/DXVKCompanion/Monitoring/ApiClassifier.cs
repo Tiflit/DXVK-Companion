@@ -18,44 +18,28 @@ namespace DXVKCompanion.Monitoring
 
         public GraphicsApi Classify(Process process)
         {
-            try
-            {
-                if (_scanner.UsesDx9(process))
-                    return GraphicsApi.DX9;
+            // Single scan instead of up to five separate ones.
+            var modules = _scanner.GetLoadedGraphicsModules(process);
 
-                if (_scanner.UsesDx10(process))
-                    return GraphicsApi.DX10;
+            if (modules.Contains("d3d9.dll")) return GraphicsApi.DX9;
+            if (modules.Contains("d3d10.dll")) return GraphicsApi.DX10;
+            if (modules.Contains("d3d11.dll")) return GraphicsApi.DX11;
+            if (modules.Contains("d3d12.dll") || modules.Contains("vulkan-1.dll")) return GraphicsApi.ModernAPI;
 
-                if (_scanner.UsesDx11(process))
-                    return GraphicsApi.DX11;
-
-                if (_scanner.UsesDx12(process) || _scanner.UsesVulkan(process))
-                    return GraphicsApi.ModernAPI;
-            }
-            catch
-            {
-                // Module enumeration failed (access denied etc.) — fall back to PE import parsing below.
-            }
-
+            // Nothing matched via live modules (genuinely none loaded, or enumeration was
+            // blocked) — fall back to static PE import parsing.
             try
             {
                 var imports = _parser.GetImports(process.MainModule.FileName).ToList();
 
-                if (imports.Contains("d3d9.dll"))
-                    return GraphicsApi.DX9;
-
-                if (imports.Contains("d3d10.dll"))
-                    return GraphicsApi.DX10;
-
-                if (imports.Contains("d3d11.dll"))
-                    return GraphicsApi.DX11;
-
-                if (imports.Contains("d3d12.dll") || imports.Contains("vulkan-1.dll"))
-                    return GraphicsApi.ModernAPI;
+                if (imports.Contains("d3d9.dll")) return GraphicsApi.DX9;
+                if (imports.Contains("d3d10.dll")) return GraphicsApi.DX10;
+                if (imports.Contains("d3d11.dll")) return GraphicsApi.DX11;
+                if (imports.Contains("d3d12.dll") || imports.Contains("vulkan-1.dll")) return GraphicsApi.ModernAPI;
             }
             catch
             {
-                // Ignore parse failures; fall through to Unknown
+                Logger.Log($"ApiClassifier: PE import fallback failed for {process.ProcessName}.");
             }
 
             return GraphicsApi.Unknown;
