@@ -4,15 +4,18 @@ namespace DXVKCompanion.Models
 {
     public class CachedRelease
     {
-        public ReleaseInfo Release { get; set; }
-        public DateTime Timestamp { get; set; }
+        public ReleaseInfo Release { get; set; } = new ReleaseInfo();
 
-        public CachedRelease() { }
+        // Standardized name
+        public DateTime CachedAt { get; set; }
 
-        public CachedRelease(ReleaseInfo release, DateTime timestamp)
+        // GitHub ETag for 304 Not Modified support
+        public string? ETag { get; set; }
+
+        // 24-hour TTL
+        public bool IsExpired()
         {
-            Release = release;
-            Timestamp = timestamp;
+            return (DateTime.UtcNow - CachedAt).TotalHours > 24;
         }
     }
 }
