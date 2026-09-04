@@ -1,11 +1,11 @@
 using System;
-using System.Net.Http;
 using System.Windows.Forms;
-using DXVKCompanion.DXVK;
 using DXVKCompanion.Monitoring;
 using DXVKCompanion.Storage;
-using DXVKCompanion.UI;
+using DXVKCompanion.DXVK;
 using DXVKCompanion.Utils;
+using DXVKCompanion.UI;
+using System.Net.Http;
 
 namespace DXVKCompanion
 {
@@ -14,39 +14,38 @@ namespace DXVKCompanion
         [STAThread]
         static void Main()
         {
+            Paths.EnsureDirectories();
+            Logger.Log("DXVK Companion started.");
+
             ApplicationConfiguration.Initialize();
-
-            // Shared singletons
-            var httpClient = new HttpClient();
-            httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("DXVK-Companion/1.0");
-
-            var cacheStore = new CacheStore();
-            var settings = SettingsStore.Load();
-            var fileUtils = new FileUtils();
-            var configManager = new DxvkConfigManager();
-
-            // DXVK layer
-            var githubClient = new DxvkGithubClient(httpClient, cacheStore);
-            var releaseCache = new DxvkReleaseCache(cacheStore);
-            var installer = new DxvkInstaller(fileUtils, httpClient);
-            var rollback = new DxvkRollback(fileUtils);
-            var dxvkManager = new DxvkManager(installer, rollback, githubClient, releaseCache, configManager);
-
-            // Storage
-            var profiles = new ProfileStore();
 
             // Monitoring
             var detector = new GameDetector();
-            var exitHandler = new ProcessExitHandler(profiles);
+            var exitHandler = new ProcessExitHandler();
+            var moduleScanner = new ModuleScanner();
+            var peParser = new PeParser();
+            var classifier = new ApiClassifier(moduleScanner, peParser);
             var monitor = new ProcessMonitor(detector, exitHandler);
 
-            // API detection
-            var scanner = new ModuleScanner();
-            var parser = new PeParser();
-            var classifier = new ApiClassifier(scanner, parser);
+            // Storage
+            var profiles = new ProfileStore();
+            var cacheStore = new CacheStore();
+
+            // DXVK
+            var configManager = new DxvkConfigManager();
+            var fileUtils = new FileUtils();
+
+            // Create a shared HttpClient for the installer (and other components if you want to reuse it)
+            var httpClient = new HttpClient();
+
+            var installer = new DxvkInstaller(fileUtils, httpClient);
+            var rollback = new DxvkRollback(fileUtils);
+            var github = new DxvkGithubClient();
+            var cache = new DxvkReleaseCache(cacheStore);
+            var dxvkManager = new DxvkManager(installer, rollback, github, cache, profiles);
 
             // UI
-            var trayApp = new TrayApp(monitor, profiles, dxvkManager, classifier, settings);
+            var trayApp = new TrayApp(monitor, profiles, dxvkManager, classifier);
 
             Application.Run();
         }
