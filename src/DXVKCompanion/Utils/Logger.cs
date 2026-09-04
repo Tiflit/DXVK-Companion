@@ -5,11 +5,11 @@ using DXVKCompanion.Storage;
 
 namespace DXVKCompanion.Utils
 {
-    public class Logger
+    public static class Logger
     {
-        private readonly object _lock = new();
+        private static readonly object _lock = new();
 
-        public void Log(string message)
+        public static void Log(string message)
         {
             try
             {
