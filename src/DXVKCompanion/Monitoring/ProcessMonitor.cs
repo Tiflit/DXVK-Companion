@@ -15,10 +15,14 @@ namespace DXVKCompanion.Monitoring
 
         public event Action<Process>? OnGameDetected;
 
+        // Raised with the exe path of a previously-detected game once it exits.
+        public event Action<string>? OnGameExited;
+
         public ProcessMonitor(GameDetector detector, ProcessExitHandler exitHandler)
         {
             _detector = detector;
             _exitHandler = exitHandler;
+            _exitHandler.ProcessExited += exePath => OnGameExited?.Invoke(exePath);
 
             _timer = new Timer(PollProcesses, null, 0, 2000);
         }
@@ -39,10 +43,8 @@ namespace DXVKCompanion.Monitoring
             var currentPids = processes.Select(p => p.Id).ToHashSet();
 
             foreach (var pid in _seenPids.Keys)
-            {
                 if (!currentPids.Contains(pid))
                     _seenPids.TryRemove(pid, out _);
-            }
 
             foreach (var proc in processes)
             {
@@ -72,9 +74,6 @@ namespace DXVKCompanion.Monitoring
             }
         }
 
-        public void Dispose()
-        {
-            _timer.Dispose();
-        }
+        public void Dispose() => _timer.Dispose();
     }
 }
