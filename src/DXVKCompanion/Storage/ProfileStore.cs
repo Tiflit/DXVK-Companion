@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
@@ -7,7 +8,10 @@ namespace DXVKCompanion.Storage
 {
     public class ProfileStore
     {
-        private readonly Dictionary<string, GameProfile> _profiles = new();
+        // Windows paths are case-insensitive at the filesystem level — without this comparer,
+        // "C:\Games\Game.exe" and "c:\games\game.exe" would create two separate profiles
+        // for what is actually the same file.
+        private readonly Dictionary<string, GameProfile> _profiles = new(StringComparer.OrdinalIgnoreCase);
 
         public ProfileStore()
         {
