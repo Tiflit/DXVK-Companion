@@ -14,11 +14,10 @@ namespace DXVKCompanion.DXVK
         private readonly HttpClient _httpClient;
         private readonly CacheStore _cacheStore;
 
-        public DxvkGithubClient()
+        public DxvkGithubClient(HttpClient httpClient, CacheStore cacheStore)
         {
-            _httpClient = new HttpClient();
-            _httpClient.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("DXVK-Companion", "1.0"));
-            _cacheStore = new CacheStore();
+            _httpClient = httpClient;
+            _cacheStore = cacheStore;
         }
 
         public async Task<ReleaseInfo?> FetchLatestReleaseAsync()
@@ -37,7 +36,13 @@ namespace DXVKCompanion.DXVK
                 var response = await _httpClient.SendAsync(request);
 
                 if (response.StatusCode == System.Net.HttpStatusCode.NotModified && cached != null)
+                {
+                    // Refresh the cached timestamp even on a 304 — otherwise the TTL window
+                    // never actually extends and every launch after the first expiry hits
+                    // the network again despite always getting "not modified" back.
+                    _cacheStore.SaveCachedRelease(cached.Release, cached.ETag);
                     return cached.Release;
+                }
 
                 response.EnsureSuccessStatusCode();
 
@@ -57,11 +62,7 @@ namespace DXVKCompanion.DXVK
                     }
                 }
 
-                var release = new ReleaseInfo
-                {
-                    Version = tagName,
-                    DownloadUrl = assetUrl
-                };
+                var release = new ReleaseInfo { Version = tagName, DownloadUrl = assetUrl };
 
                 string? etag = response.Headers.ETag?.Tag;
                 _cacheStore.SaveCachedRelease(release, etag);
