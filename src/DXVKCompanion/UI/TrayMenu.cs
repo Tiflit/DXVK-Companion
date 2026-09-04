@@ -1,3 +1,4 @@
+// FILE: UI/TrayMenu.cs
 using System.Diagnostics;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -41,6 +42,8 @@ namespace DXVKCompanion.UI
             menu.Items.Add("Disable DXVK", null, async (_, _) => await DisableDXVK());
             menu.Items.Add("Update DXVK", null, async (_, _) => await UpdateDXVK());
             menu.Items.Add("Game Details", null, (_, _) => OpenGameDetails());
+            menu.Items.Add(new ToolStripSeparator());
+            menu.Items.Add("Manage Games...", null, (_, _) => OpenManageGames());
             menu.Items.Add("Settings", null, (_, _) => OpenSettings());
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("Exit DXVK Companion", null, (_, _) => Application.Exit());
@@ -103,6 +106,11 @@ namespace DXVKCompanion.UI
         {
             if (_activeProfile == null) return;
             new GameDetailsWindow(_activeProfile, _profiles).Show();
+        }
+
+        private void OpenManageGames()
+        {
+            new ManageGamesWindow(_profiles, _dxvk).Show();
         }
 
         private void OpenSettings() => new SettingsWindow(_settings).Show();
