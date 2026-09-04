@@ -95,9 +95,11 @@ namespace DXVKCompanion.DXVK
                     string srcD3d9 = Path.Combine(dxvkArchDir, "d3d9.dll");
                     string dstD3d9 = Path.Combine(gameDir, "d3d9.dll");
 
-                    await _files.SafeReplaceWithBackupAsync(dstD3d9, srcD3d9);
+                    bool replaced = await _files.SafeReplaceWithBackupAsync(dstD3d9, srcD3d9);
+                    if (!replaced)
+                        return false;
                 }
-                else if (profile.Api == GraphicsApi.DX11 || profile.Api == GraphicsApi.ModernAPI)
+                else if (profile.Api == GraphicsApi.DX11 || profile.Api == GraphicsApi.ModernAPI || profile.Api == GraphicsApi.DX10)
                 {
                     string srcD3d11 = Path.Combine(dxvkArchDir, "d3d11.dll");
                     string srcDxgi = Path.Combine(dxvkArchDir, "dxgi.dll");
@@ -105,8 +107,13 @@ namespace DXVKCompanion.DXVK
                     string dstD3d11 = Path.Combine(gameDir, "d3d11.dll");
                     string dstDxgi = Path.Combine(gameDir, "dxgi.dll");
 
-                    await _files.SafeReplaceWithBackupAsync(dstD3d11, srcD3d11);
-                    await _files.SafeReplaceWithBackupAsync(dstDxgi, srcDxgi);
+                    bool r1 = await _files.SafeReplaceWithBackupAsync(dstD3d11, srcD3d11);
+                    if (!r1)
+                        return false;
+
+                    bool r2 = await _files.SafeReplaceWithBackupAsync(dstDxgi, srcDxgi);
+                    if (!r2)
+                        return false;
                 }
                 else
                 {
