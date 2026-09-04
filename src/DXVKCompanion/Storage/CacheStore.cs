@@ -1,4 +1,3 @@
-using System;
 using System.IO;
 using System.Text.Json;
 using DXVKCompanion.Models;
@@ -32,7 +31,7 @@ namespace DXVKCompanion.Storage
             var cached = new CachedRelease
             {
                 Release = release,
-                CachedAt = DateTime.UtcNow,
+                CachedAt = System.DateTime.UtcNow,
                 ETag = etag
             };
 
