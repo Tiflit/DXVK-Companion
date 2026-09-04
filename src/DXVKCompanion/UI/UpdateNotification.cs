@@ -2,7 +2,7 @@ using System.Windows.Forms;
 
 namespace DXVKCompanion.UI
 {
-    public class UpdateNotification
+    public static class UpdateNotification
     {
         public static void Show(NotifyIcon tray, string version)
         {
