@@ -6,20 +6,21 @@ namespace DXVKCompanion.Utils
 {
     public class CompanionUpdateChecker
     {
-        private const string ApiUrl = "https://api.github.com/repos/Tiflit/DXVK-Companion/releases/latest";
         private readonly HttpClient _client;
 
-        public CompanionUpdateChecker()
+        public CompanionUpdateChecker(HttpClient client)
         {
-            _client = new HttpClient();
-            _client.DefaultRequestHeaders.UserAgent.ParseAdd("DXVK-Companion/1.0");
+            _client = client;
         }
 
         public async Task<string?> GetLatestVersionAsync()
         {
             try
             {
-                var json = await _client.GetStringAsync(ApiUrl);
+                var json = await _client.GetStringAsync(
+                    "https://api.github.com/repos/Tiflit/DXVK-Companion/releases/latest"
+                );
+
                 using var doc = JsonDocument.Parse(json);
                 return doc.RootElement.GetProperty("tag_name").GetString();
             }
