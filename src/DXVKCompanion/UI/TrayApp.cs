@@ -27,6 +27,12 @@ namespace DXVKCompanion.UI
         private readonly HttpClient _httpClient;
         private readonly SynchronizationContext _syncContext;
 
+        // Set just before showing a balloon that should open a URL when clicked, cleared right
+        // after it fires. A single handler subscribed once in the constructor (below) replaces
+        // the old per-call subscription, which was stacking a new permanent handler on every
+        // update check and firing on totally unrelated balloon clicks.
+        private string? _pendingUpdateUrl;
+
         public TrayApp(
             ProcessMonitor monitor,
             ProfileStore profiles,
@@ -50,6 +56,13 @@ namespace DXVKCompanion.UI
                 Icon = SystemIcons.Application,
                 Visible = true,
                 Text = "DXVK Companion"
+            };
+
+            _trayIcon.BalloonTipClicked += (_, _) =>
+            {
+                if (_pendingUpdateUrl == null) return;
+                Process.Start(new ProcessStartInfo { FileName = _pendingUpdateUrl, UseShellExecute = true });
+                _pendingUpdateUrl = null;
             };
 
             _menu = new TrayMenu(_trayIcon, profiles, dxvk, settings);
@@ -81,7 +94,7 @@ namespace DXVKCompanion.UI
                 _syncContext.Post(_ =>
                 {
                     _trayIcon.ShowBalloonTip(5000, "DXVK Update Available",
-                        $"A new DXVK version ({latest.Version}) is available.", ToolTipIcon.Info);
+                        $"A new DXVK version ({latest.Version}) is available. Open Manage Games to update.", ToolTipIcon.Info);
                 }, null);
             }
         }
@@ -98,15 +111,7 @@ namespace DXVKCompanion.UI
             {
                 _syncContext.Post(_ =>
                 {
-                    _trayIcon.BalloonTipClicked += (_, _) =>
-                    {
-                        Process.Start(new ProcessStartInfo
-                        {
-                            FileName = "https://github.com/Tiflit/DXVK-Companion/releases",
-                            UseShellExecute = true
-                        });
-                    };
-
+                    _pendingUpdateUrl = "https://github.com/Tiflit/DXVK-Companion/releases";
                     _trayIcon.ShowBalloonTip(5000, "DXVK Companion Update Available",
                         $"A new DXVK Companion version ({latest}) is available.\nClick to open releases.", ToolTipIcon.Info);
                 }, null);
@@ -143,8 +148,6 @@ namespace DXVKCompanion.UI
                     dxvkCompatible && !antiCheat && !profile.DxvkEnabled &&
                     string.IsNullOrWhiteSpace(profile.DxvkVersion))
                 {
-                    // Queued, not applied immediately — the game we just detected is,
-                    // by definition, currently running.
                     await _dxvk.RequestEnableAsync(profile, process);
                 }
 
