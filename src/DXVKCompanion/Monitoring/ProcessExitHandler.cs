@@ -1,31 +1,40 @@
 using System;
 using System.Diagnostics;
-using DXVKCompanion.Storage;
 
 namespace DXVKCompanion.Monitoring
 {
     public class ProcessExitHandler
     {
-        private readonly ProfileStore _profiles;
-
-        public ProcessExitHandler(ProfileStore profiles)
-        {
-            _profiles = profiles;
-        }
+        // Raised when a process we attached to exits, with its exe path — lets subscribers
+        // act on it without holding a live Process reference around.
+        public event Action<string>? ProcessExited;
 
         public void Attach(Process process)
         {
+            string? exePath = null;
+            try
+            {
+                exePath = process.MainModule?.FileName;
+            }
+            catch
+            {
+                // Access denied — we still attach below, we just won't be able to report the path.
+            }
+
             try
             {
                 process.EnableRaisingEvents = true;
                 process.Exited += (_, _) =>
                 {
-                    // Nothing to clean in profiles, but could be extended
+                    if (exePath != null)
+                        ProcessExited?.Invoke(exePath);
+
+                    process.Dispose();
                 };
             }
             catch
             {
-                // Ignore failures
+                // Ignore failures (e.g. process already exited before we could subscribe)
             }
         }
     }
