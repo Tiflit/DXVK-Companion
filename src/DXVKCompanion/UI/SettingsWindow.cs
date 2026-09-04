@@ -1,26 +1,59 @@
 using System.Windows.Forms;
+using DXVKCompanion.Storage;
+using DXVKCompanion.Utils;
 
 namespace DXVKCompanion.UI
 {
     public class SettingsWindow : Form
     {
-        public SettingsWindow()
+        private readonly SettingsStore _settings;
+        private readonly StartupManager _startup;
+
+        public SettingsWindow(SettingsStore settings)
         {
+            _settings = settings;
+            _startup = new StartupManager();
+
             Text = "DXVK Companion Settings";
             Width = 400;
-            Height = 300;
+            Height = 200;
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false;
 
-            var label = new Label
+            var autoEnableCheckbox = new CheckBox
             {
-                Text = "Global settings will be added here.",
+                Text = "Auto-enable DXVK for new games (experimental)",
+                Checked = _settings.AutoEnableDxvkForNewGames,
                 AutoSize = true,
                 Top = 20,
                 Left = 20
             };
+            autoEnableCheckbox.CheckedChanged += (_, _) =>
+            {
+                _settings.AutoEnableDxvkForNewGames = autoEnableCheckbox.Checked;
+                _settings.Save();
+            };
+            Controls.Add(autoEnableCheckbox);
 
-            Controls.Add(label);
+            var startupCheckbox = new CheckBox
+            {
+                Text = "Launch DXVK Companion on Windows startup",
+                Checked = _settings.LaunchOnStartup,
+                AutoSize = true,
+                Top = 60,
+                Left = 20
+            };
+            startupCheckbox.CheckedChanged += (_, _) =>
+            {
+                _settings.LaunchOnStartup = startupCheckbox.Checked;
+                _settings.Save();
+
+                if (startupCheckbox.Checked)
+                    _startup.EnableStartup();
+                else
+                    _startup.DisableStartup();
+            };
+            Controls.Add(startupCheckbox);
         }
     }
 }
