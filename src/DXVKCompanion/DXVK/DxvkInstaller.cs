@@ -1,6 +1,6 @@
-using System;
 using System.IO;
 using System.IO.Compression;
+using System.Linq;
 using System.Net.Http;
 using System.Threading.Tasks;
 using System.Formats.Tar;
@@ -21,6 +21,13 @@ namespace DXVKCompanion.DXVK
             _httpClient = httpClient;
         }
 
+        private static string SanitizeVersion(string version)
+        {
+            foreach (char c in Path.GetInvalidFileNameChars())
+                version = version.Replace(c, '_');
+            return version;
+        }
+
         private async Task<bool> DownloadAndExtractAsync(ReleaseInfo release)
         {
             if (string.IsNullOrWhiteSpace(release.DownloadUrl))
@@ -34,6 +41,8 @@ namespace DXVKCompanion.DXVK
 
                 using var gzStream = new GZipStream(new MemoryStream(data), CompressionMode.Decompress);
                 using var tar = new TarReader(gzStream);
+
+                string versionDir = Path.Combine(Paths.DxvkDir, SanitizeVersion(release.Version));
 
                 TarEntry? entry;
                 while ((entry = tar.GetNextEntry()) != null)
@@ -57,11 +66,10 @@ namespace DXVKCompanion.DXVK
                     string arch = name.Contains("/x32/") ? "x32" : "x64";
                     string dllName = Path.GetFileName(name);
 
-                    string dllDir = Path.Combine(Paths.DxvkDir, arch);
+                    string dllDir = Path.Combine(versionDir, arch);
                     Directory.CreateDirectory(dllDir);
 
-                    string dllPath = Path.Combine(dllDir, dllName);
-                    _files.WriteBytes(dllPath, bytes);
+                    _files.WriteBytes(Path.Combine(dllDir, dllName), bytes);
                 }
 
                 return true;
@@ -81,9 +89,13 @@ namespace DXVKCompanion.DXVK
                     return false;
 
                 string arch = profile.Architecture == "x32" ? "x32" : "x64";
-                string dxvkArchDir = Path.Combine(Paths.DxvkDir, arch);
+                string versionDir = Path.Combine(Paths.DxvkDir, SanitizeVersion(release.Version));
+                string dxvkArchDir = Path.Combine(versionDir, arch);
 
-                if (!Directory.Exists(dxvkArchDir))
+                // Re-download whenever THIS SPECIFIC VERSION isn't already extracted locally.
+                // Previously this checked only whether the shared DXVK folder existed at all,
+                // which meant "Update" never actually fetched newer DLLs after the first install.
+                if (!Directory.Exists(dxvkArchDir) || !Directory.EnumerateFiles(dxvkArchDir).Any())
                 {
                     bool ok = await DownloadAndExtractAsync(release);
                     if (!ok)
@@ -92,26 +104,23 @@ namespace DXVKCompanion.DXVK
 
                 if (profile.Api == GraphicsApi.DX9)
                 {
-                    string srcD3d9 = Path.Combine(dxvkArchDir, "d3d9.dll");
-                    string dstD3d9 = Path.Combine(gameDir, "d3d9.dll");
-
-                    bool replaced = await _files.SafeReplaceWithBackupAsync(dstD3d9, srcD3d9);
+                    bool replaced = await _files.SafeReplaceWithBackupAsync(
+                        Path.Combine(gameDir, "d3d9.dll"),
+                        Path.Combine(dxvkArchDir, "d3d9.dll"));
                     if (!replaced)
                         return false;
                 }
                 else if (profile.Api == GraphicsApi.DX11 || profile.Api == GraphicsApi.ModernAPI || profile.Api == GraphicsApi.DX10)
                 {
-                    string srcD3d11 = Path.Combine(dxvkArchDir, "d3d11.dll");
-                    string srcDxgi = Path.Combine(dxvkArchDir, "dxgi.dll");
-
-                    string dstD3d11 = Path.Combine(gameDir, "d3d11.dll");
-                    string dstDxgi = Path.Combine(gameDir, "dxgi.dll");
-
-                    bool r1 = await _files.SafeReplaceWithBackupAsync(dstD3d11, srcD3d11);
+                    bool r1 = await _files.SafeReplaceWithBackupAsync(
+                        Path.Combine(gameDir, "d3d11.dll"),
+                        Path.Combine(dxvkArchDir, "d3d11.dll"));
                     if (!r1)
                         return false;
 
-                    bool r2 = await _files.SafeReplaceWithBackupAsync(dstDxgi, srcDxgi);
+                    bool r2 = await _files.SafeReplaceWithBackupAsync(
+                        Path.Combine(gameDir, "dxgi.dll"),
+                        Path.Combine(dxvkArchDir, "dxgi.dll"));
                     if (!r2)
                         return false;
                 }
