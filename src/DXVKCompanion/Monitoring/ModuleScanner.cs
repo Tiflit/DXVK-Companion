@@ -32,6 +32,23 @@ namespace DXVKCompanion.Monitoring
                             found.Add(tracked);
                 }
             }
+
+        // Games loading more than one graphics API at once is unusual and can indicate a
+        // wrapper layer in play (e.g. dgVoodoo bridging legacy DirectDraw/D3D up to D3D11) —
+        // worth knowing about even though it doesn't change classification today.
+        public bool UsesMultipleApis(Process process)
+        {
+            var modules = GetLoadedGraphicsModules(process);
+            int apiCount = 0;
+
+            if (modules.Contains("d3d9.dll")) apiCount++;
+            if (modules.Contains("d3d11.dll")) apiCount++;
+            if (modules.Contains("vulkan-1.dll")) apiCount++;
+            if (modules.Contains("d3d12.dll")) apiCount++;
+
+            return apiCount > 1;
+        }
+
             catch
             {
                 // Access denied — return whatever was found before the failure (often nothing).
