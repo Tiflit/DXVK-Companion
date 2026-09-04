@@ -1,5 +1,7 @@
+using System;
 using System.Diagnostics;
 using System.Drawing;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using DXVKCompanion.Monitoring;
@@ -22,21 +24,24 @@ namespace DXVKCompanion.UI
         private readonly GameDetector _detector;
         private readonly SettingsStore _settings;
         private readonly Logger _logger;
+        private readonly SynchronizationContext _syncContext;
 
         public TrayApp(
             ProcessMonitor monitor,
             ProfileStore profiles,
             DxvkManager dxvk,
-            ApiClassifier classifier)
+            ApiClassifier classifier,
+            SettingsStore settings)
         {
             _monitor = monitor;
             _profiles = profiles;
             _dxvk = dxvk;
             _classifier = classifier;
+            _settings = settings;
 
             _detector = new GameDetector();
-            _settings = new SettingsStore();
             _logger = new Logger();
+            _syncContext = SynchronizationContext.Current ?? new SynchronizationContext();
 
             _trayIcon = new NotifyIcon
             {
@@ -45,7 +50,7 @@ namespace DXVKCompanion.UI
                 Text = "DXVK Companion"
             };
 
-            _menu = new TrayMenu(_trayIcon, profiles, dxvk, _settings);
+            _menu = new TrayMenu(_trayIcon, profiles, dxvk, settings);
 
             _monitor.OnGameDetected += HandleGameDetected;
 
@@ -72,51 +77,68 @@ namespace DXVKCompanion.UI
 
             if (anyOutdated)
             {
-                _trayIcon.ShowBalloonTip(
-                    5000,
-                    "DXVK Update Available",
-                    $"A new DXVK version ({latest.Version}) is available.",
-                    ToolTipIcon.Info
-                );
+                _syncContext.Post(_ =>
+                {
+                    _trayIcon.ShowBalloonTip(
+                        5000,
+                        "DXVK Update Available",
+                        $"A new DXVK version ({latest.Version}) is available.",
+                        ToolTipIcon.Info
+                    );
+                }, null);
             }
         }
 
         private async Task CheckCompanionUpdateOnStartup()
         {
-            var checker = new CompanionUpdateChecker();
+            var checker = new CompanionUpdateChecker(_dxvk.HttpClient);
             var latest = await checker.GetLatestVersionAsync();
             if (latest == null)
                 return;
 
-            // For now, assume local version "1.0.0" – replace with real versioning later
-            var localVersion = "1.0.0";
+            var localVersion = "1.0.0"; // placeholder
 
             if (localVersion != latest)
             {
-                _trayIcon.BalloonTipClicked += (_, _) =>
+                _syncContext.Post(_ =>
                 {
-                    System.Diagnostics.Process.Start(new ProcessStartInfo
+                    _trayIcon.BalloonTipClicked += (_, _) =>
                     {
-                        FileName = "https://github.com/Tiflit/DXVK-Companion/releases",
-                        UseShellExecute = true
-                    });
-                };
+                        Process.Start(new ProcessStartInfo
+                        {
+                            FileName = "https://github.com/Tiflit/DXVK-Companion/releases",
+                            UseShellExecute = true
+                        });
+                    };
 
-                _trayIcon.ShowBalloonTip(
-                    5000,
-                    "DXVK Companion Update Available",
-                    $"A new DXVK Companion version ({latest}) is available.\nClick to open releases.",
-                    ToolTipIcon.Info
-                );
+                    _trayIcon.ShowBalloonTip(
+                        5000,
+                        "DXVK Companion Update Available",
+                        $"A new DXVK Companion version ({latest}) is available.\nClick to open releases.",
+                        ToolTipIcon.Info
+                    );
+                }, null);
             }
         }
 
         private async void HandleGameDetected(Process process)
         {
+            string exePath;
+
             try
             {
-                string exePath = process.MainModule.FileName;
-                var profile = _profiles.GetOrCreate(exePath);
+                exePath = process.MainModule.FileName;
+            }
+            catch
+            {
+                return;
+            }
+
+            GameProfile profile;
+
+            try
+            {
+                profile = _profiles.GetOrCreate(exePath);
 
                 profile.Api = _classifier.Classify(process);
 
@@ -153,17 +175,21 @@ namespace DXVKCompanion.UI
 
                 string message = BuildNotificationMessage(process, profile, antiCheat, latest, localVersion, dxvkCompatible, updateAvailable);
 
-                _trayIcon.ShowBalloonTip(
-                    5000,
-                    "Game Detected",
-                    message,
-                    antiCheat ? ToolTipIcon.Warning : ToolTipIcon.Info
-                );
+                _syncContext.Post(_ =>
+                {
+                    _trayIcon.ShowBalloonTip(
+                        5000,
+                        "Game Detected",
+                        message,
+                        antiCheat ? ToolTipIcon.Warning : ToolTipIcon.Info
+                    );
 
-                _menu.SetActiveGame(process, profile);
+                    _menu.SetActiveGame(process, profile);
+                }, null);
             }
             catch
             {
+                // swallow per-process errors
             }
         }
 
