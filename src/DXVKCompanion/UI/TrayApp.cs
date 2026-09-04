@@ -105,9 +105,7 @@ namespace DXVKCompanion.UI
             var latest = await checker.GetLatestVersionAsync();
             if (latest == null) return;
 
-            var localVersion = "1.0.0"; // placeholder — wire up to the real assembly version
-
-            if (localVersion != latest)
+            if (CompanionVersion.IsOutdatedComparedTo(CompanionVersion.Current, latest))
             {
                 _syncContext.Post(_ =>
                 {
