@@ -1,3 +1,5 @@
+README 1 :
+
 DXVK‑Companion
 A lightweight, fully portable Windows tray application that detects game launches, identifies DXVK‑compatible DirectX APIs, and automatically manages DXVK deployment, updates, rollbacks, and per‑game configuration.
 Designed primarily for Intel Battlemage GPUs (Arc B580 and similar), but works on any GPU.
@@ -333,3 +335,154 @@ Free modification
 Free redistribution
 
 Commercial use
+
+
+
+README 2 :
+
+DXVK‑Companion
+A lightweight Windows tray application that automatically detects running games, classifies their graphics API (DX9/DX11/DX12/Vulkan), and safely applies DXVK to improve performance — without ever modifying system files or polluting game directories.
+
+✨ Features
+🎮 Automatic Game Detection
+DXVK‑Companion monitors running processes and identifies games using:
+
+Module scanning
+
+PE import parsing
+
+Anti‑cheat detection
+
+Launcher filtering
+
+🔍 Accurate API Classification
+DXVK‑Companion correctly distinguishes:
+
+DirectX 9
+
+DirectX 11
+
+DirectX 12
+
+Vulkan
+
+OpenGL
+
+Using both loaded modules and real PE import parsing.
+
+🚀 DXVK Deployment (DX9 + DX11)
+DXVK is applied safely:
+
+DX9 → d3d9.dll
+
+DX11 → d3d11.dll + dxgi.dll
+
+Backups created automatically (*.bak)
+
+No game directory pollution
+
+All DXVK files stored under DXVK-Companion/DXVK/
+
+♻️ Safe Rollbacks
+Disabling DXVK restores:
+
+d3d9.dll.bak → d3d9.dll
+
+d3d11.dll.bak → d3d11.dll
+
+dxgi.dll.bak → dxgi.dll
+
+Removes dxvk.conf
+
+⚙️ DXVK Configuration
+DXVK‑Companion writes a portable dxvk.conf with:
+
+HUD toggle
+
+Frame limiter (dxvk.maxFrameRate)
+
+Architecture‑specific settings
+
+🔄 Update System
+DXVK‑Companion checks for:
+
+DXVK updates (on startup only)
+
+DXVK‑Companion updates (on startup only)
+
+Using GitHub’s API + ETag caching.
+
+🧪 Experimental: Auto‑Enable DXVK
+When enabled, DXVK‑Companion automatically applies DXVK to new games that:
+
+Use DX9 or DX11
+
+Have no anti‑cheat
+
+Have no existing DXVK version
+
+🖥️ Portable & Safe
+DXVK‑Companion:
+
+Never writes outside its own folder
+
+Never modifies system files
+
+Never touches registry (except optional startup shortcut)
+
+Stores all data in JSON
+
+Uses a single shared HttpClient
+
+📂 Folder Structure
+Code
+DXVK-Companion/
+ ├── DXVK/               # Extracted DXVK binaries (x32/x64)
+ ├── Profiles/           # Per-game profiles
+ ├── Cache/              # DXVK release cache (ETag + metadata)
+ ├── Logs/               # Companion logs
+ ├── settings.json       # Global settings
+ └── DXVK-Companion.exe
+🔐 Anti‑Cheat Safety
+DXVK‑Companion automatically detects:
+
+Easy Anti‑Cheat
+
+BattleEye
+
+Vanguard
+
+Riot Client
+
+Other known anti‑cheat modules
+
+If detected:
+
+DXVK is not auto‑enabled
+
+A warning is shown
+
+Manual enabling is still possible (at user’s risk)
+
+🧰 Requirements
+Windows 10 or 11
+
+.NET 8 Runtime
+
+DXVK release tarball (downloaded automatically)
+
+🚀 Installation
+Download the latest release
+
+Extract anywhere (portable)
+
+Run DXVK-Companion.exe
+
+Optionally enable “Launch on startup” in Settings
+
+🧩 Credits
+DXVK by doitsujin
+https://github.com/doitsujin/DXVK
+
+📜 License
+MIT License
