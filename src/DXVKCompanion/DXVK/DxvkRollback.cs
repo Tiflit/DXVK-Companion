@@ -18,21 +18,30 @@ namespace DXVKCompanion.DXVK
         {
             try
             {
-                string gameDir = Path.GetDirectoryName(profile.ExecutablePath) ?? string.Empty;
+                string gameDir = Path.GetDirectoryName(profile.ExePath) ?? string.Empty;
                 if (string.IsNullOrWhiteSpace(gameDir))
                     return false;
 
+                string d3d9 = Path.Combine(gameDir, "d3d9.dll");
                 string d3d11 = Path.Combine(gameDir, "d3d11.dll");
                 string dxgi = Path.Combine(gameDir, "dxgi.dll");
 
+                string d3d9Bak = d3d9 + ".bak";
                 string d3d11Bak = d3d11 + ".bak";
                 string dxgiBak = dxgi + ".bak";
+
+                if (File.Exists(d3d9Bak))
+                    await _files.SafeReplaceAsync(d3d9, d3d9Bak);
 
                 if (File.Exists(d3d11Bak))
                     await _files.SafeReplaceAsync(d3d11, d3d11Bak);
 
                 if (File.Exists(dxgiBak))
                     await _files.SafeReplaceAsync(dxgi, dxgiBak);
+
+                string confPath = Path.Combine(gameDir, "dxvk.conf");
+                if (File.Exists(confPath))
+                    File.Delete(confPath);
 
                 return true;
             }
