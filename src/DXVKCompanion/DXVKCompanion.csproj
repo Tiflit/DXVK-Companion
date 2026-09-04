@@ -9,7 +9,18 @@
     <RootNamespace>DXVKCompanion</RootNamespace>
     <AssemblyName>DXVK-Companion</AssemblyName>
     <Version>1.0.0</Version>
+    <!-- Set explicitly rather than left to inherit from <Version>, so a git commit-hash
+         suffix never gets silently appended by source-link/deterministic build behavior —
+         which would otherwise make CompanionVersion's exact-string comparison against
+         GitHub's release tag always report "outdated". -->
+    <InformationalVersion>1.0.0</InformationalVersion>
     <Product>DXVK Companion</Product>
   </PropertyGroup>
+
+  <!-- SelfContained / PublishSingleFile deliberately NOT set here — they require a
+       RuntimeIdentifier and would break plain `dotnet build`/`dotnet run` during normal
+       development. Pass them as command-line flags at publish time instead, exactly as
+       the README's build command already does:
+       dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -->
 
 </Project>
