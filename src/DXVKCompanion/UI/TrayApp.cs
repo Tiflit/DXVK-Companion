@@ -1,10 +1,12 @@
 using System.Diagnostics;
 using System.Drawing;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 using DXVKCompanion.Monitoring;
 using DXVKCompanion.Storage;
 using DXVKCompanion.DXVK;
 using DXVKCompanion.Models;
+using DXVKCompanion.Utils;
 
 namespace DXVKCompanion.UI
 {
@@ -17,6 +19,8 @@ namespace DXVKCompanion.UI
         private readonly ProfileStore _profiles;
         private readonly DxvkManager _dxvk;
         private readonly ApiClassifier _classifier;
+        private readonly GameDetector _detector;
+        private readonly Logger _logger;
 
         public TrayApp(
             ProcessMonitor monitor,
@@ -28,6 +32,9 @@ namespace DXVKCompanion.UI
             _profiles = profiles;
             _dxvk = dxvk;
             _classifier = classifier;
+
+            _detector = new GameDetector();
+            _logger = new Logger();
 
             _trayIcon = new NotifyIcon
             {
@@ -41,21 +48,104 @@ namespace DXVKCompanion.UI
             _monitor.OnGameDetected += HandleGameDetected;
         }
 
-        private void HandleGameDetected(Process process)
+        private async void HandleGameDetected(Process process)
         {
-            var profile = _profiles.GetOrCreate(process.MainModule.FileName);
+            try
+            {
+                string exePath = process.MainModule.FileName;
+                var profile = _profiles.GetOrCreate(exePath);
 
-            profile.Api = _classifier.Classify(process);
-            _profiles.Save(profile);
+                // API classification
+                profile.Api = _classifier.Classify(process);
 
-            _trayIcon.ShowBalloonTip(
-                3000,
-                "Game Detected",
-                $"{process.ProcessName} is running.\nAPI: {profile.Api}",
-                ToolTipIcon.Info
-            );
+                // Architecture detection via PeParser
+                var parser = new PeParser();
+                profile.Architecture = parser.GetArchitecture(exePath);
 
-            _menu.SetActiveGame(process, profile);
+                // Anti-cheat risk
+                bool antiCheat = _detector.HasAntiCheatRisk(process);
+
+                // Latest DXVK release
+                var latest = await _dxvk.GetLatestReleaseAsync();
+
+                // Local DXVK state
+                string localVersion = string.IsNullOrWhiteSpace(profile.DxvkVersion)
+                    ? "None"
+                    : profile.DxvkVersion;
+
+                bool dxvkCompatible =
+                    profile.Api == GraphicsApi.DX9 ||
+                    profile.Api == GraphicsApi.DX11 ||
+                    profile.Api == GraphicsApi.ModernAPI;
+
+                bool updateAvailable = latest != null &&
+                                       profile.DxvkEnabled &&
+                                       _dxvk.UpdateAvailable(profile, latest);
+
+                _profiles.Save(profile);
+
+                string message = BuildNotificationMessage(process, profile, antiCheat, latest, localVersion, dxvkCompatible, updateAvailable);
+
+                _trayIcon.ShowBalloonTip(
+                    5000,
+                    "Game Detected",
+                    message,
+                    antiCheat ? ToolTipIcon.Warning : ToolTipIcon.Info
+                );
+
+                _menu.SetActiveGame(process, profile);
+            }
+            catch
+            {
+                // Swallow per-process errors to avoid crashing the tray app
+            }
+        }
+
+        private string BuildNotificationMessage(
+            Process process,
+            GameProfile profile,
+            bool antiCheat,
+            ReleaseInfo? latest,
+            string localVersion,
+            bool dxvkCompatible,
+            bool updateAvailable)
+        {
+            var msg = $"{process.ProcessName} is running.\n" +
+                      $"API: {profile.Api} ({profile.Architecture})\n" +
+                      $"DXVK enabled: {profile.DxvkEnabled}\n" +
+                      $"Local DXVK version: {localVersion}\n";
+
+            if (latest != null)
+            {
+                msg += $"Latest DXVK release: {latest.Version}\n";
+            }
+
+            if (!dxvkCompatible)
+            {
+                msg += "DXVK is not compatible with this game's API.\n";
+            }
+            else
+            {
+                if (!profile.DxvkEnabled)
+                {
+                    msg += "DXVK is available for this game. Enable it from the tray menu (applies on next launch).\n";
+                }
+                else if (updateAvailable)
+                {
+                    msg += "A newer DXVK version is available. You can update it from the tray menu.\n";
+                }
+                else
+                {
+                    msg += "DXVK is up to date for this game.\n";
+                }
+            }
+
+            if (antiCheat)
+            {
+                msg += "⚠ Anti-cheat components detected. Do NOT use DXVK in online/multiplayer modes.\n";
+            }
+
+            return msg;
         }
     }
 }
