@@ -14,8 +14,6 @@ namespace DXVKCompanion.Monitoring
         private readonly ProcessExitHandler _exitHandler;
 
         public event Action<Process>? OnGameDetected;
-
-        // Raised with the exe path of a previously-detected game once it exits.
         public event Action<string>? OnGameExited;
 
         public ProcessMonitor(GameDetector detector, ProcessExitHandler exitHandler)
@@ -56,14 +54,24 @@ namespace DXVKCompanion.Monitoring
                         continue;
                     }
 
-                    _seenPids[proc.Id] = 1;
-
                     if (!_detector.IsGameProcess(proc))
                     {
+                        // Permanently excluded (launcher/system process) — never worth rechecking.
+                        _seenPids[proc.Id] = 1;
                         proc.Dispose();
                         continue;
                     }
 
+                    if (!_detector.HasWindow(proc))
+                    {
+                        // Might still be launching. Deliberately NOT marked as seen, so the next
+                        // poll tick re-examines this same PID once its window appears — fixes a
+                        // regression where slow-launching games were permanently skipped.
+                        proc.Dispose();
+                        continue;
+                    }
+
+                    _seenPids[proc.Id] = 1;
                     _exitHandler.Attach(proc);
                     OnGameDetected?.Invoke(proc);
                 }
