@@ -6,6 +6,12 @@ namespace DXVKCompanion.Utils
 {
     public class PeParser
     {
+        // Not a genuine infinite-loop risk (reads are always sequential and forward-only, so a
+        // truncated/malformed file hits EndOfStreamException and gets caught below regardless) —
+        // but a corrupted, oversized file could otherwise burn time walking thousands of garbage
+        // descriptors before hitting EOF. Cheap defensive cap.
+        private const int MaxImportDescriptors = 4096;
+
         public IEnumerable<string> GetImports(string path)
         {
             var imports = new List<string>();
@@ -15,17 +21,14 @@ namespace DXVKCompanion.Utils
                 using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
                 using var br = new BinaryReader(fs);
 
-                // DOS header: e_lfanew at 0x3C points to the start of the PE header.
                 fs.Seek(0x3C, SeekOrigin.Begin);
                 int peOffset = br.ReadInt32();
 
                 fs.Seek(peOffset, SeekOrigin.Begin);
                 uint signature = br.ReadUInt32();
-                if (signature != 0x00004550) // "PE\0\0"
+                if (signature != 0x00004550)
                     return imports;
 
-                // COFF header: Machine(2), NumberOfSections(2), TimeDateStamp(4),
-                // PointerToSymbolTable(4), NumberOfSymbols(4), SizeOfOptionalHeader(2), Characteristics(2)
                 fs.Seek(peOffset + 4, SeekOrigin.Begin);
                 ushort machine = br.ReadUInt16();
                 ushort numSections = br.ReadUInt16();
@@ -37,7 +40,6 @@ namespace DXVKCompanion.Utils
                 ushort magic = br.ReadUInt16();
                 bool isPE32Plus = magic == 0x20b;
 
-                // Data Directory index 1 is the Import Table (index 0 is Export). Each entry is 8 bytes.
                 int dataDirectoryOffset = isPE32Plus ? 112 : 96;
                 fs.Seek(optionalHeaderStart + dataDirectoryOffset + (1 * 8), SeekOrigin.Begin);
                 uint importRva = br.ReadUInt32();
@@ -52,7 +54,7 @@ namespace DXVKCompanion.Utils
 
                 for (int i = 0; i < numSections; i++)
                 {
-                    fs.Seek(8, SeekOrigin.Current); // section name
+                    fs.Seek(8, SeekOrigin.Current);
                     uint virtualSize = br.ReadUInt32();
                     uint virtualAddress = br.ReadUInt32();
                     uint sizeOfRawData = br.ReadUInt32();
@@ -77,7 +79,7 @@ namespace DXVKCompanion.Utils
 
                 fs.Seek(importTableOffset, SeekOrigin.Begin);
 
-                while (true)
+                for (int guard = 0; guard < MaxImportDescriptors; guard++)
                 {
                     uint originalFirstThunk = br.ReadUInt32();
                     uint timeDateStamp = br.ReadUInt32();
