@@ -1,52 +1,77 @@
 using System;
-using System.IO;
-using System.IO.Compression;
 using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Text.Json;
-using System.Formats.Tar;
+using System.Threading.Tasks;
 using DXVKCompanion.Models;
+using DXVKCompanion.Storage;
 
 namespace DXVKCompanion.DXVK
 {
     public class DxvkGithubClient
     {
-        private readonly HttpClient _http = new();
+        private const string ApiUrl = "https://api.github.com/repos/doitsujin/dxvk/releases/latest";
+        private readonly HttpClient _httpClient;
+        private readonly CacheStore _cacheStore;
 
-        public ReleaseInfo FetchLatestRelease()
+        public DxvkGithubClient()
         {
-            var json = _http.GetStringAsync(
-                "https://api.github.com/repos/doitsujin/dxvk/releases/latest"
-            ).Result;
+            _httpClient = new HttpClient();
+            _httpClient.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("DXVK-Companion", "1.0"));
+            _cacheStore = new CacheStore();
+        }
 
-            using var doc = JsonDocument.Parse(json);
-            var root = doc.RootElement;
-
-            string version = root.GetProperty("tag_name").GetString()!;
-            string assetUrl = root.GetProperty("assets")[0].GetProperty("browser_download_url").GetString()!;
-
-            var stream = _http.GetStreamAsync(assetUrl).Result;
-
-            // Extract in memory
-            using var gzip = new GZipStream(stream, CompressionMode.Decompress);
-            using var tar = new TarReader(gzip);
-
-            var release = new ReleaseInfo(version);
-
-            TarEntry? entry;
-            while ((entry = tar.GetNextEntry()) != null)
+        public async Task<ReleaseInfo?> FetchLatestReleaseAsync()
+        {
+            try
             {
-                if (entry.EntryType != TarEntryType.RegularFile)
-                    continue;
+                var cached = _cacheStore.LoadCachedRelease();
+                if (cached != null && !cached.IsExpired())
+                    return cached.Release;
 
-                string name = entry.Name.ToLower();
+                var request = new HttpRequestMessage(HttpMethod.Get, ApiUrl);
 
-                if (name.Contains("/x32/") || name.Contains("/x64/"))
+                if (cached != null && !string.IsNullOrWhiteSpace(cached.ETag))
+                    request.Headers.IfNoneMatch.Add(new EntityTagHeaderValue(cached.ETag));
+
+                var response = await _httpClient.SendAsync(request);
+
+                if (response.StatusCode == System.Net.HttpStatusCode.NotModified && cached != null)
+                    return cached.Release;
+
+                response.EnsureSuccessStatusCode();
+
+                string json = await response.Content.ReadAsStringAsync();
+                using var doc = JsonDocument.Parse(json);
+
+                string tagName = doc.RootElement.GetProperty("tag_name").GetString() ?? "unknown";
+                string assetUrl = "";
+
+                foreach (var asset in doc.RootElement.GetProperty("assets").EnumerateArray())
                 {
-                    release.AddDllFromTar(name, entry.DataStream);
+                    string name = asset.GetProperty("name").GetString() ?? "";
+                    if (name.EndsWith(".tar.gz", StringComparison.OrdinalIgnoreCase))
+                    {
+                        assetUrl = asset.GetProperty("browser_download_url").GetString() ?? "";
+                        break;
+                    }
                 }
-            }
 
-            return release;
+                var release = new ReleaseInfo
+                {
+                    Version = tagName,
+                    DownloadUrl = assetUrl
+                };
+
+                string? etag = response.Headers.ETag?.Tag;
+                _cacheStore.SaveCachedRelease(release, etag);
+
+                return release;
+            }
+            catch
+            {
+                return null;
+            }
         }
     }
 }
