@@ -1,7 +1,9 @@
+using System;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
 using System.Net.Http;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Formats.Tar;
 using DXVKCompanion.Models;
@@ -12,6 +14,8 @@ namespace DXVKCompanion.DXVK
 {
     public class DxvkInstaller
     {
+        private static readonly TimeSpan DownloadTimeout = TimeSpan.FromSeconds(60);
+
         private readonly FileUtils _files;
         private readonly HttpClient _httpClient;
 
@@ -37,7 +41,8 @@ namespace DXVKCompanion.DXVK
             {
                 Paths.EnsureDirectories();
 
-                var data = await _httpClient.GetByteArrayAsync(release.DownloadUrl);
+                using var cts = new CancellationTokenSource(DownloadTimeout);
+                var data = await _httpClient.GetByteArrayAsync(release.DownloadUrl, cts.Token);
 
                 using var gzStream = new GZipStream(new MemoryStream(data), CompressionMode.Decompress);
                 using var tar = new TarReader(gzStream);
@@ -63,9 +68,6 @@ namespace DXVKCompanion.DXVK
                     entry.DataStream?.CopyTo(ms);
                     var bytes = ms.ToArray();
 
-                    // Matches "x32/" whether or not it's preceded by a leading slash, so this
-                    // works regardless of whether the archive nests everything under a top-level
-                    // "dxvk-x.y.z/" folder or not.
                     string arch = name.Contains("x32/") ? "x32" : "x64";
                     string dllName = Path.GetFileName(name);
 
@@ -77,8 +79,14 @@ namespace DXVKCompanion.DXVK
 
                 return true;
             }
-            catch
+            catch (OperationCanceledException)
             {
+                Logger.Log($"DxvkInstaller: download of {release.Version} timed out after {DownloadTimeout.TotalSeconds}s.");
+                return false;
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"DxvkInstaller: failed to download/extract {release.Version}: {ex.GetType().Name} - {ex.Message}");
                 return false;
             }
         }
@@ -89,7 +97,10 @@ namespace DXVKCompanion.DXVK
             {
                 string gameDir = Path.GetDirectoryName(profile.ExePath) ?? string.Empty;
                 if (string.IsNullOrWhiteSpace(gameDir))
+                {
+                    Logger.Log($"DxvkInstaller: could not determine game directory for {profile.ExePath}.");
                     return false;
+                }
 
                 string arch = profile.Architecture == "x32" ? "x32" : "x64";
                 string versionDir = Path.Combine(Paths.DxvkDir, SanitizeVersion(release.Version));
@@ -108,7 +119,10 @@ namespace DXVKCompanion.DXVK
                         Path.Combine(gameDir, "d3d9.dll"),
                         Path.Combine(dxvkArchDir, "d3d9.dll"));
                     if (!replaced)
+                    {
+                        Logger.Log($"DxvkInstaller: failed to replace d3d9.dll for {profile.ExeName}.");
                         return false;
+                    }
                 }
                 else if (profile.Api == GraphicsApi.DX11 || profile.Api == GraphicsApi.ModernAPI || profile.Api == GraphicsApi.DX10)
                 {
@@ -116,23 +130,31 @@ namespace DXVKCompanion.DXVK
                         Path.Combine(gameDir, "d3d11.dll"),
                         Path.Combine(dxvkArchDir, "d3d11.dll"));
                     if (!r1)
+                    {
+                        Logger.Log($"DxvkInstaller: failed to replace d3d11.dll for {profile.ExeName}.");
                         return false;
+                    }
 
                     bool r2 = await _files.SafeReplaceWithBackupAsync(
                         Path.Combine(gameDir, "dxgi.dll"),
                         Path.Combine(dxvkArchDir, "dxgi.dll"));
                     if (!r2)
+                    {
+                        Logger.Log($"DxvkInstaller: failed to replace dxgi.dll for {profile.ExeName}.");
                         return false;
+                    }
                 }
                 else
                 {
+                    Logger.Log($"DxvkInstaller: {profile.ExeName} has an unsupported API ({profile.Api}); skipping.");
                     return false;
                 }
 
                 return true;
             }
-            catch
+            catch (Exception ex)
             {
+                Logger.Log($"DxvkInstaller: unexpected error applying DXVK to {profile.ExeName}: {ex.GetType().Name} - {ex.Message}");
                 return false;
             }
         }
