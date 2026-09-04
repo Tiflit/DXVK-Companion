@@ -1,17 +1,10 @@
 using System.Diagnostics;
+using System.Linq;
+using DXVKCompanion.Models;
 using DXVKCompanion.Utils;
 
 namespace DXVKCompanion.Monitoring
 {
-    public enum GraphicsApi
-    {
-        Unknown,
-        DX9,
-        DX10,
-        DX11,
-        ModernAPI
-    }
-
     public class ApiClassifier
     {
         private readonly ModuleScanner _scanner;
@@ -25,8 +18,6 @@ namespace DXVKCompanion.Monitoring
 
         public GraphicsApi Classify(Process process)
         {
-            // First try loaded modules (fast, runtime)
-            // Check specific DirectX versions explicitly
             try
             {
                 if (_scanner.UsesDx9(process))
@@ -43,14 +34,12 @@ namespace DXVKCompanion.Monitoring
             }
             catch
             {
-                // If module enumeration fails (access denied etc.) we'll fallback to PE import parsing below.
-                // Caller should treat inability to inspect as potentially risky (handled at higher layers).
+                // Module enumeration failed (access denied etc.) — fall back to PE import parsing below.
             }
 
-            // Fallback to PE imports (static)
             try
             {
-                var imports = _parser.GetImports(process.MainModule.FileName);
+                var imports = _parser.GetImports(process.MainModule.FileName).ToList();
 
                 if (imports.Contains("d3d9.dll"))
                     return GraphicsApi.DX9;
