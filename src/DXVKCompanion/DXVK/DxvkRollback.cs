@@ -1,6 +1,5 @@
-using System;
-using System.Diagnostics;
 using System.IO;
+using System.Threading.Tasks;
 using DXVKCompanion.Models;
 using DXVKCompanion.Utils;
 
@@ -15,20 +14,32 @@ namespace DXVKCompanion.DXVK
             _files = files;
         }
 
-        public void Restore(Process game, GameProfile profile)
+        public async Task<bool> RestoreOriginalDllsAsync(GameProfile profile)
         {
-            string exePath = game.MainModule.FileName;
-            string gameDir = Path.GetDirectoryName(exePath)!;
-
-            foreach (var dll in profile.InstalledDlls)
+            try
             {
-                string path = Path.Combine(gameDir, dll);
-                _files.RestoreBackup(path);
-            }
+                string gameDir = Path.GetDirectoryName(profile.ExecutablePath) ?? string.Empty;
+                if (string.IsNullOrWhiteSpace(gameDir))
+                    return false;
 
-            string conf = Path.Combine(gameDir, "dxvk.conf");
-            if (File.Exists(conf))
-                File.Delete(conf);
+                string d3d11 = Path.Combine(gameDir, "d3d11.dll");
+                string dxgi = Path.Combine(gameDir, "dxgi.dll");
+
+                string d3d11Bak = d3d11 + ".bak";
+                string dxgiBak = dxgi + ".bak";
+
+                if (File.Exists(d3d11Bak))
+                    await _files.SafeReplaceAsync(d3d11, d3d11Bak);
+
+                if (File.Exists(dxgiBak))
+                    await _files.SafeReplaceAsync(dxgi, dxgiBak);
+
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
         }
     }
 }
