@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Threading.Tasks;
 
 namespace DXVKCompanion.Utils
 {
@@ -37,6 +38,56 @@ namespace DXVKCompanion.Utils
         public void WriteBytes(string dst, byte[] bytes)
         {
             File.WriteAllBytes(dst, bytes);
+        }
+
+        public async Task SafeReplaceWithBackupAsync(string targetPath, string sourcePath)
+        {
+            int maxRetries = 5;
+            int delayMs = 500;
+
+            for (int i = 0; i < maxRetries; i++)
+            {
+                try
+                {
+                    string backupPath = targetPath + ".bak";
+
+                    if (File.Exists(targetPath) && !File.Exists(backupPath))
+                    {
+                        File.Copy(targetPath, backupPath, overwrite: false);
+                    }
+
+                    File.Copy(sourcePath, targetPath, overwrite: true);
+                    return;
+                }
+                catch (IOException)
+                {
+                    await Task.Delay(delayMs);
+                    delayMs *= 2;
+                }
+            }
+        }
+
+        public async Task SafeReplaceAsync(string targetPath, string sourcePath)
+        {
+            int maxRetries = 5;
+            int delayMs = 500;
+
+            for (int i = 0; i < maxRetries; i++)
+            {
+                try
+                {
+                    if (File.Exists(targetPath))
+                        File.Delete(targetPath);
+
+                    File.Move(sourcePath, targetPath);
+                    return;
+                }
+                catch (IOException)
+                {
+                    await Task.Delay(delayMs);
+                    delayMs *= 2;
+                }
+            }
         }
     }
 }
