@@ -2,15 +2,19 @@ using System;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
 using DXVKCompanion.Models;
 using DXVKCompanion.Storage;
+using DXVKCompanion.Utils;
 
 namespace DXVKCompanion.DXVK
 {
     public class DxvkGithubClient
     {
         private const string ApiUrl = "https://api.github.com/repos/doitsujin/dxvk/releases/latest";
+        private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(15);
+
         private readonly HttpClient _httpClient;
         private readonly CacheStore _cacheStore;
 
@@ -34,7 +38,8 @@ namespace DXVKCompanion.DXVK
                 if (cached != null && !string.IsNullOrWhiteSpace(cached.ETag))
                     request.Headers.IfNoneMatch.Add(new EntityTagHeaderValue(cached.ETag));
 
-                var response = await _httpClient.SendAsync(request);
+                using var cts = new CancellationTokenSource(RequestTimeout);
+                var response = await _httpClient.SendAsync(request, cts.Token);
 
                 if (response.StatusCode == System.Net.HttpStatusCode.NotModified && cached != null)
                 {
@@ -67,10 +72,14 @@ namespace DXVKCompanion.DXVK
 
                 return release;
             }
-            catch
+            catch (OperationCanceledException)
             {
-                // Network failure — fall back to a stale cached release rather than nothing at
-                // all, so the app stays usable (if slightly out of date) while offline.
+                Logger.Log($"DxvkGithubClient: request to GitHub API timed out after {RequestTimeout.TotalSeconds}s.");
+                return cached?.Release;
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"DxvkGithubClient: failed to fetch latest release: {ex.GetType().Name} - {ex.Message}");
                 return cached?.Release;
             }
         }
