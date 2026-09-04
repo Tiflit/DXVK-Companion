@@ -1,5 +1,4 @@
-using System;
-using System.Diagnostics;
+using System.Threading.Tasks;
 using DXVKCompanion.Models;
 using DXVKCompanion.Storage;
 
@@ -12,6 +11,7 @@ namespace DXVKCompanion.DXVK
         private readonly DxvkGithubClient _github;
         private readonly DxvkReleaseCache _cache;
         private readonly ProfileStore _profiles;
+        private readonly DxvkConfigManager _config;
 
         public DxvkManager(
             DxvkInstaller installer,
@@ -25,32 +25,58 @@ namespace DXVKCompanion.DXVK
             _github = github;
             _cache = cache;
             _profiles = profiles;
+            _config = new DxvkConfigManager();
         }
 
-        public void EnableDXVK(Process game, GameProfile profile)
+        public async Task<ReleaseInfo?> GetLatestReleaseAsync()
         {
-            var release = _cache.GetLatestRelease() ?? _github.FetchLatestRelease();
-            _cache.Save(release);
+            var cached = _cache.GetLatestRelease();
+            if (cached != null)
+                return cached;
 
-            _installer.Install(game, profile, release);
+            var latest = await _github.FetchLatestReleaseAsync();
+            if (latest != null)
+                _cache.Save(latest);
+
+            return latest;
+        }
+
+        public bool UpdateAvailable(GameProfile profile, ReleaseInfo latest)
+        {
+            if (string.IsNullOrWhiteSpace(profile.DxvkVersion))
+                return true;
+
+            return !string.Equals(profile.DxvkVersion, latest.Version);
+        }
+
+        public async Task<bool> EnableDxvkAsync(GameProfile profile)
+        {
+            var latest = await GetLatestReleaseAsync();
+            if (latest == null)
+                return false;
+
+            bool ok = await _installer.ApplyToGameAsync(profile, latest);
+            if (!ok)
+                return false;
+
             profile.DxvkEnabled = true;
-            profile.LastVersion = release.Version;
-
+            profile.DxvkVersion = latest.Version;
+            _config.WriteConfig(profile);
             _profiles.Save(profile);
+
+            return true;
         }
 
-        public void DisableDXVK(Process game, GameProfile profile)
+        public async Task<bool> DisableDxvkAsync(GameProfile profile)
         {
-            _rollback.Restore(game, profile);
+            bool ok = await _rollback.RestoreOriginalDllsAsync(profile);
+            if (!ok)
+                return false;
+
             profile.DxvkEnabled = false;
-
             _profiles.Save(profile);
-        }
 
-        public bool UpdateAvailable(GameProfile profile)
-        {
-            var release = _cache.GetLatestRelease() ?? _github.FetchLatestRelease();
-            return release.Version != profile.LastVersion;
+            return true;
         }
     }
 }
