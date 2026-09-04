@@ -1,4 +1,3 @@
-using System;
 using System.Diagnostics;
 
 namespace DXVKCompanion.Monitoring
@@ -12,20 +11,12 @@ namespace DXVKCompanion.Monitoring
                 foreach (ProcessModule module in process.Modules)
                 {
                     string name = module.ModuleName.ToLowerInvariant();
-
-                    if (name.Contains("d3d9.dll") ||
-                        name.Contains("d3d10.dll") ||
-                        name.Contains("d3d11.dll") ||
-                        name.Contains("dxgi.dll"))
-                    {
+                    if (name.Contains("d3d9.dll") || name.Contains("d3d10.dll") ||
+                        name.Contains("d3d11.dll") || name.Contains("dxgi.dll"))
                         return true;
-                    }
                 }
             }
-            catch
-            {
-                // Access denied → fallback to PE parsing via ApiClassifier/PeParser
-            }
+            catch { }
 
             return false;
         }
@@ -35,16 +26,10 @@ namespace DXVKCompanion.Monitoring
             try
             {
                 foreach (ProcessModule module in process.Modules)
-                {
-                    string name = module.ModuleName.ToLowerInvariant();
-                    if (name.Contains("d3d9.dll"))
+                    if (module.ModuleName.ToLowerInvariant().Contains("d3d9.dll"))
                         return true;
-                }
             }
-            catch
-            {
-                // Ignore access failures here; caller may fallback
-            }
+            catch { }
 
             return false;
         }
@@ -54,15 +39,10 @@ namespace DXVKCompanion.Monitoring
             try
             {
                 foreach (ProcessModule module in process.Modules)
-                {
-                    string name = module.ModuleName.ToLowerInvariant();
-                    if (name.Contains("d3d10.dll"))
+                    if (module.ModuleName.ToLowerInvariant().Contains("d3d10.dll"))
                         return true;
-                }
             }
-            catch
-            {
-            }
+            catch { }
 
             return false;
         }
@@ -71,16 +51,14 @@ namespace DXVKCompanion.Monitoring
         {
             try
             {
+                // Requires d3d11.dll specifically — dxgi.dll alone is also loaded by DX10
+                // and DX12 titles, which was previously causing DX12 games to be
+                // misclassified as DX11.
                 foreach (ProcessModule module in process.Modules)
-                {
-                    string name = module.ModuleName.ToLowerInvariant();
-                    if (name.Contains("d3d11.dll") || name.Contains("dxgi.dll"))
+                    if (module.ModuleName.ToLowerInvariant().Contains("d3d11.dll"))
                         return true;
-                }
             }
-            catch
-            {
-            }
+            catch { }
 
             return false;
         }
@@ -90,17 +68,10 @@ namespace DXVKCompanion.Monitoring
             try
             {
                 foreach (ProcessModule module in process.Modules)
-                {
-                    string name = module.ModuleName.ToLowerInvariant();
-
-                    if (name.Contains("d3d12.dll"))
+                    if (module.ModuleName.ToLowerInvariant().Contains("d3d12.dll"))
                         return true;
-                }
             }
-            catch
-            {
-                // Ignore
-            }
+            catch { }
 
             return false;
         }
@@ -110,17 +81,10 @@ namespace DXVKCompanion.Monitoring
             try
             {
                 foreach (ProcessModule module in process.Modules)
-                {
-                    string name = module.ModuleName.ToLowerInvariant();
-
-                    if (name.Contains("vulkan-1.dll"))
+                    if (module.ModuleName.ToLowerInvariant().Contains("vulkan-1.dll"))
                         return true;
-                }
             }
-            catch
-            {
-                // Ignore
-            }
+            catch { }
 
             return false;
         }
@@ -130,17 +94,10 @@ namespace DXVKCompanion.Monitoring
             try
             {
                 foreach (ProcessModule module in process.Modules)
-                {
-                    string name = module.ModuleName.ToLowerInvariant();
-
-                    if (name.Contains("opengl32.dll"))
+                    if (module.ModuleName.ToLowerInvariant().Contains("opengl32.dll"))
                         return true;
-                }
             }
-            catch
-            {
-                // Ignore
-            }
+            catch { }
 
             return false;
         }
@@ -152,19 +109,11 @@ namespace DXVKCompanion.Monitoring
                 foreach (ProcessModule module in process.Modules)
                 {
                     string name = module.ModuleName.ToLowerInvariant();
-
-                    if (name.Contains("dgvoodoo.dll") ||
-                        name.Contains("ddraw.dll") ||
-                        name.Contains("d3d8.dll"))
-                    {
+                    if (name.Contains("dgvoodoo.dll") || name.Contains("ddraw.dll") || name.Contains("d3d8.dll"))
                         return true;
-                    }
                 }
             }
-            catch
-            {
-                // Ignore
-            }
+            catch { }
 
             return false;
         }
