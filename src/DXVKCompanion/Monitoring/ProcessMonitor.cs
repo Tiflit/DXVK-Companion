@@ -20,7 +20,6 @@ namespace DXVKCompanion.Monitoring
             _detector = detector;
             _exitHandler = exitHandler;
 
-            // Poll every 2 seconds; low overhead for a tray app
             _timer = new Timer(PollProcesses, null, 0, 2000);
         }
 
@@ -39,7 +38,6 @@ namespace DXVKCompanion.Monitoring
 
             var currentPids = processes.Select(p => p.Id).ToHashSet();
 
-            // Cleanup: remove PIDs that no longer exist
             foreach (var pid in _seenPids.Keys)
             {
                 if (!currentPids.Contains(pid))
@@ -48,22 +46,28 @@ namespace DXVKCompanion.Monitoring
 
             foreach (var proc in processes)
             {
-                if (_seenPids.ContainsKey(proc.Id))
-                    continue;
-
-                _seenPids[proc.Id] = 1;
-
-                if (!_detector.IsGameProcess(proc))
-                    continue;
-
                 try
                 {
+                    if (_seenPids.ContainsKey(proc.Id))
+                    {
+                        proc.Dispose();
+                        continue;
+                    }
+
+                    _seenPids[proc.Id] = 1;
+
+                    if (!_detector.IsGameProcess(proc))
+                    {
+                        proc.Dispose();
+                        continue;
+                    }
+
                     _exitHandler.Attach(proc);
                     OnGameDetected?.Invoke(proc);
                 }
                 catch
                 {
-                    // Ignore failures for individual processes
+                    proc.Dispose();
                 }
             }
         }
