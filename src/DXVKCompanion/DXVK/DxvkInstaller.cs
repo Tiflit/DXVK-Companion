@@ -63,7 +63,10 @@ namespace DXVKCompanion.DXVK
                     entry.DataStream?.CopyTo(ms);
                     var bytes = ms.ToArray();
 
-                    string arch = name.Contains("/x32/") ? "x32" : "x64";
+                    // Matches "x32/" whether or not it's preceded by a leading slash, so this
+                    // works regardless of whether the archive nests everything under a top-level
+                    // "dxvk-x.y.z/" folder or not.
+                    string arch = name.Contains("x32/") ? "x32" : "x64";
                     string dllName = Path.GetFileName(name);
 
                     string dllDir = Path.Combine(versionDir, arch);
@@ -92,9 +95,6 @@ namespace DXVKCompanion.DXVK
                 string versionDir = Path.Combine(Paths.DxvkDir, SanitizeVersion(release.Version));
                 string dxvkArchDir = Path.Combine(versionDir, arch);
 
-                // Re-download whenever THIS SPECIFIC VERSION isn't already extracted locally.
-                // Previously this checked only whether the shared DXVK folder existed at all,
-                // which meant "Update" never actually fetched newer DLLs after the first install.
                 if (!Directory.Exists(dxvkArchDir) || !Directory.EnumerateFiles(dxvkArchDir).Any())
                 {
                     bool ok = await DownloadAndExtractAsync(release);
