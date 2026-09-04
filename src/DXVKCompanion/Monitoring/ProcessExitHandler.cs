@@ -1,22 +1,31 @@
 using System;
 using System.Diagnostics;
+using DXVKCompanion.Storage;
 
 namespace DXVKCompanion.Monitoring
 {
     public class ProcessExitHandler
     {
-        public event Action<Process>? OnGameExited;
+        private readonly ProfileStore _profiles;
+
+        public ProcessExitHandler(ProfileStore profiles)
+        {
+            _profiles = profiles;
+        }
 
         public void Attach(Process process)
         {
             try
             {
                 process.EnableRaisingEvents = true;
-                process.Exited += (_, _) => OnGameExited?.Invoke(process);
+                process.Exited += (_, _) =>
+                {
+                    // Nothing to clean in profiles, but could be extended
+                };
             }
             catch
             {
-                // Some processes cannot be hooked; ignore
+                // Ignore failures
             }
         }
     }
