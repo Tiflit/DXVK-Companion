@@ -1,3 +1,4 @@
+using System;
 using System.IO;
 using System.Text.Json;
 using DXVKCompanion.Models;
@@ -6,22 +7,36 @@ namespace DXVKCompanion.Storage
 {
     public class CacheStore
     {
-        public CachedRelease? Load()
+        public CachedRelease? LoadCachedRelease()
         {
             Paths.EnsureDirectories();
 
             if (!File.Exists(Paths.CacheFile))
                 return null;
 
-            var json = File.ReadAllText(Paths.CacheFile);
-            return JsonSerializer.Deserialize<CachedRelease>(json);
+            try
+            {
+                var json = File.ReadAllText(Paths.CacheFile);
+                return JsonSerializer.Deserialize<CachedRelease>(json);
+            }
+            catch
+            {
+                return null;
+            }
         }
 
-        public void Save(CachedRelease release)
+        public void SaveCachedRelease(ReleaseInfo release, string? etag)
         {
             Paths.EnsureDirectories();
 
-            var json = JsonSerializer.Serialize(release, new JsonSerializerOptions
+            var cached = new CachedRelease
+            {
+                Release = release,
+                CachedAt = DateTime.UtcNow,
+                ETag = etag
+            };
+
+            var json = JsonSerializer.Serialize(cached, new JsonSerializerOptions
             {
                 WriteIndented = true
             });
