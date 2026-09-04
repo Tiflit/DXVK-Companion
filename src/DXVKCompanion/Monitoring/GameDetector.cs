@@ -1,74 +1,71 @@
-public class GameDetector
+using System;
+using System.Diagnostics;
+
+namespace DXVKCompanion.Monitoring
 {
-    private static readonly string[] AntiCheatModules =
+    public class GameDetector
     {
-        "easyanticheat.dll",
-        "eac.dll",
-        "battleye.dll",
-        "bedaisy.sys",
-        "riotclientservices.exe",
-        "vgk.sys",
-        "nvanti.dll"
-    };
-
-    private static readonly string[] LauncherNames =
-    {
-        "steam.exe",
-        "epicgameslauncher.exe",
-        "origin.exe",
-        "uplay.exe",
-        "goggalaxy.exe"
-    };
-
-    public bool IsGameProcess(Process process)
-    {
-        try
+        private static readonly string[] AntiCheatModules =
         {
-            string name = process.ProcessName.ToLowerInvariant();
+            "easyanticheat.dll",
+            "eac.dll",
+            "battleye.dll",
+            "bedaisy.sys",
+            "riotclientservices.exe",
+            "vgk.sys",
+            "nvanti.dll"
+        };
 
-            if (Array.Exists(LauncherNames, x => x == name))
-                return false;
-
-            if (name == "explorer" || name == "system" || name == "idle")
-                return false;
-
-            return true;
-        }
-        catch
+        private static readonly string[] LauncherNames =
         {
-            return false;
-        }
-    }
+            "steam.exe",
+            "epicgameslauncher.exe",
+            "origin.exe",
+            "uplay.exe",
+            "goggalaxy.exe"
+        };
 
-    // NOTE: returns InspectionResult now (Safe / Risky / Unknown).
-    // Access-denied or other failures return Unknown so the caller can be conservative.
-    public InspectionResult HasAntiCheatRisk(Process process)
-    {
-        try
+        public bool IsGameProcess(Process process)
         {
-            foreach (ProcessModule module in process.Modules)
+            try
             {
-                string name = module.ModuleName.ToLowerInvariant();
+                string name = process.ProcessName.ToLowerInvariant();
 
-                foreach (var ac in AntiCheatModules)
+                if (LauncherNames.Contains(name))
+                    return false;
+
+                if (name == "explorer" || name == "system" || name == "idle")
+                    return false;
+
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        public bool HasAntiCheatRisk(Process process)
+        {
+            try
+            {
+                foreach (ProcessModule module in process.Modules)
                 {
-                    if (name.Contains(ac))
-                        return InspectionResult.Risky;
+                    string name = module.ModuleName.ToLowerInvariant();
+
+                    foreach (var ac in AntiCheatModules)
+                    {
+                        if (name.Contains(ac))
+                            return true;
+                    }
                 }
             }
+            catch
+            {
+                // Access denied → assume safe
+            }
 
-            // enumeration succeeded, and nothing suspicious found
-            return InspectionResult.Safe;
-        }
-        catch (UnauthorizedAccessException)
-        {
-            // Access denied → process might be protected by anti-cheat; return Unknown
-            return InspectionResult.Unknown;
-        }
-        catch
-        {
-            // Any other error during inspection should be treated conservatively
-            return InspectionResult.Unknown;
+            return false;
         }
     }
 }
