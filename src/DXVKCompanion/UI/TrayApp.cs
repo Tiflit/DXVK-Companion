@@ -27,10 +27,6 @@ namespace DXVKCompanion.UI
         private readonly HttpClient _httpClient;
         private readonly SynchronizationContext _syncContext;
 
-        // Set just before showing a balloon that should open a URL when clicked, cleared right
-        // after it fires. A single handler subscribed once in the constructor (below) replaces
-        // the old per-call subscription, which was stacking a new permanent handler on every
-        // update check and firing on totally unrelated balloon clicks.
         private string? _pendingUpdateUrl;
 
         public TrayApp(
@@ -48,6 +44,8 @@ namespace DXVKCompanion.UI
             _settings = settings;
             _httpClient = httpClient;
 
+            // TrayApp's constructor has no GameDetector parameter — this is the only place
+            // _detector is ever assigned, not a redundant duplicate of one passed in.
             _detector = new GameDetector();
             _syncContext = SynchronizationContext.Current ?? new SynchronizationContext();
 
@@ -119,8 +117,15 @@ namespace DXVKCompanion.UI
         private async void HandleGameDetected(Process process)
         {
             string exePath;
-            try { exePath = process.MainModule.FileName; }
-            catch { return; }
+            try
+            {
+                exePath = process.MainModule.FileName;
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"TrayApp: failed to read MainModule.FileName: {ex.GetType().Name} - {ex.Message}");
+                return;
+            }
 
             try
             {
@@ -160,9 +165,9 @@ namespace DXVKCompanion.UI
                     _menu.SetActiveGame(process, profile);
                 }, null);
             }
-            catch
+            catch (Exception ex)
             {
-                // swallow per-process errors
+                Logger.Log($"TrayApp.HandleGameDetected failed for {exePath}: {ex.GetType().Name} - {ex.Message}");
             }
         }
 
