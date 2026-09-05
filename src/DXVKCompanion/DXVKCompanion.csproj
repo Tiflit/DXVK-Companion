@@ -1,5 +1,4 @@
 <Project Sdk="Microsoft.NET.Sdk">
-
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0-windows</TargetFramework>
@@ -17,10 +16,7 @@
     <Product>DXVK Companion</Product>
   </PropertyGroup>
 
-  <!-- SelfContained / PublishSingleFile deliberately NOT set here — they require a
-       RuntimeIdentifier and would break plain `dotnet build`/`dotnet run` during normal
-       development. Pass them as command-line flags at publish time instead, exactly as
-       the README's build command already does:
-       dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -->
-
+  <!-- Publishing settings are intentionally not enabled for normal build operations.
+       A RuntimeIdentifier and self-contained/single-file publish options should be
+       supplied at publish time rather than stored here. -->
 </Project>
