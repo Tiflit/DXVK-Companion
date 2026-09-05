@@ -49,7 +49,14 @@ public sealed class SingleFileTransactionEngine
 
         try
         {
-            targetPath = ResolveInsideRoot(request.InstallationRoot, request.RelativePath);
+            try
+            {
+                targetPath = ResolveInsideRoot(request.InstallationRoot, request.RelativePath);
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                return Abort(transactionId, request.Operation, affected, ex.Message);
+            }
             if (request.Operation == TransactionOperation.None)
             {
                 return Abort(transactionId, request.Operation, affected, "A transaction operation is required.");
@@ -144,7 +151,7 @@ public sealed class SingleFileTransactionEngine
 
             if (request.Operation == TransactionOperation.Restore)
             {
-                VerifyRestore(targetPath, request.OriginalState, originalIdentity, backupPath);
+                VerifyRestore(targetPath, request.OriginalState, backupPath);
             }
             else
             {
@@ -262,7 +269,7 @@ public sealed class SingleFileTransactionEngine
         }
     }
 
-    private static void VerifyRestore(string targetPath, OriginalFileState originalState, SafetyFileIdentity? originalIdentity, string? backupPath)
+    private static void VerifyRestore(string targetPath, OriginalFileState originalState, string? backupPath)
     {
         if (originalState == OriginalFileState.DidNotExist)
         {
@@ -280,7 +287,8 @@ public sealed class SingleFileTransactionEngine
         }
 
         var restoredIdentity = FileIdentity.Capture(targetPath);
-        if (restoredIdentity != originalIdentity)
+        var backupIdentity = FileIdentity.Capture(backupPath);
+        if (restoredIdentity != backupIdentity)
         {
             throw new IOException("Restore verification failed: original identity mismatch.");
         }
