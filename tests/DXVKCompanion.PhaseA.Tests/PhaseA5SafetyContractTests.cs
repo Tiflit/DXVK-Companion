@@ -74,10 +74,10 @@ public sealed class PhaseA5SafetyContractTests
         using (var directory = new SyntheticTestDirectory())
         {
             rootPath = directory.RootPath;
-            directory.CreateFile("nested\file.txt", "synthetic");
+            directory.CreateFile(@"nested\file.txt", "synthetic");
 
             Assert.StartsWith(Path.GetFullPath(Path.GetTempPath()), rootPath, StringComparison.OrdinalIgnoreCase);
-            Assert.True(File.Exists(directory.GetPath("nested\file.txt")));
+            Assert.True(File.Exists(directory.GetPath(@"nested\file.txt")));
             Assert.NotEqual(Path.GetFullPath(Directory.GetCurrentDirectory()), rootPath);
         }
 
