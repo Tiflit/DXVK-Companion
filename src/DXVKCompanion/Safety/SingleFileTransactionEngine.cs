@@ -126,7 +126,18 @@ public sealed class SingleFileTransactionEngine
             var planPath = Path.Combine(_transactionStoreRoot, transactionId + ".json");
             File.WriteAllText(planPath, JsonSerializer.Serialize(plan));
 
-            if (originalState == OriginalFileState.Existing)
+            if (request.Operation == TransactionOperation.Restore)
+            {
+                if (request.OriginalState == OriginalFileState.Existing)
+                {
+                    backupPath = ResolveBackupPath(request.BackupRelativePath, transactionId, request.RelativePath);
+                    if (!File.Exists(backupPath))
+                    {
+                        return SafeFailure(transactionId, request.Operation, affected, "Original backup is unavailable for restore.");
+                    }
+                }
+            }
+            else if (originalState == OriginalFileState.Existing)
             {
                 backupPath = ResolveBackupPath(request.BackupRelativePath, transactionId, request.RelativePath);
                 Directory.CreateDirectory(Path.GetDirectoryName(backupPath)!);
