@@ -9,7 +9,7 @@ namespace DXVKCompanion.Monitoring
     public class ProcessMonitor : IDisposable
     {
         private readonly ConcurrentDictionary<int, byte> _seenPids = new();
-        private readonly Timer _timer;
+        private readonly System.Threading.Timer _timer;
         private readonly GameDetector _detector;
         private readonly ProcessExitHandler _exitHandler;
 
@@ -21,8 +21,7 @@ namespace DXVKCompanion.Monitoring
             _detector = detector;
             _exitHandler = exitHandler;
             _exitHandler.ProcessExited += exePath => OnGameExited?.Invoke(exePath);
-
-            _timer = new Timer(PollProcesses, null, 0, 2000);
+            _timer = new System.Threading.Timer(PollProcesses, null, 0, 2000);
         }
 
         private void PollProcesses(object? state)
@@ -65,8 +64,7 @@ namespace DXVKCompanion.Monitoring
                     if (!_detector.HasWindow(proc))
                     {
                         // Might still be launching. Deliberately NOT marked as seen, so the next
-                        // poll tick re-examines this same PID once its window appears — fixes a
-                        // regression where slow-launching games were permanently skipped.
+                        // poll tick re-examines this same PID once its window appears.
                         proc.Dispose();
                         continue;
                     }
