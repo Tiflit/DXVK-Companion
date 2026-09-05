@@ -106,11 +106,10 @@ namespace DXVKCompanion.Storage
                 // A current-format file exists but is unreadable. Never silently
                 // fall back to stale legacy data. Preserve it first.
                 TryPreserveBrokenCurrentFile();
-                Log($"GameLibraryStore: current library could not be loaded. Preserved a recovery copy; legacy migration was not used automatically.");
+                Log($"GameLibraryStore: current library could not be loaded. Preserved a recovery copy; no legacy import was attempted.");
                 return;
             }
 
-            TryMigrateLegacyProfiles();
         }
 
         private LoadResult TryLoadCurrentFormat()
@@ -153,175 +152,6 @@ namespace DXVKCompanion.Storage
                 Log($"GameLibraryStore: failed to load current library: {ex.GetType().Name} - {ex.Message}");
                 return LoadResult.Invalid;
             }
-        }
-
-        private void TryMigrateLegacyProfiles()
-        {
-            if (!File.Exists(Paths.ProfilesFile))
-                return;
-
-            try
-            {
-                var json = File.ReadAllText(Paths.ProfilesFile);
-                var legacyProfiles = JsonSerializer.Deserialize<List<LegacyGameProfile>>(json, JsonOptions);
-                if (legacyProfiles == null || legacyProfiles.Count == 0)
-                    return;
-
-                lock (_sync)
-                {
-                    _installations.Clear();
-
-                    foreach (var legacy in legacyProfiles)
-                    {
-                        if (string.IsNullOrWhiteSpace(legacy.ExePath))
-                            continue;
-
-                        var exePath = Path.GetFullPath(legacy.ExePath);
-                        var installationPath = Path.GetDirectoryName(exePath);
-                        if (string.IsNullOrWhiteSpace(installationPath))
-                            continue;
-
-                        var normalizedInstallation =
-                            GameInstallation.NormalizeInstallationPath(installationPath);
-
-                        if (!_installations.TryGetValue(normalizedInstallation, out var installation))
-                        {
-                            installation = new GameInstallation
-                            {
-                                InstallationPath = normalizedInstallation,
-                                DisplayName = new DirectoryInfo(normalizedInstallation).Name
-                            };
-                            _installations[normalizedInstallation] = installation;
-                        }
-
-                        var relativeExePath = Path.GetRelativePath(normalizedInstallation, exePath);
-                        var executable = installation.GetOrAddExecutable(relativeExePath, legacy.ExeName);
-                        executable.LastKnownApi = legacy.Api;
-                        executable.LastKnownArchitecture = legacy.Architecture;
-
-                        ReconcileLegacyFrameLimit(installation, legacy);
-
-                        if (legacy.DxvkEnabled)
-                        {
-                            ReconcileLegacyManagedVersion(installation, legacy);
-                            ReconcileLegacyManagedArchitecture(installation, legacy);
-                            CreateLegacyManagedFileRecords(installation, legacy);
-                        }
-                    }
-
-                    UpdateRestorationStateLocked();
-                    WriteAllLocked();
-                }
-
-                Log("GameLibraryStore: legacy profiles migrated to the new game-library format. Legacy games.json was not modified.");
-            }
-            catch (Exception ex)
-            {
-                Log($"GameLibraryStore: legacy migration failed: {ex.GetType().Name} - {ex.Message}");
-            }
-        }
-
-        private static void ReconcileLegacyManagedVersion(GameInstallation installation, LegacyGameProfile legacy)
-        {
-            if (string.IsNullOrWhiteSpace(legacy.DxvkVersion))
-                return;
-
-            if (string.IsNullOrWhiteSpace(installation.ManagedDxvkVersion))
-            {
-                installation.ManagedDxvkVersion = legacy.DxvkVersion;
-                return;
-            }
-
-            if (!string.Equals(installation.ManagedDxvkVersion, legacy.DxvkVersion, StringComparison.OrdinalIgnoreCase))
-            {
-                installation.ManagedDxvkVersion = null;
-                installation.ConflictFlags |= InstallationConflictFlags.DxvkVersion;
-            }
-        }
-
-        private static void ReconcileLegacyManagedArchitecture(GameInstallation installation, LegacyGameProfile legacy)
-        {
-            if (string.IsNullOrWhiteSpace(legacy.Architecture) ||
-                string.Equals(legacy.Architecture, "Unknown", StringComparison.OrdinalIgnoreCase))
-                return;
-
-            if (string.IsNullOrWhiteSpace(installation.ManagedDxvkArchitecture))
-            {
-                installation.ManagedDxvkArchitecture = legacy.Architecture;
-                return;
-            }
-
-            if (!string.Equals(installation.ManagedDxvkArchitecture, legacy.Architecture, StringComparison.OrdinalIgnoreCase))
-            {
-                installation.ManagedDxvkArchitecture = null;
-                installation.ConflictFlags |= InstallationConflictFlags.Architecture;
-            }
-        }
-
-        private static void ReconcileLegacyFrameLimit(GameInstallation installation, LegacyGameProfile legacy)
-        {
-            if (legacy.FrameLimit <= 0)
-                return;
-
-            if (!installation.Configuration.FrameLimitEnabled)
-            {
-                installation.Configuration.FrameLimit = legacy.FrameLimit;
-                installation.Configuration.FrameLimitEnabled = true;
-                return;
-            }
-
-            if (installation.Configuration.FrameLimit != legacy.FrameLimit)
-            {
-                // Do not let an arbitrary legacy profile win. Disable the
-                // installation-level value and leave a diagnostic trail.
-                installation.Configuration.FrameLimit = 120;
-                installation.Configuration.FrameLimitEnabled = false;
-                installation.ConflictFlags |= InstallationConflictFlags.FrameLimit;
-            }
-        }
-
-        private static void CreateLegacyManagedFileRecords(
-            GameInstallation installation,
-            LegacyGameProfile legacy)
-        {
-            foreach (var fileName in GetLegacyDxvkFileSet(legacy.Api))
-            {
-                var record = installation.GetOrAddManagedFile(fileName);
-                var backupPath = Path.Combine(
-                    installation.InstallationPath,
-                    fileName + ".bak");
-
-                // Legacy Companion used .bak files in the game directory.
-                // Presence is useful evidence, but the new safety engine will
-                // still verify the file before using the backup.
-                if (File.Exists(backupPath))
-                {
-                    record.OriginalState = FileOriginalState.Existing;
-                    record.BackupRelativePath = null; // copied later by the new file engine
-                    record.CurrentState = ManagedFileState.Unknown;
-                }
-                else
-                {
-                    // We know legacy Companion claims this file was managed,
-                    // but we cannot safely infer the original state.
-                    record.OriginalState = FileOriginalState.Unknown;
-                    record.CurrentState = ManagedFileState.Unknown;
-                    installation.ConflictFlags |= InstallationConflictFlags.UnknownOriginalFile;
-                }
-
-                record.ManagedDxvkVersion = installation.ManagedDxvkVersion;
-            }
-        }
-
-        private static IReadOnlyList<string> GetLegacyDxvkFileSet(GraphicsApi api)
-        {
-            return api switch
-            {
-                GraphicsApi.DX9 => new[] { "d3d9.dll" },
-                GraphicsApi.DX10 => new[] { "d3d11.dll", "dxgi.dll" },
-                GraphicsApi.DX11 => new[] { "d3d11.dll", "dxgi.dll" },
-                _ => Array.Empty<string>()
-            };
         }
 
         private void UpdateRestorationStateLocked()
@@ -427,16 +257,6 @@ namespace DXVKCompanion.Storage
             FutureSchema = 2
         }
 
-        private sealed class LegacyGameProfile
-        {
-            public string ExePath { get; set; } = string.Empty;
-            public string ExeName { get; set; } = string.Empty;
-            public GraphicsApi Api { get; set; } = GraphicsApi.Unknown;
-            public string Architecture { get; set; } = "Unknown";
-            public bool DxvkEnabled { get; set; }
-            public string? DxvkVersion { get; set; }
-            public bool HudEnabled { get; set; }
-            public int FrameLimit { get; set; }
-        }
+
     }
 }
