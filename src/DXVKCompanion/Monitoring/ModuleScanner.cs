@@ -32,6 +32,13 @@ namespace DXVKCompanion.Monitoring
                             found.Add(tracked);
                 }
             }
+            catch
+            {
+                // Access denied — return whatever was found before the failure (often nothing).
+            }
+
+            return found;
+        }
 
         // Games loading more than one graphics API at once is unusual and can indicate a
         // wrapper layer in play (e.g. dgVoodoo bridging legacy DirectDraw/D3D up to D3D11) —
@@ -47,14 +54,6 @@ namespace DXVKCompanion.Monitoring
             if (modules.Contains("d3d12.dll")) apiCount++;
 
             return apiCount > 1;
-        }
-
-            catch
-            {
-                // Access denied — return whatever was found before the failure (often nothing).
-            }
-
-            return found;
         }
 
         // Kept for any external/future callers that only care about one specific API —
