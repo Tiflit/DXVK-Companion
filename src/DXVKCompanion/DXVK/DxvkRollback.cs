@@ -61,10 +61,17 @@ namespace DXVKCompanion.DXVK
                                 expectedTargetIdentity = FileIdentity.Capture(targetPath);
                             }
 
+                            var safetyOriginalState = mf.OriginalState switch
+                            {
+                                FileOriginalState.Existing => OriginalFileState.Existing,
+                                FileOriginalState.Missing => OriginalFileState.DidNotExist,
+                                _ => OriginalFileState.Unknown
+                            };
+
                             filesToRestore.Add(new MultiFileTransactionFile
                             {
                                 RelativePath = mf.RelativePath,
-                                OriginalState = mf.OriginalState,
+                                OriginalState = safetyOriginalState,
                                 BackupRelativePath = mf.BackupRelativePath,
                                 ExpectedTargetIdentity = expectedTargetIdentity
                             });

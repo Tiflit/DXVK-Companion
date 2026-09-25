@@ -64,7 +64,7 @@ public sealed class SafeDeploymentIntegrationTests
         Assert.Equal("2.5", installation!.ManagedDxvkVersion);
         Assert.Equal(RestorationState.Managed, installation.RestorationState);
         Assert.Equal(2, installation.ManagedFiles.Count);
-        Assert.All(installation.ManagedFiles, f => Assert.Equal(FileOriginalState.DidNotExist, f.OriginalState));
+        Assert.All(installation.ManagedFiles, f => Assert.Equal(FileOriginalState.Missing, f.OriginalState));
 
         // 2. Rollback / Restore
         var rollbackOk = await rollback.RestoreOriginalDllsAsync(profile);

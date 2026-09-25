@@ -5,6 +5,7 @@ using System.Windows.Forms;
 using DXVKCompanion.Monitoring;
 using DXVKCompanion.Storage;
 using DXVKCompanion.DXVK;
+using DXVKCompanion.Safety;
 using DXVKCompanion.Utils;
 using DXVKCompanion.UI;
 

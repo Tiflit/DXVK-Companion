@@ -176,7 +176,12 @@ namespace DXVKCompanion.DXVK
 
                     if (existingRecord != null && existingRecord.OriginalState != FileOriginalState.Unknown)
                     {
-                        originalState = existingRecord.OriginalState;
+                        originalState = existingRecord.OriginalState switch
+                        {
+                            FileOriginalState.Existing => OriginalFileState.Existing,
+                            FileOriginalState.Missing => OriginalFileState.DidNotExist,
+                            _ => OriginalFileState.Unknown
+                        };
                         backupRelativePath = existingRecord.BackupRelativePath;
                         if (File.Exists(targetPath))
                         {
@@ -229,7 +234,12 @@ namespace DXVKCompanion.DXVK
                     foreach (var filePlan in filesToProcess)
                     {
                         var record = installation.GetOrAddManagedFile(filePlan.RelativePath);
-                        record.OriginalState = filePlan.OriginalState;
+                        record.OriginalState = filePlan.OriginalState switch
+                        {
+                            OriginalFileState.Existing => FileOriginalState.Existing,
+                            OriginalFileState.DidNotExist => FileOriginalState.Missing,
+                            _ => FileOriginalState.Unknown
+                        };
                         record.BackupRelativePath = filePlan.BackupRelativePath;
                         if (filePlan.OriginalState == OriginalFileState.Existing && filePlan.ExpectedTargetIdentity != null && string.IsNullOrEmpty(record.OriginalSha256))
                         {
