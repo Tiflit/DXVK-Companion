@@ -116,10 +116,11 @@ namespace DXVKCompanion.UI
 
         private async void HandleGameDetected(Process process)
         {
-            string exePath;
+            string? exePath;
             try
             {
-                exePath = process.MainModule.FileName;
+                exePath = process.MainModule?.FileName;
+                if (string.IsNullOrEmpty(exePath)) return;
             }
             catch (Exception ex)
             {

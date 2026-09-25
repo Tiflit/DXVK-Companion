@@ -52,6 +52,40 @@ namespace DXVKCompanion.Storage
             }
         }
 
+        public GameInstallation? FindInstallationForExecutable(string exeFullPath)
+        {
+            if (string.IsNullOrWhiteSpace(exeFullPath)) return null;
+
+            var fullExe = Path.GetFullPath(exeFullPath);
+            var exeDir = Path.GetDirectoryName(fullExe);
+
+            lock (_sync)
+            {
+                // 1. Direct match on executable directory
+                if (exeDir != null)
+                {
+                    var normalizedDir = GameInstallation.NormalizeInstallationPath(exeDir);
+                    if (_installations.TryGetValue(normalizedDir, out var direct))
+                        return direct;
+                }
+
+                // 2. Match on existing installation where executable path is inside installation root
+                foreach (var installation in _installations.Values)
+                {
+                    var rootWithSep = installation.InstallationPath.EndsWith(Path.DirectorySeparatorChar)
+                        ? installation.InstallationPath
+                        : installation.InstallationPath + Path.DirectorySeparatorChar;
+
+                    if (fullExe.StartsWith(rootWithSep, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return installation;
+                    }
+                }
+
+                return null;
+            }
+        }
+
         public GameInstallation GetOrCreateInstallation(string installationPath, string? displayName = null)
         {
             var normalized = GameInstallation.NormalizeInstallationPath(installationPath);
@@ -70,6 +104,36 @@ namespace DXVKCompanion.Storage
                 };
 
                 _installations[normalized] = installation;
+                WriteAllLocked();
+                return installation;
+            }
+        }
+
+        public GameInstallation RecordDetectionSnapshot(DetectionSnapshot snapshot)
+        {
+            ArgumentNullException.ThrowIfNull(snapshot);
+
+            lock (_sync)
+            {
+                var installation = GetOrCreateInstallation(snapshot.InstallationRoot, Path.GetFileName(snapshot.InstallationRoot));
+                var profile = installation.GetOrAddExecutable(snapshot.ExecutableRelativePath, snapshot.ProcessName);
+
+                if (profile.LastKnownApi != GraphicsApi.Unknown &&
+                    snapshot.Classification.PrimaryApi != GraphicsApi.Unknown &&
+                    profile.LastKnownApi != snapshot.Classification.PrimaryApi)
+                {
+                    snapshot.HasApiChanged = true;
+                    snapshot.PreviousApi = profile.LastKnownApi;
+                    Log($"GameLibraryStore: API transition detected for {snapshot.ExecutableRelativePath}: {profile.LastKnownApi} -> {snapshot.Classification.PrimaryApi}");
+                }
+
+                profile.LastKnownApi = snapshot.Classification.PrimaryApi;
+                profile.ApiConfidence = snapshot.Classification.Confidence;
+                profile.LastKnownArchitecture = snapshot.Classification.Architecture;
+                profile.DetectionEvidence = snapshot.Classification.Evidence.ToList();
+                profile.LastSeenUtc = snapshot.TimestampUtc;
+
+                installation.LastSeenUtc = snapshot.TimestampUtc;
                 WriteAllLocked();
                 return installation;
             }

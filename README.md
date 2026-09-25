@@ -61,11 +61,11 @@ Optimized for modern GPUs—especially Intel Arc / Battlemage architectures (Arc
   * `CacheStore` & `SettingsStore`: Portable configuration and release caching.
 
 * **Detection & Monitoring (`DXVKCompanion.Monitoring`)**:
-  * `ProcessMonitor`: Polling process monitor with low idle resource usage.
-  * `GameDetector`: Filters out launchers (Steam, Epic, EA, Ubisoft, GOG Galaxy) and flags anti-cheat runtimes.
-  * `ModuleScanner`: Inspects loaded graphics modules in running processes.
-  * `PeParser`: Static PE header and Import Address Table (IAT) inspection fallback.
-  * `ApiClassifier`: Classifies Direct3D 9, 10, 11, and Modern API (DX12 / Vulkan) games.
+  * `ProcessMonitor`: Polling process monitor with window wait retries and rich `DetectionSnapshot` generation.
+  * `GameDetector`: Filters out system processes and store launchers, and assesses anti-cheat risks (`AntiCheatAssessment`) across process modules and game directories.
+  * `ModuleScanner`: Inspects loaded graphics runtime modules in running processes.
+  * `PeParser`: Static PE header and Import Address Table (IAT) inspection fallback with architecture detection.
+  * `ApiClassifier`: Classifies Direct3D 9, 10, 11, and Modern API (DX12 / Vulkan) games with confidence levels and evidence tracking (`ApiClassificationResult`).
 
 * **DXVK Management (`DXVKCompanion.DXVK`)**:
   * `DxvkGithubClient`: Fetches official release metadata from the GitHub API with local caching.
@@ -124,7 +124,7 @@ For complete specifications and architectural contracts, refer to the project do
 * [x] **Phase A.1**: Pre-Release Legacy Migration Cleanup
 * [x] **Phase A.5**: Multi-File Atomic Transaction Engine (`MultiFileTransactionEngine`, `FileIdentity`)
 * [x] **Phase D (Integration)**: Safe File Engine Integration (`DxvkInstaller` and `DxvkRollback` wired to transaction engine, isolated backups, and clean self-cleaning)
-* [ ] **Phase B**: Detection Layer Refactoring (Multi-executable folder tracking, delayed runtime scans, enhanced anti-cheat heuristics)
+* [x] **Phase B**: Detection Layer Refactoring (Multi-executable folder tracking, delayed runtime scans, enhanced anti-cheat heuristics, and API transitions)
 * [ ] **Phase C**: DXVK Release Repository (Official release catalog, deterministic hash identification, and existing DXVK adoption)
 * [ ] **Phase E & F**: UI Modernization & Delayed Notifications
 * [ ] **Phase G**: Automated Maintenance Mode

@@ -38,7 +38,7 @@ namespace DXVKCompanion
             var moduleScanner = new ModuleScanner();
             var peParser = new PeParser();
             var classifier = new ApiClassifier(moduleScanner, peParser);
-            var monitor = new ProcessMonitor(detector, exitHandler);
+            var monitor = new ProcessMonitor(detector, exitHandler, classifier, gameLibraryStore);
 
             // DXVK
             var fileUtils = new FileUtils();

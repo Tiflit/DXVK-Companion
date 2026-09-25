@@ -18,7 +18,7 @@ namespace DXVKCompanion.Monitoring
             "dxgi.dll", "vulkan-1.dll", "opengl32.dll", "ddraw.dll", "dgvoodoo.dll"
         };
 
-        public HashSet<string> GetLoadedGraphicsModules(Process process)
+        public virtual HashSet<string> GetLoadedGraphicsModules(Process process)
         {
             var found = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
