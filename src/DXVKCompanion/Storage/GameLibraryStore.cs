@@ -311,41 +311,6 @@ namespace DXVKCompanion.Storage
             }
         }
 
-        private void UpdateRestorationStateLocked()
-        {
-            foreach (var installation in _installations.Values)
-            {
-                if (installation.ConflictFlags != InstallationConflictFlags.None)
-                {
-                    installation.RestorationState = RestorationState.AttentionRequired;
-                    continue;
-                }
-
-                if (installation.ManagedFiles.Count == 0)
-                {
-                    installation.RestorationState = RestorationState.None;
-                    continue;
-                }
-
-                if (installation.ManagedFiles.Any(x => x.CurrentState == ManagedFileState.ExternallyChanged))
-                {
-                    installation.RestorationState = RestorationState.AttentionRequired;
-                    continue;
-                }
-
-                if (installation.ManagedFiles.Any(x => x.OriginalState == FileOriginalState.Unknown))
-                {
-                    installation.RestorationState = RestorationState.AttentionRequired;
-                    continue;
-                }
-
-                installation.RestorationState =
-                    installation.ManagedDxvkVersion == null
-                        ? RestorationState.Restored
-                        : RestorationState.Managed;
-            }
-        }
-
         private void TryPreserveBrokenCurrentFile()
         {
             try
@@ -368,8 +333,6 @@ namespace DXVKCompanion.Storage
         {
             Paths.EnsureDirectories();
             Directory.CreateDirectory(_backupsDirectoryPath);
-
-            UpdateRestorationStateLocked();
 
             var library = new GameLibrary
             {

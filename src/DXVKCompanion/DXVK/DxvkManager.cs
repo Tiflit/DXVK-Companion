@@ -207,7 +207,7 @@ namespace DXVKCompanion.DXVK
                 {
                     case PendingActionType.Install:
                     case PendingActionType.Update:
-                        success = await EnableDxvkAsync(profile);
+                        success = await EnableDxvkAsync(profile, installation.PendingAction.TargetDxvkVersion);
                         break;
                     case PendingActionType.Reapply:
                         success = await ReapplyAsync(profile, updateBaseline: true);
@@ -276,7 +276,7 @@ namespace DXVKCompanion.DXVK
                 {
                     case PendingActionType.Install:
                     case PendingActionType.Update:
-                        success = await EnableDxvkAsync(profile);
+                        success = await EnableDxvkAsync(profile, installation.PendingAction.TargetDxvkVersion);
                         break;
                     case PendingActionType.Reapply:
                         success = await ReapplyAsync(profile, updateBaseline: true);
@@ -296,18 +296,26 @@ namespace DXVKCompanion.DXVK
             return processed;
         }
 
-        public async Task<bool> EnableDxvkAsync(GameProfile profile)
+        public async Task<bool> EnableDxvkAsync(GameProfile profile, string? targetVersion = null)
         {
-            var latest = await GetLatestReleaseAsync();
-            if (latest == null)
-                return false;
+            ReleaseInfo? release;
+            if (!string.IsNullOrWhiteSpace(targetVersion))
+            {
+                release = new ReleaseInfo { Version = targetVersion, DownloadUrl = "" };
+            }
+            else
+            {
+                release = await GetLatestReleaseAsync();
+                if (release == null)
+                    return false;
+            }
 
-            bool ok = await _installer.ApplyToGameAsync(profile, latest);
+            bool ok = await _installer.ApplyToGameAsync(profile, release);
             if (!ok)
                 return false;
 
             profile.DxvkEnabled = true;
-            profile.DxvkVersion = latest.Version;
+            profile.DxvkVersion = release.Version;
             _profiles.Save(profile);
 
             return true;
@@ -328,14 +336,14 @@ namespace DXVKCompanion.DXVK
         public ExistingDxvkAssessment AssessExistingDxvk(GameProfile profile)
         {
             string gameDir = Path.GetDirectoryName(profile.ExePath) ?? string.Empty;
-            var detector = new ExistingDxvkDetector();
+            var detector = new ExistingDxvkDetector(_installer.DxvkSourceDir);
             return detector.AssessDirectory(gameDir, profile.Architecture);
         }
 
         public async Task<bool> AdoptExistingAsync(GameProfile profile)
         {
             string gameDir = Path.GetDirectoryName(profile.ExePath) ?? string.Empty;
-            var detector = new ExistingDxvkDetector();
+            var detector = new ExistingDxvkDetector(_installer.DxvkSourceDir);
             var assessment = detector.AssessDirectory(gameDir, profile.Architecture);
             if (!assessment.CanBeAdopted)
                 return false;

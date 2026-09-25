@@ -43,6 +43,8 @@ namespace DXVKCompanion.DXVK
         {
         }
 
+        public string DxvkSourceDir => _dxvkSourceDir;
+
         private static string SanitizeVersion(string version)
         {
             foreach (char c in Path.GetInvalidFileNameChars())
@@ -445,7 +447,7 @@ namespace DXVKCompanion.DXVK
                         if (existingRecord != null && !string.Equals(currentIdentity.Sha256, existingRecord.ExpectedManagedSha256, StringComparison.OrdinalIgnoreCase))
                         {
                             backupRelativePath = Path.Combine(installation.Id, dllName);
-                            string fullBackupPath = Path.Combine(GameLibraryPaths.BackupsDir, backupRelativePath);
+                            string fullBackupPath = Path.Combine(_transactionEngine.TransactionStoreRoot, backupRelativePath);
                             Directory.CreateDirectory(Path.GetDirectoryName(fullBackupPath)!);
                             File.Copy(targetPath, fullBackupPath, overwrite: true);
                             originalState = OriginalFileState.Existing;
