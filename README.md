@@ -1,488 +1,131 @@
-README 1 :
+# DXVK-Companion
 
-DXVK‑Companion
-A lightweight, fully portable Windows tray application that detects game launches, identifies DXVK‑compatible DirectX APIs, and automatically manages DXVK deployment, updates, rollbacks, and per‑game configuration.
-Designed primarily for Intel Battlemage GPUs (Arc B580 and similar), but works on any GPU.
+A lightweight, fully portable, and self-cleaning Windows utility that detects game launches, identifies DirectX graphics APIs, and safely manages [DXVK](https://github.com/doitsujin/dxvk) deployment, updates, rollbacks, and configuration.
 
-✨ Overview
-DXVK‑Companion automates DXVK management for Windows games.
-It detects when a game launches, determines whether it uses a DXVK‑compatible API (DX9, DX10, DX11), and lets you enable or disable DXVK with a single click.
+Optimized for modern GPUs—especially Intel Arc / Battlemage architectures (Arc B580 and Xe2)—while fully supporting Nvidia GeForce and AMD Radeon hardware running legacy Direct3D 9, 10, and 11 games.
 
-DXVK‑Companion is:
+---
 
-Fully portable — no files written to %APPDATA%, registry, or system folders
+## ⚡ Core Principles
 
-Self‑contained — all configuration, cache, logs, and DXVK data live inside the app folder
+* **Strict Portability**: Completely self-contained in its application directory. Never writes to `%APPDATA%`, the Windows Registry, or system directories. Perfect for USB drives and portable libraries.
+* **Self-Cleaning Game Directories**: Game directories remain pristine. Original DLLs are backed up exclusively inside Companion's isolated storage (`Profiles/Backups/`), never leaving `.bak` artifacts in game folders. On restore, injected DXVK DLLs and generated `dxvk.conf` files are cleanly deleted.
+* **Atomic Multi-File Transactions**: Multi-file deployments (such as `d3d11.dll` + `dxgi.dll` for DirectX 11) are treated as a single logical transaction with SHA-256 pre-flight identity verification and automatic rollback if any file fails.
+* **Zero External Dependencies**: Built entirely on .NET 8 using native Windows APIs and built-in runtime features (including in-memory tarball extraction via `GZipStream` and `System.Formats.Tar`).
+* **Non-Aggressive Execution**: Never modifies running game processes. Deployment actions are staged and executed safely after the game cleanly terminates.
+* **Anti-Cheat Safety**: Detects anti-cheat modules (Easy Anti-Cheat, BattlEye, Vanguard, etc.) and guards single-player titles from risky modifications.
 
-Safe — DLL backups and rollbacks prevent accidental game corruption
+---
 
-Automated — detects games in real time and applies DXVK on next launch
+## 🏗️ Architecture Overview
 
-Modern — built on .NET 8 with in‑memory tar extraction and clean architecture
+```text
+                    PROCESS MONITOR
+                           │
+                           ▼
+                    DETECTION LAYER
+       (ProcessFilter, ModuleScanner, PE Import Fallback)
+                           │
+                           ▼
+                   API CLASSIFICATION
+             (DX9, DX10, DX11, ModernAPI DX12/Vulkan)
+                           │
+                           ▼
+                 SAFE TRANSACTION ENGINE
+         (MultiFileTransactionEngine & FileIdentity)
+             ┌─────────────┼─────────────┐
+             ▼             ▼             ▼
+          Install       Update        Restore
+             └─────────────┼─────────────┘
+                           │
+                           ▼
+                 VERIFY & PERSIST STATE
+             (GameLibraryStore & Backups)
+                           │
+                           ▼
+                  SYSTEM TRAY INTERFACE
+```
 
-Ideal for Intel Arc users who want Vulkan performance for DX9/DX11 titles without manual setup.
+### Component Breakdown
 
-🎮 Key Features
-Real‑Time Game Detection
-DXVK‑Companion monitors running processes and identifies games using:
+* **Safety & Transactions (`DXVKCompanion.Safety`)**:
+  * `MultiFileTransactionEngine`: Executes atomic multi-file operations (`Install`, `Update`, `Reapply`, `Restore`), manages isolated backups, and provides automatic rollback upon failure.
+  * `SingleFileTransactionEngine`: Atomic single-file state machine with crash recovery.
+  * `FileIdentity`: Deterministic SHA-256 and byte-size identity tracking for file provenance and tampering detection.
+  * `TransactionContracts`: Formal state machines and outcome records.
 
-PE header inspection
+* **Domain & Storage (`DXVKCompanion.Models`, `DXVKCompanion.Storage`)**:
+  * `GameInstallation`: Tracks installation roots, multiple executables, managed file records, and conflict flags.
+  * `ManagedFileRecord`: Tracks original state (`Existing` vs. `DidNotExist`), baseline hashes, and backup pointers.
+  * `GameLibraryStore`: Atomic JSON persistence for game libraries with corruption recovery.
+  * `CacheStore` & `SettingsStore`: Portable configuration and release caching.
 
-Loaded module scanning
+* **Detection & Monitoring (`DXVKCompanion.Monitoring`)**:
+  * `ProcessMonitor`: Polling process monitor with low idle resource usage.
+  * `GameDetector`: Filters out launchers (Steam, Epic, EA, Ubisoft, GOG Galaxy) and flags anti-cheat runtimes.
+  * `ModuleScanner`: Inspects loaded graphics modules in running processes.
+  * `PeParser`: Static PE header and Import Address Table (IAT) inspection fallback.
+  * `ApiClassifier`: Classifies Direct3D 9, 10, 11, and Modern API (DX12 / Vulkan) games.
 
-DXVK‑compatible API classification (DX9 / DX10 / DX11 / ModernAPI)
+* **DXVK Management (`DXVKCompanion.DXVK`)**:
+  * `DxvkGithubClient`: Fetches official release metadata from the GitHub API with local caching.
+  * `DxvkInstaller`: In-memory extraction of release archives into isolated cache and atomic game deployment.
+  * `DxvkRollback`: Clean restoration of original game baselines and deletion of injected DXVK files.
+  * `DxvkConfigManager`: Manages `dxvk.conf` settings (HUD overlay and frame limiters).
 
-Launchers (Steam, Epic, Origin, Ubisoft, etc.) are ignored.
+* **User Interface (`DXVKCompanion.UI`)**:
+  * `TrayApp` & `TrayMenu`: Lightweight system tray control.
+  * `GameDetailsWindow` & `ManageGamesWindow`: Per-game settings and library management.
 
-One‑Click DXVK Management
-From the tray menu:
+---
 
-Enable DXVK
+## 📂 Portable Directory Structure
 
-Disable DXVK and restore original DLLs
-
-View per‑game settings
-
-Toggle HUD and frame limits
-
-Check for DXVK updates
-
-DXVK is applied safely and takes effect on next launch.
-
-In‑Memory DXVK Extraction
-DXVK releases are downloaded directly from GitHub and extracted in memory using:
-
-GZipStream
-
-TarReader (System.Formats.Tar)
-
-No temporary files, no leftover archives.
-
-Fully Portable Storage
-All app data lives inside the DXVK‑Companion folder:
-
-Code
+```text
 DXVK-Companion/
-│
-├── Profiles/      # Per-game JSON profiles
-├── Cache/         # Cached DXVK release metadata
-├── Logs/          # Application logs
-└── DXVK/          # Optional local DXVK cache
-Perfect for:
-
-USB drives
-
-Modded game setups
-
-Multiple Windows installations
-
-Offline environments
-
-Safe Rollbacks
-Before injecting DXVK DLLs, the app automatically backs up originals:
-
-Code
-d3d11.dll → d3d11.dll.bak
-dxgi.dll  → dxgi.dll.bak
-Disabling DXVK restores the backups exactly.
-
-Per‑Game Configuration
-Each game gets its own profile:
-
-API (DX9 / DX10 / DX11 / ModernAPI)
-
-Architecture (x32 / x64)
-
-DXVK enabled/disabled
-
-Last installed DXVK version
-
-HUD toggle
-
-Frame limit
-
-Profiles survive game reinstalls or folder moves.
-
-⚠️ Anti‑Cheat Disclaimer
-DXVK‑Companion replaces DirectX DLLs inside game folders.
-This is NOT SAFE for online multiplayer titles with anti‑cheat systems such as:
-
-Easy Anti‑Cheat (EAC)
-
-BattleEye
-
-Vanguard
-
-FACEIT
-
-Ricochet
-
-Use DXVK‑Companion only with single‑player or offline games.  
-You are responsible for ensuring DXVK is not used with protected titles.
-
-🧠 Design Philosophy
-1. Portability First
-DXVK‑Companion never writes outside its own folder.
-No registry, no %APPDATA%, no installers.
-
-2. Clean Architecture
-The project is divided into clear layers:
-
-Monitoring
-
-DXVK management
-
-Storage
-
-Models
-
-Utilities
-
-UI
-
-Each layer is isolated and testable.
-
-3. Safety Over Aggression
-DXVK is never injected into a running game.
-Changes are staged and applied after the game exits.
-
-4. Zero External Dependencies
-Only built‑in .NET 8 libraries and native Windows APIs are used.
-
-📐 Architecture Diagram
-Lifecycle Overview (Mermaid)
-mermaid
-sequenceDiagram
-    participant PM as ProcessMonitor
-    participant GD as GameDetector
-    participant AC as ApiClassifier
-    participant UI as TrayApp
-    participant DX as DxvkManager
-
-    PM->>GD: New process detected
-    GD->>AC: Inspect executable (PE + modules)
-    AC->>UI: API classification result
-    UI->>DX: User enables DXVK
-    DX->>DX: Stage DXVK deployment
-    PM->>DX: ProcessExit event
-    DX->>DX: Apply DXVK safely (backup + inject)
-🧱 Architecture Summary
-Monitoring Layer
-ProcessMonitor — polls processes, detects new games
-
-GameDetector — filters launchers
-
-ModuleScanner — checks loaded modules
-
-ApiClassifier — determines DXVK compatibility
-
-ProcessExitHandler — triggers post‑session sync
-
-DXVK Layer
-DxvkGithubClient — fetches releases
-
-DxvkReleaseCache — 24h TTL cache
-
-DxvkInstaller — safe DLL deployment
-
-DxvkRollback — restores backups
-
-DxvkConfigManager — writes dxvk.conf
-
-Storage Layer
-ProfileStore — per‑game JSON profiles
-
-CacheStore — DXVK release cache
-
-Paths — portable directory management
-
-Models
-GameProfile
-
-DxvkState
-
-ReleaseInfo
-
-CachedRelease
-
-Utils
-Logger
-
-PeParser
-
-FileUtils
-
-EnvironmentUtils
-
-UI
-TrayApp
-
-TrayMenu
-
-SettingsWindow
-
-GameDetailsWindow
-
-UpdateNotification
-
-🚀 Build Instructions (Single‑File Portable EXE)
-To build a self‑contained, single‑file, portable executable:
-
-bash
-dotnet publish src/DXVKCompanion/DXVKCompanion.csproj \
-    -c Release \
-    -r win-x64 \
-    --self-contained true \
-    -p:PublishSingleFile=true \
-    -p:EnableCompressionInSingleFile=true
-This produces:
-
-Code
-bin/Release/net8.0/win-x64/publish/DXVK-Companion.exe
-No .NET runtime required.
-
-📌 DXVK Compatibility Constraints
-DXVK supports:
-
-DirectX 9
-
-DirectX 10
-
-DirectX 11
-
-DXVK does not support:
-
-DirectX 12
-
-Vulkan
-
-OpenGL
-
-DirectDraw (unless wrapped by dgVoodoo2 → DX11 → DXVK)
-
-For Intel Arc GPUs:
-
-DX9 → huge improvement
-
-DX11 → often improved
-
-DX12 → excellent natively
-
-Vulkan → excellent natively
-
-DXVK‑Companion applies DXVK only to DX9/DX10/DX11 titles.
-
-📦 What Has Been Implemented
-Full project structure
-
-Portable filesystem
-
-Monitoring layer
-
-DXVK download + in‑memory extraction
-
-Safe DLL deployment + rollback
-
-Per‑game profiles
-
-GitHub release caching
-
-Tray UI
-
-Integration in Program.cs
-
-Architecture documentation
-
-🛠 What Has Not Been Implemented Yet
-DXVK update checker integration
-
-Post‑session sync logic
-
-Architecture detection integration
-
-Environment variable injection
-
-Advanced DXVK settings
-
-UI polish
-
-DXVK fork support (async, gplasync, etc.)
-
-Anti‑cheat safe mode
-
-Release packaging
-
-📅 Planned Features
-Auto‑update DXVK on launch
-
-Per‑game DXVK version pinning
-
-Custom DXVK forks
-
-Optional DXVK download mirror
-
-Game launch history
-
-Auto‑enable DXVK for new games
-
-📄 License
-DXVK‑Companion is licensed under the MIT License, allowing:
-
-Free use
-
-Free modification
-
-Free redistribution
-
-Commercial use
-
-
-
-README 2 :
-
-DXVK‑Companion
-A lightweight Windows tray application that automatically detects running games, classifies their graphics API (DX9/DX11/DX12/Vulkan), and safely applies DXVK to improve performance — without ever modifying system files or polluting game directories.
-
-✨ Features
-🎮 Automatic Game Detection
-DXVK‑Companion monitors running processes and identifies games using:
-
-Module scanning
-
-PE import parsing
-
-Anti‑cheat detection
-
-Launcher filtering
-
-🔍 Accurate API Classification
-DXVK‑Companion correctly distinguishes:
-
-DirectX 9
-
-DirectX 11
-
-DirectX 12
-
-Vulkan
-
-OpenGL
-
-Using both loaded modules and real PE import parsing.
-
-🚀 DXVK Deployment (DX9 + DX11)
-DXVK is applied safely:
-
-DX9 → d3d9.dll
-
-DX11 → d3d11.dll + dxgi.dll
-
-Backups created automatically (*.bak)
-
-No game directory pollution
-
-All DXVK files stored under DXVK-Companion/DXVK/
-
-♻️ Safe Rollbacks
-Disabling DXVK restores:
-
-d3d9.dll.bak → d3d9.dll
-
-d3d11.dll.bak → d3d11.dll
-
-dxgi.dll.bak → dxgi.dll
-
-Removes dxvk.conf
-
-⚙️ DXVK Configuration
-DXVK‑Companion writes a portable dxvk.conf with:
-
-HUD toggle
-
-Frame limiter (dxvk.maxFrameRate)
-
-Architecture‑specific settings
-
-🔄 Update System
-DXVK‑Companion checks for:
-
-DXVK updates (on startup only)
-
-DXVK‑Companion updates (on startup only)
-
-Using GitHub’s API + ETag caching.
-
-🧪 Experimental: Auto‑Enable DXVK
-When enabled, DXVK‑Companion automatically applies DXVK to new games that:
-
-Use DX9 or DX11
-
-Have no anti‑cheat
-
-Have no existing DXVK version
-
-🖥️ Portable & Safe
-DXVK‑Companion:
-
-Never writes outside its own folder
-
-Never modifies system files
-
-Never touches registry (except optional startup shortcut)
-
-Stores all data in JSON
-
-Uses a single shared HttpClient
-
-📂 Folder Structure
-Code
-DXVK-Companion/
- ├── DXVK/               # Extracted DXVK binaries (x32/x64)
- ├── Profiles/           # Per-game profiles
- ├── Cache/              # DXVK release cache (ETag + metadata)
- ├── Logs/               # Companion logs
- ├── settings.json       # Global settings
- └── DXVK-Companion.exe
-🔐 Anti‑Cheat Safety
-DXVK‑Companion automatically detects:
-
-Easy Anti‑Cheat
-
-BattleEye
-
-Vanguard
-
-Riot Client
-
-Other known anti‑cheat modules
-
-If detected:
-
-DXVK is not auto‑enabled
-
-A warning is shown
-
-Manual enabling is still possible (at user’s risk)
-
-🧰 Requirements
-Windows 10 or 11
-
-.NET 8 Runtime
-
-DXVK release tarball (downloaded automatically)
-
-🚀 Installation
-Download the latest release
-
-Extract anywhere (portable)
-
-Run DXVK-Companion.exe
-
-Optionally enable “Launch on startup” in Settings
-
-🧩 Credits
-DXVK by doitsujin
-https://github.com/doitsujin/DXVK
-
-📜 License
-MIT License
+├── Profiles/
+│   ├── game-library.json   # Hierarchical game installations and managed file records
+│   ├── games.json          # Legacy profile configuration
+│   └── Backups/            # Pristine original game file baselines (isolated from game folders)
+├── Cache/                  # Cached DXVK release metadata
+├── Logs/                   # Application log files
+└── DXVK/                   # Extracted DXVK release binaries (x32 and x64)
+```
+
+---
+
+## 🧪 Testing & Validation
+
+All file safety operations are validated using sandboxed synthetic environments (`SyntheticTestDirectory`) that guarantee tests never touch real game installations or developer workspaces:
+
+```bash
+# Build application in Release
+dotnet build src/DXVKCompanion/DXVKCompanion.csproj --configuration Release
+
+# Build test suite in Release
+dotnet build tests/DXVKCompanion.PhaseA.Tests/DXVKCompanion.PhaseA.Tests.csproj --configuration Release
+
+# Run automated tests
+dotnet test tests/DXVKCompanion.PhaseA.Tests/DXVKCompanion.PhaseA.Tests.csproj --configuration Release --no-build --no-restore
+```
+
+Continuous integration runs automatically on Windows via GitHub Actions (`.github/workflows/build-and-test.yml`).
+
+---
+
+## 🗺️ Project Specifications & Roadmap
+
+For complete specifications and architectural contracts, refer to the project documents:
+* [Master Project Specification](DXVK-COMPANION-SPEC-A1-UPDATED.md)
+* [Phase A.5 Safety & Identity Design](DXVK-Companion-PhaseA5-Safety-and-Identity-Design-FINAL.md)
+
+### Development Progress
+* [x] **Phase A**: Data Foundation (Hierarchical `GameInstallation`, `ExecutableProfile`, `ManagedFileRecord`)
+* [x] **Phase A.1**: Pre-Release Legacy Migration Cleanup
+* [x] **Phase A.5**: Multi-File Atomic Transaction Engine (`MultiFileTransactionEngine`, `FileIdentity`)
+* [x] **Phase D (Integration)**: Safe File Engine Integration (`DxvkInstaller` and `DxvkRollback` wired to transaction engine, isolated backups, and clean self-cleaning)
+* [ ] **Phase B**: Detection Layer Refactoring (Multi-executable folder tracking, delayed runtime scans, enhanced anti-cheat heuristics)
+* [ ] **Phase C**: DXVK Release Repository (Official release catalog, deterministic hash identification, and existing DXVK adoption)
+* [ ] **Phase E & F**: UI Modernization & Delayed Notifications
+* [ ] **Phase G**: Automated Maintenance Mode
+* [ ] **Future Goal**: Opt-in global crowd-sourced game & GPU compatibility catalog

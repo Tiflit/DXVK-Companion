@@ -80,17 +80,24 @@ public sealed class MultiFileTransactionEngine
 
                 string? backupPath = null;
                 SafetyFileIdentity? backupIdentity = null;
-                if (request.Operation is TransactionOperation.Install or TransactionOperation.Update or TransactionOperation.Reapply)
-                    && currentState == OriginalFileState.Existing)
+                if ((request.Operation is TransactionOperation.Install or TransactionOperation.Update or TransactionOperation.Reapply)
+                    && file.OriginalState == OriginalFileState.Existing)
                 {
                     backupPath = ResolveBackupPath(file.BackupRelativePath, transactionId, file.RelativePath);
-                    Directory.CreateDirectory(Path.GetDirectoryName(backupPath)!);
-                    File.Copy(targetPath, backupPath, overwrite: true);
-                    backupIdentity = FileIdentity.Capture(backupPath);
-                    if (backupIdentity != currentIdentity)
-                        return SafeFailure(transactionId, request.Operation, affected, $"The backup could not be verified: {file.RelativePath}");
+                    if (request.Operation == TransactionOperation.Install || !File.Exists(backupPath))
+                    {
+                        Directory.CreateDirectory(Path.GetDirectoryName(backupPath)!);
+                        File.Copy(targetPath, backupPath, overwrite: true);
+                        backupIdentity = FileIdentity.Capture(backupPath);
+                        if (backupIdentity != currentIdentity)
+                            return SafeFailure(transactionId, request.Operation, affected, $"The backup could not be verified: {file.RelativePath}");
+                    }
+                    else
+                    {
+                        backupIdentity = FileIdentity.Capture(backupPath);
+                    }
                 }
-                else if (request.Operation == TransactionOperation.Restore && currentState == OriginalFileState.Existing)
+                else if (request.Operation == TransactionOperation.Restore && file.OriginalState == OriginalFileState.Existing)
                 {
                     backupPath = ResolveBackupPath(file.BackupRelativePath, transactionId, file.RelativePath);
                     if (!File.Exists(backupPath))
@@ -98,7 +105,7 @@ public sealed class MultiFileTransactionEngine
                     backupIdentity = FileIdentity.Capture(backupPath);
                 }
 
-                prepared.Add(new PreparedFile(file, targetPath, sourcePath, sourceIdentity, currentState, currentIdentity, backupPath, backupIdentity));
+                prepared.Add(new PreparedFile(file, targetPath, sourcePath, sourceIdentity, file.OriginalState, currentIdentity, backupPath, backupIdentity));
             }
 
             var plan = new SafetyTransactionPlan
