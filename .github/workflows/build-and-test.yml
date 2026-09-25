@@ -36,7 +36,23 @@ jobs:
         run: dotnet build tests/DXVKCompanion.PhaseA.Tests/DXVKCompanion.PhaseA.Tests.csproj --configuration Release --no-restore
 
       - name: Run Phase A tests
-        run: dotnet test tests/DXVKCompanion.PhaseA.Tests/DXVKCompanion.PhaseA.Tests.csproj --configuration Release --no-build --no-restore --logger "trx;LogFileName=phase-a-tests.trx"
+        run: dotnet test tests/DXVKCompanion.PhaseA.Tests/DXVKCompanion.PhaseA.Tests.csproj --configuration Release --no-build --no-restore --logger "console;verbosity=detailed" --logger "trx;LogFileName=phase-a-tests.trx"
+
+      - name: Report Test Failures
+        if: always()
+        shell: pwsh
+        run: |
+          Get-ChildItem -Path "**/*.trx" -Recurse | ForEach-Object {
+            [xml]$xml = Get-Content $_.FullName
+            if ($xml.TestRun.Results.UnitTestResult) {
+              $xml.TestRun.Results.UnitTestResult | Where-Object { $_.outcome -eq 'Failed' } | ForEach-Object {
+                Write-Host "::error title=$($_.testName)::$($_.Output.ErrorInfo.Message)"
+                Write-Host "FAILED TEST: $($_.testName)"
+                Write-Host "$($_.Output.ErrorInfo.Message)"
+                Write-Host "$($_.Output.ErrorInfo.StackTrace)"
+              }
+            }
+          }
 
       - name: Upload test results
         if: always()
