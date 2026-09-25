@@ -45,10 +45,10 @@ namespace DXVKCompanion
             var installer = new DxvkInstaller(httpClient, transactionEngine, gameLibraryStore, null, fileUtils);
             var rollback = new DxvkRollback(transactionEngine, gameLibraryStore, fileUtils);
             var github = new DxvkGithubClient(httpClient, cacheStore);
-            var dxvkManager = new DxvkManager(installer, rollback, github, profiles);
+            var dxvkManager = new DxvkManager(installer, rollback, github, profiles, gameLibraryStore);
 
             // UI
-            var trayApp = new TrayApp(monitor, profiles, dxvkManager, classifier, settings, httpClient);
+            var trayApp = new TrayApp(monitor, profiles, dxvkManager, classifier, settings, httpClient, gameLibraryStore);
 
             Application.Run();
         }

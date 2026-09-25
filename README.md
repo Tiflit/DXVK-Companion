@@ -129,6 +129,6 @@ For complete specifications and architectural contracts, refer to the project do
 * [x] **Phase B**: Detection Layer Refactoring (Multi-executable folder tracking, delayed runtime scans, enhanced anti-cheat heuristics, and API transitions)
 * [x] **Phase C**: DXVK Release Repository (Official release catalog, deterministic hash identification, existing DXVK adoption, Reapply, and Section 36 `dxvk.conf` management)
 * [x] **Phase D**: External-Change & Pending-Action Handling (`ManagedFileInspector`, Section 20 supersession, baseline replacement, and persistent restart handling)
-* [ ] **Phase E & F**: UI Modernization & Delayed Notifications
+* [x] **Phase E & F**: UI Modernization & Delayed Notifications (Status-oriented management UI, adoption/reapply buttons, health badges, startup inspection, and delayed balloon notifications)
 * [ ] **Phase G**: Automated Maintenance Mode
 * [ ] **Future Goal**: Opt-in global crowd-sourced game & GPU compatibility catalog

@@ -1,35 +1,39 @@
 using System;
+using System.Collections.Generic;
+using System.Drawing;
+using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using System.Windows.Forms;
-using DXVKCompanion.Models;
 using DXVKCompanion.DXVK;
+using DXVKCompanion.Models;
 using DXVKCompanion.Storage;
 
 namespace DXVKCompanion.UI
 {
     /// <summary>
-    /// Lists every game DXVK Companion has ever seen (not just the currently-running one),
-    /// letting you enable/disable DXVK per title and push updates to some or all of them.
-    /// Enable/Disable/Update here go through the same exit-safety queueing as the tray menu —
-    /// if a listed game happens to be running right now, the action queues instead of touching
-    /// its files immediately.
+    /// Status-oriented management UI displaying comprehensive game health,
+    /// restoration state, pending actions, and lifecycle management.
     /// </summary>
     public class ManageGamesWindow : Form
     {
         private readonly ProfileStore _profiles;
         private readonly DxvkManager _dxvk;
+        private readonly GameLibraryStore _gameLibraryStore;
+        private readonly ManagedFileInspector _inspector;
         private readonly ListView _listView;
         private readonly Label _statusLabel;
 
-        public ManageGamesWindow(ProfileStore profiles, DxvkManager dxvk)
+        public ManageGamesWindow(ProfileStore profiles, DxvkManager dxvk, GameLibraryStore? gameLibraryStore = null)
         {
             _profiles = profiles;
             _dxvk = dxvk;
+            _gameLibraryStore = gameLibraryStore ?? new GameLibraryStore();
+            _inspector = new ManagedFileInspector(_gameLibraryStore);
 
             Text = "DXVK Companion — Manage Games";
-            Width = 780;
-            Height = 460;
+            Width = 920;
+            Height = 520;
             StartPosition = FormStartPosition.CenterScreen;
 
             _listView = new ListView
@@ -39,45 +43,55 @@ namespace DXVKCompanion.UI
                 FullRowSelect = true,
                 MultiSelect = true
             };
-            _listView.Columns.Add("Game", 220);
-            _listView.Columns.Add("API", 90);
-            _listView.Columns.Add("Arch", 60);
+            _listView.Columns.Add("Game", 180);
+            _listView.Columns.Add("Status", 130);
+            _listView.Columns.Add("API", 80);
+            _listView.Columns.Add("Arch", 55);
             _listView.Columns.Add("DXVK", 70);
-            _listView.Columns.Add("Version", 100);
-            _listView.Columns.Add("Path", 380);
+            _listView.Columns.Add("Version", 85);
+            _listView.Columns.Add("Pending", 110);
+            _listView.Columns.Add("Path", 340);
+
+            _listView.DoubleClick += (_, _) => OpenSelectedGameDetails();
 
             _statusLabel = new Label
             {
                 Dock = DockStyle.Bottom,
-                Height = 22,
+                Height = 26,
                 Text = "",
                 TextAlign = ContentAlignment.MiddleLeft,
-                Padding = new Padding(6, 0, 0, 0)
+                Padding = new Padding(8, 0, 0, 0)
             };
 
             var buttonPanel = new FlowLayoutPanel
             {
                 Dock = DockStyle.Bottom,
-                Height = 44,
+                Height = 48,
                 FlowDirection = FlowDirection.LeftToRight,
                 Padding = new Padding(6)
             };
 
             var btnEnable = new Button { Text = "Enable DXVK", AutoSize = true };
             var btnDisable = new Button { Text = "Disable DXVK", AutoSize = true };
+            var btnReapply = new Button { Text = "Reapply DXVK", AutoSize = true };
+            var btnAdopt = new Button { Text = "Adopt Existing", AutoSize = true };
+            var btnDetails = new Button { Text = "Game Details...", AutoSize = true };
             var btnUpdateSelected = new Button { Text = "Update Selected", AutoSize = true };
-            var btnUpdateAllEnabled = new Button { Text = "Update All Enabled", AutoSize = true };
+            var btnUpdateAll = new Button { Text = "Update All Enabled", AutoSize = true };
             var btnRefresh = new Button { Text = "Refresh", AutoSize = true };
 
             btnEnable.Click += async (_, _) => await RunOnSelected("Enabling", p => _dxvk.RequestEnableByPathAsync(p));
             btnDisable.Click += async (_, _) => await RunOnSelected("Disabling", p => _dxvk.RequestDisableByPathAsync(p));
+            btnReapply.Click += async (_, _) => await RunOnSelected("Reapplying", p => _dxvk.RequestReapplyByPathAsync(p, updateBaseline: true));
+            btnAdopt.Click += async (_, _) => await RunAdoptSelected();
+            btnDetails.Click += (_, _) => OpenSelectedGameDetails();
             btnUpdateSelected.Click += async (_, _) => await RunOnSelected("Updating", p => _dxvk.RequestUpdateByPathAsync(p));
-            btnUpdateAllEnabled.Click += async (_, _) => await RunUpdateAllEnabled();
+            btnUpdateAll.Click += async (_, _) => await RunUpdateAllEnabled();
             btnRefresh.Click += (_, _) => RefreshList();
 
             buttonPanel.Controls.AddRange(new Control[]
             {
-                btnEnable, btnDisable, btnUpdateSelected, btnUpdateAllEnabled, btnRefresh
+                btnEnable, btnDisable, btnReapply, btnAdopt, btnDetails, btnUpdateSelected, btnUpdateAll, btnRefresh
             });
 
             Controls.Add(_listView);
@@ -89,29 +103,97 @@ namespace DXVKCompanion.UI
 
         private void RefreshList()
         {
+            _inspector.InspectAll();
             _listView.Items.Clear();
 
             foreach (var profile in _profiles.GetAll().OrderBy(p => p.ExeName))
             {
+                string gameDir = Path.GetDirectoryName(profile.ExePath) ?? string.Empty;
+                var installation = !string.IsNullOrWhiteSpace(gameDir)
+                    ? _gameLibraryStore.FindByInstallationPath(gameDir)
+                    : null;
+
+                string statusText = "Clean / Native";
+                string pendingText = "-";
+
+                if (installation != null)
+                {
+                    if (installation.ConflictFlags != InstallationConflictFlags.None)
+                    {
+                        statusText = $"Conflict: {installation.ConflictFlags}";
+                    }
+                    else if (installation.RestorationState == RestorationState.AttentionRequired)
+                    {
+                        statusText = "Attention Required";
+                    }
+                    else if (installation.RestorationState == RestorationState.Managed)
+                    {
+                        statusText = "Managed";
+                    }
+                    else if (installation.RestorationState == RestorationState.Restored)
+                    {
+                        statusText = "Restored";
+                    }
+
+                    if (installation.PendingAction != null && installation.PendingAction.IsPending)
+                    {
+                        pendingText = $"{installation.PendingAction.Type}";
+                    }
+                }
+                else if (profile.DxvkEnabled)
+                {
+                    statusText = "Enabled";
+                }
+
                 var item = new ListViewItem(profile.ExeName) { Tag = profile };
+                item.SubItems.Add(statusText);
                 item.SubItems.Add(profile.Api.ToString());
                 item.SubItems.Add(profile.Architecture);
                 item.SubItems.Add(profile.DxvkEnabled ? "Enabled" : "Disabled");
                 item.SubItems.Add(profile.DxvkVersion ?? "-");
+                item.SubItems.Add(pendingText);
                 item.SubItems.Add(profile.ExePath);
+
+                if (statusText.StartsWith("Attention", StringComparison.OrdinalIgnoreCase) ||
+                    statusText.StartsWith("Conflict", StringComparison.OrdinalIgnoreCase))
+                {
+                    item.ForeColor = Color.DarkOrange;
+                }
+                else if (statusText.Equals("Managed", StringComparison.OrdinalIgnoreCase) ||
+                         statusText.Equals("Enabled", StringComparison.OrdinalIgnoreCase))
+                {
+                    item.ForeColor = Color.DarkGreen;
+                }
+
                 _listView.Items.Add(item);
             }
 
-            _statusLabel.Text = $"{_listView.Items.Count} game(s) tracked.";
+            _statusLabel.Text = $"{_listView.Items.Count} game(s) tracked. Status inspected.";
         }
 
-        private System.Collections.Generic.List<GameProfile> GetSelectedProfiles()
+        private List<GameProfile> GetSelectedProfiles()
         {
-            var result = new System.Collections.Generic.List<GameProfile>();
+            var result = new List<GameProfile>();
             foreach (ListViewItem item in _listView.SelectedItems)
+            {
                 if (item.Tag is GameProfile p)
                     result.Add(p);
+            }
             return result;
+        }
+
+        private void OpenSelectedGameDetails()
+        {
+            var selected = GetSelectedProfiles();
+            if (selected.Count == 0)
+            {
+                MessageBox.Show("Select a game first to view details.", "DXVK Companion", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            var window = new GameDetailsWindow(selected[0], _profiles, _dxvk, _gameLibraryStore);
+            window.FormClosed += (_, _) => RefreshList();
+            window.ShowDialog(this);
         }
 
         private async Task RunOnSelected(string verb, Func<GameProfile, Task<DxvkActionResult>> action)
@@ -119,7 +201,7 @@ namespace DXVKCompanion.UI
             var selected = GetSelectedProfiles();
             if (selected.Count == 0)
             {
-                MessageBox.Show("Select one or more games first.", "DXVK Companion");
+                MessageBox.Show("Select one or more games first.", "DXVK Companion", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
 
@@ -139,7 +221,39 @@ namespace DXVKCompanion.UI
             }
 
             RefreshList();
-            _statusLabel.Text = $"{verb} done — {applied} applied, {queued} queued (game still running), {failed} failed.";
+            _statusLabel.Text = $"{verb} complete — {applied} applied, {queued} queued (running), {failed} failed.";
+        }
+
+        private async Task RunAdoptSelected()
+        {
+            var selected = GetSelectedProfiles();
+            if (selected.Count == 0)
+            {
+                MessageBox.Show("Select one or more games to adopt.", "DXVK Companion", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            int adopted = 0, failed = 0;
+
+            foreach (var profile in selected)
+            {
+                bool ok = await _dxvk.AdoptExistingAsync(profile);
+                if (ok) adopted++;
+                else failed++;
+            }
+
+            RefreshList();
+
+            if (adopted > 0)
+            {
+                MessageBox.Show($"Successfully adopted existing official DXVK release for {adopted} game(s).",
+                    "DXVK Adoption", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            else
+            {
+                MessageBox.Show("No adoptable official DXVK release was recognized in the selected game directory.",
+                    "DXVK Adoption", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
         }
 
         private async Task RunUpdateAllEnabled()
@@ -147,7 +261,6 @@ namespace DXVKCompanion.UI
             _statusLabel.Text = "Checking for updates...";
 
             var results = await _dxvk.UpdateAllEnabledAsync();
-
             RefreshList();
 
             if (results.Count == 0)
@@ -160,7 +273,7 @@ namespace DXVKCompanion.UI
             int queued = results.Values.Count(r => r == DxvkActionResult.Queued);
             int failed = results.Values.Count(r => r == DxvkActionResult.Failed);
 
-            _statusLabel.Text = $"Update all done — {applied} applied, {queued} queued (game still running), {failed} failed.";
+            _statusLabel.Text = $"Update all complete — {applied} applied, {queued} queued (running), {failed} failed.";
         }
     }
 }

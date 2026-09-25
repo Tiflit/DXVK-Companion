@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.Drawing;
+using System.IO;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
@@ -25,6 +26,8 @@ namespace DXVKCompanion.UI
         private readonly GameDetector _detector;
         private readonly SettingsStore _settings;
         private readonly HttpClient _httpClient;
+        private readonly GameLibraryStore _gameLibraryStore;
+        private readonly ManagedFileInspector _inspector;
         private readonly SynchronizationContext _syncContext;
 
         private string? _pendingUpdateUrl;
@@ -35,7 +38,8 @@ namespace DXVKCompanion.UI
             DxvkManager dxvk,
             ApiClassifier classifier,
             SettingsStore settings,
-            HttpClient httpClient)
+            HttpClient httpClient,
+            GameLibraryStore? gameLibraryStore = null)
         {
             _monitor = monitor;
             _profiles = profiles;
@@ -43,9 +47,9 @@ namespace DXVKCompanion.UI
             _classifier = classifier;
             _settings = settings;
             _httpClient = httpClient;
+            _gameLibraryStore = gameLibraryStore ?? new GameLibraryStore();
+            _inspector = new ManagedFileInspector(_gameLibraryStore);
 
-            // TrayApp's constructor has no GameDetector parameter — this is the only place
-            // _detector is ever assigned, not a redundant duplicate of one passed in.
             _detector = new GameDetector();
             _syncContext = SynchronizationContext.Current ?? new SynchronizationContext();
 
@@ -63,13 +67,40 @@ namespace DXVKCompanion.UI
                 _pendingUpdateUrl = null;
             };
 
-            _menu = new TrayMenu(_trayIcon, profiles, dxvk, settings);
+            _menu = new TrayMenu(_trayIcon, profiles, dxvk, settings, _gameLibraryStore);
 
             _monitor.OnGameDetected += HandleGameDetected;
-            _monitor.OnGameExited += async exePath => await _dxvk.ApplyPendingAsync(exePath);
+            _monitor.OnGameExited += async exePath =>
+            {
+                await _dxvk.ApplyPendingAsync(exePath);
+                _syncContext.Post(_ =>
+                {
+                    _trayIcon.ShowBalloonTip(4000, "DXVK Companion",
+                        $"Operation completed safely after game exit for {Path.GetFileName(exePath)}.", ToolTipIcon.Info);
+                }, null);
+            };
 
+            // Startup tasks: inspect all installations and process pending actions
+            _ = InitializeStartupStateAsync();
             _ = CheckDxvkUpdateOnStartup();
             _ = CheckCompanionUpdateOnStartup();
+        }
+
+        private async Task InitializeStartupStateAsync()
+        {
+            try
+            {
+                _inspector.InspectAll();
+                int processed = await _dxvk.ProcessAllPendingActionsAsync();
+                if (processed > 0)
+                {
+                    Logger.Log($"TrayApp: successfully processed {processed} pending actions on startup.");
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"TrayApp: startup inspection error: {ex.GetType().Name} - {ex.Message}");
+            }
         }
 
         private async Task CheckDxvkUpdateOnStartup()
@@ -148,6 +179,17 @@ namespace DXVKCompanion.UI
 
                 bool updateAvailable = latest != null && profile.DxvkEnabled && _dxvk.UpdateAvailable(profile, latest);
 
+                string gameDir = Path.GetDirectoryName(exePath) ?? string.Empty;
+                var installation = !string.IsNullOrWhiteSpace(gameDir)
+                    ? _gameLibraryStore.FindByInstallationPath(gameDir)
+                    : null;
+
+                bool externalChange = false;
+                if (installation != null)
+                {
+                    externalChange = _inspector.InspectInstallation(installation);
+                }
+
                 if (_settings.AutoEnableDxvkForNewGames &&
                     dxvkCompatible && !antiCheat && !profile.DxvkEnabled &&
                     string.IsNullOrWhiteSpace(profile.DxvkVersion))
@@ -157,12 +199,12 @@ namespace DXVKCompanion.UI
 
                 _profiles.Save(profile);
 
-                string message = BuildNotificationMessage(process, profile, antiCheat, latest, localVersion, dxvkCompatible, updateAvailable);
+                string message = BuildNotificationMessage(process, profile, antiCheat, latest, localVersion, dxvkCompatible, updateAvailable, externalChange);
 
                 _syncContext.Post(_ =>
                 {
                     _trayIcon.ShowBalloonTip(5000, "Game Detected", message,
-                        antiCheat ? ToolTipIcon.Warning : ToolTipIcon.Info);
+                        antiCheat || externalChange ? ToolTipIcon.Warning : ToolTipIcon.Info);
                     _menu.SetActiveGame(process, profile);
                 }, null);
             }
@@ -174,7 +216,7 @@ namespace DXVKCompanion.UI
 
         private string BuildNotificationMessage(
             Process process, GameProfile profile, bool antiCheat, ReleaseInfo? latest,
-            string localVersion, bool dxvkCompatible, bool updateAvailable)
+            string localVersion, bool dxvkCompatible, bool updateAvailable, bool externalChange)
         {
             var msg = $"{process.ProcessName} is running.\n" +
                       $"API: {profile.Api} ({profile.Architecture})\n" +
@@ -184,7 +226,11 @@ namespace DXVKCompanion.UI
             if (latest != null)
                 msg += $"Latest DXVK release: {latest.Version}\n";
 
-            if (!dxvkCompatible)
+            if (externalChange)
+            {
+                msg += "⚠ External game file changes detected. Click Reapply DXVK in the tray menu once the game closes.\n";
+            }
+            else if (!dxvkCompatible)
             {
                 msg += "DXVK is not compatible with this game's API.\n";
             }
