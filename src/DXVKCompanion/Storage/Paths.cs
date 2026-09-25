@@ -23,6 +23,7 @@ namespace DXVKCompanion.Storage
             Directory.CreateDirectory(CacheDir);
             Directory.CreateDirectory(LogsDir);
             Directory.CreateDirectory(DxvkDir);
+            Directory.CreateDirectory(GameLibraryPaths.BackupsDir);
         }
     }
 }

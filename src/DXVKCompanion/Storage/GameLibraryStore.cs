@@ -23,7 +23,15 @@ namespace DXVKCompanion.Storage
 
         private const string RecoverySuffix = ".recovery";
 
-        public GameLibraryStore() => Load();
+        private readonly string _libraryFilePath;
+        private readonly string _backupsDirectoryPath;
+
+        public GameLibraryStore(string? libraryFilePath = null, string? backupsDirectoryPath = null)
+        {
+            _libraryFilePath = libraryFilePath ?? GameLibraryPaths.GameLibraryFile;
+            _backupsDirectoryPath = backupsDirectoryPath ?? GameLibraryPaths.BackupsDir;
+            Load();
+        }
 
         public IReadOnlyCollection<GameInstallation> GetAll()
         {
@@ -95,9 +103,9 @@ namespace DXVKCompanion.Storage
         private void Load()
         {
             Paths.EnsureDirectories();
-            Directory.CreateDirectory(GameLibraryPaths.BackupsDir);
+            Directory.CreateDirectory(_backupsDirectoryPath);
 
-            if (File.Exists(GameLibraryPaths.GameLibraryFile))
+            if (File.Exists(_libraryFilePath))
             {
                 var result = TryLoadCurrentFormat();
                 if (result == LoadResult.Success || result == LoadResult.FutureSchema)
@@ -116,7 +124,7 @@ namespace DXVKCompanion.Storage
         {
             try
             {
-                var json = File.ReadAllText(GameLibraryPaths.GameLibraryFile);
+                var json = File.ReadAllText(_libraryFilePath);
                 var library = JsonSerializer.Deserialize<GameLibrary>(json, JsonOptions);
                 if (library == null)
                     return LoadResult.Invalid;
@@ -193,12 +201,12 @@ namespace DXVKCompanion.Storage
         {
             try
             {
-                if (!File.Exists(GameLibraryPaths.GameLibraryFile))
+                if (!File.Exists(_libraryFilePath))
                     return;
 
                 var stamp = DateTime.UtcNow.ToString("yyyyMMdd-HHmmssfff");
-                var recoveryPath = GameLibraryPaths.GameLibraryFile + RecoverySuffix + "." + stamp + ".json";
-                File.Copy(GameLibraryPaths.GameLibraryFile, recoveryPath, false);
+                var recoveryPath = _libraryFilePath + RecoverySuffix + "." + stamp + ".json";
+                File.Copy(_libraryFilePath, recoveryPath, false);
                 Log($"GameLibraryStore: preserved unreadable library as {Path.GetFileName(recoveryPath)}.");
             }
             catch (Exception ex)
@@ -210,7 +218,7 @@ namespace DXVKCompanion.Storage
         private void WriteAllLocked()
         {
             Paths.EnsureDirectories();
-            Directory.CreateDirectory(GameLibraryPaths.BackupsDir);
+            Directory.CreateDirectory(_backupsDirectoryPath);
 
             UpdateRestorationStateLocked();
 
@@ -224,12 +232,12 @@ namespace DXVKCompanion.Storage
             };
 
             var json = JsonSerializer.Serialize(library, JsonOptions);
-            var tempPath = GameLibraryPaths.GameLibraryFile + ".tmp";
+            var tempPath = _libraryFilePath + ".tmp";
 
             try
             {
                 File.WriteAllText(tempPath, json);
-                File.Move(tempPath, GameLibraryPaths.GameLibraryFile, true);
+                File.Move(tempPath, _libraryFilePath, true);
             }
             finally
             {

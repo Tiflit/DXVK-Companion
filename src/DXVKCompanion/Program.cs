@@ -28,6 +28,8 @@ namespace DXVKCompanion
             var profiles = new ProfileStore();
             var cacheStore = new CacheStore();
             var settings = SettingsStore.Load();
+            var gameLibraryStore = new GameLibraryStore();
+            var transactionEngine = new MultiFileTransactionEngine(GameLibraryPaths.BackupsDir);
 
             // Monitoring
             var detector = new GameDetector();
@@ -39,8 +41,8 @@ namespace DXVKCompanion
 
             // DXVK
             var fileUtils = new FileUtils();
-            var installer = new DxvkInstaller(fileUtils, httpClient);
-            var rollback = new DxvkRollback(fileUtils);
+            var installer = new DxvkInstaller(httpClient, transactionEngine, gameLibraryStore, null, fileUtils);
+            var rollback = new DxvkRollback(transactionEngine, gameLibraryStore, fileUtils);
             var github = new DxvkGithubClient(httpClient, cacheStore);
             var dxvkManager = new DxvkManager(installer, rollback, github, profiles);
 
