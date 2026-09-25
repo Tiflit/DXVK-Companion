@@ -358,5 +358,59 @@ namespace DXVKCompanion.DXVK
             }
             return ok;
         }
+
+        /// <summary>
+        /// Global operation to restore all games managed by DXVK Companion to their baseline.
+        /// Each game is handled independently with error isolation (Section 23).
+        /// </summary>
+        public async Task<RestoreAllSummary> RestoreAllAsync()
+        {
+            var summary = new RestoreAllSummary();
+            var allProfiles = _profiles.GetAll().ToList();
+
+            foreach (var profile in allProfiles)
+            {
+                string gameDir = Path.GetDirectoryName(profile.ExePath) ?? string.Empty;
+                var installation = !string.IsNullOrWhiteSpace(gameDir) ? _gameLibraryStore.FindByInstallationPath(gameDir) : null;
+
+                bool isManaged = profile.DxvkEnabled || (installation != null && installation.RestorationState == RestorationState.Managed);
+                if (!isManaged)
+                {
+                    summary.AlreadyRestored++;
+                    continue;
+                }
+
+                summary.TotalManaged++;
+
+                if (IsPathCurrentlyRunning(profile.ExePath))
+                {
+                    await RequestDisableByPathAsync(profile);
+                    summary.QueuedRunning++;
+                    summary.Messages.Add($"{profile.ExeName}: Game running; restore queued for exit.");
+                    continue;
+                }
+
+                try
+                {
+                    bool ok = await DisableDxvkAsync(profile);
+                    if (ok)
+                    {
+                        summary.Restored++;
+                    }
+                    else
+                    {
+                        summary.FailedOrAttentionRequired++;
+                        summary.Messages.Add($"{profile.ExeName}: Restore operation failed.");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    summary.FailedOrAttentionRequired++;
+                    summary.Messages.Add($"{profile.ExeName}: Exception: {ex.Message}");
+                }
+            }
+
+            return summary;
+        }
     }
 }

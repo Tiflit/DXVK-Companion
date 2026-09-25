@@ -1,11 +1,21 @@
 using System.IO;
 using System.Text.Json;
+using System.Text.Json.Serialization;
+using DXVKCompanion.Models;
 
 namespace DXVKCompanion.Storage
 {
     public class SettingsStore
     {
-        public bool AutoEnableDxvkForNewGames { get; set; } = false;
+        [JsonConverter(typeof(JsonStringEnumConverter))]
+        public GlobalManagementPolicy GlobalPolicy { get; set; } = GlobalManagementPolicy.Manual;
+
+        public bool AutoEnableDxvkForNewGames
+        {
+            get => GlobalPolicy == GlobalManagementPolicy.Automated;
+            set => GlobalPolicy = value ? GlobalManagementPolicy.Automated : GlobalManagementPolicy.Manual;
+        }
+
         public bool LaunchOnStartup { get; set; } = false;
 
         private static string SettingsPath =>

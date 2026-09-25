@@ -210,11 +210,18 @@ namespace DXVKCompanion.UI
                     externalChange = _inspector.InspectInstallation(installation);
                 }
 
-                if (_settings.AutoEnableDxvkForNewGames &&
+                var effectivePolicy = installation?.ManagementPolicy ?? ManagementPolicy.UseGlobal();
+                bool isAutomated = effectivePolicy.IsAutomated(_settings.GlobalPolicy);
+
+                if (isAutomated &&
                     dxvkCompatible && !antiCheat && !profile.DxvkEnabled &&
                     string.IsNullOrWhiteSpace(profile.DxvkVersion))
                 {
                     await _dxvk.RequestEnableAsync(profile, process);
+                }
+                else if (isAutomated && externalChange && !antiCheat && profile.DxvkEnabled)
+                {
+                    await _dxvk.RequestReapplyAsync(profile, process, updateBaseline: true);
                 }
 
                 _profiles.Save(profile);

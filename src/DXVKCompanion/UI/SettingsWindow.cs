@@ -1,4 +1,6 @@
+using System.Drawing;
 using System.Windows.Forms;
+using DXVKCompanion.Models;
 using DXVKCompanion.Storage;
 using DXVKCompanion.Utils;
 
@@ -14,33 +16,70 @@ namespace DXVKCompanion.UI
             _settings = settings;
             _startup = new StartupManager();
 
-            Text = "DXVK Companion Settings";
-            Width = 400;
-            Height = 200;
+            Text = "DXVK Companion — Settings";
+            Width = 460;
+            Height = 280;
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false;
+            StartPosition = FormStartPosition.CenterScreen;
 
-            var autoEnableCheckbox = new CheckBox
+            var policyGroup = new GroupBox
             {
-                Text = "Auto-enable DXVK for new games (experimental)",
-                Checked = _settings.AutoEnableDxvkForNewGames,
-                AutoSize = true,
-                Top = 20,
-                Left = 20
+                Text = "Global Management Policy",
+                Top = 15,
+                Left = 15,
+                Width = 415,
+                Height = 110
             };
-            autoEnableCheckbox.CheckedChanged += (_, _) =>
+
+            var rbManual = new RadioButton
             {
-                _settings.AutoEnableDxvkForNewGames = autoEnableCheckbox.Checked;
-                _settings.Save();
+                Text = "Manual (Recommended: Observe & report only; explicit user action)",
+                Checked = _settings.GlobalPolicy == GlobalManagementPolicy.Manual,
+                Top = 25,
+                Left = 15,
+                Width = 385,
+                AutoSize = true
             };
-            Controls.Add(autoEnableCheckbox);
+
+            var rbAutomated = new RadioButton
+            {
+                Text = "Automated (Experimental: Auto-install & maintain DXVK on exit)",
+                Checked = _settings.GlobalPolicy == GlobalManagementPolicy.Automated,
+                Top = 60,
+                Left = 15,
+                Width = 385,
+                AutoSize = true
+            };
+
+            rbManual.CheckedChanged += (_, _) =>
+            {
+                if (rbManual.Checked)
+                {
+                    _settings.GlobalPolicy = GlobalManagementPolicy.Manual;
+                    _settings.Save();
+                }
+            };
+
+            rbAutomated.CheckedChanged += (_, _) =>
+            {
+                if (rbAutomated.Checked)
+                {
+                    _settings.GlobalPolicy = GlobalManagementPolicy.Automated;
+                    _settings.Save();
+                }
+            };
+
+            policyGroup.Controls.Add(rbManual);
+            policyGroup.Controls.Add(rbAutomated);
+            Controls.Add(policyGroup);
 
             var startupCheckbox = new CheckBox
             {
                 Text = "Launch DXVK Companion on Windows startup",
                 Checked = _settings.LaunchOnStartup,
                 AutoSize = true,
-                Top = 60,
+                Top = 140,
                 Left = 20
             };
             startupCheckbox.CheckedChanged += (_, _) =>
@@ -54,6 +93,17 @@ namespace DXVKCompanion.UI
                     _startup.DisableStartup();
             };
             Controls.Add(startupCheckbox);
+
+            var btnClose = new Button
+            {
+                Text = "Close",
+                Top = 190,
+                Left = 330,
+                Width = 100,
+                Height = 32
+            };
+            btnClose.Click += (_, _) => Close();
+            Controls.Add(btnClose);
         }
     }
 }

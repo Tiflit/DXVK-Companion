@@ -28,7 +28,7 @@ namespace DXVKCompanion.UI
 
             Text = $"Game Details — {_profile.ExeName}";
             Width = 560;
-            Height = 480;
+            Height = 580;
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false;
             StartPosition = FormStartPosition.CenterParent;
@@ -202,6 +202,53 @@ namespace DXVKCompanion.UI
                 top += 45;
             }
 
+            // Policy & Visibility controls
+            var policyLabel = new Label
+            {
+                Text = "Management Policy:",
+                AutoSize = true,
+                Top = top,
+                Left = 20
+            };
+            Controls.Add(policyLabel);
+            top += 25;
+
+            var policyCombo = new ComboBox
+            {
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                Top = top,
+                Left = 20,
+                Width = 240
+            };
+            policyCombo.Items.Add("Use Global Policy");
+            policyCombo.Items.Add("Automatic Management");
+            policyCombo.Items.Add("Disabled");
+
+            int policyIndex = 0;
+            if (installation?.ManagementPolicy != null)
+            {
+                policyIndex = installation.ManagementPolicy.Mode switch
+                {
+                    ManagementMode.Automatic => 1,
+                    ManagementMode.Disabled => 2,
+                    _ => 0
+                };
+            }
+            policyCombo.SelectedIndex = policyIndex;
+            Controls.Add(policyCombo);
+            top += 35;
+
+            var hideCheckbox = new CheckBox
+            {
+                Text = "Hide game from standard library view",
+                Checked = installation?.IsHidden ?? false,
+                Top = top,
+                Left = 20,
+                AutoSize = true
+            };
+            Controls.Add(hideCheckbox);
+            top += 30;
+
             // Configuration controls
             var hudCheckbox = new CheckBox
             {
@@ -255,6 +302,15 @@ namespace DXVKCompanion.UI
                     installation.Configuration.HudEnabled = hudCheckbox.Checked;
                     installation.Configuration.FrameLimit = (int)frameLimitBox.Value;
                     installation.Configuration.FrameLimitEnabled = frameLimitBox.Value > 0;
+                    installation.IsHidden = hideCheckbox.Checked;
+
+                    installation.ManagementPolicy = policyCombo.SelectedIndex switch
+                    {
+                        1 => ManagementPolicy.Automatic(),
+                        2 => ManagementPolicy.Disabled(),
+                        _ => ManagementPolicy.UseGlobal()
+                    };
+
                     _gameLibraryStore.Save(installation);
                 }
 

@@ -21,5 +21,17 @@ namespace DXVKCompanion.Models
                 PinnedDxvkVersion = version.Trim()
             };
         }
+
+        public bool IsAutomated(GlobalManagementPolicy globalPolicy)
+        {
+            return Mode switch
+            {
+                ManagementMode.Automatic => true,
+                ManagementMode.PinnedVersion => true,
+                ManagementMode.Disabled => false,
+                ManagementMode.UseGlobal => globalPolicy == GlobalManagementPolicy.Automated,
+                _ => false
+            };
+        }
     }
 }
