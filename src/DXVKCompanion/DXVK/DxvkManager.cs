@@ -182,7 +182,6 @@ namespace DXVKCompanion.DXVK
 
             profile.DxvkEnabled = true;
             profile.DxvkVersion = latest.Version;
-            _config.WriteConfig(profile);
             _profiles.Save(profile);
 
             return true;
@@ -198,6 +197,40 @@ namespace DXVKCompanion.DXVK
             _profiles.Save(profile);
 
             return true;
+        }
+
+        public ExistingDxvkAssessment AssessExistingDxvk(GameProfile profile)
+        {
+            string gameDir = System.IO.Path.GetDirectoryName(profile.ExePath) ?? string.Empty;
+            var detector = new ExistingDxvkDetector();
+            return detector.AssessDirectory(gameDir, profile.Architecture);
+        }
+
+        public async Task<bool> AdoptExistingAsync(GameProfile profile)
+        {
+            string gameDir = System.IO.Path.GetDirectoryName(profile.ExePath) ?? string.Empty;
+            var detector = new ExistingDxvkDetector();
+            var assessment = detector.AssessDirectory(gameDir, profile.Architecture);
+            if (!assessment.CanBeAdopted)
+                return false;
+
+            bool ok = _installer.AdoptExisting(profile, assessment);
+            if (ok)
+            {
+                _profiles.Save(profile);
+            }
+            return ok;
+        }
+
+        public async Task<bool> ReapplyAsync(GameProfile profile)
+        {
+            bool ok = await _installer.ReapplyAsync(profile);
+            if (ok)
+            {
+                profile.DxvkEnabled = true;
+                _profiles.Save(profile);
+            }
+            return ok;
         }
     }
 }

@@ -42,6 +42,12 @@ namespace DXVKCompanion.DXVK
 
                     var installation = _gameLibraryStore.FindByInstallationPath(gameDir);
 
+                    if (installation != null && installation.ConflictFlags != InstallationConflictFlags.None)
+                    {
+                        Logger.Log($"DxvkRollback: refusing rollback on {installation.DisplayName}; installation has conflict flags: {installation.ConflictFlags}.");
+                        return false;
+                    }
+
                     if (installation != null && installation.ManagedFiles.Count > 0)
                     {
                         var filesToRestore = new List<MultiFileTransactionFile>();
@@ -117,17 +123,15 @@ namespace DXVKCompanion.DXVK
 
                         RestoreLegacyBakIfExists(d3d9);
                         RestoreLegacyBakIfExists(d3d11);
-                        RestoreLegacyBakIfExists(dxgi);
-                    }
-
-                    // Self-clean any dxvk.conf left in game directory
-                    string confPath = Path.Combine(gameDir, "dxvk.conf");
-                    if (File.Exists(confPath))
-                    {
-                        try { File.Delete(confPath); }
-                        catch (Exception ex)
+                        // Self-clean any dxvk.conf left in game directory in legacy fallback mode
+                        string confPath = Path.Combine(gameDir, "dxvk.conf");
+                        if (File.Exists(confPath))
                         {
-                            Logger.Log($"DxvkRollback: could not delete dxvk.conf: {ex.Message}");
+                            try { File.Delete(confPath); }
+                            catch (Exception ex)
+                            {
+                                Logger.Log($"DxvkRollback: could not delete legacy dxvk.conf: {ex.Message}");
+                            }
                         }
                     }
 

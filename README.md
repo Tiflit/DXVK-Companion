@@ -69,9 +69,11 @@ Optimized for modern GPUs—especially Intel Arc / Battlemage architectures (Arc
 
 * **DXVK Management (`DXVKCompanion.DXVK`)**:
   * `DxvkGithubClient`: Fetches official release metadata from the GitHub API with local caching.
-  * `DxvkInstaller`: In-memory extraction of release archives into isolated cache and atomic game deployment.
-  * `DxvkRollback`: Clean restoration of original game baselines and deletion of injected DXVK files.
-  * `DxvkConfigManager`: Manages `dxvk.conf` settings (HUD overlay and frame limiters).
+  * `DxvkReleaseCatalog`: Deterministic SHA-256 hash lookup for official DXVK releases.
+  * `ExistingDxvkDetector`: Inspects game directories, PE version metadata, and SHA-256 hashes to reliably recognize official releases, unknown builds, or native files.
+  * `DxvkInstaller`: In-memory extraction of release archives, atomic game deployment, configuration staging, existing DXVK adoption, and reapplication.
+  * `DxvkRollback`: Clean restoration of original game baselines and self-cleaning deletion of injected DXVK files.
+  * `DxvkConfigManager`: Manages `dxvk.conf` settings (Section 36 invariant: atomic merge, zero unneeded config creation).
 
 * **User Interface (`DXVKCompanion.UI`)**:
   * `TrayApp` & `TrayMenu`: Lightweight system tray control.
@@ -125,7 +127,7 @@ For complete specifications and architectural contracts, refer to the project do
 * [x] **Phase A.5**: Multi-File Atomic Transaction Engine (`MultiFileTransactionEngine`, `FileIdentity`)
 * [x] **Phase D (Integration)**: Safe File Engine Integration (`DxvkInstaller` and `DxvkRollback` wired to transaction engine, isolated backups, and clean self-cleaning)
 * [x] **Phase B**: Detection Layer Refactoring (Multi-executable folder tracking, delayed runtime scans, enhanced anti-cheat heuristics, and API transitions)
-* [ ] **Phase C**: DXVK Release Repository (Official release catalog, deterministic hash identification, and existing DXVK adoption)
+* [x] **Phase C**: DXVK Release Repository (Official release catalog, deterministic hash identification, existing DXVK adoption, Reapply, and Section 36 `dxvk.conf` management)
 * [ ] **Phase E & F**: UI Modernization & Delayed Notifications
 * [ ] **Phase G**: Automated Maintenance Mode
 * [ ] **Future Goal**: Opt-in global crowd-sourced game & GPU compatibility catalog
