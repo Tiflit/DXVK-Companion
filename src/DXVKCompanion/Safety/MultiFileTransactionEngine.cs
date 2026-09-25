@@ -80,7 +80,7 @@ public sealed class MultiFileTransactionEngine
 
                 string? backupPath = null;
                 SafetyFileIdentity? backupIdentity = null;
-                if (request.Operation is TransactionOperation.Install or TransactionOperation.Update or TransactionOperation.Reapply)
+                if ((request.Operation is TransactionOperation.Install or TransactionOperation.Update or TransactionOperation.Reapply)
                     && currentState == OriginalFileState.Existing)
                 {
                     backupPath = ResolveBackupPath(file.BackupRelativePath, transactionId, file.RelativePath);
