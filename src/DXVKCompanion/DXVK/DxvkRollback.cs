@@ -95,7 +95,7 @@ namespace DXVKCompanion.DXVK
 
                             foreach (var mf in installation.ManagedFiles)
                             {
-                                mf.CurrentState = ManagedFileState.Restored;
+                                mf.CurrentState = ManagedFileState.Consistent;
                                 mf.ManagedDxvkVersion = null;
                                 mf.LastVerifiedUtc = DateTime.UtcNow;
                             }

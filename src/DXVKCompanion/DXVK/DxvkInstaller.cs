@@ -218,7 +218,7 @@ namespace DXVKCompanion.DXVK
                 var isUpdate = dllsToDeploy.All(dll =>
                 {
                     var r = installation.FindManagedFile(dll);
-                    return r != null && r.CurrentState == ManagedFileState.Managed;
+                    return r != null && r.CurrentState == ManagedFileState.Consistent && !string.IsNullOrEmpty(r.ManagedDxvkVersion);
                 });
 
                 var request = new MultiFileTransactionRequest
@@ -247,7 +247,7 @@ namespace DXVKCompanion.DXVK
                         }
                         record.ExpectedManagedSha256 = filePlan.ExpectedSourceIdentity?.Sha256;
                         record.ManagedDxvkVersion = release.Version;
-                        record.CurrentState = ManagedFileState.Managed;
+                        record.CurrentState = ManagedFileState.Consistent;
                         record.LastVerifiedUtc = DateTime.UtcNow;
                     }
 

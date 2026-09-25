@@ -65,6 +65,7 @@ public sealed class SafeDeploymentIntegrationTests
         Assert.Equal(RestorationState.Managed, installation.RestorationState);
         Assert.Equal(2, installation.ManagedFiles.Count);
         Assert.All(installation.ManagedFiles, f => Assert.Equal(FileOriginalState.Missing, f.OriginalState));
+        Assert.All(installation.ManagedFiles, f => Assert.Equal(ManagedFileState.Consistent, f.CurrentState));
 
         // 2. Rollback / Restore
         var rollbackOk = await rollback.RestoreOriginalDllsAsync(profile);
@@ -78,6 +79,7 @@ public sealed class SafeDeploymentIntegrationTests
         Assert.NotNull(updatedInstallation);
         Assert.Null(updatedInstallation!.ManagedDxvkVersion);
         Assert.Equal(RestorationState.Restored, updatedInstallation.RestorationState);
+        Assert.All(updatedInstallation.ManagedFiles, f => Assert.Equal(ManagedFileState.Consistent, f.CurrentState));
     }
 
     [Fact]
