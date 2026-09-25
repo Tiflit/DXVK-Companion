@@ -163,23 +163,43 @@ namespace DXVKCompanion.UI
             {
                 var profile = _profiles.GetOrCreate(exePath);
 
-                profile.Api = _classifier.Classify(process);
+                var classification = _classifier.ClassifyDetailed(process, exePath);
+                profile.Api = classification.PrimaryApi;
+                profile.Architecture = classification.Architecture;
 
-                var parser = new PeParser();
-                profile.Architecture = parser.GetArchitecture(exePath);
+                string gameDir = Path.GetDirectoryName(exePath) ?? string.Empty;
+                var antiCheatAssessment = _detector.AssessAntiCheatRisk(process, gameDir);
+                bool antiCheat = antiCheatAssessment.Risk != AntiCheatRisk.None;
 
-                bool antiCheat = _detector.HasAntiCheatRisk(process);
+                // Record detection snapshot into modern GameLibraryStore
+                if (!string.IsNullOrWhiteSpace(gameDir))
+                {
+                    string relExe = Path.GetRelativePath(gameDir, exePath);
+                    var snapshot = new DetectionSnapshot
+                    {
+                        ProcessId = process.Id,
+                        ProcessName = process.ProcessName,
+                        ExecutablePath = exePath,
+                        InstallationRoot = gameDir,
+                        ExecutableRelativePath = relExe,
+                        Classification = classification,
+                        AntiCheat = antiCheatAssessment,
+                        TimestampUtc = DateTime.UtcNow
+                    };
+                    _gameLibraryStore.RecordDetectionSnapshot(snapshot);
+                }
+
                 var latest = await _dxvk.GetLatestReleaseAsync();
 
                 string localVersion = string.IsNullOrWhiteSpace(profile.DxvkVersion) ? "None" : profile.DxvkVersion;
 
                 bool dxvkCompatible = profile.Api == GraphicsApi.DX9 ||
+                                      profile.Api == GraphicsApi.DX10 ||
                                       profile.Api == GraphicsApi.DX11 ||
                                       profile.Api == GraphicsApi.ModernAPI;
 
                 bool updateAvailable = latest != null && profile.DxvkEnabled && _dxvk.UpdateAvailable(profile, latest);
 
-                string gameDir = Path.GetDirectoryName(exePath) ?? string.Empty;
                 var installation = !string.IsNullOrWhiteSpace(gameDir)
                     ? _gameLibraryStore.FindByInstallationPath(gameDir)
                     : null;
