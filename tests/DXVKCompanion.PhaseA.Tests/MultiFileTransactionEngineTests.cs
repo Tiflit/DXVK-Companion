@@ -1,4 +1,5 @@
 using DXVKCompanion.Safety;
+using Xunit;
 
 namespace DXVKCompanion.PhaseATests;
 
