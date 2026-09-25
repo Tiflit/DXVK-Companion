@@ -236,9 +236,8 @@ namespace DXVKCompanion.Storage
                                 Configuration = new DxvkConfiguration
                                 {
                                     FrameLimitEnabled = legacy.FrameLimit > 0,
-                                    FrameLimitFps = legacy.FrameLimit > 0 ? legacy.FrameLimit : 120,
-                                    OverlayEnabled = legacy.HudEnabled,
-                                    OverlayPreset = legacy.HudEnabled ? "fps" : "off"
+                                    FrameLimit = legacy.FrameLimit > 0 ? legacy.FrameLimit : 120,
+                                    HudEnabled = legacy.HudEnabled
                                 }
                             };
                             _installations[normalizedDir] = installation;

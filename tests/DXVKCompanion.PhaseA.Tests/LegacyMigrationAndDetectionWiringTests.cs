@@ -68,9 +68,8 @@ namespace DXVKCompanion.PhaseA.Tests
             Assert.Equal(RestorationState.Managed, skyrimInstall.RestorationState);
             Assert.Equal("2.6", skyrimInstall.ManagedDxvkVersion);
             Assert.True(skyrimInstall.Configuration.FrameLimitEnabled);
-            Assert.Equal(60, skyrimInstall.Configuration.FrameLimitFps);
-            Assert.True(skyrimInstall.Configuration.OverlayEnabled);
-            Assert.Equal("fps", skyrimInstall.Configuration.OverlayPreset);
+            Assert.Equal(60, skyrimInstall.Configuration.FrameLimit);
+            Assert.True(skyrimInstall.Configuration.HudEnabled);
 
             var skyrimExeProfile = skyrimInstall.Executables.FirstOrDefault(e => e.RelativePath.Equals("SkyrimSE.exe", StringComparison.OrdinalIgnoreCase));
             Assert.NotNull(skyrimExeProfile);
