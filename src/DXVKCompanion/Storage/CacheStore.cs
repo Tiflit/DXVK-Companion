@@ -6,16 +6,25 @@ namespace DXVKCompanion.Storage
 {
     public class CacheStore
     {
+        private readonly string _cacheFile;
+
+        public CacheStore(string? cacheFile = null)
+        {
+            _cacheFile = cacheFile ?? Paths.CacheFile;
+        }
+
         public CachedRelease? LoadCachedRelease()
         {
-            Paths.EnsureDirectories();
+            var dir = Path.GetDirectoryName(_cacheFile);
+            if (!string.IsNullOrEmpty(dir))
+                Directory.CreateDirectory(dir);
 
-            if (!File.Exists(Paths.CacheFile))
+            if (!File.Exists(_cacheFile))
                 return null;
 
             try
             {
-                var json = File.ReadAllText(Paths.CacheFile);
+                var json = File.ReadAllText(_cacheFile);
                 return JsonSerializer.Deserialize<CachedRelease>(json);
             }
             catch
@@ -26,7 +35,9 @@ namespace DXVKCompanion.Storage
 
         public void SaveCachedRelease(ReleaseInfo release, string? etag)
         {
-            Paths.EnsureDirectories();
+            var dir = Path.GetDirectoryName(_cacheFile);
+            if (!string.IsNullOrEmpty(dir))
+                Directory.CreateDirectory(dir);
 
             var cached = new CachedRelease
             {
@@ -40,7 +51,7 @@ namespace DXVKCompanion.Storage
                 WriteIndented = true
             });
 
-            File.WriteAllText(Paths.CacheFile, json);
+            File.WriteAllText(_cacheFile, json);
         }
     }
 }

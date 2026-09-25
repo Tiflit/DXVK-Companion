@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Text.Json;
 using DXVKCompanion.Models;
+using DXVKCompanion.PhaseATests;
 using DXVKCompanion.Storage;
 using Xunit;
 

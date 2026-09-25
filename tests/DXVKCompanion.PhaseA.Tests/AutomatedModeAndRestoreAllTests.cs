@@ -6,6 +6,7 @@ using System.Text.Json;
 using System.Threading.Tasks;
 using DXVKCompanion.DXVK;
 using DXVKCompanion.Models;
+using DXVKCompanion.PhaseATests;
 using DXVKCompanion.Safety;
 using DXVKCompanion.Storage;
 using DXVKCompanion.Utils;
