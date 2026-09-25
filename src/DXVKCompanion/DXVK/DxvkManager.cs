@@ -3,6 +3,8 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.IO;
+using System.Linq;
 using System.Threading.Tasks;
 using DXVKCompanion.Models;
 using DXVKCompanion.Storage;
@@ -24,15 +26,22 @@ namespace DXVKCompanion.DXVK
         private readonly DxvkRollback _rollback;
         private readonly DxvkGithubClient _github;
         private readonly ProfileStore _profiles;
+        private readonly GameLibraryStore _gameLibraryStore;
         private readonly DxvkConfigManager _config;
         private readonly ConcurrentDictionary<string, PendingAction> _pending = new(StringComparer.OrdinalIgnoreCase);
 
-        public DxvkManager(DxvkInstaller installer, DxvkRollback rollback, DxvkGithubClient github, ProfileStore profiles)
+        public DxvkManager(
+            DxvkInstaller installer,
+            DxvkRollback rollback,
+            DxvkGithubClient github,
+            ProfileStore profiles,
+            GameLibraryStore? gameLibraryStore = null)
         {
             _installer = installer;
             _rollback = rollback;
             _github = github;
             _profiles = profiles;
+            _gameLibraryStore = gameLibraryStore ?? new GameLibraryStore();
             _config = new DxvkConfigManager();
         }
 
@@ -54,19 +63,14 @@ namespace DXVKCompanion.DXVK
             }
             catch (InvalidOperationException)
             {
-                // Covers ObjectDisposedException too (it derives from InvalidOperationException).
-                // No process is associated with this object anymore — treat as exited, not running.
                 return false;
             }
             catch (Win32Exception)
             {
-                // Couldn't ask the OS about this process (it's already gone) — treat as exited.
                 return false;
             }
             catch
             {
-                // Any other unexpected failure: default to "not running". An indefinite silent
-                // queue (the old behavior) is worse UX than just applying immediately.
                 return false;
             }
         }
@@ -89,7 +93,7 @@ namespace DXVKCompanion.DXVK
                     }
                     catch
                     {
-                        // Access denied or process exited mid-enumeration — skip it.
+                        // Access denied or process exited mid-enumeration
                     }
                 }
                 p.Dispose();
@@ -101,6 +105,16 @@ namespace DXVKCompanion.DXVK
         {
             if (isRunning)
             {
+                string gameDir = Path.GetDirectoryName(profile.ExePath) ?? string.Empty;
+                if (!string.IsNullOrWhiteSpace(gameDir))
+                {
+                    var installation = _gameLibraryStore.GetOrCreateInstallation(gameDir, Path.GetFileNameWithoutExtension(profile.ExePath));
+                    installation.PendingAction = action == PendingAction.Enable
+                        ? Models.PendingAction.Install(profile.DxvkVersion ?? "latest", "Queued while game running")
+                        : Models.PendingAction.Restore("Queued while game running");
+                    _gameLibraryStore.Save(installation);
+                }
+
                 _pending[profile.ExePath] = action;
                 return DxvkActionResult.Queued;
             }
@@ -132,6 +146,30 @@ namespace DXVKCompanion.DXVK
         public Task<DxvkActionResult> RequestUpdateByPathAsync(GameProfile profile)
             => RequestEnableByPathAsync(profile);
 
+        public Task<DxvkActionResult> RequestReapplyAsync(GameProfile profile, Process process, bool updateBaseline = true)
+            => QueueOrApplyReapplyAsync(profile, IsStillRunning(process), updateBaseline);
+
+        public Task<DxvkActionResult> RequestReapplyByPathAsync(GameProfile profile, bool updateBaseline = true)
+            => QueueOrApplyReapplyAsync(profile, IsPathCurrentlyRunning(profile.ExePath), updateBaseline);
+
+        private async Task<DxvkActionResult> QueueOrApplyReapplyAsync(GameProfile profile, bool isRunning, bool updateBaseline)
+        {
+            if (isRunning)
+            {
+                string gameDir = Path.GetDirectoryName(profile.ExePath) ?? string.Empty;
+                if (!string.IsNullOrWhiteSpace(gameDir))
+                {
+                    var installation = _gameLibraryStore.GetOrCreateInstallation(gameDir, Path.GetFileNameWithoutExtension(profile.ExePath));
+                    installation.PendingAction = Models.PendingAction.Reapply(installation.ManagedDxvkVersion ?? "latest", "Queued reapply while game running");
+                    _gameLibraryStore.Save(installation);
+                }
+                return DxvkActionResult.Queued;
+            }
+
+            bool ok = await ReapplyAsync(profile, updateBaseline);
+            return ok ? DxvkActionResult.Applied : DxvkActionResult.Failed;
+        }
+
         /// <summary>Updates every currently-enabled profile that isn't already on the latest version.</summary>
         public async Task<Dictionary<string, DxvkActionResult>> UpdateAllEnabledAsync()
         {
@@ -154,12 +192,40 @@ namespace DXVKCompanion.DXVK
 
         public async Task ApplyPendingAsync(string exePath)
         {
-            if (!_pending.TryRemove(exePath, out var action))
-                return;
+            _pending.TryRemove(exePath, out var transientAction);
 
+            string gameDir = Path.GetDirectoryName(exePath) ?? string.Empty;
+            var installation = !string.IsNullOrWhiteSpace(gameDir) ? _gameLibraryStore.FindByInstallationPath(gameDir) : null;
             var profile = _profiles.GetOrCreate(exePath);
 
-            switch (action)
+            if (installation?.PendingAction != null && installation.PendingAction.IsPending)
+            {
+                var pendingType = installation.PendingAction.Type;
+                bool success = false;
+
+                switch (pendingType)
+                {
+                    case PendingActionType.Install:
+                    case PendingActionType.Update:
+                        success = await EnableDxvkAsync(profile);
+                        break;
+                    case PendingActionType.Reapply:
+                        success = await ReapplyAsync(profile, updateBaseline: true);
+                        break;
+                    case PendingActionType.Restore:
+                        success = await DisableDxvkAsync(profile);
+                        break;
+                }
+
+                if (success)
+                {
+                    installation.PendingAction = null;
+                    _gameLibraryStore.Save(installation);
+                }
+                return;
+            }
+
+            switch (transientAction)
             {
                 case PendingAction.Enable:
                     await EnableDxvkAsync(profile);
@@ -168,6 +234,66 @@ namespace DXVKCompanion.DXVK
                     await DisableDxvkAsync(profile);
                     break;
             }
+        }
+
+        public async Task<int> ProcessAllPendingActionsAsync()
+        {
+            int processed = 0;
+            foreach (var installation in _gameLibraryStore.GetAll())
+            {
+                if (installation.PendingAction == null || !installation.PendingAction.IsPending)
+                    continue;
+
+                bool anyRunning = false;
+                foreach (var exe in installation.Executables)
+                {
+                    string fullPath = Path.Combine(installation.InstallationPath, exe.RelativePath);
+                    if (IsPathCurrentlyRunning(fullPath))
+                    {
+                        anyRunning = true;
+                        break;
+                    }
+                }
+
+                if (anyRunning)
+                    continue;
+
+                string? primaryExeRel = installation.Executables.FirstOrDefault()?.RelativePath;
+                if (string.IsNullOrEmpty(primaryExeRel) && Directory.Exists(installation.InstallationPath))
+                {
+                    var firstExe = Directory.EnumerateFiles(installation.InstallationPath, "*.exe").FirstOrDefault();
+                    if (firstExe != null) primaryExeRel = Path.GetFileName(firstExe);
+                }
+
+                if (string.IsNullOrEmpty(primaryExeRel))
+                    continue;
+
+                string primaryExePath = Path.Combine(installation.InstallationPath, primaryExeRel);
+                var profile = _profiles.GetOrCreate(primaryExePath);
+
+                bool success = false;
+                switch (installation.PendingAction.Type)
+                {
+                    case PendingActionType.Install:
+                    case PendingActionType.Update:
+                        success = await EnableDxvkAsync(profile);
+                        break;
+                    case PendingActionType.Reapply:
+                        success = await ReapplyAsync(profile, updateBaseline: true);
+                        break;
+                    case PendingActionType.Restore:
+                        success = await DisableDxvkAsync(profile);
+                        break;
+                }
+
+                if (success)
+                {
+                    installation.PendingAction = null;
+                    _gameLibraryStore.Save(installation);
+                    processed++;
+                }
+            }
+            return processed;
         }
 
         public async Task<bool> EnableDxvkAsync(GameProfile profile)
@@ -201,14 +327,14 @@ namespace DXVKCompanion.DXVK
 
         public ExistingDxvkAssessment AssessExistingDxvk(GameProfile profile)
         {
-            string gameDir = System.IO.Path.GetDirectoryName(profile.ExePath) ?? string.Empty;
+            string gameDir = Path.GetDirectoryName(profile.ExePath) ?? string.Empty;
             var detector = new ExistingDxvkDetector();
             return detector.AssessDirectory(gameDir, profile.Architecture);
         }
 
         public async Task<bool> AdoptExistingAsync(GameProfile profile)
         {
-            string gameDir = System.IO.Path.GetDirectoryName(profile.ExePath) ?? string.Empty;
+            string gameDir = Path.GetDirectoryName(profile.ExePath) ?? string.Empty;
             var detector = new ExistingDxvkDetector();
             var assessment = detector.AssessDirectory(gameDir, profile.Architecture);
             if (!assessment.CanBeAdopted)
@@ -222,9 +348,9 @@ namespace DXVKCompanion.DXVK
             return ok;
         }
 
-        public async Task<bool> ReapplyAsync(GameProfile profile)
+        public async Task<bool> ReapplyAsync(GameProfile profile, bool updateBaseline = true)
         {
-            bool ok = await _installer.ReapplyAsync(profile);
+            bool ok = await _installer.ReapplyAsync(profile, updateBaseline);
             if (ok)
             {
                 profile.DxvkEnabled = true;

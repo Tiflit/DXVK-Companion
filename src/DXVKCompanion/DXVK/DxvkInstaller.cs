@@ -360,7 +360,7 @@ namespace DXVKCompanion.DXVK
             }
         }
 
-        public async Task<bool> ReapplyAsync(GameProfile profile)
+        public async Task<bool> ReapplyAsync(GameProfile profile, bool updateBaseline = false)
         {
             string? stagingDir = null;
             try
@@ -436,6 +436,25 @@ namespace DXVKCompanion.DXVK
 
                     string? backupRelativePath = existingRecord?.BackupRelativePath ?? (originalState == OriginalFileState.Existing ? Path.Combine(installation.Id, dllName) : null);
                     SafetyFileIdentity? expectedTargetIdentity = File.Exists(targetPath) ? FileIdentity.Capture(targetPath) : null;
+
+                    // Section 18.2: If updating baseline after an external change (e.g. game update),
+                    // the newly observed game file becomes the new restoration baseline.
+                    if (updateBaseline && File.Exists(targetPath))
+                    {
+                        var currentIdentity = FileIdentity.Capture(targetPath);
+                        if (existingRecord != null && !string.Equals(currentIdentity.Sha256, existingRecord.ExpectedManagedSha256, StringComparison.OrdinalIgnoreCase))
+                        {
+                            backupRelativePath = Path.Combine(installation.Id, dllName);
+                            string fullBackupPath = Path.Combine(GameLibraryPaths.BackupsDir, backupRelativePath);
+                            Directory.CreateDirectory(Path.GetDirectoryName(fullBackupPath)!);
+                            File.Copy(targetPath, fullBackupPath, overwrite: true);
+                            originalState = OriginalFileState.Existing;
+                            existingRecord.OriginalState = FileOriginalState.Existing;
+                            existingRecord.OriginalSha256 = currentIdentity.Sha256;
+                            existingRecord.BackupRelativePath = backupRelativePath;
+                            Logger.Log($"DxvkInstaller: updated restoration baseline for {dllName} in {installation.DisplayName} to hash {currentIdentity.Sha256[..Math.Min(8, currentIdentity.Sha256.Length)]}.");
+                        }
+                    }
 
                     filesToProcess.Add(new MultiFileTransactionFile
                     {
@@ -519,6 +538,7 @@ namespace DXVKCompanion.DXVK
 
                     installation.RestorationState = RestorationState.Managed;
                     installation.ConflictFlags = InstallationConflictFlags.None;
+                    installation.PendingAction = null;
                     installation.LastSeenUtc = DateTime.UtcNow;
                     _gameLibraryStore.Save(installation);
 

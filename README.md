@@ -57,6 +57,7 @@ Optimized for modern GPUs—especially Intel Arc / Battlemage architectures (Arc
 * **Domain & Storage (`DXVKCompanion.Models`, `DXVKCompanion.Storage`)**:
   * `GameInstallation`: Tracks installation roots, multiple executables, managed file records, and conflict flags.
   * `ManagedFileRecord`: Tracks original state (`Existing` vs. `DidNotExist`), baseline hashes, and backup pointers.
+  * `ManagedFileInspector`: Real-time inspection of managed files, detecting external modifications, deletions, and invalidating stale pending actions.
   * `GameLibraryStore`: Atomic JSON persistence for game libraries with corruption recovery.
   * `CacheStore` & `SettingsStore`: Portable configuration and release caching.
 
@@ -125,9 +126,9 @@ For complete specifications and architectural contracts, refer to the project do
 * [x] **Phase A**: Data Foundation (Hierarchical `GameInstallation`, `ExecutableProfile`, `ManagedFileRecord`)
 * [x] **Phase A.1**: Pre-Release Legacy Migration Cleanup
 * [x] **Phase A.5**: Multi-File Atomic Transaction Engine (`MultiFileTransactionEngine`, `FileIdentity`)
-* [x] **Phase D (Integration)**: Safe File Engine Integration (`DxvkInstaller` and `DxvkRollback` wired to transaction engine, isolated backups, and clean self-cleaning)
 * [x] **Phase B**: Detection Layer Refactoring (Multi-executable folder tracking, delayed runtime scans, enhanced anti-cheat heuristics, and API transitions)
 * [x] **Phase C**: DXVK Release Repository (Official release catalog, deterministic hash identification, existing DXVK adoption, Reapply, and Section 36 `dxvk.conf` management)
+* [x] **Phase D**: External-Change & Pending-Action Handling (`ManagedFileInspector`, Section 20 supersession, baseline replacement, and persistent restart handling)
 * [ ] **Phase E & F**: UI Modernization & Delayed Notifications
 * [ ] **Phase G**: Automated Maintenance Mode
 * [ ] **Future Goal**: Opt-in global crowd-sourced game & GPU compatibility catalog
