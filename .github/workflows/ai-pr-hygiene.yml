@@ -39,6 +39,7 @@ jobs:
           check_heading "Summary"
           check_heading "Scope"
           check_heading "Verification"
+          check_heading "Documentation"
 
           if printf '%s\n' "$body" | grep -Eiq '(closes|fixes|resolves|tracked[[:space:]]+in|relates[[:space:]]+to)[[:space:]]+#[0-9]+'; then
             echo "PASS: PR body references a GitHub Issue"
@@ -55,7 +56,7 @@ jobs:
             else
               echo "One or more advisory checks need attention."
               echo
-              echo "Expected headings: `Summary`, `Scope`, `Verification`"
+              echo "Expected headings: `Summary`, `Scope`, `Verification`, `Documentation`"
               echo "Expected: a visible GitHub Issue reference."
               echo
               echo "This check is intentionally advisory during the workflow pilot and does not block merging."
