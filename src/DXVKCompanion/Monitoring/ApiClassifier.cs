@@ -46,11 +46,16 @@ namespace DXVKCompanion.Monitoring
                 var observed = new List<GraphicsApi>();
                 var evidence = new List<string>();
 
-                if (runtimeModules.Contains("d3d12.dll") || runtimeModules.Contains("vulkan-1.dll"))
+                if (runtimeModules.Contains("d3d12.dll"))
                 {
-                    observed.Add(GraphicsApi.ModernAPI);
-                    if (runtimeModules.Contains("d3d12.dll")) evidence.Add("Loaded runtime module: d3d12.dll");
-                    if (runtimeModules.Contains("vulkan-1.dll")) evidence.Add("Loaded runtime module: vulkan-1.dll");
+                    observed.Add(GraphicsApi.DX12);
+                    evidence.Add("Loaded runtime module: d3d12.dll");
+                }
+
+                if (runtimeModules.Contains("vulkan-1.dll"))
+                {
+                    observed.Add(GraphicsApi.Vulkan);
+                    evidence.Add("Loaded runtime module: vulkan-1.dll");
                 }
 
                 if (runtimeModules.Contains("d3d11.dll"))
@@ -94,11 +99,16 @@ namespace DXVKCompanion.Monitoring
                     var observed = new List<GraphicsApi>();
                     var evidence = new List<string>();
 
-                    if (imports.Contains("d3d12.dll", StringComparer.OrdinalIgnoreCase) ||
-                        imports.Contains("vulkan-1.dll", StringComparer.OrdinalIgnoreCase))
+                    if (imports.Contains("d3d12.dll", StringComparer.OrdinalIgnoreCase))
                     {
-                        observed.Add(GraphicsApi.ModernAPI);
-                        evidence.Add("Static PE import: Direct3D 12 / Vulkan");
+                        observed.Add(GraphicsApi.DX12);
+                        evidence.Add("Static PE import: d3d12.dll");
+                    }
+
+                    if (imports.Contains("vulkan-1.dll", StringComparer.OrdinalIgnoreCase))
+                    {
+                        observed.Add(GraphicsApi.Vulkan);
+                        evidence.Add("Static PE import: vulkan-1.dll");
                     }
 
                     if (imports.Contains("d3d11.dll", StringComparer.OrdinalIgnoreCase))
