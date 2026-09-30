@@ -39,6 +39,8 @@ public sealed class MultiFileTransactionEngine
         _hooks = hooks ?? new MultiFileTransactionTestHooks();
     }
 
+    public string TransactionStoreRoot => _transactionStoreRoot;
+
     public SafetyTransactionResult Execute(MultiFileTransactionRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);

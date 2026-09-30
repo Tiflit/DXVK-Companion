@@ -25,11 +25,16 @@ namespace DXVKCompanion.Storage
 
         private readonly string _libraryFilePath;
         private readonly string _backupsDirectoryPath;
+        private readonly string _legacyProfilesPath;
 
-        public GameLibraryStore(string? libraryFilePath = null, string? backupsDirectoryPath = null)
+        public GameLibraryStore(
+            string? libraryFilePath = null,
+            string? backupsDirectoryPath = null,
+            string? legacyProfilesPath = null)
         {
             _libraryFilePath = libraryFilePath ?? GameLibraryPaths.GameLibraryFile;
             _backupsDirectoryPath = backupsDirectoryPath ?? GameLibraryPaths.BackupsDir;
+            _legacyProfilesPath = legacyProfilesPath ?? Paths.ProfilesFile;
             Load();
         }
 
@@ -52,6 +57,40 @@ namespace DXVKCompanion.Storage
             }
         }
 
+        public GameInstallation? FindInstallationForExecutable(string exeFullPath)
+        {
+            if (string.IsNullOrWhiteSpace(exeFullPath)) return null;
+
+            var fullExe = Path.GetFullPath(exeFullPath);
+            var exeDir = Path.GetDirectoryName(fullExe);
+
+            lock (_sync)
+            {
+                // 1. Direct match on executable directory
+                if (exeDir != null)
+                {
+                    var normalizedDir = GameInstallation.NormalizeInstallationPath(exeDir);
+                    if (_installations.TryGetValue(normalizedDir, out var direct))
+                        return direct;
+                }
+
+                // 2. Match on existing installation where executable path is inside installation root
+                foreach (var installation in _installations.Values)
+                {
+                    var rootWithSep = installation.InstallationPath.EndsWith(Path.DirectorySeparatorChar)
+                        ? installation.InstallationPath
+                        : installation.InstallationPath + Path.DirectorySeparatorChar;
+
+                    if (fullExe.StartsWith(rootWithSep, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return installation;
+                    }
+                }
+
+                return null;
+            }
+        }
+
         public GameInstallation GetOrCreateInstallation(string installationPath, string? displayName = null)
         {
             var normalized = GameInstallation.NormalizeInstallationPath(installationPath);
@@ -70,6 +109,36 @@ namespace DXVKCompanion.Storage
                 };
 
                 _installations[normalized] = installation;
+                WriteAllLocked();
+                return installation;
+            }
+        }
+
+        public GameInstallation RecordDetectionSnapshot(DetectionSnapshot snapshot)
+        {
+            ArgumentNullException.ThrowIfNull(snapshot);
+
+            lock (_sync)
+            {
+                var installation = GetOrCreateInstallation(snapshot.InstallationRoot, Path.GetFileName(snapshot.InstallationRoot));
+                var profile = installation.GetOrAddExecutable(snapshot.ExecutableRelativePath, snapshot.ProcessName);
+
+                if (profile.LastKnownApi != GraphicsApi.Unknown &&
+                    snapshot.Classification.PrimaryApi != GraphicsApi.Unknown &&
+                    profile.LastKnownApi != snapshot.Classification.PrimaryApi)
+                {
+                    snapshot.HasApiChanged = true;
+                    snapshot.PreviousApi = profile.LastKnownApi;
+                    Log($"GameLibraryStore: API transition detected for {snapshot.ExecutableRelativePath}: {profile.LastKnownApi} -> {snapshot.Classification.PrimaryApi}");
+                }
+
+                profile.LastKnownApi = snapshot.Classification.PrimaryApi;
+                profile.ApiConfidence = snapshot.Classification.Confidence;
+                profile.LastKnownArchitecture = snapshot.Classification.Architecture;
+                profile.DetectionEvidence = snapshot.Classification.Evidence.ToList();
+                profile.LastSeenUtc = snapshot.TimestampUtc;
+
+                installation.LastSeenUtc = snapshot.TimestampUtc;
                 WriteAllLocked();
                 return installation;
             }
@@ -118,6 +187,86 @@ namespace DXVKCompanion.Storage
                 return;
             }
 
+            // Only attempt legacy migration when current library file does not exist
+            if (File.Exists(_legacyProfilesPath))
+            {
+                TryMigrateLegacyProfiles();
+            }
+        }
+
+        private void TryMigrateLegacyProfiles()
+        {
+            try
+            {
+                var json = File.ReadAllText(_legacyProfilesPath);
+                var legacyProfiles = JsonSerializer.Deserialize<List<GameProfile>>(json, JsonOptions);
+                if (legacyProfiles == null || legacyProfiles.Count == 0)
+                    return;
+
+                lock (_sync)
+                {
+                    _installations.Clear();
+                    foreach (var legacy in legacyProfiles)
+                    {
+                        if (string.IsNullOrWhiteSpace(legacy.ExePath))
+                            continue;
+
+                        string exeFullPath;
+                        try
+                        {
+                            exeFullPath = Path.GetFullPath(legacy.ExePath);
+                        }
+                        catch
+                        {
+                            continue;
+                        }
+
+                        string? gameDir = Path.GetDirectoryName(exeFullPath);
+                        if (string.IsNullOrWhiteSpace(gameDir))
+                            continue;
+
+                        var normalizedDir = GameInstallation.NormalizeInstallationPath(gameDir);
+                        if (!_installations.TryGetValue(normalizedDir, out var installation))
+                        {
+                            installation = new GameInstallation
+                            {
+                                InstallationPath = normalizedDir,
+                                DisplayName = new DirectoryInfo(normalizedDir).Name,
+                                ManagementPolicy = ManagementPolicy.UseGlobal(),
+                                Configuration = new DxvkConfiguration
+                                {
+                                    FrameLimitEnabled = legacy.FrameLimit > 0,
+                                    FrameLimit = legacy.FrameLimit > 0 ? legacy.FrameLimit : 120,
+                                    HudEnabled = legacy.HudEnabled
+                                }
+                            };
+                            _installations[normalizedDir] = installation;
+                        }
+
+                        string relExe = Path.GetFileName(exeFullPath);
+                        var exeProfile = installation.GetOrAddExecutable(relExe, legacy.ExeName);
+                        exeProfile.LastKnownApi = legacy.Api;
+                        exeProfile.LastKnownArchitecture = legacy.Architecture;
+
+                        if (legacy.DxvkEnabled)
+                        {
+                            installation.RestorationState = RestorationState.Managed;
+                            if (!string.IsNullOrWhiteSpace(legacy.DxvkVersion))
+                            {
+                                installation.ManagedDxvkVersion = legacy.DxvkVersion;
+                            }
+                        }
+                    }
+
+                    WriteAllLocked();
+                }
+
+                Log($"GameLibraryStore: successfully migrated {legacyProfiles.Count} legacy profile(s) from {_legacyProfilesPath}.");
+            }
+            catch (Exception ex)
+            {
+                Log($"GameLibraryStore: legacy migration failed: {ex.GetType().Name} - {ex.Message}");
+            }
         }
 
         private LoadResult TryLoadCurrentFormat()
@@ -162,41 +311,6 @@ namespace DXVKCompanion.Storage
             }
         }
 
-        private void UpdateRestorationStateLocked()
-        {
-            foreach (var installation in _installations.Values)
-            {
-                if (installation.ConflictFlags != InstallationConflictFlags.None)
-                {
-                    installation.RestorationState = RestorationState.AttentionRequired;
-                    continue;
-                }
-
-                if (installation.ManagedFiles.Count == 0)
-                {
-                    installation.RestorationState = RestorationState.None;
-                    continue;
-                }
-
-                if (installation.ManagedFiles.Any(x => x.CurrentState == ManagedFileState.ExternallyChanged))
-                {
-                    installation.RestorationState = RestorationState.AttentionRequired;
-                    continue;
-                }
-
-                if (installation.ManagedFiles.Any(x => x.OriginalState == FileOriginalState.Unknown))
-                {
-                    installation.RestorationState = RestorationState.AttentionRequired;
-                    continue;
-                }
-
-                installation.RestorationState =
-                    installation.ManagedDxvkVersion == null
-                        ? RestorationState.Restored
-                        : RestorationState.Managed;
-            }
-        }
-
         private void TryPreserveBrokenCurrentFile()
         {
             try
@@ -219,8 +333,6 @@ namespace DXVKCompanion.Storage
         {
             Paths.EnsureDirectories();
             Directory.CreateDirectory(_backupsDirectoryPath);
-
-            UpdateRestorationStateLocked();
 
             var library = new GameLibrary
             {

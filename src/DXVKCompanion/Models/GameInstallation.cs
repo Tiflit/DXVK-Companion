@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text.Json.Serialization;
 
 namespace DXVKCompanion.Models
 {
@@ -82,5 +83,26 @@ namespace DXVKCompanion.Models
         public bool HudEnabled { get; set; }
         public int FrameLimit { get; set; } = 120;
         public bool FrameLimitEnabled { get; set; }
+
+        [JsonIgnore]
+        public bool OverlayEnabled
+        {
+            get => HudEnabled;
+            set => HudEnabled = value;
+        }
+
+        [JsonIgnore]
+        public int FrameLimitFps
+        {
+            get => FrameLimit;
+            set => FrameLimit = value;
+        }
+
+        [JsonIgnore]
+        public string OverlayPreset
+        {
+            get => HudEnabled ? "fps" : "off";
+            set => HudEnabled = !string.Equals(value, "off", StringComparison.OrdinalIgnoreCase);
+        }
     }
 }

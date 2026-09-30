@@ -1,0 +1,59 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Run test suite
+        run: dotnet test tests/DXVKCompanion.PhaseA.Tests/DXVKCompanion.PhaseA.Tests.csproj --configuration Release
+
+      - name: Publish portable self-contained win-x64 binary
+        shell: pwsh
+        run: |
+          dotnet publish src/DXVKCompanion/DXVKCompanion.csproj `
+            --configuration Release `
+            --runtime win-x64 `
+            --self-contained true `
+            -p:PublishSingleFile=true `
+            -p:IncludeNativeLibrariesForSelfExtract=true `
+            -p:EnableCompressionInSingleFile=true `
+            --output ./artifacts/publish
+
+      - name: Package Release ZIP
+        shell: pwsh
+        run: |
+          $tag = if ($env:GITHUB_REF -like "refs/tags/*") { $env:GITHUB_REF.Substring(10) } else { "v1.0.0" }
+          $zipName = "DXVK-Companion-$tag-win-x64.zip"
+          Compress-Archive -Path ./artifacts/publish/* -DestinationPath ./artifacts/$zipName
+          $hash = (Get-FileHash ./artifacts/$zipName -Algorithm SHA256).Hash
+          Set-Content -Path ./artifacts/$zipName.sha256 -Value "$hash  $zipName"
+          Write-Output "ZIP_NAME=$zipName" >> $env:GITHUB_ENV
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: |
+            ./artifacts/*.zip
+            ./artifacts/*.sha256
+          draft: false
+          prerelease: false
+          generate_release_notes: true

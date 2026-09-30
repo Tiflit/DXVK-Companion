@@ -12,7 +12,7 @@ namespace DXVKCompanion.Utils
         // descriptors before hitting EOF. Cheap defensive cap.
         private const int MaxImportDescriptors = 4096;
 
-        public IEnumerable<string> GetImports(string path)
+        public virtual IEnumerable<string> GetImports(string path)
         {
             var imports = new List<string>();
 
@@ -115,7 +115,7 @@ namespace DXVKCompanion.Utils
             return imports;
         }
 
-        public string GetArchitecture(string path)
+        public virtual string GetArchitecture(string path)
         {
             try
             {

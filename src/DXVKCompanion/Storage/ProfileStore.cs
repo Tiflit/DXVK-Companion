@@ -12,9 +12,11 @@ namespace DXVKCompanion.Storage
         // "C:\Games\Game.exe" and "c:\games\game.exe" would create two separate profiles
         // for what is actually the same file.
         private readonly Dictionary<string, GameProfile> _profiles = new(StringComparer.OrdinalIgnoreCase);
+        private readonly string _profilesFile;
 
-        public ProfileStore()
+        public ProfileStore(string? profilesFile = null)
         {
+            _profilesFile = profilesFile ?? Paths.ProfilesFile;
             Load();
         }
 
@@ -40,14 +42,16 @@ namespace DXVKCompanion.Storage
 
         private void Load()
         {
-            Paths.EnsureDirectories();
+            var dir = Path.GetDirectoryName(_profilesFile);
+            if (!string.IsNullOrEmpty(dir))
+                Directory.CreateDirectory(dir);
 
-            if (!File.Exists(Paths.ProfilesFile))
+            if (!File.Exists(_profilesFile))
                 return;
 
             try
             {
-                var json = File.ReadAllText(Paths.ProfilesFile);
+                var json = File.ReadAllText(_profilesFile);
                 var list = JsonSerializer.Deserialize<List<GameProfile>>(json);
 
                 if (list == null)
@@ -64,7 +68,9 @@ namespace DXVKCompanion.Storage
 
         private void WriteAll()
         {
-            Paths.EnsureDirectories();
+            var dir = Path.GetDirectoryName(_profilesFile);
+            if (!string.IsNullOrEmpty(dir))
+                Directory.CreateDirectory(dir);
 
             var list = new List<GameProfile>(_profiles.Values);
 
@@ -73,7 +79,7 @@ namespace DXVKCompanion.Storage
                 WriteIndented = true
             });
 
-            File.WriteAllText(Paths.ProfilesFile, json);
+            File.WriteAllText(_profilesFile, json);
         }
     }
 }

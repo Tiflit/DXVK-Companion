@@ -1,41 +1,54 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Linq;
+using DXVKCompanion.Models;
 
 namespace DXVKCompanion.Monitoring
 {
     public class GameDetector
     {
-        private static readonly string[] AntiCheatModules =
+        private static readonly HashSet<string> ExcludedProcessNames = new(StringComparer.OrdinalIgnoreCase)
         {
-            "easyanticheat.dll", "eac.dll", "battleye.dll", "bedaisy.sys",
-            "riotclientservices.exe", "vgk.sys", "nvanti.dll"
+            // Windows system and shell processes
+            "system", "idle", "registry", "smss", "csrss", "wininit", "services", "lsass",
+            "winlogon", "fontdrvhost", "dwm", "svchost", "taskhostw", "runtimebroker",
+            "shellexperiencehost", "searchhost", "startmenuexperiencehost", "sihost",
+            "ctfmon", "conhost", "dllhost", "wudfhost", "spoolsv", "audiodg", "explorer",
+            "applicationframehost", "systemsettings", "securityhealthservice",
+
+            // Game launchers and store clients
+            "steam", "steamwebhelper", "epicgameslauncher", "epicwebhelper", "origin",
+            "originthinsetupinternal", "uplay", "upc", "goggalaxy", "galaxyclient",
+            "eadesktop", "ealauncher", "battlenet", "riotclientux", "riotclientservices"
         };
 
-        private static readonly string[] LauncherNames =
+        private static readonly string[] AntiCheatSignatures =
         {
-            "steam.exe", "epicgameslauncher.exe", "origin.exe", "uplay.exe", "goggalaxy.exe"
+            "easyanticheat", "eac", "eac_server", "battleye", "bedaisy", "beservice",
+            "vgk", "vgc", "ricochet", "randgrid", "denuvo", "gamemon", "gameguard",
+            "xigncode", "punkbuster", "pbsvc", "equ8", "ace-base", "anti-cheat-expert",
+            "nvanti"
+        };
+
+        private static readonly string[] AntiCheatDirectorySignatures =
+        {
+            "easyanticheat", "battleye", "easyanticheat_setup.exe", "beservice.exe"
         };
 
         /// <summary>
-        /// Permanent exclusion filter only (launchers, system processes). Deliberately does NOT
-        /// check for a window here — that's HasWindow below, kept separate so ProcessMonitor can
-        /// tell "never a game" (safe to permanently ignore) apart from "might still be launching"
-        /// (needs rechecking on a later poll tick).
+        /// Permanent exclusion filter (system processes, launchers).
         /// </summary>
         public bool IsGameProcess(Process process)
         {
             try
             {
                 string name = process.ProcessName.ToLowerInvariant();
+                if (name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+                    name = Path.GetFileNameWithoutExtension(name);
 
-                if (LauncherNames.Contains(name))
-                    return false;
-
-                if (name == "explorer" || name == "system" || name == "idle")
-                    return false;
-
-                return true;
+                return !ExcludedProcessNames.Contains(name);
             }
             catch
             {
@@ -55,28 +68,76 @@ namespace DXVKCompanion.Monitoring
             }
         }
 
-        public bool HasAntiCheatRisk(Process process)
+        public AntiCheatAssessment AssessAntiCheatRisk(Process process, string? exeDirectory = null)
         {
+            var evidence = new List<string>();
+
+            // 1. Inspect live process modules
             try
             {
                 foreach (ProcessModule module in process.Modules)
                 {
-                    string name = module.ModuleName.ToLowerInvariant();
-                    foreach (var ac in AntiCheatModules)
-                        if (name.Contains(ac))
-                            return true;
+                    string moduleName = module.ModuleName.ToLowerInvariant();
+                    foreach (var signature in AntiCheatSignatures)
+                    {
+                        if (moduleName.Contains(signature))
+                        {
+                            evidence.Add($"Loaded module: {module.ModuleName}");
+                            break;
+                        }
+                    }
                 }
-
-                return false; // successfully enumerated every module, genuinely none matched
             }
-            catch
+            catch (Exception ex)
             {
-                // Module enumeration blocked. Kernel-mode anti-cheat drivers intentionally
-                // block exactly this kind of introspection as an anti-tampering measure, so
-                // being blocked is itself correlated with anti-cheat presence — assume risk
-                // rather than assume safe. A false warning costs a click; a missed one risks a ban.
-                return true;
+                // Module enumeration blocked by kernel driver or OS security
+                return AntiCheatAssessment.UnableToDetermine(
+                    $"Process module inspection was blocked ({ex.GetType().Name}): anti-tamper or security protection active.");
             }
+
+            // 2. Inspect game directory indicators if path is available
+            string? dir = exeDirectory;
+            if (string.IsNullOrEmpty(dir))
+            {
+                try { dir = Path.GetDirectoryName(process.MainModule?.FileName); }
+                catch { }
+            }
+
+            if (!string.IsNullOrEmpty(dir) && Directory.Exists(dir))
+            {
+                try
+                {
+                    foreach (var entry in Directory.EnumerateFileSystemEntries(dir))
+                    {
+                        string name = Path.GetFileName(entry).ToLowerInvariant();
+                        foreach (var sig in AntiCheatDirectorySignatures)
+                        {
+                            if (name.Contains(sig))
+                            {
+                                evidence.Add($"Game directory contains anti-cheat component: {Path.GetFileName(entry)}");
+                                break;
+                            }
+                        }
+                    }
+                }
+                catch
+                {
+                    // Directory enumeration non-fatal
+                }
+            }
+
+            if (evidence.Count > 0)
+            {
+                return AntiCheatAssessment.SuspectedOrKnown(evidence.ToArray());
+            }
+
+            return AntiCheatAssessment.None();
+        }
+
+        public bool HasAntiCheatRisk(Process process)
+        {
+            var assessment = AssessAntiCheatRisk(process);
+            return assessment.Risk != AntiCheatRisk.None;
         }
     }
 }
