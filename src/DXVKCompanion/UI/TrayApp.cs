@@ -72,12 +72,16 @@ namespace DXVKCompanion.UI
             _monitor.OnGameDetected += HandleGameDetected;
             _monitor.OnGameExited += async exePath =>
             {
-                await _dxvk.ApplyPendingAsync(exePath);
-                _syncContext.Post(_ =>
+                _syncContext.Post(_ => _menu.ClearActiveGame(), null);
+                bool applied = await _dxvk.ApplyPendingAsync(exePath);
+                if (applied)
                 {
-                    _trayIcon.ShowBalloonTip(4000, "DXVK Companion",
-                        $"Operation completed safely after game exit for {Path.GetFileName(exePath)}.", ToolTipIcon.Info);
-                }, null);
+                    _syncContext.Post(_ =>
+                    {
+                        _trayIcon.ShowBalloonTip(4000, "DXVK Companion",
+                            $"Operation completed safely after game exit for {Path.GetFileName(exePath)}.", ToolTipIcon.Info);
+                    }, null);
+                }
             };
 
             // Startup tasks: inspect all installations and process pending actions

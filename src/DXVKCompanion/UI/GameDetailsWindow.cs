@@ -37,6 +37,10 @@ namespace DXVKCompanion.UI
             var installation = !string.IsNullOrWhiteSpace(gameDir)
                 ? _gameLibraryStore.FindByInstallationPath(gameDir)
                 : null;
+            if (installation == null && !string.IsNullOrWhiteSpace(gameDir))
+            {
+                installation = _gameLibraryStore.GetOrCreateInstallation(gameDir, _profile.ExeName);
+            }
 
             int top = 20;
 

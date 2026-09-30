@@ -141,6 +141,25 @@ namespace DXVKCompanion.UI
             _inspector.InspectAll();
             _listView.Items.Clear();
 
+            var knownPaths = _profiles.GetAll().Select(p => p.ExePath).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            foreach (var inst in _gameLibraryStore.GetAll())
+            {
+                foreach (var exe in inst.Executables)
+                {
+                    string fullExe = Path.Combine(inst.InstallationPath, exe.RelativePath);
+                    if (!knownPaths.Contains(fullExe))
+                    {
+                        var p = _profiles.GetOrCreate(fullExe);
+                        p.Api = exe.LastKnownApi;
+                        p.Architecture = exe.LastKnownArchitecture;
+                        p.DxvkEnabled = inst.RestorationState == RestorationState.Managed;
+                        p.DxvkVersion = inst.ManagedDxvkVersion;
+                        _profiles.Save(p);
+                        knownPaths.Add(fullExe);
+                    }
+                }
+            }
+
             foreach (var profile in _profiles.GetAll().OrderBy(p => p.ExeName))
             {
                 string gameDir = Path.GetDirectoryName(profile.ExePath) ?? string.Empty;

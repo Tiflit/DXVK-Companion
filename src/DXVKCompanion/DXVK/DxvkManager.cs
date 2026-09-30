@@ -190,7 +190,7 @@ namespace DXVKCompanion.DXVK
             return results;
         }
 
-        public async Task ApplyPendingAsync(string exePath)
+        public async Task<bool> ApplyPendingAsync(string exePath)
         {
             _pending.TryRemove(exePath, out var transientAction);
 
@@ -222,17 +222,17 @@ namespace DXVKCompanion.DXVK
                     installation.PendingAction = null;
                     _gameLibraryStore.Save(installation);
                 }
-                return;
+                return success;
             }
 
             switch (transientAction)
             {
                 case PendingAction.Enable:
-                    await EnableDxvkAsync(profile);
-                    break;
+                    return await EnableDxvkAsync(profile);
                 case PendingAction.Disable:
-                    await DisableDxvkAsync(profile);
-                    break;
+                    return await DisableDxvkAsync(profile);
+                default:
+                    return false;
             }
         }
 

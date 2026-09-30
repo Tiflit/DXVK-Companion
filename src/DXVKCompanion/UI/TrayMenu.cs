@@ -45,6 +45,12 @@ namespace DXVKCompanion.UI
             _activeProfile = profile;
         }
 
+        public void ClearActiveGame()
+        {
+            _activeProcess = null;
+            _activeProfile = null;
+        }
+
         private ContextMenuStrip BuildMenu()
         {
             var menu = new ContextMenuStrip();
