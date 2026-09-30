@@ -18,6 +18,12 @@ Do not perform unrelated refactoring, formatting churn, dependency additions, pr
 
 Respect any "Allowed paths" and "Forbidden or out-of-scope changes" in the task Issue.
 
+## Work allocation
+
+Do not impose artificial size limits on Gemini/Antigravity work. A substantial implementation, investigation, or refactor is acceptable when it is required by the Issue and remains within scope.
+
+Use task boundaries, deterministic validation, and review to control risk—not an arbitrary line-count budget.
+
 ## Tests and evidence
 
 Add regression coverage for changed behavior.
