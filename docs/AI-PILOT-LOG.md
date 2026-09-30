@@ -130,6 +130,38 @@ The purpose is to observe whether it can trace the cross-component invariant ind
 
 A planned pre-implementation Claude analysis was not completed because Claude reached its usage limit. That experiment should not be treated as having occurred.
 
+## Workflow Foundation — Issue #7 / PR #8
+
+### Purpose
+
+Create the first repository-native automation layer for the multi-agent workflow without changing application behavior.
+
+### Changes
+
+The foundation branch adds:
+
+- `AGENTS.md` for concise agent operating rules;
+- `docs/AI-DEVELOPMENT-WORKFLOW.md` for durable workflow policy;
+- this pilot log entry/history;
+- `.github/ISSUE_TEMPLATE/ai-task.yml` for structured task contracts;
+- `.github/workflows/ai-pr-hygiene.yml` for advisory PR metadata checks;
+- `.github/workflows/ai-scope-check.yml` for advisory allowed-path checking;
+- `.github/workflows/ai-review-packet.yml` for a compact post-CI review evidence artifact.
+
+### Observations
+
+- GitHub can serve as the state/audit layer without an external orchestrator.
+- Read-only PR metadata checks are straightforward to run safely.
+- Allowed-path enforcement should remain advisory until several real tasks prove the contract format and matching rules.
+- Documentation impact is important enough to appear explicitly in both task and PR contracts.
+- Review-packet generation should assemble evidence, not execute reviewed PR code.
+- Gemini should not be artificially constrained by a fixed diff budget; task scope and deterministic gates are safer controls.
+- The first workflow automation is deliberately non-blocking so we can observe its behavior before making it a merge gate.
+
+### Current limitation
+
+The review-packet workflow uses `workflow_run` and therefore is intended to become operational after the workflow is present on the default branch. PR #8 is the bootstrap vehicle; the packet should not yet be treated as production automation until that activation path is verified.
+
 ## Future pilot records
 
 For each future non-trivial pilot, record:
