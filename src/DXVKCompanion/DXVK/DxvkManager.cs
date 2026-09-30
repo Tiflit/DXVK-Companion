@@ -8,6 +8,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using DXVKCompanion.Models;
 using DXVKCompanion.Storage;
+using DXVKCompanion.Utils;
 
 namespace DXVKCompanion.DXVK
 {
@@ -105,6 +106,25 @@ namespace DXVKCompanion.DXVK
         {
             if (!DxvkCapabilityMatrix.IsSupported(profile.Api))
             {
+                return DxvkActionResult.Failed;
+            }
+
+            if (action == PendingAction.Enable &&
+                !string.Equals(profile.Architecture, "x32", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(profile.Architecture, "x64", StringComparison.OrdinalIgnoreCase))
+            {
+                Logger.Log($"DxvkManager: cannot deploy or queue DXVK for {profile.ExeName}; architecture is unknown ({profile.Architecture}).");
+                string gameDir = Path.GetDirectoryName(profile.ExePath) ?? string.Empty;
+                if (!string.IsNullOrWhiteSpace(gameDir))
+                {
+                    var installation = _gameLibraryStore.FindByInstallationPath(gameDir);
+                    if (installation != null)
+                    {
+                        installation.ConflictFlags |= InstallationConflictFlags.Architecture;
+                        installation.RestorationState = RestorationState.AttentionRequired;
+                        _gameLibraryStore.Save(installation);
+                    }
+                }
                 return DxvkActionResult.Failed;
             }
 
@@ -324,7 +344,8 @@ namespace DXVKCompanion.DXVK
                     if (!string.Equals(profile.Architecture, installation.PendingAction.Architecture, StringComparison.OrdinalIgnoreCase))
                     {
                         Logger.Log($"DxvkManager: architecture mismatch for pending action on {profile.ExeName} (queued: {installation.PendingAction.Architecture}, detected: {profile.Architecture}). Aborting.");
-                        installation.ConflictFlags = InstallationConflictFlags.AttentionRequired;
+                        installation.ConflictFlags |= InstallationConflictFlags.Architecture;
+                        installation.RestorationState = RestorationState.AttentionRequired;
                         _gameLibraryStore.Save(installation);
                         return false;
                     }
@@ -442,7 +463,8 @@ namespace DXVKCompanion.DXVK
                     if (!string.Equals(profile.Architecture, installation.PendingAction.Architecture, StringComparison.OrdinalIgnoreCase))
                     {
                         Logger.Log($"DxvkManager: architecture mismatch in bulk processing on {profile.ExeName} (queued: {installation.PendingAction.Architecture}, detected: {profile.Architecture}). Aborting.");
-                        installation.ConflictFlags = InstallationConflictFlags.AttentionRequired;
+                        installation.ConflictFlags |= InstallationConflictFlags.Architecture;
+                        installation.RestorationState = RestorationState.AttentionRequired;
                         _gameLibraryStore.Save(installation);
                         continue;
                     }

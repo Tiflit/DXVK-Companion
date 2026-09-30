@@ -691,8 +691,9 @@ namespace DXVKCompanion.PhaseA.Tests
 
             // Assert: Refused because of architecture mismatch
             Assert.False(result);
-            var updated = libraryStore.FindByInstallationPath(gameDir.RootPath);
-            Assert.Equal(InstallationConflictFlags.AttentionRequired, updated!.ConflictFlags);
+            Assert.NotNull(updated);
+            Assert.Equal(InstallationConflictFlags.Architecture, updated!.ConflictFlags & InstallationConflictFlags.Architecture);
+            Assert.Equal(RestorationState.AttentionRequired, updated.RestorationState);
         }
 
         [Fact]
@@ -800,6 +801,117 @@ namespace DXVKCompanion.PhaseA.Tests
             Assert.Equal(0, recovered);
             Assert.False(File.Exists(planPath));
             Assert.Equal("newly-committed-dxvk-file", File.ReadAllText(gameFile));
+        }
+
+        [Fact]
+        public void TransactionEngine_RestoresDeletedFile_ByteForByte_WhenFailureOccursAfterDeletion()
+        {
+            using var gameDir = new SyntheticTestDirectory();
+            using var storageDir = new SyntheticTestDirectory();
+            using var sourceDir = new SyntheticTestDirectory();
+
+            string backupsDir = Path.Combine(storageDir.RootPath, "backups");
+            string sourceDll = sourceDir.CreateFile("d3d11.dll", "new-dll-bytes");
+            string confPath = gameDir.CreateFile("dxvk.conf", "dxvk.hud = full\ndxvk.numCompilerThreads = 4");
+            var originalConfIdentity = FileIdentity.Capture(confPath);
+
+            var engine = new MultiFileTransactionEngine(backupsDir, new MultiFileTransactionTestHooks
+            {
+                AfterApply = (target, idx) =>
+                {
+                    // Fail on the second file (after dxvk.conf was already deleted from disk)
+                    if (idx == 1)
+                        throw new IOException("Injected failure after config deletion");
+                }
+            });
+
+            var request = new MultiFileTransactionRequest
+            {
+                InstallationRoot = gameDir.RootPath,
+                Operation = TransactionOperation.Reapply,
+                Files = new[]
+                {
+                    // File 0: dxvk.conf removed (historical original state: DidNotExist)
+                    new MultiFileTransactionFile
+                    {
+                        RelativePath = "dxvk.conf",
+                        Action = FileTransactionAction.RestoreOriginal,
+                        OriginalState = OriginalFileState.DidNotExist,
+                        ExpectedTargetIdentity = originalConfIdentity
+                    },
+                    // File 1: d3d11.dll deployed
+                    new MultiFileTransactionFile
+                    {
+                        RelativePath = "d3d11.dll",
+                        SourceFilePath = sourceDll,
+                        Action = FileTransactionAction.Deploy,
+                        OriginalState = OriginalFileState.DidNotExist
+                    }
+                }
+            };
+
+            var result = engine.Execute(request);
+            Assert.Equal(TransactionOutcome.SafeFailure, result.Outcome);
+
+            // Assert: dxvk.conf was restored byte-for-byte from rollback snapshot!
+            Assert.True(File.Exists(confPath));
+            Assert.Equal("dxvk.hud = full\ndxvk.numCompilerThreads = 4", File.ReadAllText(confPath));
+            var restoredIdent = FileIdentity.Capture(confPath);
+            Assert.Equal(originalConfIdentity, restoredIdent);
+        }
+
+        [Fact]
+        public void CrashRecovery_CorruptBackup_PreservesJournalAndSetsAttentionRequired()
+        {
+            using var gameDir = new SyntheticTestDirectory();
+            using var storageDir = new SyntheticTestDirectory();
+
+            string backupsDir = Path.Combine(storageDir.RootPath, "backups");
+            Directory.CreateDirectory(backupsDir);
+
+            string gameFile = gameDir.CreateFile("d3d11.dll", "partial-write-state");
+            string planId = Guid.NewGuid().ToString("N");
+            string rollbackDir = Path.Combine(backupsDir, "rollback", planId);
+            Directory.CreateDirectory(rollbackDir);
+            string rollbackFile = Path.Combine(rollbackDir, "d3d11.dll");
+            File.WriteAllText(rollbackFile, "corrupted-content");
+
+            var expectedIdentity = new SafetyFileIdentity("00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff", 20);
+
+            var plan = new SafetyTransactionPlan
+            {
+                TransactionId = planId,
+                Operation = TransactionOperation.Update,
+                InstallationRoot = gameDir.RootPath,
+                State = TransactionState.Applying,
+                Files = new[]
+                {
+                    new SafetyFilePlan
+                    {
+                        RelativePath = "d3d11.dll",
+                        SourceRelativePath = "source.dll",
+                        PreTransactionExists = true,
+                        RollbackRelativePath = Path.Combine("rollback", planId, "d3d11.dll"),
+                        RollbackIdentity = expectedIdentity
+                    }
+                }
+            };
+
+            string planPath = Path.Combine(backupsDir, planId + ".json");
+            File.WriteAllText(planPath, JsonSerializer.Serialize(plan));
+
+            var engine = new MultiFileTransactionEngine(backupsDir);
+
+            // Act
+            int recovered = engine.RecoverInterruptedTransactions();
+
+            // Assert: recovery must NOT claim success, must NOT delete the plan, and marks AttentionRequired
+            Assert.Equal(0, recovered);
+            Assert.True(File.Exists(planPath));
+
+            var reloadedPlan = JsonSerializer.Deserialize<SafetyTransactionPlan>(File.ReadAllText(planPath));
+            Assert.NotNull(reloadedPlan);
+            Assert.Equal(TransactionState.AttentionRequired, reloadedPlan!.State);
         }
 
         private sealed class TestModuleScanner : ModuleScanner

@@ -156,9 +156,13 @@ namespace DXVKCompanion.DXVK
                         string name = asset.GetProperty("name").GetString() ?? "";
 
                         // The Windows DXVK archive is named dxvk-{version}.tar.gz and strictly excludes "native"
-                        if (name.StartsWith("dxvk-", StringComparison.OrdinalIgnoreCase) &&
-                            !name.Contains("native", StringComparison.OrdinalIgnoreCase) &&
-                            name.EndsWith(".tar.gz", StringComparison.OrdinalIgnoreCase))
+                        bool isExactWindowsArchive =
+                            (string.Equals(name, $"dxvk-{version}.tar.gz", StringComparison.OrdinalIgnoreCase) ||
+                             string.Equals(name, $"dxvk-v{version}.tar.gz", StringComparison.OrdinalIgnoreCase) ||
+                             string.Equals(name, $"dxvk-{tagName}.tar.gz", StringComparison.OrdinalIgnoreCase)) &&
+                            !name.Contains("native", StringComparison.OrdinalIgnoreCase);
+
+                        if (isExactWindowsArchive)
                         {
                             assetUrl = asset.GetProperty("browser_download_url").GetString() ?? "";
 

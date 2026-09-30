@@ -183,6 +183,20 @@ namespace DXVKCompanion.DXVK
                     return false;
                 }
 
+                if (!string.Equals(profile.Architecture, "x32", StringComparison.OrdinalIgnoreCase) &&
+                    !string.Equals(profile.Architecture, "x64", StringComparison.OrdinalIgnoreCase))
+                {
+                    Logger.Log($"DxvkInstaller: cannot deploy DXVK to {profile.ExeName}; architecture is unknown ({profile.Architecture}).");
+                    var existing = _gameLibraryStore.FindByInstallationPath(gameDir);
+                    if (existing != null)
+                    {
+                        existing.ConflictFlags |= InstallationConflictFlags.Architecture;
+                        existing.RestorationState = RestorationState.AttentionRequired;
+                        _gameLibraryStore.Save(existing);
+                    }
+                    return false;
+                }
+
                 string arch = string.Equals(profile.Architecture, "x32", StringComparison.OrdinalIgnoreCase) ? "x32" : "x64";
                 string versionDir = Path.Combine(_dxvkSourceDir, SanitizeVersion(release.Version));
                 string dxvkArchDir = Path.Combine(versionDir, arch);
@@ -439,7 +453,18 @@ namespace DXVKCompanion.DXVK
                 }
 
                 string version = installation.ManagedDxvkVersion;
-                string arch = installation.ManagedDxvkArchitecture ?? (string.Equals(profile.Architecture, "x32", StringComparison.OrdinalIgnoreCase) ? "x32" : "x64");
+                string? arch = installation.ManagedDxvkArchitecture ?? (
+                    string.Equals(profile.Architecture, "x32", StringComparison.OrdinalIgnoreCase) ? "x32" :
+                    string.Equals(profile.Architecture, "x64", StringComparison.OrdinalIgnoreCase) ? "x64" : null);
+
+                if (string.IsNullOrEmpty(arch))
+                {
+                    Logger.Log($"DxvkInstaller: cannot reapply DXVK for {profile.ExeName}; architecture is unknown ({profile.Architecture}).");
+                    installation.ConflictFlags |= InstallationConflictFlags.Architecture;
+                    installation.RestorationState = RestorationState.AttentionRequired;
+                    _gameLibraryStore.Save(installation);
+                    return false;
+                }
                 string versionDir = Path.Combine(_dxvkSourceDir, SanitizeVersion(version));
                 string dxvkArchDir = Path.Combine(versionDir, arch);
 

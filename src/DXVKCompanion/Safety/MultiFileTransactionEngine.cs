@@ -66,40 +66,81 @@ public sealed class MultiFileTransactionEngine
                 if (plan == null || string.IsNullOrWhiteSpace(plan.InstallationRoot) || plan.Files == null)
                     continue;
 
+                string txRollbackDir = Path.Combine(_transactionStoreRoot, "rollback", plan.TransactionId);
+
                 // If prepared (no writes ever made) or committed (already verified before termination), simply clean up
                 if (plan.State == TransactionState.Prepared || plan.State == TransactionState.Committed)
                 {
                     TryDelete(planFile);
+                    if (Directory.Exists(txRollbackDir))
+                        try { Directory.Delete(txRollbackDir, true); } catch { }
                     continue;
                 }
+
+                bool recoverySuccessful = true;
 
                 for (var index = plan.Files.Count - 1; index >= 0; index--)
                 {
                     var filePlan = plan.Files[index];
                     var targetPath = ResolveInsideRoot(plan.InstallationRoot, filePlan.RelativePath);
 
-                    if (filePlan.OriginalState == OriginalFileState.Existing)
+                    if (filePlan.PreTransactionExists || filePlan.RollbackRelativePath != null)
                     {
-                        string backupPath = ResolveBackupPath(filePlan.BackupRelativePath, plan.TransactionId, filePlan.RelativePath);
-                        if (File.Exists(backupPath))
+                        string rollbackPath = ResolveInsideRoot(_transactionStoreRoot, filePlan.RollbackRelativePath ?? Path.Combine("rollback", plan.TransactionId, filePlan.RelativePath));
+                        if (!File.Exists(rollbackPath))
                         {
-                            var backupIdent = FileIdentity.Capture(backupPath);
-                            if (filePlan.BackupIdentity != null && backupIdent != filePlan.BackupIdentity)
-                            {
-                                Logger.Log($"MultiFileTransactionEngine: backup identity mismatch during crash recovery for {filePlan.RelativePath}");
-                                continue;
-                            }
+                            Logger.Log($"MultiFileTransactionEngine: rollback backup missing during crash recovery for {filePlan.RelativePath}");
+                            recoverySuccessful = false;
+                            break;
+                        }
 
-                            File.Copy(backupPath, targetPath, overwrite: true);
+                        var backupIdent = FileIdentity.Capture(rollbackPath);
+                        if (filePlan.RollbackIdentity != null && backupIdent != filePlan.RollbackIdentity)
+                        {
+                            Logger.Log($"MultiFileTransactionEngine: rollback backup identity mismatch during crash recovery for {filePlan.RelativePath}");
+                            recoverySuccessful = false;
+                            break;
+                        }
 
-                            var recoveredIdent = FileIdentity.Capture(targetPath);
-                            if (filePlan.OriginalIdentity != null && recoveredIdent != filePlan.OriginalIdentity)
-                            {
-                                Logger.Log($"MultiFileTransactionEngine: recovered file identity mismatch for {filePlan.RelativePath}");
-                            }
+                        File.Copy(rollbackPath, targetPath, overwrite: true);
+
+                        var recoveredIdent = FileIdentity.Capture(targetPath);
+                        if (filePlan.RollbackIdentity != null && recoveredIdent != filePlan.RollbackIdentity)
+                        {
+                            Logger.Log($"MultiFileTransactionEngine: recovered file identity mismatch for {filePlan.RelativePath}");
+                            recoverySuccessful = false;
+                            break;
                         }
                     }
-                    else if (filePlan.OriginalState == OriginalFileState.DidNotExist)
+                    else if (filePlan.OriginalState == OriginalFileState.Existing && filePlan.BackupRelativePath != null)
+                    {
+                        string backupPath = ResolveBackupPath(filePlan.BackupRelativePath, plan.TransactionId, filePlan.RelativePath);
+                        if (!File.Exists(backupPath))
+                        {
+                            Logger.Log($"MultiFileTransactionEngine: backup missing during crash recovery for {filePlan.RelativePath}");
+                            recoverySuccessful = false;
+                            break;
+                        }
+
+                        var backupIdent = FileIdentity.Capture(backupPath);
+                        if (filePlan.BackupIdentity != null && backupIdent != filePlan.BackupIdentity)
+                        {
+                            Logger.Log($"MultiFileTransactionEngine: backup identity mismatch during crash recovery for {filePlan.RelativePath}");
+                            recoverySuccessful = false;
+                            break;
+                        }
+
+                        File.Copy(backupPath, targetPath, overwrite: true);
+
+                        var recoveredIdent = FileIdentity.Capture(targetPath);
+                        if (filePlan.OriginalIdentity != null && recoveredIdent != filePlan.OriginalIdentity)
+                        {
+                            Logger.Log($"MultiFileTransactionEngine: recovered file identity mismatch for {filePlan.RelativePath}");
+                            recoverySuccessful = false;
+                            break;
+                        }
+                    }
+                    else
                     {
                         if (File.Exists(targetPath))
                         {
@@ -107,6 +148,17 @@ public sealed class MultiFileTransactionEngine
                         }
                     }
                 }
+
+                if (!recoverySuccessful)
+                {
+                    Logger.Log($"MultiFileTransactionEngine: transaction recovery failed or identity mismatch for {plan.TransactionId}. Preserving journal and setting AttentionRequired.");
+                    plan = plan with { State = TransactionState.AttentionRequired };
+                    File.WriteAllText(planFile, JsonSerializer.Serialize(plan));
+                    continue;
+                }
+
+                if (Directory.Exists(txRollbackDir))
+                    try { Directory.Delete(txRollbackDir, true); } catch { }
 
                 TryDelete(planFile);
                 recoveredCount++;
@@ -160,6 +212,21 @@ public sealed class MultiFileTransactionEngine
                     }
                 }
 
+                // Capture transaction-local rollback snapshot of current target if it exists
+                bool preTransactionExists = currentState == OriginalFileState.Existing;
+                string? rollbackFullPath = null;
+                string? rollbackRelPath = null;
+                SafetyFileIdentity? rollbackIdentity = null;
+
+                if (preTransactionExists)
+                {
+                    rollbackRelPath = Path.Combine("rollback", transactionId, file.RelativePath);
+                    rollbackFullPath = ResolveInsideRoot(_transactionStoreRoot, rollbackRelPath);
+                    Directory.CreateDirectory(Path.GetDirectoryName(rollbackFullPath)!);
+                    File.Copy(targetPath, rollbackFullPath, overwrite: true);
+                    rollbackIdentity = FileIdentity.Capture(rollbackFullPath);
+                }
+
                 string? backupPath = null;
                 SafetyFileIdentity? backupIdentity = null;
 
@@ -190,7 +257,18 @@ public sealed class MultiFileTransactionEngine
                     }
                 }
 
-                prepared.Add(new PreparedFile(file, targetPath, sourcePath, sourceIdentity, file.OriginalState, currentIdentity, backupPath, backupIdentity));
+                prepared.Add(new PreparedFile(
+                    file,
+                    targetPath,
+                    sourcePath,
+                    sourceIdentity,
+                    file.OriginalState,
+                    currentIdentity,
+                    backupPath,
+                    backupIdentity,
+                    preTransactionExists,
+                    rollbackFullPath,
+                    rollbackIdentity));
             }
 
             var plan = new SafetyTransactionPlan
@@ -208,7 +286,10 @@ public sealed class MultiFileTransactionEngine
                     OriginalState = p.OriginalState,
                     BackupRelativePath = p.File.BackupRelativePath,
                     OriginalIdentity = p.OriginalIdentity,
-                    BackupIdentity = p.BackupIdentity
+                    BackupIdentity = p.BackupIdentity,
+                    PreTransactionExists = p.PreTransactionExists,
+                    RollbackRelativePath = p.RollbackPath != null ? Path.GetRelativePath(_transactionStoreRoot, p.RollbackPath) : null,
+                    RollbackIdentity = p.RollbackIdentity
                 }).ToArray(),
                 State = TransactionState.Prepared
             };
@@ -219,9 +300,9 @@ public sealed class MultiFileTransactionEngine
 
             for (var index = 0; index < prepared.Count; index++)
             {
+                anyWrite = true;
                 var item = prepared[index];
                 Apply(item, request.Operation);
-                anyWrite = true;
                 _hooks.AfterApply?.Invoke(item.TargetPath, index);
             }
 
@@ -233,6 +314,10 @@ public sealed class MultiFileTransactionEngine
 
             plan = plan with { State = TransactionState.Committed };
             File.WriteAllText(planPath, JsonSerializer.Serialize(plan));
+
+            string txRollbackDir = Path.Combine(_transactionStoreRoot, "rollback", transactionId);
+            if (Directory.Exists(txRollbackDir))
+                try { Directory.Delete(txRollbackDir, true); } catch { }
 
             File.Delete(planPath);
             return new SafetyTransactionResult
@@ -381,27 +466,30 @@ public sealed class MultiFileTransactionEngine
             var item = prepared[index];
             _hooks.DuringRecovery?.Invoke(index);
 
-            if (item.OriginalIdentity is not null)
+            if (item.PreTransactionExists)
             {
-                if (item.BackupPath != null && File.Exists(item.BackupPath))
+                if (item.RollbackPath != null && File.Exists(item.RollbackPath))
+                {
+                    File.Copy(item.RollbackPath, item.TargetPath, overwrite: true);
+                    var recovered = FileIdentity.Capture(item.TargetPath);
+                    if (item.RollbackIdentity != null && recovered != item.RollbackIdentity)
+                        throw new IOException($"Recovered target does not match the pre-transaction identity: {item.File.RelativePath}");
+                }
+                else if (item.BackupPath != null && File.Exists(item.BackupPath))
                 {
                     File.Copy(item.BackupPath, item.TargetPath, overwrite: true);
                 }
-                else if (item.OriginalState == OriginalFileState.Existing && item.BackupPath is null)
+                else
                 {
-                    throw new IOException($"Original backup is unavailable: {item.File.RelativePath}");
+                    throw new IOException($"Pre-transaction rollback copy is unavailable: {item.File.RelativePath}");
                 }
             }
-            else if (item.OriginalState == OriginalFileState.DidNotExist)
+            else
             {
                 if (File.Exists(item.TargetPath))
                     File.Delete(item.TargetPath);
                 if (File.Exists(item.TargetPath))
                     throw new IOException($"Originally absent target still exists after recovery: {item.File.RelativePath}");
-            }
-            else
-            {
-                throw new IOException($"Original state is unknown, so recovery cannot be proven safe: {item.File.RelativePath}");
             }
         }
     }
@@ -415,6 +503,7 @@ public sealed class MultiFileTransactionEngine
     private static string ResolveInsideRoot(string installationRoot, string relativePath)
     {
         var root = Path.GetFullPath(installationRoot);
+        var candidate = Path.GetFullPath(Path.Combine(root, relativePath));
         var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
         var prefix = root.EndsWith(Path.DirectorySeparatorChar) ? root : root + Path.DirectorySeparatorChar;
         if (!candidate.StartsWith(prefix, comparison))
@@ -457,5 +546,8 @@ public sealed class MultiFileTransactionEngine
         OriginalFileState OriginalState,
         SafetyFileIdentity? OriginalIdentity,
         string? BackupPath,
-        SafetyFileIdentity? BackupIdentity);
+        SafetyFileIdentity? BackupIdentity,
+        bool PreTransactionExists,
+        string? RollbackPath,
+        SafetyFileIdentity? RollbackIdentity);
 }

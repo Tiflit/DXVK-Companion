@@ -24,21 +24,21 @@ namespace DXVKCompanion.Monitoring
             _parser = parser ?? throw new ArgumentNullException(nameof(parser));
         }
 
-        public virtual bool Is32BitProcess(Process process)
+        public virtual bool? Is32BitProcess(Process process)
         {
             try
             {
                 if (!Environment.Is64BitOperatingSystem) return true;
-                if (process.HasExited) return false;
+                if (process.HasExited) return null;
                 if (OperatingSystem.IsWindows() && IsWow64Process(process.Handle, out bool isWow64))
                 {
                     return isWow64;
                 }
-                return false;
+                return null;
             }
             catch
             {
-                return false;
+                return null;
             }
         }
 
@@ -60,7 +60,11 @@ namespace DXVKCompanion.Monitoring
             }
             if (architecture == "Unknown")
             {
-                architecture = Environment.Is64BitOperatingSystem && !Is32BitProcess(process) ? "x64" : "x32";
+                bool? is32 = Is32BitProcess(process);
+                if (is32.HasValue)
+                {
+                    architecture = is32.Value ? "x32" : "x64";
+                }
             }
 
             var runtimeModules = _scanner.GetLoadedGraphicsModules(process);

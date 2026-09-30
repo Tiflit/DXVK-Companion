@@ -90,6 +90,9 @@ public sealed record SafetyFilePlan
     public string? BackupRelativePath { get; init; }
     public SafetyFileIdentity? OriginalIdentity { get; init; }
     public SafetyFileIdentity? BackupIdentity { get; init; }
+    public bool PreTransactionExists { get; init; }
+    public string? RollbackRelativePath { get; init; }
+    public SafetyFileIdentity? RollbackIdentity { get; init; }
 }
 
 public sealed record SafetyTransactionPlan
