@@ -8,12 +8,22 @@ Optimized for modern GPUs—especially Intel Arc / Battlemage architectures (Arc
 
 ## ⚡ Core Principles
 
-* **Strict Portability**: Completely self-contained in its application directory. Never writes to `%APPDATA%`, the Windows Registry, or system directories (with the exception of optional Windows startup integration).
-* **Self-Cleaning Game Directories**: Game directories remain pristine. Original DLLs are backed up exclusively inside Companion's isolated storage (`Profiles/Backups/`), never leaving `.bak` artifacts in game folders. On restore, injected DXVK DLLs and generated `dxvk.conf` files are cleanly deleted.
-* **Atomic Multi-File Transactions**: Multi-file deployments (such as `d3d11.dll` + `dxgi.dll` for DirectX 11) are treated as a single logical transaction with SHA-256 pre-flight identity verification and automatic rollback if any file fails.
-* **Zero External Dependencies**: Built entirely on .NET 8 using native Windows APIs and built-in runtime features (including in-memory tarball extraction via `GZipStream` and `System.Formats.Tar`).
+* **Strict Portability**: Completely self-contained in its application folder. Never writes to `%APPDATA%`, the Windows Registry, or system directories (with the exception of optional Windows startup integration).
+* **Self-Cleaning Game Directories**: Game directories remain pristine. Original DLLs are backed up exclusively inside Companion's isolated storage (`Profiles/Backups/{id}`), never leaving `.bak` artifacts in game folders. On restore, injected DXVK DLLs and generated `dxvk.conf` files are cleanly removed.
+* **Atomic Multi-File Transactions**: Multi-file deployments (such as `d3d11.dll` + `dxgi.dll` for DirectX 11) are executed as a single logical transaction with SHA-256 pre-flight identity verification and automatic rollback if any file operation fails.
+* **Zero External Dependencies**: Built on .NET 8 using native Windows APIs and runtime capabilities (including in-memory release tarball decompression via `GZipStream` and `System.Formats.Tar`).
 * **Non-Aggressive Execution**: Never modifies running game processes. Deployment actions are staged and executed safely after the game cleanly terminates.
-* **Anti-Cheat Safety**: Detects anti-cheat modules (Easy Anti-Cheat, BattlEye, Vanguard, etc.) with fail-closed heuristics (`UnableToDetermine` / `SuspectedOrKnown`) to guard online multiplayer titles from risky modifications.
+* **Anti-Cheat Safety**: Detects anti-cheat modules (Easy Anti-Cheat, BattlEye, Vanguard, etc.) with fail-closed heuristics (`UnableToDetermine` / `SuspectedOrKnown`) to protect online multiplayer titles from risky modifications.
+
+---
+
+## 🚀 Quick Start (Testing & Usage)
+
+### Running Standalone
+1. Download `DXVK-Companion-win-x64` from the latest [GitHub Actions Artifacts](https://github.com/Tiflit/DXVK-Companion/actions) or [GitHub Releases](https://github.com/Tiflit/DXVK-Companion/releases).
+2. Extract the archive into any folder of your choice (e.g., `C:\Tools\DXVK-Companion`).
+3. Run `DXVK-Companion.exe`.
+4. Companion docks directly into the Windows system tray notification area (near the clock).
 
 ---
 
@@ -23,18 +33,44 @@ DXVK Companion supports two operating modes configured globally in **Settings** 
 
 ### 1. Manual Mode (Default)
 * Observes and reports game rendering APIs, architectures, and health states.
-* Does not automatically modify game files or deploy DXVK without explicit user confirmation.
-* Full control via **Manage Games** and **Game Details** dialogs.
+* Does not modify game files or deploy DXVK without explicit user confirmation.
+* Direct control available via **Manage Games** and **Game Details** dialogs.
 
 ### 2. Automated Mode (Experimental)
 * Automatically selects and deploys the latest official DXVK release for newly launched compatible Direct3D games.
 * Queues safe deployment while the game is running and applies the transaction automatically upon game exit.
 * Detects external game patches or file updates and automatically re-evaluates the baseline before reapplying DXVK.
-* Respects fail-closed anti-cheat protection: automatic actions are blocked if anti-cheat or anti-tamper components are detected.
+* Respects fail-closed anti-cheat protection: automatic actions are strictly blocked if anti-cheat or anti-tamper components are detected.
 
 ---
 
-## 🏗️ Architecture Overview
+## 🖥️ User Interface Overview
+
+### System Tray Menu (Section 39)
+Right-clicking the tray icon presents a clean, static, and predictable menu:
+* **Status Header**: Displays current application state.
+* **Active Game**: Shows the active detected process, API, and architecture (or *No Supported Game Running* when idle).
+* **Manage Games...**: Opens the centralized game management dashboard.
+* **Game Details...**: Opens detailed configuration for the currently active game.
+* **Settings...**: Configures global management policy and Windows startup behavior.
+* **Exit**: Closes Companion cleanly.
+
+### Manage Games Dashboard
+* **View Filters**: Quickly filter between `Active Games`, `Managed / Active Only`, `Attention Required`, `Hidden Games`, and `All Tracked Games`.
+* **Health Badges**: Real-time status reporting (`Clean / Native`, `Managed`, `Attention Required`, `Conflict`, `Restored`).
+* **Batch Operations**: Support for updating all enabled games or safely executing **Restore All** with per-game error isolation.
+* **Adoption & Reapplication**: One-click adoption of pre-existing official DXVK releases and reapplication after external game patches.
+
+### Game Details Window
+* **Health & API Inspection**: Inspects detected Direct3D version, bitness (x86/x64), and managed files.
+* **Per-Game Policy Override**: Configure individual titles to `Use Global Policy`, `Automatic Management`, or `Disabled`.
+* **Frame Limiter**: Set a custom framerate limit (writes `dxvk.frameRate` cleanly).
+* **Performance HUD**: Toggle DXVK's built-in telemetry overlay (`dxvk.hud = fps,devinfo`).
+* **Configuration Safety**: Merges settings cleanly into existing `dxvk.conf` files without overwriting user-defined options.
+
+---
+
+## 🏗️ Architecture & Component Design
 
 ```text
                     PROCESS MONITOR
@@ -101,7 +137,7 @@ DXVK Companion supports two operating modes configured globally in **Settings** 
 
 * **User Interface (`DXVKCompanion.UI`)**:
   * `TrayApp` & `TrayMenu`: Minimal static system tray menu adhering to Section 39.
-  * `ManageGamesWindow`: Status-oriented management UI with real-time health badges, view filtering (`Active Games`, `Managed`, `Attention Required`, `Hidden`), adoption, reapplication, and **Restore All**.
+  * `ManageGamesWindow`: Status-oriented management UI with real-time health badges, view filtering, adoption, reapplication, and **Restore All**.
   * `GameDetailsWindow`: Game health banner, frame limiting, HUD overlay toggles, per-game policy selection, and hidden status toggling.
   * `SettingsWindow`: Global management policy toggle (Manual vs. Automated Experimental) and startup control.
 
@@ -111,13 +147,14 @@ DXVK Companion supports two operating modes configured globally in **Settings** 
 
 ```text
 DXVK-Companion/
+├── DXVK-Companion.exe      # Standalone single-file executable
 ├── Profiles/
 │   ├── game-library.json   # Hierarchical game installations and managed file records
 │   ├── games.json          # Legacy profile configuration (migrated automatically)
 │   └── Backups/            # Pristine original game file baselines (isolated from game folders)
 ├── Cache/                  # Cached DXVK release metadata
 ├── Logs/                   # Application log files
-└── DXVK/                   # Extracted DXVK release binaries (x32 and x64)
+└── DXVK/                   # Extracted official DXVK release binaries (x32 and x64)
 ```
 
 ---
@@ -137,14 +174,14 @@ dotnet build tests/DXVKCompanion.PhaseA.Tests/DXVKCompanion.PhaseA.Tests.csproj 
 dotnet test tests/DXVKCompanion.PhaseA.Tests/DXVKCompanion.PhaseA.Tests.csproj --configuration Release --no-build --no-restore
 ```
 
-Continuous integration runs automatically on Windows via GitHub Actions (`.github/workflows/build-and-test.yml`).
+Continuous integration runs automatically on Windows runners via GitHub Actions (`.github/workflows/build-and-test.yml`).
 Automated standalone self-contained packaging is built on tag push via `.github/workflows/release.yml`.
 
 ---
 
 ## 🗺️ Project Specifications & Roadmap
 
-For complete specifications and architectural contracts, refer to the authoritative specification document:
+For complete specifications and architectural contracts, refer to the authoritative specification documents:
 * [Master Project Specification (Revised 2)](DXVK-COMPANION-SPEC-REVISED2.md)
 * [Phase A.5 Safety & Identity Design](DXVK-Companion-PhaseA5-Safety-and-Identity-Design-FINAL.md)
 
