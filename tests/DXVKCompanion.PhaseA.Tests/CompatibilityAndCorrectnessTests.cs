@@ -80,10 +80,8 @@ namespace DXVKCompanion.PhaseA.Tests
             var installer = new DxvkInstaller(new HttpClient(), engine, libraryStore, sourceDir.RootPath);
 
             // Test D3D12
-            var profileD3D12 = new GameProfile
+            var profileD3D12 = new GameProfile(exePath)
             {
-                ExePath = exePath,
-                ExeName = "Game.exe",
                 Api = GraphicsApi.D3D12,
                 Architecture = "x64"
             };
@@ -95,10 +93,8 @@ namespace DXVKCompanion.PhaseA.Tests
             Assert.False(File.Exists(Path.Combine(gameDir.RootPath, "dxgi.dll")));
 
             // Test Vulkan
-            var profileVulkan = new GameProfile
+            var profileVulkan = new GameProfile(exePath)
             {
-                ExePath = exePath,
-                ExeName = "Game.exe",
                 Api = GraphicsApi.Vulkan,
                 Architecture = "x64"
             };
@@ -131,10 +127,8 @@ namespace DXVKCompanion.PhaseA.Tests
             var installer = new DxvkInstaller(new HttpClient(), engine, libraryStore, sourceDir.RootPath);
             var rollback = new DxvkRollback(engine, libraryStore);
 
-            var profile = new GameProfile
+            var profile = new GameProfile(exePath)
             {
-                ExePath = exePath,
-                ExeName = "Game.exe",
                 Api = GraphicsApi.D3D10,
                 Architecture = "x64"
             };
@@ -179,10 +173,8 @@ namespace DXVKCompanion.PhaseA.Tests
             var installer = new DxvkInstaller(new HttpClient(), engine, libraryStore, sourceDir.RootPath);
             var rollback = new DxvkRollback(engine, libraryStore);
 
-            var profile = new GameProfile
+            var profile = new GameProfile(exePath)
             {
-                ExePath = exePath,
-                ExeName = "Game.exe",
                 Api = GraphicsApi.D3D8,
                 Architecture = "x32"
             };
@@ -227,10 +219,8 @@ namespace DXVKCompanion.PhaseA.Tests
             var initialEngine = new MultiFileTransactionEngine(backupsDir);
             var initialInstaller = new DxvkInstaller(new HttpClient(), initialEngine, libraryStore, sourceDir.RootPath);
 
-            var profile = new GameProfile
+            var profile = new GameProfile(exePath)
             {
-                ExePath = exePath,
-                ExeName = "Game.exe",
                 Api = GraphicsApi.D3D11,
                 Architecture = "x64"
             };
@@ -298,9 +288,12 @@ namespace DXVKCompanion.PhaseA.Tests
             var cacheStore = new CacheStore();
             cacheStore.SaveLatest(new CachedRelease
             {
-                Version = "2.6.2",
-                CachedAtUtc = DateTime.UtcNow,
-                DownloadUrl = "https://github.com/doitsujin/dxvk/releases/download/v2.6.2/dxvk-2.6.2.tar.gz"
+                Release = new ReleaseInfo
+                {
+                    Version = "2.6.2",
+                    DownloadUrl = "https://github.com/doitsujin/dxvk/releases/download/v2.6.2/dxvk-2.6.2.tar.gz"
+                },
+                CachedAt = DateTime.UtcNow
             });
             var github = new DxvkGithubClient(new HttpClient(), cacheStore);
 
@@ -357,9 +350,12 @@ namespace DXVKCompanion.PhaseA.Tests
             var cacheStore = new CacheStore();
             cacheStore.SaveLatest(new CachedRelease
             {
-                Version = "2.6.2",
-                CachedAtUtc = DateTime.UtcNow,
-                DownloadUrl = "https://fake/dxvk-2.6.2.tar.gz"
+                Release = new ReleaseInfo
+                {
+                    Version = "2.6.2",
+                    DownloadUrl = "https://fake/dxvk-2.6.2.tar.gz"
+                },
+                CachedAt = DateTime.UtcNow
             });
             var github = new DxvkGithubClient(new HttpClient(), cacheStore);
 
@@ -456,10 +452,8 @@ namespace DXVKCompanion.PhaseA.Tests
             var engine = new MultiFileTransactionEngine(Path.Combine(storageDir.RootPath, "backups"));
             var installer = new DxvkInstaller(new HttpClient(), engine, libraryStore, sourceDir.RootPath);
 
-            var profile = new GameProfile
+            var profile = new GameProfile(exePath)
             {
-                ExePath = exePath,
-                ExeName = "Game.exe",
                 Api = GraphicsApi.D3D11,
                 Architecture = "x64",
                 HudEnabled = true // Initially HUD is enabled, so dxvk.conf is created
@@ -691,6 +685,7 @@ namespace DXVKCompanion.PhaseA.Tests
 
             // Assert: Refused because of architecture mismatch
             Assert.False(result);
+            var updated = libraryStore.FindByInstallationPath(gameDir.RootPath);
             Assert.NotNull(updated);
             Assert.Equal(InstallationConflictFlags.Architecture, updated!.ConflictFlags & InstallationConflictFlags.Architecture);
             Assert.Equal(RestorationState.AttentionRequired, updated.RestorationState);
@@ -717,10 +712,8 @@ namespace DXVKCompanion.PhaseA.Tests
             var initialEngine = new MultiFileTransactionEngine(backupsDir);
             var initialInstaller = new DxvkInstaller(new HttpClient(), initialEngine, libraryStore, sourceDir.RootPath);
 
-            var profile = new GameProfile
+            var profile = new GameProfile(exePath)
             {
-                ExePath = exePath,
-                ExeName = "Game.exe",
                 Api = GraphicsApi.D3D11,
                 Architecture = "x64",
                 HudEnabled = true
