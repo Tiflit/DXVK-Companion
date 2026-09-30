@@ -49,6 +49,9 @@ namespace DXVKCompanion.DXVK
 
         public bool UpdateAvailable(GameProfile profile, ReleaseInfo latest)
         {
+            if (!DxvkCompatibility.IsDxvkSupported(profile.Api))
+                return false;
+
             if (string.IsNullOrWhiteSpace(profile.DxvkVersion))
                 return true;
 
@@ -103,6 +106,11 @@ namespace DXVKCompanion.DXVK
 
         private async Task<DxvkActionResult> QueueOrApplyAsync(GameProfile profile, bool isRunning, PendingAction action)
         {
+            if (action == PendingAction.Enable && !DxvkCompatibility.IsDxvkSupported(profile.Api))
+            {
+                return DxvkActionResult.Failed;
+            }
+
             if (isRunning)
             {
                 string gameDir = Path.GetDirectoryName(profile.ExePath) ?? string.Empty;
@@ -154,6 +162,11 @@ namespace DXVKCompanion.DXVK
 
         private async Task<DxvkActionResult> QueueOrApplyReapplyAsync(GameProfile profile, bool isRunning, bool updateBaseline)
         {
+            if (!DxvkCompatibility.IsDxvkSupported(profile.Api))
+            {
+                return DxvkActionResult.Failed;
+            }
+
             if (isRunning)
             {
                 string gameDir = Path.GetDirectoryName(profile.ExePath) ?? string.Empty;
@@ -298,6 +311,11 @@ namespace DXVKCompanion.DXVK
 
         public async Task<bool> EnableDxvkAsync(GameProfile profile, string? targetVersion = null)
         {
+            if (!DxvkCompatibility.IsDxvkSupported(profile.Api))
+            {
+                return false;
+            }
+
             ReleaseInfo? release;
             if (!string.IsNullOrWhiteSpace(targetVersion))
             {
@@ -342,6 +360,9 @@ namespace DXVKCompanion.DXVK
 
         public async Task<bool> AdoptExistingAsync(GameProfile profile)
         {
+            if (!DxvkCompatibility.IsDxvkSupported(profile.Api))
+                return false;
+
             string gameDir = Path.GetDirectoryName(profile.ExePath) ?? string.Empty;
             var detector = new ExistingDxvkDetector(_installer.DxvkSourceDir);
             var assessment = detector.AssessDirectory(gameDir, profile.Architecture);
@@ -358,6 +379,11 @@ namespace DXVKCompanion.DXVK
 
         public async Task<bool> ReapplyAsync(GameProfile profile, bool updateBaseline = true)
         {
+            if (!DxvkCompatibility.IsDxvkSupported(profile.Api))
+            {
+                return false;
+            }
+
             bool ok = await _installer.ReapplyAsync(profile, updateBaseline);
             if (ok)
             {

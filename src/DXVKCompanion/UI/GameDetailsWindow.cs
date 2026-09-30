@@ -167,7 +167,7 @@ namespace DXVKCompanion.UI
                 Controls.Add(adoptPanel);
                 top += 45;
             }
-            else if (installation?.RestorationState == RestorationState.AttentionRequired)
+            else if (installation?.RestorationState == RestorationState.AttentionRequired && DxvkCompatibility.IsDxvkSupported(_profile.Api))
             {
                 var reapplyPanel = new Panel
                 {
