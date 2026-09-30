@@ -318,6 +318,18 @@ namespace DXVKCompanion.DXVK
                 var pendingType = installation.PendingAction.Type;
                 bool success = false;
 
+                // Validate architecture invariant
+                if (!string.IsNullOrWhiteSpace(installation.PendingAction.Architecture))
+                {
+                    if (!string.Equals(profile.Architecture, installation.PendingAction.Architecture, StringComparison.OrdinalIgnoreCase))
+                    {
+                        Logger.Log($"DxvkManager: architecture mismatch for pending action on {profile.ExeName} (queued: {installation.PendingAction.Architecture}, detected: {profile.Architecture}). Aborting.");
+                        installation.ConflictFlags = InstallationConflictFlags.AttentionRequired;
+                        _gameLibraryStore.Save(installation);
+                        return false;
+                    }
+                }
+
                 switch (pendingType)
                 {
                     case PendingActionType.Install:
@@ -327,21 +339,30 @@ namespace DXVKCompanion.DXVK
                         string? archiveSha256 = installation.PendingAction.ArchiveSha256;
 
                         ReleaseInfo? release = null;
-                        if (string.Equals(targetVer, "latest", StringComparison.OrdinalIgnoreCase) || string.IsNullOrEmpty(downloadUrl))
+                        if (!string.IsNullOrEmpty(downloadUrl))
                         {
-                            var resolved = await GetLatestReleaseAsync();
-                            if (resolved != null)
+                            release = new ReleaseInfo
                             {
-                                release = resolved;
-                            }
+                                Version = targetVer,
+                                DownloadUrl = downloadUrl,
+                                ArchiveSha256 = archiveSha256
+                            };
+                        }
+                        else if (string.Equals(targetVer, "latest", StringComparison.OrdinalIgnoreCase) || string.IsNullOrEmpty(targetVer))
+                        {
+                            release = await GetLatestReleaseAsync();
+                        }
+                        else
+                        {
+                            release = await _github.FetchReleaseByVersionAsync(targetVer);
+                            release ??= new ReleaseInfo { Version = targetVer, DownloadUrl = "" };
                         }
 
-                        release ??= new ReleaseInfo
+                        if (release == null)
                         {
-                            Version = !string.IsNullOrEmpty(targetVer) && !string.Equals(targetVer, "latest", StringComparison.OrdinalIgnoreCase) ? targetVer : "latest",
-                            DownloadUrl = downloadUrl,
-                            ArchiveSha256 = archiveSha256
-                        };
+                            Logger.Log($"DxvkManager: could not resolve release for pending action on {profile.ExeName}.");
+                            return false;
+                        }
 
                         success = await _installer.ApplyToGameAsync(profile, release);
                         if (success)
@@ -414,6 +435,19 @@ namespace DXVKCompanion.DXVK
                 var profile = _profiles.GetOrCreate(primaryExePath);
 
                 bool success = false;
+
+                // Validate architecture invariant
+                if (!string.IsNullOrWhiteSpace(installation.PendingAction.Architecture))
+                {
+                    if (!string.Equals(profile.Architecture, installation.PendingAction.Architecture, StringComparison.OrdinalIgnoreCase))
+                    {
+                        Logger.Log($"DxvkManager: architecture mismatch in bulk processing on {profile.ExeName} (queued: {installation.PendingAction.Architecture}, detected: {profile.Architecture}). Aborting.");
+                        installation.ConflictFlags = InstallationConflictFlags.AttentionRequired;
+                        _gameLibraryStore.Save(installation);
+                        continue;
+                    }
+                }
+
                 switch (installation.PendingAction.Type)
                 {
                     case PendingActionType.Install:
@@ -423,21 +457,30 @@ namespace DXVKCompanion.DXVK
                         string? archiveSha256 = installation.PendingAction.ArchiveSha256;
 
                         ReleaseInfo? release = null;
-                        if (string.Equals(targetVer, "latest", StringComparison.OrdinalIgnoreCase) || string.IsNullOrEmpty(downloadUrl))
+                        if (!string.IsNullOrEmpty(downloadUrl))
                         {
-                            var resolved = await GetLatestReleaseAsync();
-                            if (resolved != null)
+                            release = new ReleaseInfo
                             {
-                                release = resolved;
-                            }
+                                Version = targetVer,
+                                DownloadUrl = downloadUrl,
+                                ArchiveSha256 = archiveSha256
+                            };
+                        }
+                        else if (string.Equals(targetVer, "latest", StringComparison.OrdinalIgnoreCase) || string.IsNullOrEmpty(targetVer))
+                        {
+                            release = await GetLatestReleaseAsync();
+                        }
+                        else
+                        {
+                            release = await _github.FetchReleaseByVersionAsync(targetVer);
+                            release ??= new ReleaseInfo { Version = targetVer, DownloadUrl = "" };
                         }
 
-                        release ??= new ReleaseInfo
+                        if (release == null)
                         {
-                            Version = !string.IsNullOrEmpty(targetVer) && !string.Equals(targetVer, "latest", StringComparison.OrdinalIgnoreCase) ? targetVer : "latest",
-                            DownloadUrl = downloadUrl,
-                            ArchiveSha256 = archiveSha256
-                        };
+                            Logger.Log($"DxvkManager: could not resolve release in bulk processing for {profile.ExeName}.");
+                            continue;
+                        }
 
                         success = await _installer.ApplyToGameAsync(profile, release);
                         if (success)

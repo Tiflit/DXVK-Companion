@@ -1,4 +1,9 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
 using System.Text.Json;
+using DXVKCompanion.Utils;
 
 namespace DXVKCompanion.Safety;
 
@@ -17,6 +22,7 @@ public sealed record MultiFileTransactionFile
     public SafetyFileIdentity? ExpectedSourceIdentity { get; init; }
     public OriginalFileState OriginalState { get; init; } = OriginalFileState.Unknown;
     public string? BackupRelativePath { get; init; }
+    public FileTransactionAction Action { get; init; } = FileTransactionAction.Deploy;
 }
 
 public sealed record MultiFileTransactionTestHooks
@@ -60,6 +66,13 @@ public sealed class MultiFileTransactionEngine
                 if (plan == null || string.IsNullOrWhiteSpace(plan.InstallationRoot) || plan.Files == null)
                     continue;
 
+                // If prepared (no writes ever made) or committed (already verified before termination), simply clean up
+                if (plan.State == TransactionState.Prepared || plan.State == TransactionState.Committed)
+                {
+                    TryDelete(planFile);
+                    continue;
+                }
+
                 for (var index = plan.Files.Count - 1; index >= 0; index--)
                 {
                     var filePlan = plan.Files[index];
@@ -70,7 +83,20 @@ public sealed class MultiFileTransactionEngine
                         string backupPath = ResolveBackupPath(filePlan.BackupRelativePath, plan.TransactionId, filePlan.RelativePath);
                         if (File.Exists(backupPath))
                         {
+                            var backupIdent = FileIdentity.Capture(backupPath);
+                            if (filePlan.BackupIdentity != null && backupIdent != filePlan.BackupIdentity)
+                            {
+                                Logger.Log($"MultiFileTransactionEngine: backup identity mismatch during crash recovery for {filePlan.RelativePath}");
+                                continue;
+                            }
+
                             File.Copy(backupPath, targetPath, overwrite: true);
+
+                            var recoveredIdent = FileIdentity.Capture(targetPath);
+                            if (filePlan.OriginalIdentity != null && recoveredIdent != filePlan.OriginalIdentity)
+                            {
+                                Logger.Log($"MultiFileTransactionEngine: recovered file identity mismatch for {filePlan.RelativePath}");
+                            }
                         }
                     }
                     else if (filePlan.OriginalState == OriginalFileState.DidNotExist)
@@ -118,7 +144,8 @@ public sealed class MultiFileTransactionEngine
 
                 string? sourcePath = null;
                 SafetyFileIdentity? sourceIdentity = null;
-                if (request.Operation is TransactionOperation.Install or TransactionOperation.Update or TransactionOperation.Reapply)
+                if ((request.Operation is TransactionOperation.Install or TransactionOperation.Update or TransactionOperation.Reapply)
+                    && file.Action == FileTransactionAction.Deploy)
                 {
                     sourcePath = Path.GetFullPath(file.SourceFilePath!);
                     if (!File.Exists(sourcePath))
@@ -135,8 +162,18 @@ public sealed class MultiFileTransactionEngine
 
                 string? backupPath = null;
                 SafetyFileIdentity? backupIdentity = null;
-                if ((request.Operation is TransactionOperation.Install or TransactionOperation.Update or TransactionOperation.Reapply)
-                    && file.OriginalState == OriginalFileState.Existing)
+
+                if (file.Action == FileTransactionAction.RestoreOriginal || request.Operation == TransactionOperation.Restore)
+                {
+                    if (file.OriginalState == OriginalFileState.Existing)
+                    {
+                        backupPath = ResolveBackupPath(file.BackupRelativePath, transactionId, file.RelativePath);
+                        if (!File.Exists(backupPath))
+                            return SafeFailure(transactionId, request.Operation, affected, $"Original backup is unavailable for restore: {file.RelativePath}");
+                        backupIdentity = FileIdentity.Capture(backupPath);
+                    }
+                }
+                else if (file.OriginalState == OriginalFileState.Existing)
                 {
                     backupPath = ResolveBackupPath(file.BackupRelativePath, transactionId, file.RelativePath);
                     if (request.Operation == TransactionOperation.Install || !File.Exists(backupPath))
@@ -152,13 +189,6 @@ public sealed class MultiFileTransactionEngine
                         backupIdentity = FileIdentity.Capture(backupPath);
                     }
                 }
-                else if (request.Operation == TransactionOperation.Restore && file.OriginalState == OriginalFileState.Existing)
-                {
-                    backupPath = ResolveBackupPath(file.BackupRelativePath, transactionId, file.RelativePath);
-                    if (!File.Exists(backupPath))
-                        return SafeFailure(transactionId, request.Operation, affected, $"Original backup is unavailable for restore: {file.RelativePath}");
-                    backupIdentity = FileIdentity.Capture(backupPath);
-                }
 
                 prepared.Add(new PreparedFile(file, targetPath, sourcePath, sourceIdentity, file.OriginalState, currentIdentity, backupPath, backupIdentity));
             }
@@ -172,6 +202,7 @@ public sealed class MultiFileTransactionEngine
                 {
                     RelativePath = p.File.RelativePath,
                     SourceRelativePath = p.SourcePath ?? string.Empty,
+                    Action = p.File.Action,
                     ExpectedTargetIdentity = p.File.ExpectedTargetIdentity,
                     ExpectedSourceIdentity = p.File.ExpectedSourceIdentity,
                     OriginalState = p.OriginalState,
@@ -183,6 +214,9 @@ public sealed class MultiFileTransactionEngine
             };
             File.WriteAllText(planPath, JsonSerializer.Serialize(plan));
 
+            plan = plan with { State = TransactionState.Applying };
+            File.WriteAllText(planPath, JsonSerializer.Serialize(plan));
+
             for (var index = 0; index < prepared.Count; index++)
             {
                 var item = prepared[index];
@@ -191,8 +225,14 @@ public sealed class MultiFileTransactionEngine
                 _hooks.AfterApply?.Invoke(item.TargetPath, index);
             }
 
+            plan = plan with { State = TransactionState.Verifying };
+            File.WriteAllText(planPath, JsonSerializer.Serialize(plan));
+
             foreach (var item in prepared)
                 Verify(item, request.Operation);
+
+            plan = plan with { State = TransactionState.Committed };
+            File.WriteAllText(planPath, JsonSerializer.Serialize(plan));
 
             File.Delete(planPath);
             return new SafetyTransactionResult
@@ -257,14 +297,18 @@ public sealed class MultiFileTransactionEngine
 
             _ = ResolveInsideRoot(request.InstallationRoot, file.RelativePath);
 
-            if (request.Operation is TransactionOperation.Install or TransactionOperation.Update or TransactionOperation.Reapply)
+            if ((request.Operation is TransactionOperation.Install or TransactionOperation.Update or TransactionOperation.Reapply)
+                && file.Action == FileTransactionAction.Deploy)
             {
                 if (string.IsNullOrWhiteSpace(file.SourceFilePath))
                     throw new InvalidOperationException($"A source file is required: {file.RelativePath}");
             }
 
-            if (request.Operation == TransactionOperation.Restore && file.OriginalState == OriginalFileState.Unknown)
+            if ((request.Operation == TransactionOperation.Restore || file.Action == FileTransactionAction.RestoreOriginal)
+                && file.OriginalState == OriginalFileState.Unknown)
+            {
                 throw new InvalidOperationException($"Original state is required for restore: {file.RelativePath}");
+            }
         }
     }
 
@@ -274,7 +318,7 @@ public sealed class MultiFileTransactionEngine
             ? currentState == OriginalFileState.DidNotExist
             : currentState == OriginalFileState.Existing && currentIdentity == file.ExpectedTargetIdentity;
 
-        if (operation != TransactionOperation.Restore)
+        if (operation != TransactionOperation.Restore && file.Action != FileTransactionAction.RestoreOriginal)
         {
             if (!matches)
                 throw new InvalidOperationException($"The target changed during validation: {file.RelativePath}");
@@ -287,7 +331,7 @@ public sealed class MultiFileTransactionEngine
 
     private static void Apply(PreparedFile item, TransactionOperation operation)
     {
-        if (operation == TransactionOperation.Restore)
+        if (operation == TransactionOperation.Restore || item.File.Action == FileTransactionAction.RestoreOriginal)
         {
             if (item.File.OriginalState == OriginalFileState.Existing)
             {
@@ -309,7 +353,7 @@ public sealed class MultiFileTransactionEngine
 
     private static void Verify(PreparedFile item, TransactionOperation operation)
     {
-        if (operation == TransactionOperation.Restore)
+        if (operation == TransactionOperation.Restore || item.File.Action == FileTransactionAction.RestoreOriginal)
         {
             if (item.File.OriginalState == OriginalFileState.DidNotExist)
             {
@@ -337,14 +381,16 @@ public sealed class MultiFileTransactionEngine
             var item = prepared[index];
             _hooks.DuringRecovery?.Invoke(index);
 
-            if (item.OriginalState == OriginalFileState.Existing)
+            if (item.OriginalIdentity is not null)
             {
-                if (item.BackupPath is null || !File.Exists(item.BackupPath))
+                if (item.BackupPath != null && File.Exists(item.BackupPath))
+                {
+                    File.Copy(item.BackupPath, item.TargetPath, overwrite: true);
+                }
+                else if (item.OriginalState == OriginalFileState.Existing && item.BackupPath is null)
+                {
                     throw new IOException($"Original backup is unavailable: {item.File.RelativePath}");
-                File.Copy(item.BackupPath, item.TargetPath, overwrite: true);
-                var recovered = FileIdentity.Capture(item.TargetPath);
-                if (recovered != item.OriginalIdentity)
-                    throw new IOException($"Recovered target does not match the original identity: {item.File.RelativePath}");
+                }
             }
             else if (item.OriginalState == OriginalFileState.DidNotExist)
             {
@@ -369,7 +415,6 @@ public sealed class MultiFileTransactionEngine
     private static string ResolveInsideRoot(string installationRoot, string relativePath)
     {
         var root = Path.GetFullPath(installationRoot);
-        var candidate = Path.GetFullPath(Path.Combine(root, relativePath));
         var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
         var prefix = root.EndsWith(Path.DirectorySeparatorChar) ? root : root + Path.DirectorySeparatorChar;
         if (!candidate.StartsWith(prefix, comparison))

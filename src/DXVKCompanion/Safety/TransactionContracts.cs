@@ -53,6 +53,13 @@ public enum TransactionOutcome : byte
     UnresolvedRecovery = 3
 }
 
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum FileTransactionAction : byte
+{
+    Deploy = 0,
+    RestoreOriginal = 1
+}
+
 public sealed record SafetyFileIdentity(string Sha256, long Size)
 {
     public bool IsValid =>
@@ -76,6 +83,7 @@ public sealed record SafetyFilePlan
 {
     public required string RelativePath { get; init; }
     public required string SourceRelativePath { get; init; }
+    public FileTransactionAction Action { get; init; } = FileTransactionAction.Deploy;
     public SafetyFileIdentity? ExpectedTargetIdentity { get; init; }
     public SafetyFileIdentity? ExpectedSourceIdentity { get; init; }
     public OriginalFileState OriginalState { get; init; } = OriginalFileState.Unknown;

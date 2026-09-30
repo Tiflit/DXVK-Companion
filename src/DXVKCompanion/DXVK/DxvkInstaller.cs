@@ -549,27 +549,28 @@ namespace DXVKCompanion.DXVK
                 }
                 else
                 {
-                    // Cleanly remove or restore dxvk.conf if it was previously created or managed by Companion
+                    // Transactional removal or restoration of dxvk.conf when configuration is no longer required
                     var existingConfRecord = installation.FindManagedFile(DxvkConfigManager.ConfigFileName);
                     if (existingConfRecord != null)
                     {
                         string targetConfPath = Path.Combine(gameDir, DxvkConfigManager.ConfigFileName);
-                        if (File.Exists(targetConfPath))
+                        OriginalFileState confOriginalState = existingConfRecord.OriginalState switch
                         {
-                            if (existingConfRecord.OriginalState == FileOriginalState.Missing)
-                            {
-                                try { File.Delete(targetConfPath); } catch { }
-                            }
-                            else if (existingConfRecord.OriginalState == FileOriginalState.Existing && !string.IsNullOrEmpty(existingConfRecord.BackupRelativePath))
-                            {
-                                string backupPath = Path.Combine(_transactionEngine.TransactionStoreRoot, existingConfRecord.BackupRelativePath);
-                                if (File.Exists(backupPath))
-                                {
-                                    try { File.Copy(backupPath, targetConfPath, overwrite: true); } catch { }
-                                }
-                            }
-                        }
-                        installation.ManagedFiles.Remove(existingConfRecord);
+                            FileOriginalState.Existing => OriginalFileState.Existing,
+                            FileOriginalState.Missing => OriginalFileState.DidNotExist,
+                            _ => OriginalFileState.Unknown
+                        };
+                        string? confBackupRelativePath = existingConfRecord.BackupRelativePath;
+                        SafetyFileIdentity? expectedConfTargetIdentity = File.Exists(targetConfPath) ? FileIdentity.Capture(targetConfPath) : null;
+
+                        filesToProcess.Add(new MultiFileTransactionFile
+                        {
+                            RelativePath = DxvkConfigManager.ConfigFileName,
+                            Action = FileTransactionAction.RestoreOriginal,
+                            ExpectedTargetIdentity = expectedConfTargetIdentity,
+                            OriginalState = confOriginalState,
+                            BackupRelativePath = confBackupRelativePath
+                        });
                     }
                 }
 
@@ -602,6 +603,16 @@ namespace DXVKCompanion.DXVK
 
                     foreach (var filePlan in filesToProcess)
                     {
+                        if (filePlan.Action == FileTransactionAction.RestoreOriginal)
+                        {
+                            var confRec = installation.FindManagedFile(filePlan.RelativePath);
+                            if (confRec != null)
+                            {
+                                installation.ManagedFiles.Remove(confRec);
+                            }
+                            continue;
+                        }
+
                         var record = installation.GetOrAddManagedFile(filePlan.RelativePath);
                         record.OriginalState = filePlan.OriginalState switch
                         {

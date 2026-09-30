@@ -524,7 +524,282 @@ namespace DXVKCompanion.PhaseA.Tests
             // Assert
             Assert.Equal(1, recovered);
             Assert.False(File.Exists(planPath)); // Plan cleaned up
-            Assert.Equal("original-clean-baseline", File.ReadAllText(gameFile)); // File restored to baseline
+            Assert.Equal("original-clean-baseline", File.ReadAllText(gameFile));
+        }
+
+        [Fact]
+        public async Task GithubClient_FetchesSpecificReleaseAndParsesExactWindowsAssetAndDigest()
+        {
+            var mockHandler = new MockHttpMessageHandler(req =>
+            {
+                if (req.RequestUri!.ToString().Contains("/tags/v2.6.2") || req.RequestUri.ToString().Contains("/tags/2.6.2"))
+                {
+                    string json = """
+                    {
+                        "tag_name": "v2.6.2",
+                        "assets": [
+                            {
+                                "name": "dxvk-native-2.6.2-steamrt-sniper.tar.gz",
+                                "browser_download_url": "https://github.com/doitsujin/dxvk/releases/download/v2.6.2/dxvk-native-2.6.2.tar.gz",
+                                "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+                            },
+                            {
+                                "name": "dxvk-2.6.2.tar.gz",
+                                "browser_download_url": "https://github.com/doitsujin/dxvk/releases/download/v2.6.2/dxvk-2.6.2.tar.gz",
+                                "digest": "sha256:aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899"
+                            }
+                        ]
+                    }
+                    """;
+                    return new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StringContent(json)
+                    };
+                }
+                return new HttpResponseMessage(HttpStatusCode.NotFound);
+            });
+
+            using var httpClient = new HttpClient(mockHandler);
+            using var cacheDir = new SyntheticTestDirectory();
+            var cacheStore = new CacheStore(Path.Combine(cacheDir.RootPath, "cache.json"));
+            var client = new DxvkGithubClient(httpClient, cacheStore);
+
+            var release = await client.FetchReleaseByVersionAsync("2.6.2");
+            Assert.NotNull(release);
+            Assert.Equal("2.6.2", release!.Version);
+            Assert.Equal("https://github.com/doitsujin/dxvk/releases/download/v2.6.2/dxvk-2.6.2.tar.gz", release.DownloadUrl);
+            Assert.Equal("aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899", release.ArchiveSha256);
+        }
+
+        [Fact]
+        public async Task PendingAction_ResolvesSpecificVersion_WhenUrlMissing_DoesNotDefaultToLatest()
+        {
+            using var gameDir = new SyntheticTestDirectory();
+            using var storageDir = new SyntheticTestDirectory();
+            using var sourceDir = new SyntheticTestDirectory();
+
+            string releaseDir25 = Path.Combine(sourceDir.RootPath, "2.5", "x64");
+            Directory.CreateDirectory(releaseDir25);
+            File.WriteAllText(Path.Combine(releaseDir25, "d3d11.dll"), "dxvk-2.5-d3d11");
+            File.WriteAllText(Path.Combine(releaseDir25, "dxgi.dll"), "dxvk-2.5-dxgi");
+
+            string exePath = gameDir.CreateFile("Game.exe", "fake-exe");
+
+            var libraryStore = new GameLibraryStore(
+                Path.Combine(storageDir.RootPath, "game-library.json"),
+                Path.Combine(storageDir.RootPath, "backups"));
+            var profileStore = new ProfileStore(Path.Combine(storageDir.RootPath, "games.json"));
+            var engine = new MultiFileTransactionEngine(Path.Combine(storageDir.RootPath, "backups"));
+            var installer = new DxvkInstaller(new HttpClient(), engine, libraryStore, sourceDir.RootPath);
+            var rollback = new DxvkRollback(engine, libraryStore);
+
+            var mockHandler = new MockHttpMessageHandler(req =>
+            {
+                // Returns 2.5 when tag is queried, and 2.6.2 when latest is queried
+                if (req.RequestUri!.ToString().Contains("/tags/"))
+                {
+                    string json = """
+                    {
+                        "tag_name": "v2.5",
+                        "assets": [
+                            {
+                                "name": "dxvk-2.5.tar.gz",
+                                "browser_download_url": "https://fake/dxvk-2.5.tar.gz"
+                            }
+                        ]
+                    }
+                    """;
+                    return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(json) };
+                }
+                if (req.RequestUri!.ToString().Contains("/latest"))
+                {
+                    string json = """
+                    {
+                        "tag_name": "v2.6.2",
+                        "assets": [
+                            {
+                                "name": "dxvk-2.6.2.tar.gz",
+                                "browser_download_url": "https://fake/dxvk-2.6.2.tar.gz"
+                            }
+                        ]
+                    }
+                    """;
+                    return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(json) };
+                }
+                return new HttpResponseMessage(HttpStatusCode.NotFound);
+            });
+
+            var github = new DxvkGithubClient(new HttpClient(mockHandler), new CacheStore(Path.Combine(storageDir.RootPath, "cache.json")));
+            var manager = new DxvkManager(installer, rollback, github, profileStore, libraryStore);
+
+            var profile = profileStore.GetOrCreate(exePath);
+            profile.Api = GraphicsApi.D3D11;
+            profile.Architecture = "x64";
+            profileStore.Save(profile);
+
+            var installation = libraryStore.GetOrCreateInstallation(gameDir.RootPath, "Game");
+            // Older pending action has exact version "2.5" but DownloadUrl is empty
+            installation.PendingAction = PendingAction.Install("2.5", "Queued from old version");
+            libraryStore.Save(installation);
+
+            // Act: ApplyPendingAsync executes
+            bool applied = await manager.ApplyPendingAsync(exePath);
+            Assert.True(applied);
+
+            // Assert: must NOT have upgraded to latest (2.6.2) — it must remain exact target version 2.5!
+            var updated = libraryStore.FindByInstallationPath(gameDir.RootPath);
+            Assert.NotNull(updated);
+            Assert.Equal("2.5", updated!.ManagedDxvkVersion);
+        }
+
+        [Fact]
+        public async Task PendingAction_AbortsWhenArchitectureMismatched()
+        {
+            using var gameDir = new SyntheticTestDirectory();
+            using var storageDir = new SyntheticTestDirectory();
+
+            string exePath = gameDir.CreateFile("Game.exe", "fake-exe");
+
+            var libraryStore = new GameLibraryStore(
+                Path.Combine(storageDir.RootPath, "game-library.json"),
+                Path.Combine(storageDir.RootPath, "backups"));
+            var profileStore = new ProfileStore(Path.Combine(storageDir.RootPath, "games.json"));
+            var engine = new MultiFileTransactionEngine(Path.Combine(storageDir.RootPath, "backups"));
+            var installer = new DxvkInstaller(new HttpClient(), engine, libraryStore);
+            var rollback = new DxvkRollback(engine, libraryStore);
+            var github = new DxvkGithubClient(new HttpClient(), new CacheStore());
+            var manager = new DxvkManager(installer, rollback, github, profileStore, libraryStore);
+
+            var profile = profileStore.GetOrCreate(exePath);
+            profile.Api = GraphicsApi.D3D11;
+            profile.Architecture = "x64"; // Game is 64-bit
+            profileStore.Save(profile);
+
+            var installation = libraryStore.GetOrCreateInstallation(gameDir.RootPath, "Game");
+            // Action was queued for x32
+            installation.PendingAction = PendingAction.Install(
+                "2.6",
+                "Queued for x32",
+                "https://fake/dxvk-2.6.tar.gz",
+                null,
+                "x32",
+                new[] { "d3d11.dll", "dxgi.dll" });
+            libraryStore.Save(installation);
+
+            // Act
+            bool result = await manager.ApplyPendingAsync(exePath);
+
+            // Assert: Refused because of architecture mismatch
+            Assert.False(result);
+            var updated = libraryStore.FindByInstallationPath(gameDir.RootPath);
+            Assert.Equal(InstallationConflictFlags.AttentionRequired, updated!.ConflictFlags);
+        }
+
+        [Fact]
+        public async Task Reapply_RemovesDxvkConfTransactionally_RollsBackOnDllFailure()
+        {
+            using var gameDir = new SyntheticTestDirectory();
+            using var storageDir = new SyntheticTestDirectory();
+            using var sourceDir = new SyntheticTestDirectory();
+
+            string backupsDir = Path.Combine(storageDir.RootPath, "backups");
+            string releaseDir = Path.Combine(sourceDir.RootPath, "2.6", "x64");
+            Directory.CreateDirectory(releaseDir);
+            File.WriteAllText(Path.Combine(releaseDir, "d3d11.dll"), "dxvk-2.6-d3d11");
+            File.WriteAllText(Path.Combine(releaseDir, "dxgi.dll"), "dxvk-2.6-dxgi");
+
+            string exePath = gameDir.CreateFile("Game.exe", "fake-exe");
+
+            var libraryStore = new GameLibraryStore(
+                Path.Combine(storageDir.RootPath, "game-library.json"),
+                backupsDir);
+            var initialEngine = new MultiFileTransactionEngine(backupsDir);
+            var initialInstaller = new DxvkInstaller(new HttpClient(), initialEngine, libraryStore, sourceDir.RootPath);
+
+            var profile = new GameProfile
+            {
+                ExePath = exePath,
+                ExeName = "Game.exe",
+                Api = GraphicsApi.D3D11,
+                Architecture = "x64",
+                HudEnabled = true
+            };
+
+            // Initial apply: dxvk.conf is created
+            bool ok = await initialInstaller.ApplyToGameAsync(profile, new ReleaseInfo { Version = "2.6" });
+            Assert.True(ok);
+            Assert.True(File.Exists(Path.Combine(gameDir.RootPath, "dxvk.conf")));
+
+            // User turns off HUD and frame limiter
+            profile.HudEnabled = false;
+            profile.FrameLimit = 0;
+
+            // Inject failure during reapply (e.g. while applying DLLs)
+            var failingEngine = new MultiFileTransactionEngine(backupsDir, new MultiFileTransactionTestHooks
+            {
+                AfterApply = (target, idx) =>
+                {
+                    if (target.EndsWith(".dll"))
+                        throw new IOException("Injected DLL write error");
+                }
+            });
+            var failingInstaller = new DxvkInstaller(new HttpClient(), failingEngine, libraryStore, sourceDir.RootPath);
+
+            bool reapplyOk = await failingInstaller.ReapplyAsync(profile);
+            Assert.False(reapplyOk);
+
+            // Transactional rollback check: dxvk.conf was NOT deleted outside the transaction!
+            // It remains intact because the transaction failed safely and rolled back!
+            Assert.True(File.Exists(Path.Combine(gameDir.RootPath, "dxvk.conf")));
+            var inst = libraryStore.FindByInstallationPath(gameDir.RootPath);
+            Assert.NotNull(inst!.FindManagedFile("dxvk.conf"));
+        }
+
+        [Fact]
+        public void CrashRecovery_DoesNotRollBackCommittedTransaction()
+        {
+            using var gameDir = new SyntheticTestDirectory();
+            using var storageDir = new SyntheticTestDirectory();
+
+            string backupsDir = Path.Combine(storageDir.RootPath, "backups");
+            Directory.CreateDirectory(backupsDir);
+
+            string gameFile = gameDir.CreateFile("d3d11.dll", "newly-committed-dxvk-file");
+            string backupFile = Path.Combine(backupsDir, "test-backup", "d3d11.dll");
+            Directory.CreateDirectory(Path.GetDirectoryName(backupFile)!);
+            File.WriteAllText(backupFile, "old-original-file");
+
+            string planId = Guid.NewGuid().ToString("N");
+            var plan = new SafetyTransactionPlan
+            {
+                TransactionId = planId,
+                Operation = TransactionOperation.Install,
+                InstallationRoot = gameDir.RootPath,
+                State = TransactionState.Committed, // Already successfully committed
+                Files = new[]
+                {
+                    new SafetyFilePlan
+                    {
+                        RelativePath = "d3d11.dll",
+                        SourceRelativePath = "source.dll",
+                        OriginalState = OriginalFileState.Existing,
+                        BackupRelativePath = Path.Combine("test-backup", "d3d11.dll")
+                    }
+                }
+            };
+
+            string planPath = Path.Combine(backupsDir, planId + ".json");
+            File.WriteAllText(planPath, JsonSerializer.Serialize(plan));
+
+            var engine = new MultiFileTransactionEngine(backupsDir);
+
+            // Act: recover
+            int recovered = engine.RecoverInterruptedTransactions();
+
+            // Assert: Committed transaction plan is cleanly deleted without rolling back the game file
+            Assert.Equal(0, recovered);
+            Assert.False(File.Exists(planPath));
+            Assert.Equal("newly-committed-dxvk-file", File.ReadAllText(gameFile));
         }
 
         private sealed class TestModuleScanner : ModuleScanner
@@ -535,6 +810,19 @@ namespace DXVKCompanion.PhaseA.Tests
                 _modules = new HashSet<string>(modules, StringComparer.OrdinalIgnoreCase);
             }
             public override HashSet<string> GetLoadedGraphicsModules(Process process) => _modules;
+        }
+
+        private sealed class MockHttpMessageHandler : HttpMessageHandler
+        {
+            private readonly Func<HttpRequestMessage, HttpResponseMessage> _handler;
+            public MockHttpMessageHandler(Func<HttpRequestMessage, HttpResponseMessage> handler)
+            {
+                _handler = handler;
+            }
+            protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+            {
+                return Task.FromResult(_handler(request));
+            }
         }
     }
 }
