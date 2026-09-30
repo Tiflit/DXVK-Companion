@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using DXVKCompanion.Models;
 using DXVKCompanion.Utils;
 
@@ -13,10 +14,32 @@ namespace DXVKCompanion.Monitoring
         private readonly ModuleScanner _scanner;
         private readonly PeParser _parser;
 
+        [DllImport("kernel32.dll", SetLastError = true, CallingConvention = CallingConvention.Winapi)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool IsWow64Process([In] IntPtr hProcess, [Out] out bool lpSystemInfo);
+
         public ApiClassifier(ModuleScanner scanner, PeParser parser)
         {
             _scanner = scanner ?? throw new ArgumentNullException(nameof(scanner));
             _parser = parser ?? throw new ArgumentNullException(nameof(parser));
+        }
+
+        public virtual bool Is32BitProcess(Process process)
+        {
+            try
+            {
+                if (!Environment.Is64BitOperatingSystem) return true;
+                if (process.HasExited) return false;
+                if (OperatingSystem.IsWindows() && IsWow64Process(process.Handle, out bool isWow64))
+                {
+                    return isWow64;
+                }
+                return false;
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         public ApiClassificationResult ClassifyDetailed(Process process, string? exePath = null)
@@ -46,28 +69,39 @@ namespace DXVKCompanion.Monitoring
                 var observed = new List<GraphicsApi>();
                 var evidence = new List<string>();
 
-                if (runtimeModules.Contains("d3d12.dll") || runtimeModules.Contains("vulkan-1.dll"))
+                if (runtimeModules.Contains("d3d12.dll"))
                 {
-                    observed.Add(GraphicsApi.ModernAPI);
-                    if (runtimeModules.Contains("d3d12.dll")) evidence.Add("Loaded runtime module: d3d12.dll");
-                    if (runtimeModules.Contains("vulkan-1.dll")) evidence.Add("Loaded runtime module: vulkan-1.dll");
+                    observed.Add(GraphicsApi.D3D12);
+                    evidence.Add("Loaded runtime module: d3d12.dll");
+                }
+
+                if (runtimeModules.Contains("vulkan-1.dll"))
+                {
+                    observed.Add(GraphicsApi.Vulkan);
+                    evidence.Add("Loaded runtime module: vulkan-1.dll");
+                }
+
+                if (runtimeModules.Contains("d3d10.dll") || runtimeModules.Contains("d3d10core.dll") || runtimeModules.Contains("d3d10_1.dll"))
+                {
+                    observed.Add(GraphicsApi.D3D10);
+                    evidence.Add("Loaded runtime module: d3d10core / d3d10.dll");
                 }
 
                 if (runtimeModules.Contains("d3d11.dll"))
                 {
-                    observed.Add(GraphicsApi.DX11);
+                    observed.Add(GraphicsApi.D3D11);
                     evidence.Add("Loaded runtime module: d3d11.dll");
                 }
 
-                if (runtimeModules.Contains("d3d10.dll") || runtimeModules.Contains("d3d10core.dll"))
+                if (runtimeModules.Contains("d3d8.dll"))
                 {
-                    observed.Add(GraphicsApi.DX10);
-                    evidence.Add("Loaded runtime module: d3d10.dll");
+                    observed.Add(GraphicsApi.D3D8);
+                    evidence.Add("Loaded runtime module: d3d8.dll");
                 }
 
                 if (runtimeModules.Contains("d3d9.dll"))
                 {
-                    observed.Add(GraphicsApi.DX9);
+                    observed.Add(GraphicsApi.D3D9);
                     evidence.Add("Loaded runtime module: d3d9.dll");
                 }
 
@@ -94,29 +128,41 @@ namespace DXVKCompanion.Monitoring
                     var observed = new List<GraphicsApi>();
                     var evidence = new List<string>();
 
-                    if (imports.Contains("d3d12.dll", StringComparer.OrdinalIgnoreCase) ||
-                        imports.Contains("vulkan-1.dll", StringComparer.OrdinalIgnoreCase))
+                    if (imports.Contains("d3d12.dll", StringComparer.OrdinalIgnoreCase))
                     {
-                        observed.Add(GraphicsApi.ModernAPI);
-                        evidence.Add("Static PE import: Direct3D 12 / Vulkan");
+                        observed.Add(GraphicsApi.D3D12);
+                        evidence.Add("Static PE import: d3d12.dll");
+                    }
+
+                    if (imports.Contains("vulkan-1.dll", StringComparer.OrdinalIgnoreCase))
+                    {
+                        observed.Add(GraphicsApi.Vulkan);
+                        evidence.Add("Static PE import: vulkan-1.dll");
+                    }
+
+                    if (imports.Contains("d3d10.dll", StringComparer.OrdinalIgnoreCase) ||
+                        imports.Contains("d3d10core.dll", StringComparer.OrdinalIgnoreCase) ||
+                        imports.Contains("d3d10_1.dll", StringComparer.OrdinalIgnoreCase))
+                    {
+                        observed.Add(GraphicsApi.D3D10);
+                        evidence.Add("Static PE import: d3d10.dll / d3d10core.dll");
                     }
 
                     if (imports.Contains("d3d11.dll", StringComparer.OrdinalIgnoreCase))
                     {
-                        observed.Add(GraphicsApi.DX11);
+                        observed.Add(GraphicsApi.D3D11);
                         evidence.Add("Static PE import: d3d11.dll");
                     }
 
-                    if (imports.Contains("d3d10.dll", StringComparer.OrdinalIgnoreCase) ||
-                        imports.Contains("d3d10core.dll", StringComparer.OrdinalIgnoreCase))
+                    if (imports.Contains("d3d8.dll", StringComparer.OrdinalIgnoreCase))
                     {
-                        observed.Add(GraphicsApi.DX10);
-                        evidence.Add("Static PE import: d3d10.dll");
+                        observed.Add(GraphicsApi.D3D8);
+                        evidence.Add("Static PE import: d3d8.dll");
                     }
 
                     if (imports.Contains("d3d9.dll", StringComparer.OrdinalIgnoreCase))
                     {
-                        observed.Add(GraphicsApi.DX9);
+                        observed.Add(GraphicsApi.D3D9);
                         evidence.Add("Static PE import: d3d9.dll");
                     }
 
@@ -153,20 +199,6 @@ namespace DXVKCompanion.Monitoring
         public GraphicsApi Classify(Process process)
         {
             return ClassifyDetailed(process).PrimaryApi;
-        }
-
-        private static bool Is32BitProcess(Process process)
-        {
-            try
-            {
-                if (!Environment.Is64BitOperatingSystem) return true;
-                // If 64-bit OS and we cannot determine, default to 64-bit
-                return false;
-            }
-            catch
-            {
-                return false;
-            }
         }
     }
 }

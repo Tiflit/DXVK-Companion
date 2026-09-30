@@ -31,6 +31,11 @@ namespace DXVKCompanion
             var settings = SettingsStore.Load();
             var gameLibraryStore = new GameLibraryStore();
             var transactionEngine = new MultiFileTransactionEngine(GameLibraryPaths.BackupsDir);
+            int recovered = transactionEngine.RecoverInterruptedTransactions();
+            if (recovered > 0)
+            {
+                Logger.Log($"MultiFileTransactionEngine: safely recovered {recovered} interrupted transaction(s) upon startup.");
+            }
 
             // Monitoring
             var detector = new GameDetector();

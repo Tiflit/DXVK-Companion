@@ -1,0 +1,540 @@
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
+using System.Net;
+using System.Net.Http;
+using System.Text.Json;
+using System.Threading;
+using System.Threading.Tasks;
+using DXVKCompanion.DXVK;
+using DXVKCompanion.Models;
+using DXVKCompanion.Monitoring;
+using DXVKCompanion.PhaseATests;
+using DXVKCompanion.Safety;
+using DXVKCompanion.Storage;
+using DXVKCompanion.Utils;
+using Xunit;
+
+namespace DXVKCompanion.PhaseA.Tests
+{
+    public class CompatibilityAndCorrectnessTests
+    {
+        [Fact]
+        public void DxvkCapabilityMatrix_MapsAllApisCorrectly()
+        {
+            // D3D8 -> d3d8.dll + d3d9.dll
+            var d3d8 = DxvkCapabilityMatrix.GetDescriptor(GraphicsApi.D3D8);
+            Assert.True(d3d8.IsSupported);
+            Assert.Equal(new[] { "d3d8.dll", "d3d9.dll" }, d3d8.RequiredDlls);
+
+            // D3D9 -> d3d9.dll
+            var d3d9 = DxvkCapabilityMatrix.GetDescriptor(GraphicsApi.D3D9);
+            Assert.True(d3d9.IsSupported);
+            Assert.Equal(new[] { "d3d9.dll" }, d3d9.RequiredDlls);
+
+            // D3D10 -> d3d10core.dll + d3d11.dll + dxgi.dll
+            var d3d10 = DxvkCapabilityMatrix.GetDescriptor(GraphicsApi.D3D10);
+            Assert.True(d3d10.IsSupported);
+            Assert.Equal(new[] { "d3d10core.dll", "d3d11.dll", "dxgi.dll" }, d3d10.RequiredDlls);
+
+            // D3D11 -> d3d11.dll + dxgi.dll
+            var d3d11 = DxvkCapabilityMatrix.GetDescriptor(GraphicsApi.D3D11);
+            Assert.True(d3d11.IsSupported);
+            Assert.Equal(new[] { "d3d11.dll", "dxgi.dll" }, d3d11.RequiredDlls);
+
+            // D3D12 -> Observe only
+            var d3d12 = DxvkCapabilityMatrix.GetDescriptor(GraphicsApi.D3D12);
+            Assert.False(d3d12.IsSupported);
+            Assert.Empty(d3d12.RequiredDlls);
+
+            // Vulkan -> Observe only
+            var vulkan = DxvkCapabilityMatrix.GetDescriptor(GraphicsApi.Vulkan);
+            Assert.False(vulkan.IsSupported);
+            Assert.Empty(vulkan.RequiredDlls);
+
+            // ModernAPI -> Observe only
+            var modern = DxvkCapabilityMatrix.GetDescriptor(GraphicsApi.ModernAPI);
+            Assert.False(modern.IsSupported);
+            Assert.Empty(modern.RequiredDlls);
+
+            // Unknown -> Observe only
+            var unknown = DxvkCapabilityMatrix.GetDescriptor(GraphicsApi.Unknown);
+            Assert.False(unknown.IsSupported);
+            Assert.Empty(unknown.RequiredDlls);
+        }
+
+        [Fact]
+        public async Task Installer_RefusesToDeployToD3D12AndVulkan()
+        {
+            using var gameDir = new SyntheticTestDirectory();
+            using var storageDir = new SyntheticTestDirectory();
+            using var sourceDir = new SyntheticTestDirectory();
+
+            string exePath = gameDir.CreateFile("Game.exe", "fake-exe");
+
+            var libraryStore = new GameLibraryStore(
+                Path.Combine(storageDir.RootPath, "game-library.json"),
+                Path.Combine(storageDir.RootPath, "backups"));
+            var engine = new MultiFileTransactionEngine(Path.Combine(storageDir.RootPath, "backups"));
+            var installer = new DxvkInstaller(new HttpClient(), engine, libraryStore, sourceDir.RootPath);
+
+            // Test D3D12
+            var profileD3D12 = new GameProfile
+            {
+                ExePath = exePath,
+                ExeName = "Game.exe",
+                Api = GraphicsApi.D3D12,
+                Architecture = "x64"
+            };
+            var release = new ReleaseInfo { Version = "2.6" };
+
+            bool d3d12Result = await installer.ApplyToGameAsync(profileD3D12, release);
+            Assert.False(d3d12Result);
+            Assert.False(File.Exists(Path.Combine(gameDir.RootPath, "d3d11.dll")));
+            Assert.False(File.Exists(Path.Combine(gameDir.RootPath, "dxgi.dll")));
+
+            // Test Vulkan
+            var profileVulkan = new GameProfile
+            {
+                ExePath = exePath,
+                ExeName = "Game.exe",
+                Api = GraphicsApi.Vulkan,
+                Architecture = "x64"
+            };
+
+            bool vulkanResult = await installer.ApplyToGameAsync(profileVulkan, release);
+            Assert.False(vulkanResult);
+            Assert.False(File.Exists(Path.Combine(gameDir.RootPath, "d3d11.dll")));
+            Assert.False(File.Exists(Path.Combine(gameDir.RootPath, "dxgi.dll")));
+        }
+
+        [Fact]
+        public async Task Installer_DeploysAndRestoresD3D10CompleteSet()
+        {
+            using var gameDir = new SyntheticTestDirectory();
+            using var storageDir = new SyntheticTestDirectory();
+            using var sourceDir = new SyntheticTestDirectory();
+
+            string releaseDir = Path.Combine(sourceDir.RootPath, "2.6", "x64");
+            Directory.CreateDirectory(releaseDir);
+            File.WriteAllText(Path.Combine(releaseDir, "d3d10core.dll"), "dxvk-d3d10core");
+            File.WriteAllText(Path.Combine(releaseDir, "d3d11.dll"), "dxvk-d3d11");
+            File.WriteAllText(Path.Combine(releaseDir, "dxgi.dll"), "dxvk-dxgi");
+
+            string exePath = gameDir.CreateFile("Game.exe", "fake-exe");
+
+            var libraryStore = new GameLibraryStore(
+                Path.Combine(storageDir.RootPath, "game-library.json"),
+                Path.Combine(storageDir.RootPath, "backups"));
+            var engine = new MultiFileTransactionEngine(Path.Combine(storageDir.RootPath, "backups"));
+            var installer = new DxvkInstaller(new HttpClient(), engine, libraryStore, sourceDir.RootPath);
+            var rollback = new DxvkRollback(engine, libraryStore);
+
+            var profile = new GameProfile
+            {
+                ExePath = exePath,
+                ExeName = "Game.exe",
+                Api = GraphicsApi.D3D10,
+                Architecture = "x64"
+            };
+
+            // Apply D3D10
+            bool ok = await installer.ApplyToGameAsync(profile, new ReleaseInfo { Version = "2.6" });
+            Assert.True(ok);
+
+            // Verify all 3 D3D10 files deployed
+            Assert.True(File.Exists(Path.Combine(gameDir.RootPath, "d3d10core.dll")));
+            Assert.True(File.Exists(Path.Combine(gameDir.RootPath, "d3d11.dll")));
+            Assert.True(File.Exists(Path.Combine(gameDir.RootPath, "dxgi.dll")));
+
+            // Rollback
+            bool restored = await rollback.RestoreOriginalDllsAsync(profile);
+            Assert.True(restored);
+
+            // Clean restoration: none of the 3 existed before, so none should remain
+            Assert.False(File.Exists(Path.Combine(gameDir.RootPath, "d3d10core.dll")));
+            Assert.False(File.Exists(Path.Combine(gameDir.RootPath, "d3d11.dll")));
+            Assert.False(File.Exists(Path.Combine(gameDir.RootPath, "dxgi.dll")));
+        }
+
+        [Fact]
+        public async Task Installer_DeploysAndRestoresD3D8CompleteSet()
+        {
+            using var gameDir = new SyntheticTestDirectory();
+            using var storageDir = new SyntheticTestDirectory();
+            using var sourceDir = new SyntheticTestDirectory();
+
+            string releaseDir = Path.Combine(sourceDir.RootPath, "2.6", "x32");
+            Directory.CreateDirectory(releaseDir);
+            File.WriteAllText(Path.Combine(releaseDir, "d3d8.dll"), "dxvk-d3d8");
+            File.WriteAllText(Path.Combine(releaseDir, "d3d9.dll"), "dxvk-d3d9");
+
+            string exePath = gameDir.CreateFile("Game.exe", "fake-exe");
+
+            var libraryStore = new GameLibraryStore(
+                Path.Combine(storageDir.RootPath, "game-library.json"),
+                Path.Combine(storageDir.RootPath, "backups"));
+            var engine = new MultiFileTransactionEngine(Path.Combine(storageDir.RootPath, "backups"));
+            var installer = new DxvkInstaller(new HttpClient(), engine, libraryStore, sourceDir.RootPath);
+            var rollback = new DxvkRollback(engine, libraryStore);
+
+            var profile = new GameProfile
+            {
+                ExePath = exePath,
+                ExeName = "Game.exe",
+                Api = GraphicsApi.D3D8,
+                Architecture = "x32"
+            };
+
+            // Apply D3D8
+            bool ok = await installer.ApplyToGameAsync(profile, new ReleaseInfo { Version = "2.6" });
+            Assert.True(ok);
+
+            // Verify both D3D8 files deployed
+            Assert.True(File.Exists(Path.Combine(gameDir.RootPath, "d3d8.dll")));
+            Assert.True(File.Exists(Path.Combine(gameDir.RootPath, "d3d9.dll")));
+
+            // Rollback
+            bool restored = await rollback.RestoreOriginalDllsAsync(profile);
+            Assert.True(restored);
+
+            Assert.False(File.Exists(Path.Combine(gameDir.RootPath, "d3d8.dll")));
+            Assert.False(File.Exists(Path.Combine(gameDir.RootPath, "d3d9.dll")));
+        }
+
+        [Fact]
+        public async Task Installer_Reapply_PreservesDurableBaselineOnTransactionFailure()
+        {
+            using var gameDir = new SyntheticTestDirectory();
+            using var storageDir = new SyntheticTestDirectory();
+            using var sourceDir = new SyntheticTestDirectory();
+
+            string backupsDir = Path.Combine(storageDir.RootPath, "backups");
+            string releaseDir = Path.Combine(sourceDir.RootPath, "2.6", "x64");
+            Directory.CreateDirectory(releaseDir);
+            File.WriteAllText(Path.Combine(releaseDir, "d3d11.dll"), "dxvk-2.6-d3d11");
+            File.WriteAllText(Path.Combine(releaseDir, "dxgi.dll"), "dxvk-2.6-dxgi");
+
+            // Original game had a native d3d11.dll with content "ORIGINAL_BASELINE_A"
+            string originalBaselineContent = "ORIGINAL_BASELINE_A";
+            string gameD3D11 = gameDir.CreateFile("d3d11.dll", originalBaselineContent);
+            string exePath = gameDir.CreateFile("Game.exe", "fake-exe");
+
+            var libraryStore = new GameLibraryStore(
+                Path.Combine(storageDir.RootPath, "game-library.json"),
+                backupsDir);
+            var initialEngine = new MultiFileTransactionEngine(backupsDir);
+            var initialInstaller = new DxvkInstaller(new HttpClient(), initialEngine, libraryStore, sourceDir.RootPath);
+
+            var profile = new GameProfile
+            {
+                ExePath = exePath,
+                ExeName = "Game.exe",
+                Api = GraphicsApi.D3D11,
+                Architecture = "x64"
+            };
+
+            // Initial install creates backup of ORIGINAL_BASELINE_A
+            bool initialOk = await initialInstaller.ApplyToGameAsync(profile, new ReleaseInfo { Version = "2.6" });
+            Assert.True(initialOk);
+
+            var installation = libraryStore.FindByInstallationPath(gameDir.RootPath);
+            Assert.NotNull(installation);
+            var managedD3D11 = installation!.FindManagedFile("d3d11.dll");
+            Assert.NotNull(managedD3D11);
+            string backupRelPath = managedD3D11!.BackupRelativePath!;
+            string durableBackupFile = Path.Combine(backupsDir, backupRelPath);
+
+            Assert.True(File.Exists(durableBackupFile));
+            Assert.Equal(originalBaselineContent, File.ReadAllText(durableBackupFile));
+
+            // Now simulate game update: game file d3d11.dll changes externally to "GAME_UPDATE_B"
+            string gameUpdateContent = "GAME_UPDATE_B";
+            File.WriteAllText(gameD3D11, gameUpdateContent);
+
+            // Set up a failing transaction engine to inject failure during reapply
+            var failingEngine = new MultiFileTransactionEngine(backupsDir, new MultiFileTransactionTestHooks
+            {
+                AfterApply = (target, idx) => throw new IOException("Injected power loss / disk error during deployment")
+            });
+            var failingInstaller = new DxvkInstaller(new HttpClient(), failingEngine, libraryStore, sourceDir.RootPath);
+
+            // Act: Reapply with updateBaseline: true
+            bool reapplyOk = await failingInstaller.ReapplyAsync(profile, updateBaseline: true);
+
+            // Assert: Reapply failed
+            Assert.False(reapplyOk);
+
+            // CRITICAL INTEGRITY CHECK: Durable backup A must NOT have been destroyed or overwritten with B!
+            Assert.True(File.Exists(durableBackupFile));
+            string backupContentAfterFailure = File.ReadAllText(durableBackupFile);
+            Assert.Equal(originalBaselineContent, backupContentAfterFailure);
+        }
+
+        [Fact]
+        public async Task PendingAction_ResolvesExactReleaseAtQueueTime_NoLiteralLatest()
+        {
+            using var gameDir = new SyntheticTestDirectory();
+            using var storageDir = new SyntheticTestDirectory();
+            using var sourceDir = new SyntheticTestDirectory();
+
+            string releaseDir = Path.Combine(sourceDir.RootPath, "2.6.2", "x64");
+            Directory.CreateDirectory(releaseDir);
+            File.WriteAllText(Path.Combine(releaseDir, "d3d11.dll"), "dxvk-2.6.2-d3d11");
+            File.WriteAllText(Path.Combine(releaseDir, "dxgi.dll"), "dxvk-2.6.2-dxgi");
+
+            string exePath = gameDir.CreateFile("Game.exe", "fake-exe");
+
+            var libraryStore = new GameLibraryStore(
+                Path.Combine(storageDir.RootPath, "game-library.json"),
+                Path.Combine(storageDir.RootPath, "backups"));
+            var profileStore = new ProfileStore(Path.Combine(storageDir.RootPath, "games.json"));
+            var engine = new MultiFileTransactionEngine(Path.Combine(storageDir.RootPath, "backups"));
+            var installer = new DxvkInstaller(new HttpClient(), engine, libraryStore, sourceDir.RootPath);
+            var rollback = new DxvkRollback(engine, libraryStore);
+
+            // Create a fake HTTP client that returns a valid release for latest
+            var cacheStore = new CacheStore();
+            cacheStore.SaveLatest(new CachedRelease
+            {
+                Version = "2.6.2",
+                CachedAtUtc = DateTime.UtcNow,
+                DownloadUrl = "https://github.com/doitsujin/dxvk/releases/download/v2.6.2/dxvk-2.6.2.tar.gz"
+            });
+            var github = new DxvkGithubClient(new HttpClient(), cacheStore);
+
+            var manager = new DxvkManager(installer, rollback, github, profileStore, libraryStore);
+
+            var profile = profileStore.GetOrCreate(exePath);
+            profile.Api = GraphicsApi.D3D11;
+            profile.Architecture = "x64";
+            profile.DxvkVersion = null; // New unmanaged game
+            profileStore.Save(profile);
+
+            // Simulate game is currently running when enable requested
+            using var dummyProcess = Process.GetCurrentProcess(); // Live running process
+            var result = await manager.RequestEnableAsync(profile, dummyProcess);
+            Assert.Equal(DxvkActionResult.Queued, result);
+
+            var installation = libraryStore.FindByInstallationPath(gameDir.RootPath);
+            Assert.NotNull(installation);
+            Assert.NotNull(installation!.PendingAction);
+
+            // CRITICAL CHECK: TargetDxvkVersion must NOT be literal "latest"!
+            Assert.NotEqual("latest", installation.PendingAction!.TargetDxvkVersion);
+            Assert.Equal("2.6.2", installation.PendingAction.TargetDxvkVersion);
+            Assert.Equal("https://github.com/doitsujin/dxvk/releases/download/v2.6.2/dxvk-2.6.2.tar.gz", installation.PendingAction.DownloadUrl);
+            Assert.Contains("d3d11.dll", installation.PendingAction.RequiredDlls);
+            Assert.Contains("dxgi.dll", installation.PendingAction.RequiredDlls);
+
+            // When game exits, ApplyPendingAsync applies the resolved release deterministically
+            bool applied = await manager.ApplyPendingAsync(exePath);
+            Assert.True(applied);
+
+            var updatedInstallation = libraryStore.FindByInstallationPath(gameDir.RootPath);
+            Assert.Null(updatedInstallation!.PendingAction);
+            Assert.Equal("2.6.2", updatedInstallation.ManagedDxvkVersion);
+            Assert.True(File.Exists(Path.Combine(gameDir.RootPath, "d3d11.dll")));
+        }
+
+        [Fact]
+        public async Task PendingAction_RequestUpdate_ResolvesTargetVersionAtQueueTime()
+        {
+            using var gameDir = new SyntheticTestDirectory();
+            using var storageDir = new SyntheticTestDirectory();
+
+            string exePath = gameDir.CreateFile("Game.exe", "fake-exe");
+
+            var libraryStore = new GameLibraryStore(
+                Path.Combine(storageDir.RootPath, "game-library.json"),
+                Path.Combine(storageDir.RootPath, "backups"));
+            var profileStore = new ProfileStore(Path.Combine(storageDir.RootPath, "games.json"));
+            var engine = new MultiFileTransactionEngine(Path.Combine(storageDir.RootPath, "backups"));
+            var installer = new DxvkInstaller(new HttpClient(), engine, libraryStore);
+            var rollback = new DxvkRollback(engine, libraryStore);
+
+            var cacheStore = new CacheStore();
+            cacheStore.SaveLatest(new CachedRelease
+            {
+                Version = "2.6.2",
+                CachedAtUtc = DateTime.UtcNow,
+                DownloadUrl = "https://fake/dxvk-2.6.2.tar.gz"
+            });
+            var github = new DxvkGithubClient(new HttpClient(), cacheStore);
+
+            var manager = new DxvkManager(installer, rollback, github, profileStore, libraryStore);
+
+            var profile = profileStore.GetOrCreate(exePath);
+            profile.Api = GraphicsApi.D3D11;
+            profile.Architecture = "x64";
+            profile.DxvkVersion = "2.5"; // Running old version
+            profile.DxvkEnabled = true;
+            profileStore.Save(profile);
+
+            using var dummyProcess = Process.GetCurrentProcess();
+            var result = await manager.RequestUpdateAsync(profile, dummyProcess);
+            Assert.Equal(DxvkActionResult.Queued, result);
+
+            var installation = libraryStore.FindByInstallationPath(gameDir.RootPath);
+            Assert.NotNull(installation?.PendingAction);
+            Assert.Equal(PendingActionType.Update, installation!.PendingAction!.Type);
+            Assert.Equal("2.6.2", installation.PendingAction.TargetDxvkVersion);
+        }
+
+        [Fact]
+        public void ApiClassifier_ClassifiesDiscreteApisCorrectly()
+        {
+            var parser = new PeParser();
+
+            // Mock ModuleScanner
+            var scannerD3D8 = new TestModuleScanner(new[] { "d3d8.dll", "d3d9.dll" });
+            var classifierD3D8 = new ApiClassifier(scannerD3D8, parser);
+            using var p = Process.GetCurrentProcess();
+            Assert.Equal(GraphicsApi.D3D8, classifierD3D8.Classify(p));
+
+            var scannerD3D10 = new TestModuleScanner(new[] { "d3d10core.dll", "d3d11.dll" });
+            var classifierD3D10 = new ApiClassifier(scannerD3D10, parser);
+            Assert.Equal(GraphicsApi.D3D10, classifierD3D10.Classify(p));
+
+            var scannerD3D12 = new TestModuleScanner(new[] { "d3d12.dll", "dxgi.dll" });
+            var classifierD3D12 = new ApiClassifier(scannerD3D12, parser);
+            Assert.Equal(GraphicsApi.D3D12, classifierD3D12.Classify(p));
+
+            var scannerVulkan = new TestModuleScanner(new[] { "vulkan-1.dll" });
+            var classifierVulkan = new ApiClassifier(scannerVulkan, parser);
+            Assert.Equal(GraphicsApi.Vulkan, classifierVulkan.Classify(p));
+        }
+
+        [Fact]
+        public void ExistingDxvkDetector_ScopedAdoption_DoesNotAdoptForeignDlls()
+        {
+            using var gameDir = new SyntheticTestDirectory();
+            using var sourceDir = new SyntheticTestDirectory();
+
+            string releaseDir = Path.Combine(sourceDir.RootPath, "2.6", "x64");
+            Directory.CreateDirectory(releaseDir);
+            File.WriteAllText(Path.Combine(releaseDir, "d3d11.dll"), "official-dxvk-d3d11");
+            File.WriteAllText(Path.Combine(releaseDir, "dxgi.dll"), "official-dxvk-dxgi");
+
+            // Game dir contains official DXVK d3d11 and dxgi, but ALSO a native d3d9.dll
+            gameDir.CreateFile("d3d11.dll", "official-dxvk-d3d11");
+            gameDir.CreateFile("dxgi.dll", "official-dxvk-dxgi");
+            gameDir.CreateFile("d3d9.dll", "native-game-d3d9");
+
+            var detector = new ExistingDxvkDetector(sourceDir.RootPath);
+
+            // Assess for D3D11 API
+            var assessment = detector.AssessDirectory(gameDir.RootPath, "x64", GraphicsApi.D3D11);
+
+            Assert.Equal(ExistingDxvkStatus.OfficialRelease, assessment.Status);
+            Assert.Equal("2.6", assessment.MatchedVersion);
+
+            // Must only detect d3d11 and dxgi — NEVER foreign d3d9.dll!
+            Assert.Contains("d3d11.dll", assessment.DetectedDlls);
+            Assert.Contains("dxgi.dll", assessment.DetectedDlls);
+            Assert.DoesNotContain("d3d9.dll", assessment.DetectedDlls);
+        }
+
+        [Fact]
+        public async Task Reapply_RemovesDxvkConfWhenDisabled()
+        {
+            using var gameDir = new SyntheticTestDirectory();
+            using var storageDir = new SyntheticTestDirectory();
+            using var sourceDir = new SyntheticTestDirectory();
+
+            string releaseDir = Path.Combine(sourceDir.RootPath, "2.6", "x64");
+            Directory.CreateDirectory(releaseDir);
+            File.WriteAllText(Path.Combine(releaseDir, "d3d11.dll"), "dxvk-d3d11");
+            File.WriteAllText(Path.Combine(releaseDir, "dxgi.dll"), "dxvk-dxgi");
+
+            string exePath = gameDir.CreateFile("Game.exe", "fake-exe");
+
+            var libraryStore = new GameLibraryStore(
+                Path.Combine(storageDir.RootPath, "game-library.json"),
+                Path.Combine(storageDir.RootPath, "backups"));
+            var engine = new MultiFileTransactionEngine(Path.Combine(storageDir.RootPath, "backups"));
+            var installer = new DxvkInstaller(new HttpClient(), engine, libraryStore, sourceDir.RootPath);
+
+            var profile = new GameProfile
+            {
+                ExePath = exePath,
+                ExeName = "Game.exe",
+                Api = GraphicsApi.D3D11,
+                Architecture = "x64",
+                HudEnabled = true // Initially HUD is enabled, so dxvk.conf is created
+            };
+
+            bool ok = await installer.ApplyToGameAsync(profile, new ReleaseInfo { Version = "2.6" });
+            Assert.True(ok);
+            Assert.True(File.Exists(Path.Combine(gameDir.RootPath, "dxvk.conf")));
+
+            // Now user disables HUD and framerate limit
+            profile.HudEnabled = false;
+            profile.FrameLimit = 0;
+
+            bool reapplyOk = await installer.ReapplyAsync(profile);
+            Assert.True(reapplyOk);
+
+            // dxvk.conf should be cleanly removed because Companion created it and config is now empty
+            Assert.False(File.Exists(Path.Combine(gameDir.RootPath, "dxvk.conf")));
+        }
+
+        [Fact]
+        public void MultiFileTransactionEngine_RecoverInterruptedTransactions_RecoversState()
+        {
+            using var gameDir = new SyntheticTestDirectory();
+            using var storageDir = new SyntheticTestDirectory();
+
+            string backupsDir = Path.Combine(storageDir.RootPath, "backups");
+            Directory.CreateDirectory(backupsDir);
+
+            string gameFile = gameDir.CreateFile("d3d11.dll", "corrupted-or-partial-deploy");
+            string backupFile = Path.Combine(backupsDir, "test-backup", "d3d11.dll");
+            Directory.CreateDirectory(Path.GetDirectoryName(backupFile)!);
+            File.WriteAllText(backupFile, "original-clean-baseline");
+
+            string planId = Guid.NewGuid().ToString("N");
+            var plan = new SafetyTransactionPlan
+            {
+                TransactionId = planId,
+                Operation = TransactionOperation.Install,
+                InstallationRoot = gameDir.RootPath,
+                State = TransactionState.Applying,
+                Files = new[]
+                {
+                    new SafetyFilePlan
+                    {
+                        RelativePath = "d3d11.dll",
+                        SourceRelativePath = "source.dll",
+                        OriginalState = OriginalFileState.Existing,
+                        BackupRelativePath = Path.Combine("test-backup", "d3d11.dll")
+                    }
+                }
+            };
+
+            string planPath = Path.Combine(backupsDir, planId + ".json");
+            File.WriteAllText(planPath, JsonSerializer.Serialize(plan));
+
+            var engine = new MultiFileTransactionEngine(backupsDir);
+
+            // Act: recover
+            int recovered = engine.RecoverInterruptedTransactions();
+
+            // Assert
+            Assert.Equal(1, recovered);
+            Assert.False(File.Exists(planPath)); // Plan cleaned up
+            Assert.Equal("original-clean-baseline", File.ReadAllText(gameFile)); // File restored to baseline
+        }
+
+        private sealed class TestModuleScanner : ModuleScanner
+        {
+            private readonly HashSet<string> _modules;
+            public TestModuleScanner(IEnumerable<string> modules)
+            {
+                _modules = new HashSet<string>(modules, StringComparer.OrdinalIgnoreCase);
+            }
+            public override HashSet<string> GetLoadedGraphicsModules(Process process) => _modules;
+        }
+    }
+}

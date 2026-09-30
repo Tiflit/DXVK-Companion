@@ -78,6 +78,10 @@ public sealed record SafetyFilePlan
     public required string SourceRelativePath { get; init; }
     public SafetyFileIdentity? ExpectedTargetIdentity { get; init; }
     public SafetyFileIdentity? ExpectedSourceIdentity { get; init; }
+    public OriginalFileState OriginalState { get; init; } = OriginalFileState.Unknown;
+    public string? BackupRelativePath { get; init; }
+    public SafetyFileIdentity? OriginalIdentity { get; init; }
+    public SafetyFileIdentity? BackupIdentity { get; init; }
 }
 
 public sealed record SafetyTransactionPlan

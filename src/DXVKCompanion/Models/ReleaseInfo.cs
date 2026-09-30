@@ -4,5 +4,6 @@ namespace DXVKCompanion.Models
     {
         public string Version { get; set; } = "";
         public string DownloadUrl { get; set; } = "";
+        public string? ArchiveSha256 { get; set; }
     }
 }

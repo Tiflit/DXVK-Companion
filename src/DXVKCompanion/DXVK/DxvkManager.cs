@@ -52,7 +52,7 @@ namespace DXVKCompanion.DXVK
             if (string.IsNullOrWhiteSpace(profile.DxvkVersion))
                 return true;
 
-            return !string.Equals(profile.DxvkVersion, latest.Version);
+            return !string.Equals(profile.DxvkVersion, latest.Version, StringComparison.OrdinalIgnoreCase);
         }
 
         private static bool IsStillRunning(Process process)
@@ -101,17 +101,54 @@ namespace DXVKCompanion.DXVK
             return found;
         }
 
-        private async Task<DxvkActionResult> QueueOrApplyAsync(GameProfile profile, bool isRunning, PendingAction action)
+        private async Task<DxvkActionResult> QueueOrApplyAsync(GameProfile profile, bool isRunning, PendingAction action, ReleaseInfo? specificRelease = null)
         {
+            if (!DxvkCapabilityMatrix.IsSupported(profile.Api))
+            {
+                return DxvkActionResult.Failed;
+            }
+
             if (isRunning)
             {
                 string gameDir = Path.GetDirectoryName(profile.ExePath) ?? string.Empty;
                 if (!string.IsNullOrWhiteSpace(gameDir))
                 {
                     var installation = _gameLibraryStore.GetOrCreateInstallation(gameDir, Path.GetFileNameWithoutExtension(profile.ExePath));
-                    installation.PendingAction = action == PendingAction.Enable
-                        ? Models.PendingAction.Install(profile.DxvkVersion ?? "latest", "Queued while game running")
-                        : Models.PendingAction.Restore("Queued while game running");
+                    string arch = string.Equals(profile.Architecture, "x32", StringComparison.OrdinalIgnoreCase) ? "x32" : "x64";
+                    var requiredDlls = DxvkCapabilityMatrix.GetRequiredDlls(profile.Api);
+
+                    if (action == PendingAction.Enable)
+                    {
+                        ReleaseInfo? release = specificRelease;
+                        if (release == null)
+                        {
+                            if (!string.IsNullOrWhiteSpace(profile.DxvkVersion) && !string.Equals(profile.DxvkVersion, "latest", StringComparison.OrdinalIgnoreCase))
+                            {
+                                release = await _github.FetchReleaseByVersionAsync(profile.DxvkVersion) ?? new ReleaseInfo { Version = profile.DxvkVersion };
+                            }
+                            else
+                            {
+                                release = await GetLatestReleaseAsync();
+                            }
+                        }
+
+                        string targetVer = release?.Version ?? (profile.DxvkVersion ?? "latest");
+                        string? downloadUrl = release?.DownloadUrl;
+                        string? archiveSha256 = release?.ArchiveSha256;
+
+                        installation.PendingAction = Models.PendingAction.Install(
+                            targetVer,
+                            "Queued while game running",
+                            downloadUrl,
+                            archiveSha256,
+                            arch,
+                            requiredDlls);
+                    }
+                    else
+                    {
+                        installation.PendingAction = Models.PendingAction.Restore("Queued while game running");
+                    }
+
                     _gameLibraryStore.Save(installation);
                 }
 
@@ -120,7 +157,7 @@ namespace DXVKCompanion.DXVK
             }
 
             bool ok = action == PendingAction.Enable
-                ? await EnableDxvkAsync(profile)
+                ? await EnableDxvkAsync(profile, specificRelease?.Version)
                 : await DisableDxvkAsync(profile);
 
             return ok ? DxvkActionResult.Applied : DxvkActionResult.Failed;
@@ -133,8 +170,43 @@ namespace DXVKCompanion.DXVK
         public Task<DxvkActionResult> RequestDisableAsync(GameProfile profile, Process process)
             => QueueOrApplyAsync(profile, IsStillRunning(process), PendingAction.Disable);
 
-        public Task<DxvkActionResult> RequestUpdateAsync(GameProfile profile, Process process)
-            => RequestEnableAsync(profile, process);
+        public async Task<DxvkActionResult> RequestUpdateAsync(GameProfile profile, Process process)
+        {
+            var latest = await GetLatestReleaseAsync();
+            if (latest == null) return DxvkActionResult.Failed;
+
+            if (IsStillRunning(process))
+            {
+                string gameDir = Path.GetDirectoryName(profile.ExePath) ?? string.Empty;
+                if (!string.IsNullOrWhiteSpace(gameDir))
+                {
+                    var installation = _gameLibraryStore.GetOrCreateInstallation(gameDir, Path.GetFileNameWithoutExtension(profile.ExePath));
+                    string arch = string.Equals(profile.Architecture, "x32", StringComparison.OrdinalIgnoreCase) ? "x32" : "x64";
+                    var requiredDlls = DxvkCapabilityMatrix.GetRequiredDlls(profile.Api);
+
+                    installation.PendingAction = Models.PendingAction.Update(
+                        latest.Version,
+                        "Queued update while game running",
+                        latest.DownloadUrl,
+                        latest.ArchiveSha256,
+                        arch,
+                        requiredDlls);
+                    _gameLibraryStore.Save(installation);
+                }
+
+                _pending[profile.ExePath] = PendingAction.Enable;
+                return DxvkActionResult.Queued;
+            }
+
+            bool ok = await _installer.ApplyToGameAsync(profile, latest);
+            if (ok)
+            {
+                profile.DxvkEnabled = true;
+                profile.DxvkVersion = latest.Version;
+                _profiles.Save(profile);
+            }
+            return ok ? DxvkActionResult.Applied : DxvkActionResult.Failed;
+        }
 
         /// <summary>Use from the Manage Games window, where you have a profile but no live Process handle.</summary>
         public Task<DxvkActionResult> RequestEnableByPathAsync(GameProfile profile)
@@ -143,8 +215,43 @@ namespace DXVKCompanion.DXVK
         public Task<DxvkActionResult> RequestDisableByPathAsync(GameProfile profile)
             => QueueOrApplyAsync(profile, IsPathCurrentlyRunning(profile.ExePath), PendingAction.Disable);
 
-        public Task<DxvkActionResult> RequestUpdateByPathAsync(GameProfile profile)
-            => RequestEnableByPathAsync(profile);
+        public async Task<DxvkActionResult> RequestUpdateByPathAsync(GameProfile profile)
+        {
+            var latest = await GetLatestReleaseAsync();
+            if (latest == null) return DxvkActionResult.Failed;
+
+            if (IsPathCurrentlyRunning(profile.ExePath))
+            {
+                string gameDir = Path.GetDirectoryName(profile.ExePath) ?? string.Empty;
+                if (!string.IsNullOrWhiteSpace(gameDir))
+                {
+                    var installation = _gameLibraryStore.GetOrCreateInstallation(gameDir, Path.GetFileNameWithoutExtension(profile.ExePath));
+                    string arch = string.Equals(profile.Architecture, "x32", StringComparison.OrdinalIgnoreCase) ? "x32" : "x64";
+                    var requiredDlls = DxvkCapabilityMatrix.GetRequiredDlls(profile.Api);
+
+                    installation.PendingAction = Models.PendingAction.Update(
+                        latest.Version,
+                        "Queued update while game running",
+                        latest.DownloadUrl,
+                        latest.ArchiveSha256,
+                        arch,
+                        requiredDlls);
+                    _gameLibraryStore.Save(installation);
+                }
+
+                _pending[profile.ExePath] = PendingAction.Enable;
+                return DxvkActionResult.Queued;
+            }
+
+            bool ok = await _installer.ApplyToGameAsync(profile, latest);
+            if (ok)
+            {
+                profile.DxvkEnabled = true;
+                profile.DxvkVersion = latest.Version;
+                _profiles.Save(profile);
+            }
+            return ok ? DxvkActionResult.Applied : DxvkActionResult.Failed;
+        }
 
         public Task<DxvkActionResult> RequestReapplyAsync(GameProfile profile, Process process, bool updateBaseline = true)
             => QueueOrApplyReapplyAsync(profile, IsStillRunning(process), updateBaseline);
@@ -160,7 +267,15 @@ namespace DXVKCompanion.DXVK
                 if (!string.IsNullOrWhiteSpace(gameDir))
                 {
                     var installation = _gameLibraryStore.GetOrCreateInstallation(gameDir, Path.GetFileNameWithoutExtension(profile.ExePath));
-                    installation.PendingAction = Models.PendingAction.Reapply(installation.ManagedDxvkVersion ?? "latest", "Queued reapply while game running");
+                    string arch = string.Equals(profile.Architecture, "x32", StringComparison.OrdinalIgnoreCase) ? "x32" : "x64";
+                    var requiredDlls = DxvkCapabilityMatrix.GetRequiredDlls(profile.Api);
+
+                    installation.PendingAction = Models.PendingAction.Reapply(
+                        installation.ManagedDxvkVersion ?? "latest",
+                        "Queued reapply while game running",
+                        null,
+                        arch,
+                        requiredDlls);
                     _gameLibraryStore.Save(installation);
                 }
                 return DxvkActionResult.Queued;
@@ -207,7 +322,34 @@ namespace DXVKCompanion.DXVK
                 {
                     case PendingActionType.Install:
                     case PendingActionType.Update:
-                        success = await EnableDxvkAsync(profile, installation.PendingAction.TargetDxvkVersion);
+                        string targetVer = installation.PendingAction.TargetDxvkVersion ?? "";
+                        string downloadUrl = installation.PendingAction.DownloadUrl ?? "";
+                        string? archiveSha256 = installation.PendingAction.ArchiveSha256;
+
+                        ReleaseInfo? release = null;
+                        if (string.Equals(targetVer, "latest", StringComparison.OrdinalIgnoreCase) || string.IsNullOrEmpty(downloadUrl))
+                        {
+                            var resolved = await GetLatestReleaseAsync();
+                            if (resolved != null)
+                            {
+                                release = resolved;
+                            }
+                        }
+
+                        release ??= new ReleaseInfo
+                        {
+                            Version = !string.IsNullOrEmpty(targetVer) && !string.Equals(targetVer, "latest", StringComparison.OrdinalIgnoreCase) ? targetVer : "latest",
+                            DownloadUrl = downloadUrl,
+                            ArchiveSha256 = archiveSha256
+                        };
+
+                        success = await _installer.ApplyToGameAsync(profile, release);
+                        if (success)
+                        {
+                            profile.DxvkEnabled = true;
+                            profile.DxvkVersion = release.Version;
+                            _profiles.Save(profile);
+                        }
                         break;
                     case PendingActionType.Reapply:
                         success = await ReapplyAsync(profile, updateBaseline: true);
@@ -276,7 +418,34 @@ namespace DXVKCompanion.DXVK
                 {
                     case PendingActionType.Install:
                     case PendingActionType.Update:
-                        success = await EnableDxvkAsync(profile, installation.PendingAction.TargetDxvkVersion);
+                        string targetVer = installation.PendingAction.TargetDxvkVersion ?? "";
+                        string downloadUrl = installation.PendingAction.DownloadUrl ?? "";
+                        string? archiveSha256 = installation.PendingAction.ArchiveSha256;
+
+                        ReleaseInfo? release = null;
+                        if (string.Equals(targetVer, "latest", StringComparison.OrdinalIgnoreCase) || string.IsNullOrEmpty(downloadUrl))
+                        {
+                            var resolved = await GetLatestReleaseAsync();
+                            if (resolved != null)
+                            {
+                                release = resolved;
+                            }
+                        }
+
+                        release ??= new ReleaseInfo
+                        {
+                            Version = !string.IsNullOrEmpty(targetVer) && !string.Equals(targetVer, "latest", StringComparison.OrdinalIgnoreCase) ? targetVer : "latest",
+                            DownloadUrl = downloadUrl,
+                            ArchiveSha256 = archiveSha256
+                        };
+
+                        success = await _installer.ApplyToGameAsync(profile, release);
+                        if (success)
+                        {
+                            profile.DxvkEnabled = true;
+                            profile.DxvkVersion = release.Version;
+                            _profiles.Save(profile);
+                        }
                         break;
                     case PendingActionType.Reapply:
                         success = await ReapplyAsync(profile, updateBaseline: true);
@@ -298,10 +467,14 @@ namespace DXVKCompanion.DXVK
 
         public async Task<bool> EnableDxvkAsync(GameProfile profile, string? targetVersion = null)
         {
-            ReleaseInfo? release;
-            if (!string.IsNullOrWhiteSpace(targetVersion))
+            ReleaseInfo? release = null;
+            if (!string.IsNullOrWhiteSpace(targetVersion) && !string.Equals(targetVersion, "latest", StringComparison.OrdinalIgnoreCase))
             {
-                release = new ReleaseInfo { Version = targetVersion, DownloadUrl = "" };
+                release = await _github.FetchReleaseByVersionAsync(targetVersion);
+                if (release == null)
+                {
+                    release = new ReleaseInfo { Version = targetVersion, DownloadUrl = "" };
+                }
             }
             else
             {
@@ -337,14 +510,14 @@ namespace DXVKCompanion.DXVK
         {
             string gameDir = Path.GetDirectoryName(profile.ExePath) ?? string.Empty;
             var detector = new ExistingDxvkDetector(_installer.DxvkSourceDir);
-            return detector.AssessDirectory(gameDir, profile.Architecture);
+            return detector.AssessDirectory(gameDir, profile.Architecture, profile.Api);
         }
 
         public async Task<bool> AdoptExistingAsync(GameProfile profile)
         {
             string gameDir = Path.GetDirectoryName(profile.ExePath) ?? string.Empty;
             var detector = new ExistingDxvkDetector(_installer.DxvkSourceDir);
-            var assessment = detector.AssessDirectory(gameDir, profile.Architecture);
+            var assessment = detector.AssessDirectory(gameDir, profile.Architecture, profile.Api);
             if (!assessment.CanBeAdopted)
                 return false;
 
@@ -398,23 +571,16 @@ namespace DXVKCompanion.DXVK
                     continue;
                 }
 
-                try
+                bool success = await DisableDxvkAsync(profile);
+                if (success)
                 {
-                    bool ok = await DisableDxvkAsync(profile);
-                    if (ok)
-                    {
-                        summary.Restored++;
-                    }
-                    else
-                    {
-                        summary.FailedOrAttentionRequired++;
-                        summary.Messages.Add($"{profile.ExeName}: Restore operation failed.");
-                    }
+                    summary.Restored++;
+                    summary.Messages.Add($"{profile.ExeName}: Restored to original baseline.");
                 }
-                catch (Exception ex)
+                else
                 {
                     summary.FailedOrAttentionRequired++;
-                    summary.Messages.Add($"{profile.ExeName}: Exception: {ex.Message}");
+                    summary.Messages.Add($"{profile.ExeName}: Restoration failed; attention required.");
                 }
             }
 

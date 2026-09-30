@@ -7,6 +7,7 @@ using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Formats.Tar;
+using System.Security.Cryptography;
 using DXVKCompanion.Models;
 using DXVKCompanion.Safety;
 using DXVKCompanion.Storage;
@@ -57,6 +58,7 @@ namespace DXVKCompanion.DXVK
             if (string.IsNullOrWhiteSpace(release.DownloadUrl))
                 return false;
 
+            string? stagingDir = null;
             try
             {
                 Paths.EnsureDirectories();
@@ -64,11 +66,25 @@ namespace DXVKCompanion.DXVK
                 using var cts = new CancellationTokenSource(DownloadTimeout);
                 var data = await _httpClient.GetByteArrayAsync(release.DownloadUrl, cts.Token);
 
+                // Upstream SHA-256 verification if provided
+                if (!string.IsNullOrWhiteSpace(release.ArchiveSha256))
+                {
+                    using var sha256 = SHA256.Create();
+                    var computedHash = Convert.ToHexString(sha256.ComputeHash(data));
+                    if (!string.Equals(computedHash, release.ArchiveSha256, StringComparison.OrdinalIgnoreCase))
+                    {
+                        Logger.Log($"DxvkInstaller: archive SHA-256 integrity verification failed for {release.Version}. Expected {release.ArchiveSha256}, Got {computedHash}");
+                        return false;
+                    }
+                }
+
+                stagingDir = Path.Combine(_dxvkSourceDir, ".staging", Guid.NewGuid().ToString("N"));
+                Directory.CreateDirectory(stagingDir);
+
                 using var gzStream = new GZipStream(new MemoryStream(data), CompressionMode.Decompress);
                 using var tar = new TarReader(gzStream);
 
-                string versionDir = Path.Combine(_dxvkSourceDir, SanitizeVersion(release.Version));
-
+                int extractedCount = 0;
                 TarEntry? entry;
                 while ((entry = tar.GetNextEntry()) != null)
                 {
@@ -77,11 +93,13 @@ namespace DXVKCompanion.DXVK
 
                     string name = entry.Name.Replace('\\', '/').ToLowerInvariant();
 
-                    bool isDx9 = name.EndsWith("x32/d3d9.dll") || name.EndsWith("x64/d3d9.dll");
-                    bool isDx11 = name.EndsWith("x32/d3d11.dll") || name.EndsWith("x64/d3d11.dll");
-                    bool isDxgi = name.EndsWith("x32/dxgi.dll") || name.EndsWith("x64/dxgi.dll");
+                    bool isDx8 = name.EndsWith("/d3d8.dll");
+                    bool isDx9 = name.EndsWith("/d3d9.dll");
+                    bool isDx10 = name.EndsWith("/d3d10core.dll");
+                    bool isDx11 = name.EndsWith("/d3d11.dll");
+                    bool isDxgi = name.EndsWith("/dxgi.dll");
 
-                    if (!isDx9 && !isDx11 && !isDxgi)
+                    if (!isDx8 && !isDx9 && !isDx10 && !isDx11 && !isDxgi)
                         continue;
 
                     using var ms = new MemoryStream();
@@ -91,12 +109,27 @@ namespace DXVKCompanion.DXVK
                     string arch = name.Contains("x32/") ? "x32" : "x64";
                     string dllName = Path.GetFileName(name);
 
-                    string dllDir = Path.Combine(versionDir, arch);
+                    string dllDir = Path.Combine(stagingDir, arch);
                     Directory.CreateDirectory(dllDir);
 
                     _files.WriteBytes(Path.Combine(dllDir, dllName), bytes);
+                    extractedCount++;
                 }
 
+                if (extractedCount == 0)
+                {
+                    Logger.Log($"DxvkInstaller: extraction finished but no valid DXVK binaries were found in {release.Version}.");
+                    return false;
+                }
+
+                string versionDir = Path.Combine(_dxvkSourceDir, SanitizeVersion(release.Version));
+                if (Directory.Exists(versionDir))
+                {
+                    try { Directory.Delete(versionDir, true); } catch { }
+                }
+
+                Directory.Move(stagingDir, versionDir);
+                stagingDir = null; // Successfully promoted
                 return true;
             }
             catch (OperationCanceledException)
@@ -108,6 +141,13 @@ namespace DXVKCompanion.DXVK
             {
                 Logger.Log($"DxvkInstaller: failed to download/extract {release.Version}: {ex.GetType().Name} - {ex.Message}");
                 return false;
+            }
+            finally
+            {
+                if (stagingDir != null)
+                {
+                    try { if (Directory.Exists(stagingDir)) Directory.Delete(stagingDir, true); } catch { }
+                }
             }
         }
 
@@ -130,30 +170,29 @@ namespace DXVKCompanion.DXVK
                     return false;
                 }
 
+                if (!DxvkCapabilityMatrix.IsSupported(profile.Api))
+                {
+                    Logger.Log($"DxvkInstaller: {profile.ExeName} has an unsupported API ({profile.Api}); skipping deployment.");
+                    return false;
+                }
+
+                var dllsToDeploy = DxvkCapabilityMatrix.GetRequiredDlls(profile.Api);
+                if (dllsToDeploy.Count == 0)
+                {
+                    Logger.Log($"DxvkInstaller: no deployment DLLs defined for API {profile.Api}; skipping.");
+                    return false;
+                }
+
                 string arch = string.Equals(profile.Architecture, "x32", StringComparison.OrdinalIgnoreCase) ? "x32" : "x64";
                 string versionDir = Path.Combine(_dxvkSourceDir, SanitizeVersion(release.Version));
                 string dxvkArchDir = Path.Combine(versionDir, arch);
 
-                if (!Directory.Exists(dxvkArchDir) || !Directory.EnumerateFiles(dxvkArchDir).Any())
+                bool hasAllRequired = Directory.Exists(dxvkArchDir) && dllsToDeploy.All(dll => File.Exists(Path.Combine(dxvkArchDir, dll)));
+                if (!hasAllRequired)
                 {
                     bool ok = await DownloadAndExtractAsync(release);
                     if (!ok)
                         return false;
-                }
-
-                string[] dllsToDeploy;
-                if (profile.Api == GraphicsApi.DX9)
-                {
-                    dllsToDeploy = new[] { "d3d9.dll" };
-                }
-                else if (profile.Api == GraphicsApi.DX11 || profile.Api == GraphicsApi.ModernAPI || profile.Api == GraphicsApi.DX10)
-                {
-                    dllsToDeploy = new[] { "d3d11.dll", "dxgi.dll" };
-                }
-                else
-                {
-                    Logger.Log($"DxvkInstaller: {profile.ExeName} has an unsupported API ({profile.Api}); skipping.");
-                    return false;
                 }
 
                 foreach (var dllName in dllsToDeploy)
@@ -233,7 +272,6 @@ namespace DXVKCompanion.DXVK
                     });
                 }
 
-                // Invariant (Section 36): If configuration is needed, stage dxvk.conf atomically
                 if (DxvkConfigManager.RequiresConfigFile(config))
                 {
                     stagingDir = Path.Combine(GameLibraryPaths.BackupsDir, ".staging", Guid.NewGuid().ToString("N"));
@@ -387,29 +425,27 @@ namespace DXVKCompanion.DXVK
                     return false;
                 }
 
+                if (!DxvkCapabilityMatrix.IsSupported(profile.Api))
+                {
+                    Logger.Log($"DxvkInstaller: {profile.ExeName} has unsupported API ({profile.Api}); skipping reapply.");
+                    return false;
+                }
+
+                var dllsToDeploy = DxvkCapabilityMatrix.GetRequiredDlls(profile.Api);
+                if (dllsToDeploy.Count == 0)
+                {
+                    Logger.Log($"DxvkInstaller: no deployment DLLs defined for API {profile.Api}; skipping reapply.");
+                    return false;
+                }
+
                 string version = installation.ManagedDxvkVersion;
                 string arch = installation.ManagedDxvkArchitecture ?? (string.Equals(profile.Architecture, "x32", StringComparison.OrdinalIgnoreCase) ? "x32" : "x64");
                 string versionDir = Path.Combine(_dxvkSourceDir, SanitizeVersion(version));
                 string dxvkArchDir = Path.Combine(versionDir, arch);
 
-                if (!Directory.Exists(dxvkArchDir))
+                if (!Directory.Exists(dxvkArchDir) || !dllsToDeploy.All(dll => File.Exists(Path.Combine(dxvkArchDir, dll))))
                 {
-                    Logger.Log($"DxvkInstaller: source DXVK directory not found for version {version} ({arch}).");
-                    return false;
-                }
-
-                string[] dllsToDeploy;
-                if (profile.Api == GraphicsApi.DX9)
-                {
-                    dllsToDeploy = new[] { "d3d9.dll" };
-                }
-                else if (profile.Api == GraphicsApi.DX11 || profile.Api == GraphicsApi.ModernAPI || profile.Api == GraphicsApi.DX10)
-                {
-                    dllsToDeploy = new[] { "d3d11.dll", "dxgi.dll" };
-                }
-                else
-                {
-                    Logger.Log($"DxvkInstaller: {profile.ExeName} has unsupported API ({profile.Api}); skipping reapply.");
+                    Logger.Log($"DxvkInstaller: source DXVK directory not found or incomplete for version {version} ({arch}).");
                     return false;
                 }
 
@@ -423,6 +459,10 @@ namespace DXVKCompanion.DXVK
                     }
                 }
 
+                stagingDir = Path.Combine(GameLibraryPaths.BackupsDir, ".staging", Guid.NewGuid().ToString("N"));
+                Directory.CreateDirectory(stagingDir);
+
+                var pendingBaselineUpdates = new List<(string DllName, string StagedPath, string NewSha256, string DurableRelPath)>();
                 var filesToProcess = new List<MultiFileTransactionFile>();
 
                 foreach (var dllName in dllsToDeploy)
@@ -439,22 +479,21 @@ namespace DXVKCompanion.DXVK
                     string? backupRelativePath = existingRecord?.BackupRelativePath ?? (originalState == OriginalFileState.Existing ? Path.Combine(installation.Id, dllName) : null);
                     SafetyFileIdentity? expectedTargetIdentity = File.Exists(targetPath) ? FileIdentity.Capture(targetPath) : null;
 
-                    // Section 18.2: If updating baseline after an external change (e.g. game update),
-                    // the newly observed game file becomes the new restoration baseline.
+                    // Durable baseline preservation:
+                    // If updating baseline after an external change (e.g. game update),
+                    // stage the new baseline copy safely in a temporary location.
+                    // DO NOT overwrite the durable backup until the transaction successfully commits.
                     if (updateBaseline && File.Exists(targetPath))
                     {
                         var currentIdentity = FileIdentity.Capture(targetPath);
                         if (existingRecord != null && !string.Equals(currentIdentity.Sha256, existingRecord.ExpectedManagedSha256, StringComparison.OrdinalIgnoreCase))
                         {
                             backupRelativePath = Path.Combine(installation.Id, dllName);
-                            string fullBackupPath = Path.Combine(_transactionEngine.TransactionStoreRoot, backupRelativePath);
-                            Directory.CreateDirectory(Path.GetDirectoryName(fullBackupPath)!);
-                            File.Copy(targetPath, fullBackupPath, overwrite: true);
+                            string stagedBackupPath = Path.Combine(stagingDir, dllName + ".baseline_staging");
+                            File.Copy(targetPath, stagedBackupPath, overwrite: true);
+                            pendingBaselineUpdates.Add((dllName, stagedBackupPath, currentIdentity.Sha256, backupRelativePath));
+
                             originalState = OriginalFileState.Existing;
-                            existingRecord.OriginalState = FileOriginalState.Existing;
-                            existingRecord.OriginalSha256 = currentIdentity.Sha256;
-                            existingRecord.BackupRelativePath = backupRelativePath;
-                            Logger.Log($"DxvkInstaller: updated restoration baseline for {dllName} in {installation.DisplayName} to hash {currentIdentity.Sha256[..Math.Min(8, currentIdentity.Sha256.Length)]}.");
                         }
                     }
 
@@ -479,9 +518,6 @@ namespace DXVKCompanion.DXVK
 
                 if (DxvkConfigManager.RequiresConfigFile(config))
                 {
-                    stagingDir = Path.Combine(GameLibraryPaths.BackupsDir, ".staging", Guid.NewGuid().ToString("N"));
-                    Directory.CreateDirectory(stagingDir);
-
                     string targetConfPath = Path.Combine(gameDir, DxvkConfigManager.ConfigFileName);
                     string? existingConf = File.Exists(targetConfPath) ? File.ReadAllText(targetConfPath) : null;
                     string? confContent = DxvkConfigManager.GenerateConfigContent(config, existingConf);
@@ -511,6 +547,31 @@ namespace DXVKCompanion.DXVK
                         });
                     }
                 }
+                else
+                {
+                    // Cleanly remove or restore dxvk.conf if it was previously created or managed by Companion
+                    var existingConfRecord = installation.FindManagedFile(DxvkConfigManager.ConfigFileName);
+                    if (existingConfRecord != null)
+                    {
+                        string targetConfPath = Path.Combine(gameDir, DxvkConfigManager.ConfigFileName);
+                        if (File.Exists(targetConfPath))
+                        {
+                            if (existingConfRecord.OriginalState == FileOriginalState.Missing)
+                            {
+                                try { File.Delete(targetConfPath); } catch { }
+                            }
+                            else if (existingConfRecord.OriginalState == FileOriginalState.Existing && !string.IsNullOrEmpty(existingConfRecord.BackupRelativePath))
+                            {
+                                string backupPath = Path.Combine(_transactionEngine.TransactionStoreRoot, existingConfRecord.BackupRelativePath);
+                                if (File.Exists(backupPath))
+                                {
+                                    try { File.Copy(backupPath, targetConfPath, overwrite: true); } catch { }
+                                }
+                            }
+                        }
+                        installation.ManagedFiles.Remove(existingConfRecord);
+                    }
+                }
 
                 var request = new MultiFileTransactionRequest
                 {
@@ -522,6 +583,23 @@ namespace DXVKCompanion.DXVK
                 var result = _transactionEngine.Execute(request);
                 if (result.State == TransactionState.Committed && result.Outcome == TransactionOutcome.Success)
                 {
+                    // Commit staged baselines to durable backup store only after successful transaction
+                    foreach (var update in pendingBaselineUpdates)
+                    {
+                        string fullBackupPath = Path.Combine(_transactionEngine.TransactionStoreRoot, update.DurableRelPath);
+                        Directory.CreateDirectory(Path.GetDirectoryName(fullBackupPath)!);
+                        File.Copy(update.StagedPath, fullBackupPath, overwrite: true);
+
+                        var record = installation.FindManagedFile(update.DllName);
+                        if (record != null)
+                        {
+                            record.OriginalState = FileOriginalState.Existing;
+                            record.OriginalSha256 = update.NewSha256;
+                            record.BackupRelativePath = update.DurableRelPath;
+                            Logger.Log($"DxvkInstaller: committed updated restoration baseline for {update.DllName} in {installation.DisplayName} to hash {update.NewSha256[..Math.Min(8, update.NewSha256.Length)]}.");
+                        }
+                    }
+
                     foreach (var filePlan in filesToProcess)
                     {
                         var record = installation.GetOrAddManagedFile(filePlan.RelativePath);
@@ -577,6 +655,12 @@ namespace DXVKCompanion.DXVK
                     return false;
                 }
 
+                if (!DxvkCapabilityMatrix.IsSupported(profile.Api))
+                {
+                    Logger.Log($"DxvkInstaller: cannot adopt DXVK for {profile.ExeName}; API {profile.Api} is unsupported.");
+                    return false;
+                }
+
                 string gameDir = Path.GetDirectoryName(profile.ExePath) ?? string.Empty;
                 if (string.IsNullOrWhiteSpace(gameDir) || !Directory.Exists(gameDir))
                 {
@@ -592,9 +676,21 @@ namespace DXVKCompanion.DXVK
                     return false;
                 }
 
+                var requiredDlls = DxvkCapabilityMatrix.GetRequiredDlls(profile.Api);
                 string arch = string.Equals(profile.Architecture, "x32", StringComparison.OrdinalIgnoreCase) ? "x32" : "x64";
 
-                foreach (var dllName in assessment.DetectedDlls)
+                // Ensure only the DLLs that match this game's API and are confirmed DXVK are adopted
+                var dllsToAdopt = assessment.DetectedDlls
+                    .Where(dll => requiredDlls.Contains(dll, StringComparer.OrdinalIgnoreCase))
+                    .ToList();
+
+                if (dllsToAdopt.Count == 0)
+                {
+                    Logger.Log($"DxvkInstaller: no matching API DLLs found to adopt for {profile.ExeName}.");
+                    return false;
+                }
+
+                foreach (var dllName in dllsToAdopt)
                 {
                     string targetPath = Path.Combine(gameDir, dllName);
                     if (!File.Exists(targetPath))

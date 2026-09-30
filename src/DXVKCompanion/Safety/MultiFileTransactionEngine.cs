@@ -41,6 +41,59 @@ public sealed class MultiFileTransactionEngine
 
     public string TransactionStoreRoot => _transactionStoreRoot;
 
+    public int RecoverInterruptedTransactions()
+    {
+        if (!Directory.Exists(_transactionStoreRoot)) return 0;
+
+        int recoveredCount = 0;
+        foreach (var planFile in Directory.EnumerateFiles(_transactionStoreRoot, "*.json"))
+        {
+            string fileName = Path.GetFileName(planFile);
+            if (fileName.Equals("game-library.json", StringComparison.OrdinalIgnoreCase) ||
+                fileName.Equals("games.json", StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            try
+            {
+                var json = File.ReadAllText(planFile);
+                var plan = JsonSerializer.Deserialize<SafetyTransactionPlan>(json);
+                if (plan == null || string.IsNullOrWhiteSpace(plan.InstallationRoot) || plan.Files == null)
+                    continue;
+
+                for (var index = plan.Files.Count - 1; index >= 0; index--)
+                {
+                    var filePlan = plan.Files[index];
+                    var targetPath = ResolveInsideRoot(plan.InstallationRoot, filePlan.RelativePath);
+
+                    if (filePlan.OriginalState == OriginalFileState.Existing)
+                    {
+                        string backupPath = ResolveBackupPath(filePlan.BackupRelativePath, plan.TransactionId, filePlan.RelativePath);
+                        if (File.Exists(backupPath))
+                        {
+                            File.Copy(backupPath, targetPath, overwrite: true);
+                        }
+                    }
+                    else if (filePlan.OriginalState == OriginalFileState.DidNotExist)
+                    {
+                        if (File.Exists(targetPath))
+                        {
+                            File.Delete(targetPath);
+                        }
+                    }
+                }
+
+                TryDelete(planFile);
+                recoveredCount++;
+            }
+            catch
+            {
+                // Ignore corrupt or unreadable plan
+            }
+        }
+
+        return recoveredCount;
+    }
+
     public SafetyTransactionResult Execute(MultiFileTransactionRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -120,7 +173,11 @@ public sealed class MultiFileTransactionEngine
                     RelativePath = p.File.RelativePath,
                     SourceRelativePath = p.SourcePath ?? string.Empty,
                     ExpectedTargetIdentity = p.File.ExpectedTargetIdentity,
-                    ExpectedSourceIdentity = p.File.ExpectedSourceIdentity
+                    ExpectedSourceIdentity = p.File.ExpectedSourceIdentity,
+                    OriginalState = p.OriginalState,
+                    BackupRelativePath = p.File.BackupRelativePath,
+                    OriginalIdentity = p.OriginalIdentity,
+                    BackupIdentity = p.BackupIdentity
                 }).ToArray(),
                 State = TransactionState.Prepared
             };

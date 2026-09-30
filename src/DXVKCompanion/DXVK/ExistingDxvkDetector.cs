@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using DXVKCompanion.Models;
 using DXVKCompanion.Safety;
 using DXVKCompanion.Storage;
@@ -10,7 +11,7 @@ namespace DXVKCompanion.DXVK
 {
     public class ExistingDxvkDetector
     {
-        private static readonly string[] RelevantDlls = { "d3d9.dll", "d3d11.dll", "dxgi.dll" };
+        private static readonly string[] RelevantDlls = { "d3d8.dll", "d3d9.dll", "d3d10core.dll", "d3d11.dll", "dxgi.dll" };
         private readonly string _dxvkSourceDir;
 
         public ExistingDxvkDetector(string? dxvkSourceDir = null)
@@ -18,11 +19,21 @@ namespace DXVKCompanion.DXVK
             _dxvkSourceDir = dxvkSourceDir ?? Paths.DxvkDir;
         }
 
-        public virtual ExistingDxvkAssessment AssessDirectory(string gameDir, string? architecture = null)
+        public virtual ExistingDxvkAssessment AssessDirectory(string gameDir, string? architecture = null, GraphicsApi expectedApi = GraphicsApi.Unknown)
         {
             if (string.IsNullOrWhiteSpace(gameDir) || !Directory.Exists(gameDir))
             {
                 return new ExistingDxvkAssessment { Status = ExistingDxvkStatus.None };
+            }
+
+            IReadOnlyList<string> targetDlls;
+            if (expectedApi != GraphicsApi.Unknown && DxvkCapabilityMatrix.IsSupported(expectedApi))
+            {
+                targetDlls = DxvkCapabilityMatrix.GetRequiredDlls(expectedApi);
+            }
+            else
+            {
+                targetDlls = RelevantDlls;
             }
 
             var detectedDlls = new List<string>();
@@ -31,7 +42,17 @@ namespace DXVKCompanion.DXVK
             string? matchedVersion = null;
             bool matchedAllToOfficial = true;
 
-            foreach (var dll in RelevantDlls)
+            if (expectedApi != GraphicsApi.Unknown && DxvkCapabilityMatrix.IsSupported(expectedApi))
+            {
+                // Must have all required DLLs present for the expected API
+                bool hasAll = targetDlls.All(dll => File.Exists(Path.Combine(gameDir, dll)));
+                if (!hasAll)
+                {
+                    matchedAllToOfficial = false;
+                }
+            }
+
+            foreach (var dll in targetDlls)
             {
                 var fullPath = Path.Combine(gameDir, dll);
                 if (!File.Exists(fullPath)) continue;
@@ -46,7 +67,7 @@ namespace DXVKCompanion.DXVK
                     evidence.Add($"{dll}: PE metadata indicates DXVK");
                 }
 
-                // Check hash against known local release archives
+                // Check hash against known release archives
                 string? version = FindMatchingOfficialVersion(dll, identity.Sha256, architecture);
                 if (version != null)
                 {
@@ -62,9 +83,9 @@ namespace DXVKCompanion.DXVK
                 }
                 else
                 {
+                    matchedAllToOfficial = false; // Not matching official release
                     if (isDxvkMetadata)
                     {
-                        matchedAllToOfficial = false; // DXVK, but unknown build/hash
                         evidence.Add($"{dll}: DXVK signature present, but hash does not match an official release");
                     }
                     else

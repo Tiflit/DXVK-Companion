@@ -21,7 +21,15 @@ namespace DXVKCompanion.Monitoring
             // Game launchers and store clients
             "steam", "steamwebhelper", "epicgameslauncher", "epicwebhelper", "origin",
             "originthinsetupinternal", "uplay", "upc", "goggalaxy", "galaxyclient",
-            "eadesktop", "ealauncher", "battlenet", "riotclientux", "riotclientservices"
+            "eadesktop", "ealauncher", "battlenet", "riotclientux", "riotclientservices",
+
+            // Browsers, communication, productivity, and developer tools
+            "chrome", "msedge", "firefox", "brave", "opera", "vivaldi",
+            "discord", "slack", "teams", "skype",
+            "code", "devenv", "rider64", "idea64",
+            "notepad", "notepad++", "calc", "calculator",
+            "powershell", "cmd", "wt", "windowsterminal",
+            "spotify", "obs64", "obs", "vlc"
         };
 
         private static readonly string[] AntiCheatSignatures =

@@ -6,16 +6,15 @@ namespace DXVKCompanion.Monitoring
 {
     /// <summary>
     /// Enumerates a process's loaded modules ONCE per call and checks every tracked
-    /// graphics-API DLL against that single snapshot — replacing six near-identical methods
-    /// that each independently re-enumerated process.Modules (a real syscall, not a free
-    /// property read) whenever ApiClassifier called more than one of them per process.
+    /// graphics-API DLL against that single snapshot.
     /// </summary>
     public class ModuleScanner
     {
         private static readonly string[] TrackedModules =
         {
-            "d3d8.dll", "d3d9.dll", "d3d10.dll", "d3d11.dll", "d3d12.dll",
-            "dxgi.dll", "vulkan-1.dll", "opengl32.dll", "ddraw.dll", "dgvoodoo.dll"
+            "d3d8.dll", "d3d9.dll", "d3d10.dll", "d3d10core.dll", "d3d10_1.dll",
+            "d3d11.dll", "d3d12.dll", "dxgi.dll", "vulkan-1.dll", "opengl32.dll",
+            "ddraw.dll", "dgvoodoo.dll"
         };
 
         public virtual HashSet<string> GetLoadedGraphicsModules(Process process)
@@ -28,8 +27,10 @@ namespace DXVKCompanion.Monitoring
                 {
                     string name = module.ModuleName.ToLowerInvariant();
                     foreach (var tracked in TrackedModules)
+                    {
                         if (name.Contains(tracked))
                             found.Add(tracked);
+                    }
                 }
             }
             catch
@@ -40,15 +41,14 @@ namespace DXVKCompanion.Monitoring
             return found;
         }
 
-        // Games loading more than one graphics API at once is unusual and can indicate a
-        // wrapper layer in play (e.g. dgVoodoo bridging legacy DirectDraw/D3D up to D3D11) —
-        // worth knowing about even though it doesn't change classification today.
         public bool UsesMultipleApis(Process process)
         {
             var modules = GetLoadedGraphicsModules(process);
             int apiCount = 0;
 
+            if (modules.Contains("d3d8.dll")) apiCount++;
             if (modules.Contains("d3d9.dll")) apiCount++;
+            if (modules.Contains("d3d10.dll") || modules.Contains("d3d10core.dll")) apiCount++;
             if (modules.Contains("d3d11.dll")) apiCount++;
             if (modules.Contains("vulkan-1.dll")) apiCount++;
             if (modules.Contains("d3d12.dll")) apiCount++;
@@ -56,10 +56,9 @@ namespace DXVKCompanion.Monitoring
             return apiCount > 1;
         }
 
-        // Kept for any external/future callers that only care about one specific API —
-        // internally, ApiClassifier now calls GetLoadedGraphicsModules directly instead.
+        public bool UsesDx8(Process process) => GetLoadedGraphicsModules(process).Contains("d3d8.dll");
         public bool UsesDx9(Process process) => GetLoadedGraphicsModules(process).Contains("d3d9.dll");
-        public bool UsesDx10(Process process) => GetLoadedGraphicsModules(process).Contains("d3d10.dll");
+        public bool UsesDx10(Process process) => GetLoadedGraphicsModules(process).Contains("d3d10.dll") || GetLoadedGraphicsModules(process).Contains("d3d10core.dll");
         public bool UsesDx11(Process process) => GetLoadedGraphicsModules(process).Contains("d3d11.dll");
         public bool UsesDx12(Process process) => GetLoadedGraphicsModules(process).Contains("d3d12.dll");
         public bool UsesVulkan(Process process) => GetLoadedGraphicsModules(process).Contains("vulkan-1.dll");
