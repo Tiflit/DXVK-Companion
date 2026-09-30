@@ -14,11 +14,11 @@ permissions:
 jobs:
   review-packet:
     name: Generate compact review packet
-    if: \${{ github.event.workflow_run.conclusion == 'success' }}
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     env:
-      GH_TOKEN: \${{ github.token }}
-      GH_REPO: \${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
 
     steps:
       - name: Determine pull request
@@ -27,8 +27,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          pr_number="$(printf '%s' '\${{ toJson(github.event.workflow_run.pull_requests) }}' | jq -r '.[0].number // empty')"
-          run_id="\${{ github.event.workflow_run.id }}"
+          pr_number="$(printf '%s' '${{ toJson(github.event.workflow_run.pull_requests) }}' | jq -r '.[0].number // empty')"
+          run_id="${{ github.event.workflow_run.id }}"
 
           if [ -z "$pr_number" ]; then
             echo "The completed Build and Test run is not associated with a pull request; nothing to package."
@@ -42,8 +42,8 @@ jobs:
         if: steps.pr.outputs.pr_number != ''
         shell: bash
         env:
-          PR_NUMBER: \${{ steps.pr.outputs.pr_number }}
-          RUN_ID: \${{ steps.pr.outputs.run_id }}
+          PR_NUMBER: ${{ steps.pr.outputs.pr_number }}
+          RUN_ID: ${{ steps.pr.outputs.run_id }}
         run: |
           set -euo pipefail
 
@@ -177,6 +177,6 @@ jobs:
         if: steps.pr.outputs.pr_number != ''
         uses: actions/upload-artifact@v6
         with:
-          name: review-packet-pr-\${{ steps.pr.outputs.pr_number }}
+          name: review-packet-pr-${{ steps.pr.outputs.pr_number }}
           path: packet/review_packet.md
           if-no-files-found: error
