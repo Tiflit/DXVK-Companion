@@ -4,7 +4,6 @@ on:
   workflow_run:
     workflows: ["Build and Test"]
     types: [completed]
-  workflow_dispatch:
 
 permissions:
   actions: read
@@ -15,9 +14,7 @@ permissions:
 jobs:
   review-packet:
     name: Generate compact review packet
-    if: >-
-      ${{ github.event_name == 'workflow_dispatch' ||
-          github.event.workflow_run.conclusion == 'success' }}
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
@@ -30,13 +27,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [ "${{ github.event_name }}" = "workflow_run" ]; then
-            pr_number="$(printf '%s' '${{ toJson(github.event.workflow_run.pull_requests) }}' | jq -r '.[0].number // empty')"
-            run_id="${{ github.event.workflow_run.id }}"
-          else
-            echo "workflow_dispatch requires a pull request number in the Actions UI." >> "$GITHUB_STEP_SUMMARY"
-            exit 1
-          fi
+          pr_number="$(printf '%s' '${{ toJson(github.event.workflow_run.pull_requests) }}' | jq -r '.[0].number // empty')"
+          run_id="${{ github.event.workflow_run.id }}"
 
           if [ -z "$pr_number" ]; then
             echo "The completed Build and Test run is not associated with a pull request; nothing to package."
