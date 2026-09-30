@@ -1,0 +1,184 @@
+name: AI Review Packet
+
+on:
+  workflow_run:
+    workflows: ["Build and Test"]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+  issues: read
+  pull-requests: read
+
+jobs:
+  review-packet:
+    name: Generate compact review packet
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' ||
+          github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+
+    steps:
+      - name: Determine pull request
+        id: pr
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ "${{ github.event_name }}" = "workflow_run" ]; then
+            pr_number="$(printf '%s' '${{ toJson(github.event.workflow_run.pull_requests) }}' | jq -r '.[0].number // empty')"
+            run_id="${{ github.event.workflow_run.id }}"
+          else
+            echo "workflow_dispatch requires a pull request number in the Actions UI." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          if [ -z "$pr_number" ]; then
+            echo "The completed Build and Test run is not associated with a pull request; nothing to package."
+            exit 0
+          fi
+
+          echo "pr_number=$pr_number" >> "$GITHUB_OUTPUT"
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+
+      - name: Build compact review packet
+        if: steps.pr.outputs.pr_number != ''
+        shell: bash
+        env:
+          PR_NUMBER: ${{ steps.pr.outputs.pr_number }}
+          RUN_ID: ${{ steps.pr.outputs.run_id }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p packet
+
+          pr_json="$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER")"
+          pr_body="$(printf '%s' "$pr_json" | jq -r '.body // ""')"
+          pr_title="$(printf '%s' "$pr_json" | jq -r '.title // ""')"
+          pr_url="$(printf '%s' "$pr_json" | jq -r '.html_url // ""')"
+          head_sha="$(printf '%s' "$pr_json" | jq -r '.head.sha // ""')"
+          base_sha="$(printf '%s' "$pr_json" | jq -r '.base.sha // ""')"
+
+          issue_number="$(printf '%s\n' "$pr_body" |
+            grep -Eio '(closes|fixes|resolves|tracked[[:space:]]+in|relates[[:space:]]+to)[[:space:]]+#[0-9]+' |
+            tail -n 1 |
+            grep -Eo '#[0-9]+' |
+            tr -d '#' || true)"
+
+          {
+            echo "# AI Review Packet"
+            echo
+            echo "Generated from GitHub metadata after the deterministic Build and Test workflow completed successfully."
+            echo
+            echo "> This packet is evidence for independent review. It does not determine whether the change is correct."
+            echo
+            echo "## PR"
+            echo
+            echo "- Number: #$PR_NUMBER"
+            echo "- Title: $pr_title"
+            echo "- URL: $pr_url"
+            echo "- Base: \`$base_sha\`"
+            echo "- Head: \`$head_sha\`"
+            echo
+            echo "## Task contract"
+            echo
+            if [ -n "$issue_number" ]; then
+              issue_json="$(gh api "repos/$GH_REPO/issues/$issue_number")"
+              issue_title="$(printf '%s' "$issue_json" | jq -r '.title // ""')"
+              issue_body="$(printf '%s' "$issue_json" | jq -r '.body // ""')"
+              echo "Tracked issue: #$issue_number — $issue_title"
+              echo
+              printf '%s\n' "$issue_body" | head -c 40000
+              echo
+            else
+              echo "No supported issue reference was detected in the PR body."
+            fi
+
+            echo "## PR verification statement"
+            echo
+            printf '%s\n' "$pr_body" |
+              awk '/^##[[:space:]]+Verification[[:space:]]*$/{p=1;next}/^##[[:space:]]+/{p=0}p' |
+              head -c 12000
+            echo
+            echo "## Deterministic CI evidence"
+            echo
+          } > packet/review_packet.md
+
+          jobs_json="$(gh api "repos/$GH_REPO/actions/runs/$RUN_ID/jobs?per_page=100" --paginate |
+            jq -s 'map(.jobs[]) | add')"
+
+          printf '%s\n' "$jobs_json" |
+            jq -r '
+              .[] |
+              select(.name != null) |
+              "- Job: (.name) — (.conclusion // .status)" ,
+              (.steps[]? | select(.name | test("Restore|Build|Test|Publish|Upload"; "i")) |
+               "  - (.name): (.conclusion // .status)")
+            ' >> packet/review_packet.md
+
+          {
+            echo
+            echo "## Changed files"
+            echo
+          } >> packet/review_packet.md
+
+          files_json="$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER/files?per_page=100" --paginate |
+            jq -s 'add')"
+
+          printf '%s\n' "$files_json" |
+            jq -r '.[] | "- (.filename) (+(.additions)/-(.deletions)) — (.status)"'             >> packet/review_packet.md
+
+          {
+            echo
+            echo "## Selected diff"
+            echo
+            echo "Production, test, workflow, project, and configuration patches are included when available."
+            echo "Large documentation-only changes are represented by the changed-file list to preserve reviewer context."
+            echo
+          } >> packet/review_packet.md
+
+          printf '%s\n' "$files_json" |
+            jq -r '
+              .[] |
+              select(.filename | test("\.(cs|csproj|props|targets|yml|yaml|json|ps1|psm1|sh)$")) |
+              "### (.filename) (+(.additions)/-(.deletions))
+
+(.patch // "[Patch unavailable; inspect the PR directly.]")
+"
+            ' |
+            head -n 700 >> packet/review_packet.md
+
+          {
+            echo
+            echo "---"
+            echo "## Independent-review focus"
+            echo
+            echo "1. Compare implementation against the task contract."
+            echo "2. Audit tests before trusting green CI."
+            echo "3. Ask whether the required invariant can still be bypassed through another entry point."
+            echo "4. Trace the real production orchestration, not only mocks."
+            echo "5. Check regressions and unrelated scope."
+            echo
+            echo "The selected diff is intentionally compact. The PR remains the complete implementation record."
+          } >> packet/review_packet.md
+
+          {
+            echo "### AI Review Packet"
+            echo
+            echo "Generated compact packet for PR #$PR_NUMBER."
+            echo
+            sed -n '1,35p' packet/review_packet.md
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload review packet
+        if: steps.pr.outputs.pr_number != ''
+        uses: actions/upload-artifact@v6
+        with:
+          name: review-packet-pr-${{ steps.pr.outputs.pr_number }}
+          path: packet/review_packet.md
+          if-no-files-found: error
