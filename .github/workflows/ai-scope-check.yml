@@ -91,8 +91,9 @@ jobs:
             local pattern raw prefix
             for raw in "${allowed[@]}"; do
               pattern="$raw"
-              if [[ "$pattern" == */** ]]; then
-                prefix="${pattern%/**}/"
+              suffix="${pattern: -3}"
+            if [ "$suffix" = "/**" ]; then
+                prefix="${pattern:0:${#pattern}-3}/"
                 if [[ "$file" == "$prefix"* ]]; then
                   return 0
                 fi
