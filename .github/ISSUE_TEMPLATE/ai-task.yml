@@ -1,0 +1,114 @@
+name: AI development task
+description: Create a structured task contract for AI-assisted implementation and review.
+title: "[AI] "
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This issue is the authoritative task contract for an AI-assisted change.
+        Keep requirements concrete and testable. Do not rely on an AI chat session as the only source of requirements.
+
+  - type: textarea
+    id: objective
+    attributes:
+      label: Objective
+      description: What problem should be solved? State the desired behavior, not the implementation.
+      placeholder: Describe the desired outcome.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: risk
+    attributes:
+      label: Risk level
+      description: Choose the expected consequence of an incorrect implementation.
+      options:
+        - Low
+        - Medium
+        - High
+        - Architectural
+      default: 1
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: List observable conditions that must be true when the task is complete.
+      placeholder: |
+        - ...
+        - ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: allowed_paths
+    attributes:
+      label: Allowed paths
+      description: Prefer explicit paths for focused tasks. Use "Not yet constrained" only when the correct scope cannot be known before investigation.
+      placeholder: |
+        - src/...
+        - tests/...
+    validations:
+      required: true
+
+  - type: textarea
+    id: forbidden_scope
+    attributes:
+      label: Forbidden or out-of-scope changes
+      description: State changes that must not be included unless the task is explicitly revised.
+      placeholder: |
+        - No unrelated refactoring
+        - No new dependencies unless required
+    validations:
+      required: true
+
+  - type: textarea
+    id: tests
+    attributes:
+      label: Required tests and verification
+      description: Specify regression coverage and the commands or CI evidence expected.
+      placeholder: |
+        - Add regression test for ...
+        - Run dotnet test ...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: review
+    attributes:
+      label: Independent review level
+      description: Reserve scarce independent review capacity for changes where it provides meaningful value.
+      options:
+        - No independent review (low risk)
+        - Claude adversarial review
+        - Claude review plus ChatGPT arbitration if needed
+      default: 1
+    validations:
+      required: true
+
+  - type: dropdown
+    id: documentation
+    attributes:
+      label: Documentation impact
+      description: Decide explicitly whether durable documentation should change.
+      options:
+        - Required
+        - Not required — explain in PR
+        - Defer until implementation stabilizes
+      default: 0
+    validations:
+      required: true
+
+  - type: textarea
+    id: uncertainty
+    attributes:
+      label: Known uncertainty or investigation required
+      description: Record architectural questions that should be resolved before implementation when practical.
+      placeholder: |
+        - Trace ...
+        - Verify ...
+    validations:
+      required: true
