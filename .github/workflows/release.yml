@@ -47,6 +47,15 @@ jobs:
           Set-Content -Path ./artifacts/$zipName.sha256 -Value "$hash  $zipName"
           Write-Output "ZIP_NAME=$zipName" >> $env:GITHUB_ENV
 
+      - name: Upload release package artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: DXVK-Companion-release-package
+          path: |
+            ./artifacts/*.zip
+            ./artifacts/*.sha256
+          if-no-files-found: error
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/')
