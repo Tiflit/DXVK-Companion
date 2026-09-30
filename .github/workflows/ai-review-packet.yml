@@ -85,7 +85,8 @@ jobs:
               issue_body="$(printf '%s' "$issue_json" | jq -r '.body // ""')"
               echo "Tracked issue: #$issue_number — $issue_title"
               echo
-              printf '%s\n' "$issue_body" | head -c 40000
+              printf '%s' "$issue_body" > packet/issue_body.txt
+              cut -c 1-40000 packet/issue_body.txt
               echo
             else
               echo "No supported issue reference was detected in the PR body."
@@ -94,8 +95,8 @@ jobs:
             echo "## PR verification statement"
             echo
             printf '%s\n' "$pr_body" |
-              awk '/^##[[:space:]]+Verification[[:space:]]*$/{p=1;next}/^##[[:space:]]+/{p=0}p' |
-              head -c 12000
+              awk '/^##[[:space:]]+Verification[[:space:]]*$/{p=1;next}/^##[[:space:]]+/{p=0}p' > packet/verification.txt
+            cut -c 1-12000 packet/verification.txt
             echo
             echo "## Deterministic CI evidence"
             echo
