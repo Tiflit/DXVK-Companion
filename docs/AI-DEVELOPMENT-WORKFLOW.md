@@ -36,15 +36,24 @@ AI conversations are working sessions and communication channels, not the author
 
 ### Gemini / Antigravity
 
-Primary implementation agent.
+Primary implementation and heavy-lifting agent.
+
+Gemini has the most generous practical capacity in the current setup, including a separate Antigravity usage path. Use that capacity deliberately rather than trying to keep implementation changes artificially small.
 
 Use for:
 
 - repository exploration;
+- cross-component tracing;
 - implementation;
-- regression tests;
+- broad but task-relevant refactoring;
+- regression tests and test generation;
 - local iteration;
+- build/test diagnosis;
 - focused revisions after review findings.
+
+A large task should be decomposed by scope and acceptance criteria, not by an arbitrary token/diff budget. Gemini can do substantial repository work when the task genuinely requires it, while CI, scope checks, and independent review provide the safety boundaries.
+
+The workflow should optimize for completed useful work rather than equalizing model usage across agents.
 
 A revision should normally use a fresh Gemini/Antigravity session rather than continuing the original implementation conversation.
 
