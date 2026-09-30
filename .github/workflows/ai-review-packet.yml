@@ -14,11 +14,11 @@ permissions:
 jobs:
   review-packet:
     name: Generate compact review packet
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    if: \${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     env:
-      GH_TOKEN: ${{ github.token }}
-      GH_REPO: ${{ github.repository }}
+      GH_TOKEN: \${{ github.token }}
+      GH_REPO: \${{ github.repository }}
 
     steps:
       - name: Determine pull request
@@ -27,8 +27,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          pr_number="$(printf '%s' '${{ toJson(github.event.workflow_run.pull_requests) }}' | jq -r '.[0].number // empty')"
-          run_id="${{ github.event.workflow_run.id }}"
+          pr_number="$(printf '%s' '\${{ toJson(github.event.workflow_run.pull_requests) }}' | jq -r '.[0].number // empty')"
+          run_id="\${{ github.event.workflow_run.id }}"
 
           if [ -z "$pr_number" ]; then
             echo "The completed Build and Test run is not associated with a pull request; nothing to package."
@@ -42,8 +42,8 @@ jobs:
         if: steps.pr.outputs.pr_number != ''
         shell: bash
         env:
-          PR_NUMBER: ${{ steps.pr.outputs.pr_number }}
-          RUN_ID: ${{ steps.pr.outputs.run_id }}
+          PR_NUMBER: \${{ steps.pr.outputs.pr_number }}
+          RUN_ID: \${{ steps.pr.outputs.run_id }}
         run: |
           set -euo pipefail
 
@@ -102,15 +102,16 @@ jobs:
           } > packet/review_packet.md
 
           jobs_json="$(gh api "repos/$GH_REPO/actions/runs/$RUN_ID/jobs?per_page=100" --paginate |
-            jq -s 'map(.jobs[]) | add')"
+            jq -s 'map(.jobs // []) | add // []')"
 
           printf '%s\n' "$jobs_json" |
             jq -r '
               .[] |
               select(.name != null) |
-              "- Job: (.name) — (.conclusion // .status)" ,
-              (.steps[]? | select(.name | test("Restore|Build|Test|Publish|Upload"; "i")) |
-               "  - (.name): (.conclusion // .status)")
+              "- Job: \(.name) — \(.conclusion // .status)",
+              (.steps[]? |
+               select(.name | test("Restore|Build|Test|Publish|Upload"; "i")) |
+               "  - \(.name): \(.conclusion // .status)")
             ' >> packet/review_packet.md
 
           {
@@ -123,7 +124,8 @@ jobs:
             jq -s 'add')"
 
           printf '%s\n' "$files_json" |
-            jq -r '.[] | "- (.filename) (+(.additions)/-(.deletions)) — (.status)"'             >> packet/review_packet.md
+            jq -r '.[] | "- \(.filename) (+\(.additions)/-\(.deletions)) — \(.status)"' \
+            >> packet/review_packet.md
 
           {
             echo
@@ -137,13 +139,16 @@ jobs:
           printf '%s\n' "$files_json" |
             jq -r '
               .[] |
-              select(.filename | test("\.(cs|csproj|props|targets|yml|yaml|json|ps1|psm1|sh)$")) |
-              "### (.filename) (+(.additions)/-(.deletions))
+              select(.filename | test("\\.(cs|csproj|props|targets|yml|yaml|json|ps1|psm1|sh)$")) |
+              "### \(.filename) (+\(.additions)/-\(.deletions))\n\n\(.patch // "[Patch unavailable; inspect the PR directly.]")\n"
+            ' > packet/selected_diff.txt
 
-(.patch // "[Patch unavailable; inspect the PR directly.]")
-"
-            ' |
-            head -n 700 >> packet/review_packet.md
+          selected_lines="$(wc -l < packet/selected_diff.txt)"
+          head -n 700 packet/selected_diff.txt >> packet/review_packet.md
+          if [ "$selected_lines" -gt 700 ]; then
+            echo >> packet/review_packet.md
+            echo "[Selected diff truncated at 700 lines; inspect the complete PR directly.]" >> packet/review_packet.md
+          fi
 
           {
             echo
@@ -171,6 +176,6 @@ jobs:
         if: steps.pr.outputs.pr_number != ''
         uses: actions/upload-artifact@v6
         with:
-          name: review-packet-pr-${{ steps.pr.outputs.pr_number }}
+          name: review-packet-pr-\${{ steps.pr.outputs.pr_number }}
           path: packet/review_packet.md
           if-no-files-found: error
