@@ -7,20 +7,11 @@ using System.Threading.Tasks;
 using DXVKCompanion.DXVK;
 using DXVKCompanion.Models;
 using DXVKCompanion.Monitoring;
-using DXVKCompanion.DXVK;
-using DXVKCompanion.Models;
-using DXVKCompanion.Monitoring;
-using DXVKCompanion.PhaseATests;
-using DXVKCompanion.Safety;
-using DXVKCompanion.Storage;
-using Xunit;
-
 using DXVKCompanion.Safety;
 using DXVKCompanion.Storage;
 using Xunit;
 
 namespace DXVKCompanion.PhaseATests
-
 {
     public sealed class DxvkModernApiCompatibilityTests
     {
@@ -55,10 +46,10 @@ namespace DXVKCompanion.PhaseATests
         public void ApiClassifier_RuntimeModules_DetectsDX12AndVulkanDistinctly()
         {
             using var proc = Process.GetCurrentProcess();
-            // 1. DX12 alone
-            var scanner12 = new FakeModuleScanner("d3d12.dll");
             var parser = new FakePeParser(Array.Empty<string>());
 
+            // 1. DX12 alone
+            var scanner12 = new FakeModuleScanner("d3d12.dll");
             var classifier12 = new ApiClassifier(scanner12, parser);
             var result12 = classifier12.ClassifyDetailed(proc, proc.MainModule?.FileName);
 
@@ -69,14 +60,10 @@ namespace DXVKCompanion.PhaseATests
             Assert.Contains(GraphicsApi.DX12, result12.ObservedApis);
 
             // 2. Vulkan alone
-
             var scannerVk = new FakeModuleScanner("vulkan-1.dll");
             var classifierVk = new ApiClassifier(scannerVk, parser);
             var resultVk = classifierVk.ClassifyDetailed(proc, proc.MainModule?.FileName);
 
-            Assert.Equal(GraphicsApi.Vulkan, resultVk.PrimaryApi);
-            Assert.Equal(ApiDetectionConfidence.High, resultVk.Confidence);
-            Assert.Contains(resultVk.Evidence, e => e.Contains("vulkan-1.dll"));
             Assert.Equal(GraphicsApi.Vulkan, resultVk.PrimaryApi);
             Assert.Equal(ApiDetectionConfidence.High, resultVk.Confidence);
             Assert.Contains(resultVk.Evidence, e => e.Contains("vulkan-1.dll"));
@@ -102,7 +89,6 @@ namespace DXVKCompanion.PhaseATests
             Assert.Equal(ApiDetectionConfidence.High, result11Vk.Confidence);
             Assert.Contains(GraphicsApi.Vulkan, result11Vk.ObservedApis);
             Assert.Contains(GraphicsApi.DX11, result11Vk.ObservedApis);
-
         }
 
         [Fact]
@@ -114,7 +100,6 @@ namespace DXVKCompanion.PhaseATests
             var scanner = new FakeModuleScanner();
 
             // 1. DX12 PE import
-
             var parser12 = new FakePeParser(new[] { "d3d12.dll", "kernel32.dll" });
             var classifier12 = new ApiClassifier(scanner, parser12);
             var result12 = classifier12.ClassifyDetailed(proc, fakeExe);
@@ -126,14 +111,10 @@ namespace DXVKCompanion.PhaseATests
             Assert.Contains(GraphicsApi.DX12, result12.ObservedApis);
 
             // 2. Vulkan PE import
-
             var parserVk = new FakePeParser(new[] { "vulkan-1.dll", "kernel32.dll" });
             var classifierVk = new ApiClassifier(scanner, parserVk);
             var resultVk = classifierVk.ClassifyDetailed(proc, fakeExe);
 
-            Assert.Equal(GraphicsApi.Vulkan, resultVk.PrimaryApi);
-            Assert.Equal(ApiDetectionConfidence.Medium, resultVk.Confidence);
-            Assert.Contains(resultVk.Evidence, e => e.Contains("vulkan-1.dll"));
             Assert.Equal(GraphicsApi.Vulkan, resultVk.PrimaryApi);
             Assert.Equal(ApiDetectionConfidence.Medium, resultVk.Confidence);
             Assert.Contains(resultVk.Evidence, e => e.Contains("vulkan-1.dll"));
@@ -159,7 +140,6 @@ namespace DXVKCompanion.PhaseATests
             Assert.Equal(ApiDetectionConfidence.Medium, result11Vk.Confidence);
             Assert.Contains(GraphicsApi.Vulkan, result11Vk.ObservedApis);
             Assert.Contains(GraphicsApi.DX11, result11Vk.ObservedApis);
-
         }
 
         [Theory]
@@ -192,12 +172,7 @@ namespace DXVKCompanion.PhaseATests
         [InlineData(GraphicsApi.DX12)]
         [InlineData(GraphicsApi.Vulkan)]
         [InlineData(GraphicsApi.ModernAPI)]
-        [InlineData(GraphicsApi.DX12)]
-        [InlineData(GraphicsApi.Vulkan)]
-        [InlineData(GraphicsApi.ModernAPI)]
         [InlineData(GraphicsApi.Unknown)]
-        public async Task DxvkInstaller_ApplyToGameAsync_RefusesDeploymentForUnsupportedApis(GraphicsApi api)
-
         public async Task DxvkInstaller_ApplyToGameAsync_RefusesDeploymentForUnsupportedApis(GraphicsApi api)
         {
             using var gameDir = new SyntheticTestDirectory();
@@ -209,7 +184,6 @@ namespace DXVKCompanion.PhaseATests
             File.WriteAllText(Path.Combine(dxvkArchDir, "d3d11.dll"), "dxvk-d3d11");
             File.WriteAllText(Path.Combine(dxvkArchDir, "dxgi.dll"), "dxvk-dxgi");
             File.WriteAllText(Path.Combine(dxvkArchDir, "d3d9.dll"), "dxvk-d3d9");
-
 
             var exePath = gameDir.CreateFile("Game.exe", "binary");
             var store = new GameLibraryStore(
@@ -234,6 +208,14 @@ namespace DXVKCompanion.PhaseATests
             Assert.False(File.Exists(Path.Combine(gameDir.RootPath, "d3d9.dll")));
         }
 
+        [Fact]
+        public async Task DxvkInstaller_ApplyToGameAsync_DeploysExpectedDllsForSupportedApis()
+        {
+            using var storageDir = new SyntheticTestDirectory();
+            using var sourceDir = new SyntheticTestDirectory();
+
+            var dxvkArchDir = Path.Combine(sourceDir.RootPath, "2.5", "x64");
+            Directory.CreateDirectory(dxvkArchDir);
             File.WriteAllText(Path.Combine(dxvkArchDir, "d3d11.dll"), "dxvk-d3d11");
             File.WriteAllText(Path.Combine(dxvkArchDir, "dxgi.dll"), "dxvk-dxgi");
             File.WriteAllText(Path.Combine(dxvkArchDir, "d3d9.dll"), "dxvk-d3d9");
@@ -281,17 +263,14 @@ namespace DXVKCompanion.PhaseATests
                 Assert.True(File.Exists(Path.Combine(gameDir11.RootPath, "dxgi.dll")));
                 Assert.False(File.Exists(Path.Combine(gameDir11.RootPath, "d3d9.dll")));
             }
+        }
 
         [Theory]
         [InlineData(GraphicsApi.DX12)]
         [InlineData(GraphicsApi.Vulkan)]
         [InlineData(GraphicsApi.ModernAPI)]
-        [InlineData(GraphicsApi.DX12)]
-        [InlineData(GraphicsApi.Vulkan)]
-        [InlineData(GraphicsApi.ModernAPI)]
         [InlineData(GraphicsApi.Unknown)]
         public async Task DxvkInstaller_ReapplyAsync_RefusesReapplyOnManagedGameWhenApiUnsupported_AndPreservesGameFiles(GraphicsApi unsupportedApi)
-
         {
             using var gameDir = new SyntheticTestDirectory();
             using var storageDir = new SyntheticTestDirectory();
@@ -302,7 +281,6 @@ namespace DXVKCompanion.PhaseATests
             File.WriteAllText(Path.Combine(dxvkArchDir, "d3d11.dll"), "dxvk-2.5-d3d11-content");
             File.WriteAllText(Path.Combine(dxvkArchDir, "dxgi.dll"), "dxvk-2.5-dxgi-content");
 
-
             var exePath = gameDir.CreateFile("Game.exe", "binary");
             var store = new GameLibraryStore(
                 Path.Combine(storageDir.RootPath, "game-library.json"),
@@ -311,8 +289,6 @@ namespace DXVKCompanion.PhaseATests
             using var http = new HttpClient();
             var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
 
-            var profile = new GameProfile(exePath)
-            {
             var profile = new GameProfile(exePath)
             {
                 Api = GraphicsApi.DX11,
@@ -348,19 +324,13 @@ namespace DXVKCompanion.PhaseATests
             profile.Api = GraphicsApi.DX11;
             bool positiveReapply = await installer.ReapplyAsync(profile, updateBaseline: false);
             Assert.True(positiveReapply);
-
         }
 
         [Theory]
         [InlineData(GraphicsApi.DX12)]
         [InlineData(GraphicsApi.Vulkan)]
         [InlineData(GraphicsApi.ModernAPI)]
-        [InlineData(GraphicsApi.DX12)]
-        [InlineData(GraphicsApi.Vulkan)]
-        [InlineData(GraphicsApi.ModernAPI)]
         [InlineData(GraphicsApi.Unknown)]
-        public async Task DxvkManager_RequestEnableAndReapply_FailsAndDoesNotQueueForUnsupportedApis(GraphicsApi api)
-
         public async Task DxvkManager_RequestEnableAndReapply_FailsAndDoesNotQueueForUnsupportedApis(GraphicsApi api)
         {
             using var gameDir = new SyntheticTestDirectory();
@@ -412,7 +382,6 @@ namespace DXVKCompanion.PhaseATests
 
         [Fact]
         public async Task DxvkManager_ApplyPendingAsync_And_ProcessAllPendingActionsAsync_BlocksExecutionForUnsupportedApis()
-
         {
             using var gameDir = new SyntheticTestDirectory();
             using var storageDir = new SyntheticTestDirectory();
@@ -428,6 +397,141 @@ namespace DXVKCompanion.PhaseATests
             var store = new GameLibraryStore(
                 Path.Combine(storageDir.RootPath, "game-library.json"),
                 Path.Combine(storageDir.RootPath, "backups"));
+            var profileStore = new ProfileStore(Path.Combine(storageDir.RootPath, "games.json"));
+            var engine = new MultiFileTransactionEngine(Path.Combine(storageDir.RootPath, "backups"));
+            using var http = new HttpClient();
+            var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
+            var rollback = new DxvkRollback(engine, store);
+            var github = new DxvkGithubClient(http, new CacheStore(Path.Combine(storageDir.RootPath, "cache.json")));
+            var manager = new DxvkManager(installer, rollback, github, profileStore, store);
+
+            // 1. Unsupported API (DX12) with Pending Install
+            var profile = profileStore.GetOrCreate(exePath);
+            profile.Api = GraphicsApi.DX12;
+            profile.Architecture = "x64";
+            profileStore.Save(profile);
+
+            var installation = store.GetOrCreateInstallation(gameDir.RootPath, "Game");
+            installation.GetOrAddExecutable("Game.exe", "Game");
+            installation.PendingAction = PendingAction.Install("2.5", "Queued offline");
+            store.Save(installation);
+
+            // ApplyPendingAsync must return false and NOT clear pending action
+            bool directApplyOk = await manager.ApplyPendingAsync(exePath);
+            Assert.False(directApplyOk);
+            Assert.False(File.Exists(Path.Combine(gameDir.RootPath, "d3d11.dll")));
+
+            var instAfterDirect = store.FindByInstallationPath(gameDir.RootPath);
+            Assert.NotNull(instAfterDirect?.PendingAction);
+            Assert.True(instAfterDirect!.PendingAction!.IsPending);
+
+            // ProcessAllPendingActionsAsync must return 0 and not execute
+            int processed = await manager.ProcessAllPendingActionsAsync();
+            Assert.Equal(0, processed);
+            Assert.False(File.Exists(Path.Combine(gameDir.RootPath, "d3d11.dll")));
+
+            var instAfterBatch = store.FindByInstallationPath(gameDir.RootPath);
+            Assert.NotNull(instAfterBatch?.PendingAction);
+            Assert.True(instAfterBatch!.PendingAction!.IsPending);
+
+            // 2. Unsupported API (Vulkan) with Pending Reapply
+            profile.Api = GraphicsApi.Vulkan;
+            profileStore.Save(profile);
+            installation.PendingAction = PendingAction.Reapply("2.5", "Queued reapply");
+            store.Save(installation);
+
+            bool reapplyPendingOk = await manager.ApplyPendingAsync(exePath);
+            Assert.False(reapplyPendingOk);
+
+            int processedVk = await manager.ProcessAllPendingActionsAsync();
+            Assert.Equal(0, processedVk);
+
+            // 3. Positive control: supported DX11 API executes pending action cleanly
+            profile.Api = GraphicsApi.DX11;
+            profileStore.Save(profile);
+            installation.PendingAction = PendingAction.Install("2.5", "Queued for DX11");
+            store.Save(installation);
+
+            int executedPositive = await manager.ProcessAllPendingActionsAsync();
+            Assert.Equal(1, executedPositive);
+
+            var instAfterPositive = store.FindByInstallationPath(gameDir.RootPath);
+            Assert.NotNull(instAfterPositive);
+            Assert.Null(instAfterPositive!.PendingAction);
+            Assert.True(File.Exists(Path.Combine(gameDir.RootPath, "d3d11.dll")));
+            Assert.True(File.Exists(Path.Combine(gameDir.RootPath, "dxgi.dll")));
+        }
+
+        [Fact]
+        public async Task DxvkManager_DisableDxvkAsync_PreservedWhenGameReclassifiedAsDX12OrVulkan()
+        {
+            using var gameDir = new SyntheticTestDirectory();
+            using var storageDir = new SyntheticTestDirectory();
+            using var sourceDir = new SyntheticTestDirectory();
+
+            var dxvkArchDir = Path.Combine(sourceDir.RootPath, "2.5", "x64");
+            Directory.CreateDirectory(dxvkArchDir);
+            File.WriteAllText(Path.Combine(dxvkArchDir, "d3d11.dll"), "dxvk-2.5-d3d11");
+            File.WriteAllText(Path.Combine(dxvkArchDir, "dxgi.dll"), "dxvk-2.5-dxgi");
+
+            var exePath = gameDir.CreateFile("Game.exe", "synthetic-binary");
+            // Native original game DLL
+            var d3d11Path = gameDir.CreateFile("d3d11.dll", "original-native-d3d11");
+
+            var store = new GameLibraryStore(
+                Path.Combine(storageDir.RootPath, "game-library.json"),
+                Path.Combine(storageDir.RootPath, "backups"));
+            var profileStore = new ProfileStore(Path.Combine(storageDir.RootPath, "games.json"));
+            var engine = new MultiFileTransactionEngine(Path.Combine(storageDir.RootPath, "backups"));
+            using var http = new HttpClient();
+            var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
+            var rollback = new DxvkRollback(engine, store);
+            var github = new DxvkGithubClient(http, new CacheStore(Path.Combine(storageDir.RootPath, "cache.json")));
+            var manager = new DxvkManager(installer, rollback, github, profileStore, store);
+
+            var profile = profileStore.GetOrCreate(exePath);
+            profile.Api = GraphicsApi.DX11;
+            profile.Architecture = "x64";
+            profileStore.Save(profile);
+
+            // Deploy DXVK under DX11
+            var release = new ReleaseInfo { Version = "2.5", DownloadUrl = "" };
+            bool enabled = await manager.EnableDxvkAsync(profile, "2.5");
+            Assert.True(enabled);
+            Assert.True(profile.DxvkEnabled);
+            Assert.Equal("dxvk-2.5-d3d11", File.ReadAllText(d3d11Path));
+
+            // Later, game is reclassified to DX12
+            profile.Api = GraphicsApi.DX12;
+            profileStore.Save(profile);
+
+            // Safety-critical invariant: DisableDxvkAsync MUST succeed and restore original DLLs!
+            bool disabled = await manager.DisableDxvkAsync(profile);
+            Assert.True(disabled);
+            Assert.False(profile.DxvkEnabled);
+            Assert.Equal("original-native-d3d11", File.ReadAllText(d3d11Path));
+            Assert.False(File.Exists(Path.Combine(gameDir.RootPath, "dxgi.dll")));
+        }
+
+        [Fact]
+        public async Task DxvkManager_AdoptExistingAsync_RefusesAdoptionForDX12AndVulkan_AndAllowsSupportedApi()
+        {
+            using var gameDir = new SyntheticTestDirectory();
+            using var storageDir = new SyntheticTestDirectory();
+            using var sourceDir = new SyntheticTestDirectory();
+
+            var releaseDir = Path.Combine(sourceDir.RootPath, "2.5", "x64");
+            Directory.CreateDirectory(releaseDir);
+            File.WriteAllText(Path.Combine(releaseDir, "d3d11.dll"), "official-dxvk-2.5-d3d11");
+            File.WriteAllText(Path.Combine(releaseDir, "dxgi.dll"), "official-dxvk-2.5-dxgi");
+
+            var exePath = gameDir.CreateFile("Game.exe", "synthetic-binary");
+            gameDir.CreateFile("d3d11.dll", "official-dxvk-2.5-d3d11");
+            gameDir.CreateFile("dxgi.dll", "official-dxvk-2.5-dxgi");
+
+            var store = new GameLibraryStore(
+                Path.Combine(storageDir.RootPath, "game-library.json"),
+                Path.Combine(storageDir.RootPath, "backups"));
             var engine = new MultiFileTransactionEngine(Path.Combine(storageDir.RootPath, "backups"));
             using var http = new HttpClient();
             var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
@@ -438,7 +542,6 @@ namespace DXVKCompanion.PhaseATests
             var manager = new DxvkManager(installer, rollback, github, profileStore, store);
 
             // Refuses adoption for DX12
-
             var profile12 = profileStore.GetOrCreate(exePath);
             profile12.Api = GraphicsApi.DX12;
             profile12.Architecture = "x64";
@@ -446,7 +549,6 @@ namespace DXVKCompanion.PhaseATests
             Assert.False(profile12.DxvkEnabled);
 
             // Refuses adoption for Vulkan
-
             var profileVk = profileStore.GetOrCreate(exePath);
             profileVk.Api = GraphicsApi.Vulkan;
             profileVk.Architecture = "x64";
@@ -466,7 +568,41 @@ namespace DXVKCompanion.PhaseATests
             Assert.True(await manager.AdoptExistingAsync(profile11));
             Assert.True(profile11.DxvkEnabled);
             Assert.Equal("2.5", profile11.DxvkVersion);
+        }
 
+        [Theory]
+        [InlineData(GraphicsApi.DX12)]
+        [InlineData(GraphicsApi.Vulkan)]
+        [InlineData(GraphicsApi.ModernAPI)]
+        [InlineData(GraphicsApi.Unknown)]
+        public void DxvkInstaller_AdoptExisting_DirectCall_RefusesUnsupportedApis(GraphicsApi api)
+        {
+            using var gameDir = new SyntheticTestDirectory();
+            using var storageDir = new SyntheticTestDirectory();
+            using var sourceDir = new SyntheticTestDirectory();
+
+            var exePath = gameDir.CreateFile("Game.exe", "synthetic-binary");
+            var store = new GameLibraryStore(
+                Path.Combine(storageDir.RootPath, "game-library.json"),
+                Path.Combine(storageDir.RootPath, "backups"));
+            var engine = new MultiFileTransactionEngine(Path.Combine(storageDir.RootPath, "backups"));
+            using var http = new HttpClient();
+            var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
+
+            var profile = new GameProfile(exePath)
+            {
+                Api = api,
+                Architecture = "x64"
+            };
+
+            var assessment = new ExistingDxvkAssessment
+            {
+                Status = ExistingDxvkStatus.OfficialRelease,
+                MatchedVersion = "2.5",
+                DetectedDlls = new List<string> { "d3d11.dll", "dxgi.dll" }
+            };
+
+            Assert.False(installer.AdoptExisting(profile, assessment));
         }
     }
 }

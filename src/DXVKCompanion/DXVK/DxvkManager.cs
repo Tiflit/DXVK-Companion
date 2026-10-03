@@ -214,6 +214,12 @@ namespace DXVKCompanion.DXVK
             if (installation?.PendingAction != null && installation.PendingAction.IsPending)
             {
                 var pendingType = installation.PendingAction.Type;
+                if (pendingType != PendingActionType.Restore && !DxvkCompatibility.IsDxvkSupported(profile.Api))
+                {
+                    Logger.Log($"DxvkManager: refusing pending action {pendingType} for {profile.ExeName}; API {profile.Api} is not supported for DXVK.");
+                    return false;
+                }
+
                 bool success = false;
 
                 switch (pendingType)
@@ -283,6 +289,12 @@ namespace DXVKCompanion.DXVK
 
                 string primaryExePath = Path.Combine(installation.InstallationPath, primaryExeRel);
                 var profile = _profiles.GetOrCreate(primaryExePath);
+
+                if (installation.PendingAction.Type != PendingActionType.Restore && !DxvkCompatibility.IsDxvkSupported(profile.Api))
+                {
+                    Logger.Log($"DxvkManager: skipping pending action {installation.PendingAction.Type} for {profile.ExeName}; API {profile.Api} is not supported for DXVK.");
+                    continue;
+                }
 
                 bool success = false;
                 switch (installation.PendingAction.Type)
