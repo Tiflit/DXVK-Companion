@@ -9,6 +9,7 @@ using DXVKCompanion.Models;
 using DXVKCompanion.Monitoring;
 using DXVKCompanion.Safety;
 using DXVKCompanion.Storage;
+using DXVKCompanion.Utils;
 using Xunit;
 
 namespace DXVKCompanion.PhaseATests
