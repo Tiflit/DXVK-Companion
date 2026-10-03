@@ -8,6 +8,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using DXVKCompanion.Models;
 using DXVKCompanion.Storage;
+using DXVKCompanion.Utils;
 
 namespace DXVKCompanion.DXVK
 {
