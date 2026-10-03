@@ -238,17 +238,19 @@ A normal policy is one focused revision after a material finding. Persistent dis
 - Issue #6: open
 - PR #9: open
 - PR #9 latest verified head: `d9051cab30d5e5bde3d066fa8e04527e5e386f04`
-- PR #9 newest head had no associated workflow run at the latest check
+- PR #9 Build and Test run #70 failed at application compilation with two CS0103 `Logger` errors in `DxvkManager.cs`; tests did not run
 - Gemini/Antigravity: actively revising PR #9
 - Human merge authority: unchanged
 
 ## Durable checkpoint recorded on Issue #6
 
-Two comments were added to Issue #6 during the final handoff review.
+Three comments were added to Issue #6 during the final handoff review.
 
 The first recorded the prior PR #9 head `fb04a0cb...` and its failed Build and Test result.
 
-The second recorded the newer head `d9051cab...`, the cleanup of the malformed test file, the removal of the unnecessary enum JSON converter/aliases, and the fact that CI had not yet run for the new head.
+The second recorded the newer head `d9051cab...`, the cleanup of the malformed test file, the removal of the unnecessary enum JSON converter/aliases, and the absence of CI at that moment.
+
+The third recorded the subsequent Build and Test run #70 failure: the application build reports two CS0103 `Logger` errors in `DxvkManager.cs` before tests can run.
 
 These comments exist so a new AI session can recover the current Pilot #2 state without relying on this conversation.
 
