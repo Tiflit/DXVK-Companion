@@ -194,7 +194,7 @@ A correction to earlier broad wording: “F5/F6/F8 are all pre-existing” needs
 
 ## 7. Application follow-up backlog
 
-No new numbered follow-up issues are claimed as created by this handoff unless listed in the actions section.
+No new numbered follow-up issues were created as part of this documentation update.
 
 1. Reproduce and fix Reapply original-file baseline/backup safety (F8); preserve native DLLs across Restore.
 2. Decide installation-wide versus per-exe compatibility in shared directories (F5).
@@ -298,9 +298,9 @@ For future extraction: template repository should contain AGENTS.md, Issue form,
 
 ## 10. Ordered continuation plan
 
-1. Recheck live main/PR #4/#9/#10 heads, CI and documentation changes recorded below.
+1. Recheck live main/PR #4/#9/#10 heads, CI and documentation changes recorded in PR #10.
 2. Preserve revision-specific external review and arbitration records on the relevant PRs. Do not fabricate Pilot #1's reviewed SHA. The current imported documentation is a bridge, not a GitHub native reviewer approval.
-3. Complete PR #9 metadata correction (F4) and inspect its current CI relationship. Keep implementation frozen unless material new evidence appears.
+3. Verify the completed PR #9 metadata correction (F4) and inspect its current CI relationship. Keep implementation frozen unless material new evidence appears.
 4. Workflow-hardening task/PR: immutable packet binding; safe event parsing; test summary; quota-efficient packet; fail-closed scope with tested format alignment and metadata refresh.
 5. Workflow-contract task/PR: canonical PR template, neutral versioned reviewer prompt, output schema, arbitration rubric, handoff template, explicit review-state/freshness protocol, spec authority reconciliation.
 6. Human decides PR #4 and #9 merges; then close linked Issues as appropriate. Refresh or supersede PR #10 instead of merging an obsolete checkpoint. Record final outcomes rather than declaring pilots complete while PRs remain open.
@@ -323,3 +323,7 @@ No need to ask the user to restate the project. The next session can start from 
 ## Future pilot record fields
 
 Record task/contract; implementation/reviewer/arbitrator and review mode; exact source/base/tested SHA and CI run; tests; findings and evidence; materiality and scope; accepted/rejected disposition; false positives/unique findings; quota/tool burden; implementation changes caused by review; human merge/reject/escalate outcome; documentation impact. Use “none” or “unknown” when appropriate. Do not invent findings or precision.
+
+## Documentation actions completed on 2026-10-03
+
+PR #10 was refreshed in place, preserving the existing branch and human merge review. It now updates this pilot log and AI-DEVELOPMENT-WORKFLOW.md. PR #9's body now includes the missing headings, a closed command fence, precise CI identity, external-review attribution and residual limitations. Its implementation head remains c4d0f846b4031b08e9e3444c803abe37cc171890. No application/workflow implementation or main-branch changes were made. No native reviews or PR comments were posted; review substance is durable in these documents and the PR body, while a standardized comment/review-state protocol is still pending. No new follow-up Issues, merge, closure, branch protection, paid dispatch or Pilot #3 experiment was performed.
