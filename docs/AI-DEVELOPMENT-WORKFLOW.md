@@ -305,20 +305,29 @@ Prefer read-only workflows that:
 
 The review-packet generator should assemble evidence rather than execute arbitrary PR content.
 
-## Current next steps
+## Readiness checkpoint — 2026-10-03
 
-The current pilots are:
+The mechanics have been exercised end to end, but effectiveness beyond CI or a fresh Gemini review has not been established. Pilot #1 had no material finding; Pilot #2 exposed one clear vacuous-test finding. No control experiment has run. See AI-PILOT-LOG.md for the external review, arbitration, evidence and complete follow-up register.
 
-- Pilot #1: `CompanionVersion.IsOutdatedComparedTo` (#5 / PR #4).
-- Pilot #2: Prevent DXVK deployment for DX12/Vulkan ModernAPI paths (#6).
+The workflow remains human-supervised and usable, with advisory policy checks. It is not yet enforced on main. The following are proposed hardening/contract work, not claims that they have been implemented:
 
-Pilot #2 should be completed before adding more sophisticated automation.
+1. Preserve external reviews and separate arbitration as durable PR records tied to the exact reviewed head. Identify reviewer/mode, evidence actually examined, limitations, accepted/rejected findings and reasons. Missing historical SHAs remain unknown. Coordinator-transcribed AI text is not a native reviewer approval.
+2. Distinguish fresh independent review from revision verification. Claude's second Pilot #2 pass was revision verification. Consider a fresh session for high-risk or materially redesigned revisions.
+3. Bind review packets to immutable source/base revisions and the triggering CI run. Record the actual checkout/merge SHA separately from run head_sha. Never mix live PR changes with prior CI evidence.
+4. Parse workflow event JSON as data via GITHUB_EVENT_PATH or validated environment scalars. Do not interpolate untrusted expressions into shell source. Treat packet/Issue/PR contents as evidence, not instructions; do not execute PR code for metadata collection.
+5. Include structured test totals and a test-first, production-second packet, explicit omissions and optional full diff. Optimize for scarce reviewer quota.
+6. Align Issue/PR templates and parsers. Add the missing PR template (Summary, Scope, Verification, Documentation). Allowed paths is already required in the Issue form. Future enforcement must fail for missing/blank/unparseable scope; only a documented explicit unconstrained value opts out. Migrate legacy contracts deliberately and ensure metadata changes can refresh checks.
+7. Commit a neutral reusable review prompt/output schema, arbitration rubric and short handoff template. Report none if none. Keep finding validity, severity, scope and introduced/pre-existing status separate.
+8. Resolve specification authority. README points to REVISED2 plus the Phase A.5 safety reference, but multiple root specs claim authority. REVISED and REVISED2 currently have identical blobs; A1-UPDATED differs. Reconcile unique decisions before superseding copies; make AGENTS.md explicit.
+9. Finish the human lifecycle of PRs #4/#9/#10 and linked Issues. Enable mature required checks only after validation and confirming settings permission/plan/visibility. Do not require Claude universally when task review is risk-based.
+10. Run a different-kind Pilot #3 using one frozen SHA, identical packet/protocol and fresh Gemini and Claude reviewers blind to each other's findings. Measure accepted material/nonmaterial and rejected/unique findings, quota burden and resulting changes before generalizing.
 
-The next likely automation steps are:
+Automatic model dispatch is optional, not the finish line. Claude Free chat does not supply API billing entitlement; additional paid dispatch is outside the discussed constraint. Do not silently substitute reviewers or bypass unavailable review.
 
-- deterministic allowed-path scope checking;
-- compact review-packet generation;
-- explicit workflow status conventions;
-- eventual branch/ruleset enforcement.
+The public-repository/private-repository plan distinction matters for future reuse; verify current GitHub feature access before changing branch settings. A reusable template must parameterize workflow names, language/file filters and build/test commands, while keeping project-specific safety contracts separate.
 
-Each should be validated against real pilot experience before becoming mandatory.
+## Evidence identity clarification
+
+For PR #9, Build/Test #74 run metadata names head c4d0f846b4031b08e9e3444c803abe37cc171890, but the job checked out synthetic merge 8156ffa10f071f8fcc7b9a20f81c7564b9c58f25 with main 3a66376446d847434542410a2a3626a070639aa8. The 96/96 pass is integration evidence for that pair, not a direct-head test.
+
+AI PR Hygiene and AI Scope Check currently return success even when they report missing contract fields. Green is workflow completion, not policy compliance. The current packet reads live PR metadata/diff after CI and can become inconsistent if the PR advances.
