@@ -8,6 +8,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using DXVKCompanion.Models;
 using DXVKCompanion.Storage;
+using DXVKCompanion.Utils;
 
 namespace DXVKCompanion.DXVK
 {
@@ -49,6 +50,9 @@ namespace DXVKCompanion.DXVK
 
         public bool UpdateAvailable(GameProfile profile, ReleaseInfo latest)
         {
+            if (!DxvkCompatibility.IsDxvkSupported(profile.Api))
+                return false;
+
             if (string.IsNullOrWhiteSpace(profile.DxvkVersion))
                 return true;
 
@@ -103,6 +107,11 @@ namespace DXVKCompanion.DXVK
 
         private async Task<DxvkActionResult> QueueOrApplyAsync(GameProfile profile, bool isRunning, PendingAction action)
         {
+            if (action == PendingAction.Enable && !DxvkCompatibility.IsDxvkSupported(profile.Api))
+            {
+                return DxvkActionResult.Failed;
+            }
+
             if (isRunning)
             {
                 string gameDir = Path.GetDirectoryName(profile.ExePath) ?? string.Empty;
@@ -154,6 +163,11 @@ namespace DXVKCompanion.DXVK
 
         private async Task<DxvkActionResult> QueueOrApplyReapplyAsync(GameProfile profile, bool isRunning, bool updateBaseline)
         {
+            if (!DxvkCompatibility.IsDxvkSupported(profile.Api))
+            {
+                return DxvkActionResult.Failed;
+            }
+
             if (isRunning)
             {
                 string gameDir = Path.GetDirectoryName(profile.ExePath) ?? string.Empty;
@@ -201,6 +215,12 @@ namespace DXVKCompanion.DXVK
             if (installation?.PendingAction != null && installation.PendingAction.IsPending)
             {
                 var pendingType = installation.PendingAction.Type;
+                if (pendingType != PendingActionType.Restore && !DxvkCompatibility.IsDxvkSupported(profile.Api))
+                {
+                    Logger.Log($"DxvkManager: refusing pending action {pendingType} for {profile.ExeName}; API {profile.Api} is not supported for DXVK.");
+                    return false;
+                }
+
                 bool success = false;
 
                 switch (pendingType)
@@ -271,6 +291,12 @@ namespace DXVKCompanion.DXVK
                 string primaryExePath = Path.Combine(installation.InstallationPath, primaryExeRel);
                 var profile = _profiles.GetOrCreate(primaryExePath);
 
+                if (installation.PendingAction.Type != PendingActionType.Restore && !DxvkCompatibility.IsDxvkSupported(profile.Api))
+                {
+                    Logger.Log($"DxvkManager: skipping pending action {installation.PendingAction.Type} for {profile.ExeName}; API {profile.Api} is not supported for DXVK.");
+                    continue;
+                }
+
                 bool success = false;
                 switch (installation.PendingAction.Type)
                 {
@@ -298,6 +324,11 @@ namespace DXVKCompanion.DXVK
 
         public async Task<bool> EnableDxvkAsync(GameProfile profile, string? targetVersion = null)
         {
+            if (!DxvkCompatibility.IsDxvkSupported(profile.Api))
+            {
+                return false;
+            }
+
             ReleaseInfo? release;
             if (!string.IsNullOrWhiteSpace(targetVersion))
             {
@@ -342,6 +373,9 @@ namespace DXVKCompanion.DXVK
 
         public async Task<bool> AdoptExistingAsync(GameProfile profile)
         {
+            if (!DxvkCompatibility.IsDxvkSupported(profile.Api))
+                return false;
+
             string gameDir = Path.GetDirectoryName(profile.ExePath) ?? string.Empty;
             var detector = new ExistingDxvkDetector(_installer.DxvkSourceDir);
             var assessment = detector.AssessDirectory(gameDir, profile.Architecture);
@@ -358,6 +392,11 @@ namespace DXVKCompanion.DXVK
 
         public async Task<bool> ReapplyAsync(GameProfile profile, bool updateBaseline = true)
         {
+            if (!DxvkCompatibility.IsDxvkSupported(profile.Api))
+            {
+                return false;
+            }
+
             bool ok = await _installer.ReapplyAsync(profile, updateBaseline);
             if (ok)
             {

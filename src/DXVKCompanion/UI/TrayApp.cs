@@ -197,10 +197,7 @@ namespace DXVKCompanion.UI
 
                 string localVersion = string.IsNullOrWhiteSpace(profile.DxvkVersion) ? "None" : profile.DxvkVersion;
 
-                bool dxvkCompatible = profile.Api == GraphicsApi.DX9 ||
-                                      profile.Api == GraphicsApi.DX10 ||
-                                      profile.Api == GraphicsApi.DX11 ||
-                                      profile.Api == GraphicsApi.ModernAPI;
+                bool dxvkCompatible = DxvkCompatibility.IsDxvkSupported(profile.Api);
 
                 bool updateAvailable = latest != null && profile.DxvkEnabled && _dxvk.UpdateAvailable(profile, latest);
 
