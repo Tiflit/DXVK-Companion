@@ -327,3 +327,13 @@ Record task/contract; implementation/reviewer/arbitrator and review mode; exact 
 ## Documentation actions completed on 2026-10-03
 
 PR #10 was refreshed in place, preserving the existing branch and human merge review. It now updates this pilot log and AI-DEVELOPMENT-WORKFLOW.md. PR #9's body now includes the missing headings, a closed command fence, precise CI identity, external-review attribution and residual limitations. Its implementation head remains c4d0f846b4031b08e9e3444c803abe37cc171890. No application/workflow implementation or main-branch changes were made. No native reviews or PR comments were posted; review substance is durable in these documents and the PR body, while a standardized comment/review-state protocol is still pending. No new follow-up Issues, merge, closure, branch protection, paid dispatch or Pilot #3 experiment was performed.
+
+## Continuation checkpoint — 2026-10-03: manual review contract v1
+
+Rechecked live main and PRs #4/#9/#10. Main remains 3a66376446d847434542410a2a3626a070639aa8; PR #9 remains c4d0f846b4031b08e9e3444c803abe37cc171890, with successful Build/Test run 37091615107. PRs remain open; PR #9's corrected metadata is present. This check reconfirmed run status, not a new execution or another review of implementation.
+
+Added Review contract v1 to AI-DEVELOPMENT-WORKFLOW.md on the existing documentation branch: neutral reviewer prompt, required output, separate arbitration rubric, manual states/freshness and compact continuation template. Read back the committed workflow document and verified its exact contents. This is protocol documentation, not automated enforcement or a fresh external review.
+
+Historical review comments, follow-up Issues, canonical PR template, immutable/safe review-packet generation, fail-closed scope checks, specification reconciliation, protection and the controlled Pilot #3 remain pending. PR #4 still needs current-base integration evidence before a human merge decision. Application implementation remains frozen; no merge, closure, message to another agent or paid dispatch occurred.
+
+Next implementation handoff should focus on packet identity/security and contract parser alignment, in a separately scoped Issue/PR. Do not mix these workflow changes into PR #9.
