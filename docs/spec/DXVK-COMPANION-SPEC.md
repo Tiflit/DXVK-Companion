@@ -2,26 +2,25 @@
 
 ## Status
 
-**Design baseline / authoritative specification**
+**Canonical authoritative project specification**
 
-**Current implementation status**
+**Implementation status**
 
 - Phase A data foundation: complete and verified in Windows CI.
-- Phase A.1: approved — V1 will not import earlier development profiles or `games.json`.
-- Phase A.5: next design phase — transactional file safety and official DXVK identity must be specified before implementation.
+- Phase A.1: clean-slate V1 approved — V1 will not import earlier development profiles or `games.json`.
+- Phase A.5 safety & identity design: specification supplement approved in [DXVK-Companion-PhaseA5-Safety-and-Identity-Design-FINAL.md](DXVK-Companion-PhaseA5-Safety-and-Identity-Design-FINAL.md); core safety contracts verified against synthetic test directories; full implementation planned for subsequent phases (Phase C safe file engine).
 
+This document is the canonical source of truth for the intended architecture, behavior, scope, and design principles of DXVK Companion. Its normative safety and identity supplement is [DXVK-Companion-PhaseA5-Safety-and-Identity-Design-FINAL.md](DXVK-Companion-PhaseA5-Safety-and-Identity-Design-FINAL.md).
 
-This document is the current source of truth for the intended architecture, behavior, scope, and design principles of DXVK Companion.
+Earlier documents remain useful as historical design notes, but when they conflict with this specification or its supplement, this specification takes precedence.
 
-Earlier documents remain useful as historical design notes, but when they conflict with this document, this specification takes precedence.
+### Archived and historical companion documents
 
-### Historical companion documents
-
+- `docs/spec/archive/DXVK-COMPANION-SPEC-REVISED.md` (superseded)
+- `docs/spec/archive/DXVK-COMPANION-SPEC-REVISED2.md` (superseded)
 - `DXVK-COMPANION-CONCEPT-DECISIONS.md`
 - `DXVK-COMPANION-DESIGN-SUMMARY.md`
 - `DXVK-COMPANION-MIGRATION-MAP.md`
-
-The public `README.md` should be updated later, after implementation and testing stabilize.
 
 ---
 

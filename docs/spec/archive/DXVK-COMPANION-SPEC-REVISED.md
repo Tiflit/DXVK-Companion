@@ -1,12 +1,16 @@
-# DXVK Companion — Project Specification
+# DXVK Companion — Project Specification (SUPERSEDED)
+
+> [!WARNING]
+> **SUPERSEDED SPECIFICATION (ARCHIVE)**
+> This document is preserved for historical reference and development lineage only.
+> It has been superseded by the canonical specification: [docs/spec/DXVK-COMPANION-SPEC.md](../DXVK-COMPANION-SPEC.md).
+> Do not use this document as authoritative for current implementation or design contracts.
 
 ## Status
 
-**Design baseline / authoritative specification**
+**Superseded historical specification**
 
-This document is the current source of truth for the intended architecture, behavior, scope, and design principles of DXVK Companion.
-
-Earlier documents remain useful as historical design notes, but when they conflict with this document, this specification takes precedence.
+Earlier documents remain useful as historical design notes, but when they conflict with the canonical specification, [docs/spec/DXVK-COMPANION-SPEC.md](../DXVK-COMPANION-SPEC.md) takes precedence.
 
 ### Historical companion documents
 
