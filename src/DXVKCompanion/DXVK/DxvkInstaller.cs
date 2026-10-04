@@ -432,29 +432,98 @@ namespace DXVKCompanion.DXVK
                     var sourceIdentity = FileIdentity.Capture(sourcePath);
 
                     var existingRecord = installation.FindManagedFile(dllName);
-                    OriginalFileState originalState = existingRecord != null && existingRecord.OriginalState == FileOriginalState.Existing
-                        ? OriginalFileState.Existing
-                        : OriginalFileState.DidNotExist;
+                    OriginalFileState originalState;
+                    string? backupRelativePath;
+                    SafetyFileIdentity? expectedTargetIdentity = null;
 
-                    string? backupRelativePath = existingRecord?.BackupRelativePath ?? (originalState == OriginalFileState.Existing ? Path.Combine(installation.Id, dllName) : null);
-                    SafetyFileIdentity? expectedTargetIdentity = File.Exists(targetPath) ? FileIdentity.Capture(targetPath) : null;
+                    if (existingRecord != null && existingRecord.OriginalState != FileOriginalState.Unknown)
+                    {
+                        originalState = existingRecord.OriginalState switch
+                        {
+                            FileOriginalState.Existing => OriginalFileState.Existing,
+                            FileOriginalState.Missing => OriginalFileState.DidNotExist,
+                            _ => OriginalFileState.Unknown
+                        };
+                        backupRelativePath = existingRecord.BackupRelativePath ?? (originalState == OriginalFileState.Existing ? Path.Combine(installation.Id, dllName) : null);
+                        if (File.Exists(targetPath))
+                        {
+                            expectedTargetIdentity = FileIdentity.Capture(targetPath);
+                        }
+
+                        if (originalState == OriginalFileState.Existing && !string.IsNullOrEmpty(backupRelativePath))
+                        {
+                            string fullExistingBackup = Path.Combine(_transactionEngine.TransactionStoreRoot, backupRelativePath);
+                            if (File.Exists(fullExistingBackup) && !string.IsNullOrEmpty(existingRecord.OriginalSha256))
+                            {
+                                var existingBackupIdentity = FileIdentity.Capture(fullExistingBackup);
+                                if (!string.Equals(existingBackupIdentity.Sha256, existingRecord.OriginalSha256, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    Logger.Log($"DxvkInstaller: refusing reapply on {installation.DisplayName}; existing backup for {dllName} at {backupRelativePath} was corrupted or modified.");
+                                    return false;
+                                }
+                            }
+                        }
+                    }
+                    else
+                    {
+                        if (File.Exists(targetPath))
+                        {
+                            originalState = OriginalFileState.Existing;
+                            expectedTargetIdentity = FileIdentity.Capture(targetPath);
+                            backupRelativePath = ResolveSafeNewBackupRelativePath(installation.Id, dllName, expectedTargetIdentity);
+                            if (backupRelativePath == null)
+                            {
+                                Logger.Log($"DxvkInstaller: refusing reapply on {installation.DisplayName}; unresolvable backup collision for {dllName}.");
+                                return false;
+                            }
+                        }
+                        else
+                        {
+                            originalState = OriginalFileState.DidNotExist;
+                            expectedTargetIdentity = null;
+                            backupRelativePath = null;
+                        }
+                    }
 
                     // Section 18.2: If updating baseline after an external change (e.g. game update),
                     // the newly observed game file becomes the new restoration baseline.
                     if (updateBaseline && File.Exists(targetPath))
                     {
                         var currentIdentity = FileIdentity.Capture(targetPath);
-                        if (existingRecord != null && !string.Equals(currentIdentity.Sha256, existingRecord.ExpectedManagedSha256, StringComparison.OrdinalIgnoreCase))
+                        if (existingRecord != null && existingRecord.OriginalState != FileOriginalState.Unknown)
                         {
-                            backupRelativePath = Path.Combine(installation.Id, dllName);
+                            if (!string.Equals(currentIdentity.Sha256, existingRecord.ExpectedManagedSha256, StringComparison.OrdinalIgnoreCase))
+                            {
+                                backupRelativePath = existingRecord.BackupRelativePath ?? ResolveSafeNewBackupRelativePath(installation.Id, dllName, currentIdentity);
+                                if (backupRelativePath == null)
+                                {
+                                    Logger.Log($"DxvkInstaller: refusing reapply with updateBaseline on {installation.DisplayName}; unresolvable backup collision for {dllName}.");
+                                    return false;
+                                }
+                                string fullBackupPath = Path.Combine(_transactionEngine.TransactionStoreRoot, backupRelativePath);
+                                Directory.CreateDirectory(Path.GetDirectoryName(fullBackupPath)!);
+                                File.Copy(targetPath, fullBackupPath, overwrite: true);
+                                originalState = OriginalFileState.Existing;
+                                existingRecord.OriginalState = FileOriginalState.Existing;
+                                existingRecord.OriginalSha256 = currentIdentity.Sha256;
+                                existingRecord.BackupRelativePath = backupRelativePath;
+                                Logger.Log($"DxvkInstaller: updated restoration baseline for {dllName} in {installation.DisplayName} to hash {currentIdentity.Sha256[..Math.Min(8, currentIdentity.Sha256.Length)]}.");
+                            }
+                        }
+                        else
+                        {
+                            backupRelativePath = ResolveSafeNewBackupRelativePath(installation.Id, dllName, currentIdentity);
+                            if (backupRelativePath == null)
+                            {
+                                Logger.Log($"DxvkInstaller: refusing reapply with updateBaseline on {installation.DisplayName}; unresolvable backup collision for {dllName}.");
+                                return false;
+                            }
                             string fullBackupPath = Path.Combine(_transactionEngine.TransactionStoreRoot, backupRelativePath);
                             Directory.CreateDirectory(Path.GetDirectoryName(fullBackupPath)!);
                             File.Copy(targetPath, fullBackupPath, overwrite: true);
                             originalState = OriginalFileState.Existing;
-                            existingRecord.OriginalState = FileOriginalState.Existing;
-                            existingRecord.OriginalSha256 = currentIdentity.Sha256;
-                            existingRecord.BackupRelativePath = backupRelativePath;
-                            Logger.Log($"DxvkInstaller: updated restoration baseline for {dllName} in {installation.DisplayName} to hash {currentIdentity.Sha256[..Math.Min(8, currentIdentity.Sha256.Length)]}.");
+                            expectedTargetIdentity = currentIdentity;
+                            Logger.Log($"DxvkInstaller: captured initial restoration baseline for {dllName} in {installation.DisplayName} to hash {currentIdentity.Sha256[..Math.Min(8, currentIdentity.Sha256.Length)]}.");
                         }
                     }
 
@@ -493,12 +562,58 @@ namespace DXVKCompanion.DXVK
                         var stagedConfIdentity = FileIdentity.Capture(stagedConfPath);
 
                         var existingConfRecord = installation.FindManagedFile(DxvkConfigManager.ConfigFileName);
-                        OriginalFileState confOriginalState = existingConfRecord != null && existingConfRecord.OriginalState == FileOriginalState.Existing
-                            ? OriginalFileState.Existing
-                            : OriginalFileState.DidNotExist;
+                        OriginalFileState confOriginalState;
+                        string? confBackupRelativePath;
+                        SafetyFileIdentity? expectedConfTargetIdentity = null;
 
-                        string? confBackupRelativePath = existingConfRecord?.BackupRelativePath ?? (confOriginalState == OriginalFileState.Existing ? Path.Combine(installation.Id, DxvkConfigManager.ConfigFileName) : null);
-                        SafetyFileIdentity? expectedConfTargetIdentity = File.Exists(targetConfPath) ? FileIdentity.Capture(targetConfPath) : null;
+                        if (existingConfRecord != null && existingConfRecord.OriginalState != FileOriginalState.Unknown)
+                        {
+                            confOriginalState = existingConfRecord.OriginalState switch
+                            {
+                                FileOriginalState.Existing => OriginalFileState.Existing,
+                                FileOriginalState.Missing => OriginalFileState.DidNotExist,
+                                _ => OriginalFileState.Unknown
+                            };
+                            confBackupRelativePath = existingConfRecord.BackupRelativePath ?? (confOriginalState == OriginalFileState.Existing ? Path.Combine(installation.Id, DxvkConfigManager.ConfigFileName) : null);
+                            if (File.Exists(targetConfPath))
+                            {
+                                expectedConfTargetIdentity = FileIdentity.Capture(targetConfPath);
+                            }
+
+                            if (confOriginalState == OriginalFileState.Existing && !string.IsNullOrEmpty(confBackupRelativePath))
+                            {
+                                string fullExistingConfBackup = Path.Combine(_transactionEngine.TransactionStoreRoot, confBackupRelativePath);
+                                if (File.Exists(fullExistingConfBackup) && !string.IsNullOrEmpty(existingConfRecord.OriginalSha256))
+                                {
+                                    var existingBackupIdentity = FileIdentity.Capture(fullExistingConfBackup);
+                                    if (!string.Equals(existingBackupIdentity.Sha256, existingConfRecord.OriginalSha256, StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        Logger.Log($"DxvkInstaller: refusing reapply on {installation.DisplayName}; existing backup for {DxvkConfigManager.ConfigFileName} at {confBackupRelativePath} was corrupted or modified.");
+                                        return false;
+                                    }
+                                }
+                            }
+                        }
+                        else
+                        {
+                            if (File.Exists(targetConfPath))
+                            {
+                                confOriginalState = OriginalFileState.Existing;
+                                expectedConfTargetIdentity = FileIdentity.Capture(targetConfPath);
+                                confBackupRelativePath = ResolveSafeNewBackupRelativePath(installation.Id, DxvkConfigManager.ConfigFileName, expectedConfTargetIdentity);
+                                if (confBackupRelativePath == null)
+                                {
+                                    Logger.Log($"DxvkInstaller: refusing reapply on {installation.DisplayName}; unresolvable backup collision for {DxvkConfigManager.ConfigFileName}.");
+                                    return false;
+                                }
+                            }
+                            else
+                            {
+                                confOriginalState = OriginalFileState.DidNotExist;
+                                expectedConfTargetIdentity = null;
+                                confBackupRelativePath = null;
+                            }
+                        }
 
                         filesToProcess.Add(new MultiFileTransactionFile
                         {
@@ -525,6 +640,7 @@ namespace DXVKCompanion.DXVK
                     foreach (var filePlan in filesToProcess)
                     {
                         var record = installation.GetOrAddManagedFile(filePlan.RelativePath);
+                        var previousOriginalState = record.OriginalState;
                         record.OriginalState = filePlan.OriginalState switch
                         {
                             OriginalFileState.Existing => FileOriginalState.Existing,
@@ -532,6 +648,10 @@ namespace DXVKCompanion.DXVK
                             _ => FileOriginalState.Unknown
                         };
                         record.BackupRelativePath = filePlan.BackupRelativePath;
+                        if (filePlan.OriginalState == OriginalFileState.Existing && filePlan.ExpectedTargetIdentity != null && (string.IsNullOrEmpty(record.OriginalSha256) || previousOriginalState != FileOriginalState.Existing))
+                        {
+                            record.OriginalSha256 = filePlan.ExpectedTargetIdentity.Sha256;
+                        }
                         record.ExpectedManagedSha256 = filePlan.ExpectedSourceIdentity?.Sha256;
                         record.ManagedDxvkVersion = filePlan.RelativePath.EndsWith(".dll", StringComparison.OrdinalIgnoreCase) ? version : null;
                         record.CurrentState = ManagedFileState.Consistent;
@@ -636,6 +756,45 @@ namespace DXVKCompanion.DXVK
                 Logger.Log($"DxvkInstaller: unexpected error adopting DXVK for {profile.ExeName}: {ex.GetType().Name} - {ex.Message}");
                 return false;
             }
+        }
+
+        private string? ResolveSafeNewBackupRelativePath(string installationId, string fileName, SafetyFileIdentity expectedTargetIdentity)
+        {
+            string defaultRel = Path.Combine(installationId, fileName);
+            string defaultFull = Path.Combine(_transactionEngine.TransactionStoreRoot, defaultRel);
+
+            if (!File.Exists(defaultFull))
+            {
+                return defaultRel;
+            }
+
+            var defaultIdentity = FileIdentity.Capture(defaultFull);
+            if (defaultIdentity == expectedTargetIdentity)
+            {
+                return defaultRel;
+            }
+
+            // A collision exists: defaultFull has different bytes.
+            // Select a collision-safe path that preserves the pre-existing file and stores the new baseline safely.
+            string ext = Path.GetExtension(fileName);
+            string nameWithoutExt = Path.GetFileNameWithoutExtension(fileName);
+            string hashPrefix = expectedTargetIdentity.Sha256[..Math.Min(8, expectedTargetIdentity.Sha256.Length)];
+            string safeRel = Path.Combine(installationId, $"{nameWithoutExt}.baseline-{hashPrefix}{ext}");
+            string safeFull = Path.Combine(_transactionEngine.TransactionStoreRoot, safeRel);
+
+            if (!File.Exists(safeFull))
+            {
+                return safeRel;
+            }
+
+            var safeIdentity = FileIdentity.Capture(safeFull);
+            if (safeIdentity == expectedTargetIdentity)
+            {
+                return safeRel;
+            }
+
+            // Both default and collision-safe paths exist with mismatched content; refuse rather than overwrite or corrupt.
+            return null;
         }
     }
 }
