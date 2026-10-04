@@ -64,7 +64,7 @@ namespace DXVKCompanion.PhaseA.Tests
             var fileUtils = new FileUtils();
             var installer = new DxvkInstaller(new HttpClient(), engine, store, null, fileUtils);
             var rollback = new DxvkRollback(engine, store, fileUtils);
-            var profileStore = new ProfileStore();
+            var profileStore = new ProfileStore(profilesPath);
 
             // Game 1: Enabled DXVK
             string game1Dir = Path.Combine(testDir.RootPath, "Games", "Game1");
