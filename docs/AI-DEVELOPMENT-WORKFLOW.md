@@ -59,7 +59,7 @@ A large task should be decomposed by scope and acceptance criteria, not by an ar
 
 The workflow should optimize for completed useful work rather than equalizing model usage across agents.
 
-A revision should normally use a fresh Gemini/Antigravity session rather than continuing the original implementation conversation.
+Continue a reliable implementation session for focused revisions and bounded repairs; restart in a fresh session only when context window saturation, tool failures, or capability degradation requires it. Independent reviewer and auditor passes retain strict fresh-context discipline.
 
 ### ChatGPT
 
@@ -139,7 +139,7 @@ Independent review when required
     +--> material finding
               |
               v
-       Fresh Gemini context
+       Focused revision / repair (Gemini context)
               |
               v
           CI / tests
@@ -320,9 +320,9 @@ Historical recommendations and their current status:
 5. **Structured test totals and budgeted diffs**: Implemented in PR #19. TRX test totals are extracted, diffs are budgeted by section, and full diff artifacts are produced.
 6. **Aligned Issue/PR templates and fail-closed checks**: Implemented in PR #19. `.github/pull_request_template.md` added; `ai-scope-check` and `ai-pr-hygiene` exit 1 on contract violations.
 7. **Neutral review prompt and arbitration rubric**: Implemented in Review contract v1 (merged via PR #10).
-8. **Specification authority reconciliation**: Tracked under Issue #12 for human decision.
+8. **Specification authority reconciliation**: Resolved under Issue #12 by human decision approving `A1-UPDATED` and consolidating canonical specification to `docs/spec/DXVK-COMPANION-SPEC.md`.
 9. **Human lifecycle of PRs #4/#9/#10**: PR #10 merged. Legacy contract metadata for PR #4 and PR #9 updated and verified; final merge decisions remain with the human developer.
-10. **Controlled Pilot #3**: Pending completion of preparatory backlog issues (#12–#18).
+10. **Controlled Pilot #3**: Preparatory backlog issues (#13, #17, #18, #20, #22, #25) completed and merged; pending policy governance (#14, #16).
 
 Automatic model dispatch remains optional and constrained by cost and security. Merging and governance remain strictly human-controlled.
 
@@ -393,7 +393,7 @@ Link durable evidence instead of copying an entire conversation. Keep historical
 
 ### Historical context & operational status
 
-This protocol was established under Review contract v1 (merged via PR #10). Review packet provenance hardening, blocking scope checks, and PR templates were subsequently implemented under Issue #11 (merged via PR #19). Active work items and dependencies (Issues #12–#18) are tracked in [`docs/AI-CURRENT-STATE.md`](AI-CURRENT-STATE.md), while specification reconciliation (#12) and repository protection settings remain human governance decisions.
+This protocol was established under Review contract v1 (merged via PR #10). Review packet provenance hardening, blocking scope checks, and PR templates were subsequently implemented under Issue #11 (merged via PR #19). Active work items and dependencies are tracked on GitHub and in the live dashboard (Issue #27), while specification authority (Issue #12) is resolved and repository protection settings remain human governance decisions.
 
 ## Hardened review packet provenance and workflow contracts — Issue #11
 
@@ -484,4 +484,83 @@ Because `workflow_run` workflows execute from the default branch, changes to `.g
    - Budgeted test, production, and workflow diffs.
    - Attached full diff artifact `review-packet-diff-pr-<number>`.
 5. Verify `AI PR Hygiene` and `AI Scope Check` succeed for conforming PRs and fail (blocking) when required sections or allowed paths are violated.
+
+## Decision Governance, Compact Handoffs, and Review Preservation — Issue #31
+
+Implemented under Issue #31 to establish compact, evidence-bound handoffs, eliminate accidental erasure of review history during PR updates, and provide strict preflight gates separating AI recommendations from human approvals.
+
+### 1. Decision Governance Block and Policy Preflight
+
+When an issue involves an unresolved architectural or policy decision (e.g. Issue #14 shared-directory scope or Issue #16 action lifecycle), the assigned Issue contract must record a compact Decision Governance Block:
+
+```markdown
+### Decision Governance Block
+- **Decision required**: <Brief statement of architectural/policy choice required>
+- **Proposed option**: <Specific proposal / recommendation>
+- **Status**: `PENDING` | `DECIDED`
+- **Source of explicit human approval**: <Direct link to human GitHub decision or clearly attributed coordinator transcription; None if pending>
+```
+
+- **Preflight Rules**:
+  - Investigation, risk exploration, and draft decision briefs are permitted while approval is `PENDING`.
+  - Implementation of architectural or policy changes is strictly blocked until explicit human approval is recorded in the Issue.
+  - Do not decide Issue #14 or #16 in unrelated or preparatory workflow tasks.
+- **Approval Disambiguation**:
+  - **Agent Recommendations != Approval**: A recommendation from ChatGPT, Gemini, or Claude is an advisory proposal, never authorization.
+  - **Editable Status != Approval**: An agent writing `APPROVED_BY_HUMAN` or `DECIDED` does not constitute approval proof. The source must link to an authentic human comment or issue decision, or cite a coordinator transcription of explicit human instruction (with an explicit notice that the transcription is not mechanically authenticated).
+  - **CI & Merges != Approval**: Green CI, test runs, and unrelated PR merges do not convey approval for an open policy decision.
+
+### 2. Read-Only Compact Task Handoffs (`generate_handoff.py`)
+
+A read-only snapshot command producing an evidence-bound markdown or JSON summary constrained to a 300-word budget:
+
+```bash
+# Preview compact task handoff for PR #31
+python scripts/ai-workflow/generate_handoff.py --pr 31
+
+# Output structured JSON snapshot
+python scripts/ai-workflow/generate_handoff.py --pr 31 --json
+```
+
+- **Identity Verification**: Queries live GitHub PR metadata (`head.sha`, `base.sha`) and live default branch ref (`git/ref/heads/main`). Validates full 40-character SHAs and flags base branch movement (`BASE MOVED`) immediately.
+- **Workspace Disambiguation**: Local git state (`git rev-parse HEAD`, branch, status) is distinctly labeled as `Local Workspace` and never conflated with live GitHub base revisions.
+- **Evidence Provenance**: Pulls triggering workflow run, attempt, tested checkout SHA, and TRX totals from build provenance artifacts. If unverified, reports `UNAVAILABLE` rather than guessing.
+- **Separation of Facts from Conclusions**: Acquired facts (revisions, test totals, CI statuses) are strictly separated from model conclusions and pending decision prerequisites. Successful CI is never translated into reviewer approval.
+
+### 3. Review Preservation and PR-Body Update Helper (`update_pr_body.py`)
+
+An opt-in update helper preventing accidental review history loss, detecting concurrent PR modifications, and protecting marked records:
+
+```bash
+# Preview update (default: dry run, zero writes)
+python scripts/ai-workflow/update_pr_body.py --pr 31 --body-file new_pr_body.md
+
+# Preview with adoption of existing unmarked reviewer headings
+python scripts/ai-workflow/update_pr_body.py --pr 31 --body-file new_pr_body.md --adopt-unmarked
+
+# Execute update with explicit opt-in write
+python scripts/ai-workflow/update_pr_body.py --pr 31 --body-file new_pr_body.md --write
+```
+
+- **Protected Review Markers**: Preserves blocks bounded by:
+  ```markdown
+  <!-- AI-REVIEW-RECORD: <record_id> -->
+  <review content>
+  <!-- AI-REVIEW-RECORD-END -->
+  ```
+- **Integrity Validation**: Rejects malformed tags (unclosed, orphan end, nested, invalid IDs, duplicate IDs). Rejects accidental modification or deletion of historical review records.
+- **Previewed Adoption Route**: `--adopt-unmarked` detects candidate legacy review headings (e.g. `## ChatGPT coordinator verification`, `## Claude audit`) and wraps them in review markers, without silently classifying arbitrary headings.
+- **Lost-Update Guard**: Checks expected base hash, saves a local recovery backup file before write, re-reads the live body immediately before issuing `PATCH`, and verifies the post-write body.
+- **Residual Race Disclosure**: Documents the residual race window inherent in REST API updates lacking conditional HTTP ETags.
+
+### 4. Session Continuity and Checkpoint Guidelines
+
+- **Revision Discipline**: Routine revisions and bounded repairs should continue in the reliable implementation session rather than forcing unnecessary context resets. Reset into a fresh session when context window saturation, tool failure, or capability degradation requires it. Independent reviewer and auditor passes maintain strict fresh-context discipline.
+- **Concise Checkpoints**: At milestones and before stopping, record:
+  1. Completed work
+  2. Changed / uncommitted files
+  3. Verified evidence and test results
+  4. Open findings and pending decisions
+  5. Exact next action and assigned owner
+
 

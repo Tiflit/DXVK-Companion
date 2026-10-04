@@ -7,16 +7,18 @@
 > **Selective Reading Rule**: Routine agent sessions must NOT read the entire historical pilot log or journal archive. To conserve context and avoid drift, follow the 4-step startup route in [AGENTS.md](../AGENTS.md).
 
 - **Live Repository Status**: Maintained in real time by GitHub Actions in authenticated dashboard [**Issue #27**](https://github.com/Tiflit/DXVK-Companion/issues/27) (`[AI Dashboard] Current Repository State & Handoff Orientation`) for live default-branch SHA, open PRs, and active CI runs.
-- **Active Task**: [Issue #12](https://github.com/Tiflit/DXVK-Companion/issues/12) (Spec authority: make one canonical specification) — in progress pending PR review/merge.
+- **Active Task & PR Tracking**: Live task assignments and open PR inventories are tracked dynamically in the automated dashboard and via GitHub queries (`gh issue list`, `gh pr list`). This curated document provides stable architecture, role allocation, and governance protocols; it does not maintain a second live inventory by hand.
 
 ---
 
-## 1. Merged Pilot PR Inventory & Milestones
+## 1. Foundational Milestones & Merged PRs (Historical through 2026-10-04)
 
-All foundational pilot features, bugfixes, and CI harnesses are merged into `origin/main`:
+Major foundational pilot features, bugfixes, and CI harnesses merged into `main` include:
 
 | PR / Branch | Merged Head | Target Base | Status | Milestone Summary |
 |---|---|---|---|---|
+| **PR #30** (`test/issue-18-graphicsapi-persistence-downgrade`) | `bbdedf5` | `main` | **MERGED** | `GraphicsApi` enum persistence downgrade verification and clean-slate V1 alignment (Issue #18). Merged at `f576ddd`. |
+| **PR #29** (`test/issue-17-non-vacuous-guard-coverage`) | `68c604e` | `main` | **MERGED** | Non-vacuous test coverage for adoption, reapply, and restore guards (Issue #17). Merged at `bbdedf5`. |
 | **PR #26** (`workflow/issue-25-compact-handoffs`) | `49dca34` | `main` (`ce74e1e`) | **MERGED** | Compact handoff automation and live dashboard publication (Issue #25). Merged at `955ca78`. |
 | **PR #9** (`issue-6-prevent-dx12-vulkan-deployment`) | `60bd512` | `main` (`230c8ae`) | **MERGED** | Prevent DXVK deployment for DX12/Vulkan (Issue #6). Merged at `ce74e1e`. |
 | **PR #4** (`pilot/companion-version-ordering`) | `a24934d` | `main` (`4f44059`) | **MERGED** | CompanionVersion numeric ordering (Issue #5). Merged at `230c8ae`. |
@@ -29,15 +31,17 @@ All foundational pilot features, bugfixes, and CI harnesses are merged into `ori
 
 ---
 
-## 2. Active Work Queue & Ownership
+## 2. Active Work Governance & Decision Prerequisites
 
-| Work | Owner | Dependency / Decision | Next Action |
-|---|---|---|---|
-| **#12 spec authority** | Gemini implements; ChatGPT verifies; human merges | Human approved canonical spec & phase plan | Open documentation PR consolidating A1-UPDATED to `docs/spec/DXVK-COMPANION-SPEC.md` and verify. |
-| **#14 shared-directory policy** | Human decides; ChatGPT clarifies; Gemini implements | #9 compatibility base, #12 spec location | Prepare per-executable vs installation-wide options and test implications. |
-| **#15 reassessment** | Gemini; ChatGPT verifies | #9 base and #12 normative spec location | Establish source freshness and queued-action evidence. |
-| **#16 incompatible lifecycle** | Gemini; ChatGPT verifies | Terminal/parked/auto-resume decision; coordinate with #15 | Short options brief, then lifecycle tests and implementation. |
-| **#17 / #18 coverage** | Gemini; targeted ChatGPT evidence check | #9 merged; #18 spec docs depend on #12 | Run independent small sessions for non-vacuous coverage and persistence round-trips. |
+Active tasks and current PR states are derived live from GitHub. Do not maintain a parallel active-task inventory table in static documentation.
+
+Upcoming and in-flight work tracks adhere to the following governance prerequisites:
+- **Issue #31 (Workflow Automation)**: Implement compact handoff snapshot generator, PR-body review preservation helper, and decision preflight rules. (Active workflow task).
+- **Issue #14 (Shared-Directory Multi-Executable Policy)**: Awaiting explicit human decision. Agent recommendation (Option A: installation-wide refusal) is pending human approval; policy implementation is blocked until approval is recorded in the Issue.
+- **Issue #15 (API Reassessment before Queued Execution)**: Document mixed-module precedence and verify API status immediately prior to queued execution.
+- **Issue #16 (Lifecycle for Incompatible Pending Actions)**: Architectural policy choice on terminal cancellation vs parked actions; requires human decision.
+- **Issue #32 (Clean-Slate V1 Legacy-Import Removal)**: Application code refactoring tracked as a follow-up to Issue #18 to remove legacy import code per approved V1 specification.
+
 
 ---
 
@@ -90,12 +94,17 @@ All foundational pilot features, bugfixes, and CI harnesses are merged into `ori
 
 ## 5. Unresolved Architectural & Governance Decisions
 
-1. **Issue #12 (Normative Specification Authority)**: Resolved by human decision approving `A1-UPDATED`, the §47 development phase plan, and the clean-slate V1 no-legacy-import policy. Canonical specification consolidated into `docs/spec/DXVK-COMPANION-SPEC.md`, Phase A.5 design established as normative safety supplement, and superseded revisions archived.
-2. **Issue #14 (Shared-Directory Multi-Executable Policy)**: Architectural decision regarding whether DXVK installation should be scoped per-executable or across entire shared installation directories.
-3. **Issue #15 (API Reassessment before Queued Execution)**: Document mixed-module precedence and verify API status immediately prior to executing queued actions.
-4. **Issue #16 (Lifecycle for Incompatible Pending Actions)**: Policy decision on terminal vs parked vs auto-resume behavior for actions blocked by modern API classification.
-5. **Issue #17 & #18 (Follow-up Coverage & Persistence)**: Non-vacuous testing for adoption/reapply/restore and `GraphicsApi` enum persistence downgrade behavior.
-6. **Repository Protection Rulesets**: GitHub Actions workflows (`ai-scope-check`, `ai-pr-hygiene`, `build-and-test`) currently run as status checks. Enabling mandatory branch protection rulesets remains a human administrative choice.
+1. **Issue #14 (Shared-Directory Multi-Executable Policy)**: Architectural decision regarding whether DXVK installation should be scoped per-executable or across entire shared installation directories. Agent recommendation (Option A: installation-wide refusal) is pending human decision; policy implementation is blocked until human approval is recorded.
+2. **Issue #15 (API Reassessment before Queued Execution)**: Verify API status and enforce mixed-module precedence immediately prior to executing queued actions.
+3. **Issue #16 (Lifecycle for Incompatible Pending Actions)**: Architectural policy choice on terminal cancellation vs parked actions when actions are blocked by modern API classification.
+4. **Issue #32 (Clean-Slate V1 Legacy-Import Removal)**: Tracked implementation task following Issue #18 to remove legacy profile import logic per approved clean-slate V1 specification.
+5. **Repository Protection Rulesets**: GitHub Actions workflows (`ai-scope-check`, `ai-pr-hygiene`, `build-and-test`) currently run as status checks. Enabling mandatory branch protection rulesets remains a human administrative choice.
+
+> **Preserved Approved Decisions**:
+> - **Normative Specification Authority (Issue #12)**: Canonical specification is [`docs/spec/DXVK-COMPANION-SPEC.md`](../docs/spec/DXVK-COMPANION-SPEC.md), with [`docs/spec/DXVK-Companion-PhaseA5-Safety-and-Identity-Design-FINAL.md`](../docs/spec/DXVK-Companion-PhaseA5-Safety-and-Identity-Design-FINAL.md) as normative safety supplement.
+> - **Clean-Slate V1 Policy**: No legacy configuration import; modern clean-slate setup.
+> - **Deployment Guards**: Refuse DXVK deployment for DX12 and Vulkan executables, while preserving restore operations.
+
 
 ---
 

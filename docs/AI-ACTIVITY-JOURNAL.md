@@ -14,16 +14,22 @@ Every agent engaging in a meaningful work session on this repository must leave 
 
 ### Core Recording Rules
 
-1. **Concise by default**: Target 100–200 words. Expand beyond this only when recording essential evidence, reproducer definitions, or critical diagnostics.
+1. **Concise by default**: Target 100–200 words. Expand beyond this only when recording essential evidence, reproducer definitions, or critical diagnostics. Record conclusions and rationale, not long transcripts.
 2. **Key elements required**:
    - Purpose of the session
    - Decisions made and underlying rationale
    - Evidence identity, test results, and residual limitations
    - Next concrete action and owner
    - Partial or no-change outcomes if stopped early
-3. **Checkpointing**: Record a checkpoint at material milestones (e.g. after verifying a reproducer or passing a test suite) and before stopping or switching models.
-4. **Accurate attribution**: Attribute each entry strictly to the agent that performed the actions. Do not conflate implementer actions with coordinator or auditor actions.
-5. **No guessed model versions**: Record only confirmed agent identities (e.g., `Gemini (Implementer)`, `ChatGPT (Coordinator)`, `Claude (Auditor)`, `Human`).
+3. **Structured Checkpoint Instructions**: Record a checkpoint at material milestones and before stopping or switching models. Each checkpoint must clearly capture:
+   - Completed work
+   - Changed and uncommitted files
+   - Verified evidence and test results
+   - Open findings and pending decisions
+   - Exact next action and assigned owner
+4. **Session Continuity vs Reset**: Continue a reliable implementation session for focused revisions and bounded repairs; restart into a fresh session only when context window saturation, tool failure, or capability degradation requires it. Independent audits and reviews retain strict fresh-context discipline.
+5. **Accurate attribution**: Attribute each entry strictly to the agent that performed the actions. Do not conflate implementer actions with coordinator or auditor actions.
+6. **No guessed model versions**: Record only confirmed agent identities (e.g., `Gemini (Implementer)`, `ChatGPT (Coordinator)`, `Claude (Auditor)`, `Human`).
 
 ### Persistence Channels
 

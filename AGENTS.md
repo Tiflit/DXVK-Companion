@@ -7,7 +7,7 @@ This repository uses AI-assisted development with GitHub as the durable source o
 Before proposing or modifying code in a fresh session:
 
 1. **Operating rules**: Review this document (`AGENTS.md`) for role allocation and repository invariants.
-2. **Live dashboard**: Inspect the automated repository dashboard in the dedicated machine-owned Issue (`gh issue list --search "[AI Dashboard]"`) or [docs/AI-CURRENT-STATE.md](docs/AI-CURRENT-STATE.md) for live base SHAs, open PRs, and active ownership.
+2. **Live dashboard**: Inspect the automated repository dashboard in the dedicated machine-owned Issue (`gh issue list --search "[AI Dashboard]"`). The dashboard is a compact orientation entry point, not an infallible source. Underlying GitHub records (commits, PRs, Issues) remain authoritative—verify freshness, completeness, and task-critical facts directly. Static [docs/AI-CURRENT-STATE.md](docs/AI-CURRENT-STATE.md) provides curated orientation (roles, stable decisions, governance) and must not serve as an alternative for live identities.
 3. **Assigned task contract**: Inspect the assigned GitHub Issue (`gh issue view <number>`). Acceptance criteria and `### Allowed paths` are strictly authoritative.
 4. **Latest relevant activity / evidence**: Read the latest session record in `docs/ai-journal/` or the PR review packet associated with the task. *(Historical pilot logs in `docs/AI-PILOT-LOG.md` are for selective reference only; do not read full historical archives for routine tasks).*
 
@@ -36,6 +36,26 @@ Gemini implementation -> CI -> ChatGPT verification & arbitration -> Human merge
 - **Precedence Order**: `Assigned Task Contract (Issue) > Canonical Specification > Safety Supplement`.
 - **Safety Invariant Protection**: Task Issues cannot silently override safety invariants without an explicit human decision.
 
+## Decision Governance and Policy Preflight
+
+When a task involves an unresolved policy or architectural choice, the assigned Issue must contain a compact Decision Governance Block:
+
+```markdown
+### Decision Governance Block
+- **Decision required**: <Brief statement of architectural/policy choice required>
+- **Proposed option**: <Specific proposal / recommendation>
+- **Status**: `PENDING` | `DECIDED`
+- **Source of explicit human approval**: <Link to authentic human GitHub decision or clearly attributed coordinator transcription; None if pending>
+```
+
+- **Preflight Rule**: Agents may conduct investigation, prepare decision briefs, and clarify options while approval is pending, but MUST block policy implementation until explicit human approval is recorded in the task Issue.
+- **Approval Disambiguation**:
+  - Agent recommendations (e.g. ChatGPT recommendations) are NOT human approval.
+  - Editable status text (e.g. `APPROVED_BY_HUMAN` or `DECIDED`) written by an agent is NOT proof of human approval.
+  - CI success, passing tests, and unrelated PR merges are NOT approval.
+  - Source of explicit human approval must be either: (1) a direct link to a human-authored GitHub comment or issue decision; or (2) a clearly attributed coordinator transcription citing the human developer's explicit instruction verbatim, explicitly noting that the transcription is not mechanically authenticated.
+  - Do not decide Issue #14 or #16 in preparatory or unrelated workflow tasks.
+
 ## Tests and Evidence
 
 - A green CI run is evidence, not absolute proof that an invariant is satisfied.
@@ -45,5 +65,14 @@ Gemini implementation -> CI -> ChatGPT verification & arbitration -> Human merge
 ## Revision and Handoff Discipline
 
 - One focused review-driven revision cycle is the normal limit.
+- **Session Continuity vs Reset**: Continue a reliable implementation session for focused revisions and bounded repairs; restart in a fresh session only when context window saturation, tool failure, or capability degradation requires it. Independent reviewer and auditor passes retain strict fresh-context discipline.
+- **Session Checkpoint Instructions**: Before stopping or handing off, record a concise session checkpoint containing:
+  1. Completed work
+  2. Changed and uncommitted files
+  3. Verified evidence and test results
+  4. Open findings and pending decisions
+  5. Exact next action and assigned owner
+  Record conclusions and rationale, not long transcripts.
 - Persistent material disagreements or unresolved risks escalate to the human rather than triggering unbounded revision loops.
 - Do not automatically merge PRs, enable branch protection, or dispatch paid APIs.
+
