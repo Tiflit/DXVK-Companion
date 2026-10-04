@@ -9,7 +9,7 @@ Before proposing or modifying code:
 1. **Check repository status**: Read [docs/AI-CURRENT-STATE.md](docs/AI-CURRENT-STATE.md) for the active PR inventory, work queue, assigned owners, and pending human decisions. (Do NOT read the entire historical pilot log or journal archive for routine tasks).
 2. **Read the task contract**: Inspect the assigned GitHub Issue (`gh issue view <number>`). Acceptance criteria and `### Allowed paths` are strictly authoritative.
 3. **Follow workflow rules**: Review [docs/AI-DEVELOPMENT-WORKFLOW.md](docs/AI-DEVELOPMENT-WORKFLOW.md) for contract syntax, evidence verification, and review standards.
-4. **Log your activity**: Every working session must leave a factual session record in [docs/ai-journal/](docs/ai-journal/) (e.g. `YYYY-MM-DD-<issue>-<agent>-<suffix>.md`). Do not edit the shared journal index if it is outside your task's allowed paths.
+4. **Log your activity**: Follow the [activity-record policy](docs/AI-ACTIVITY-JOURNAL.md). Persist a concise session file under `docs/ai-journal/` when allowed, or an attributed Activity record in the assigned Issue/PR body through an available connector. Human transcription is fallback only. Checkpoint at material milestones and before stopping; shared index edits are optional and must be in scope.
 
 ## Model Role Allocation
 

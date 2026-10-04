@@ -486,9 +486,9 @@ Per user decision and coordinator execution check:
 
 In preparation for post-#19 clean handoffs, an automated and bounded privacy audit was executed across the repository at commit `0dcc2bd88d113363b075169e867fccec8892f58c` (`main`) and the PR #21 revision:
 - **Target patterns**: Private local user directory paths (`C:\Users\<username>\...`, `<user-home>`), personal access tokens (`ghp_`, `github_pat_`), Authorization headers (`Bearer ...`), and cloud credentials (AWS/Azure SAS signatures).
-- **Tracked repository files**: Scanned all 108 tracked files at main and task branch. Result: **No matches for the listed patterns on the specified snapshot**.
-- **Git commit history & metadata**: Inspected commit messages and author/committer identities across historical commits via `git log`. All commits use public aliases (`Tiflit <...noreply.github.com>` or `GitHub <noreply.github.com>`); no private email addresses, personal home paths, or credential strings were identified.
-- **Task-produced artifacts**: Inspected generated review packet artifacts (`review_packet.md` and full diff artifacts) from CI runs 37174005790 and 37164136438; no credentials or private local paths are present in packet markdown or diff contents.
+- **Tracked repository files**: Gemini reports scanning the 108 tracked text files at starting main; task-branch documentation received targeted rescans. Result: **No matches for the listed patterns on the specified snapshot**.
+- **Git commit metadata (bounded)**: The supplied execution report shows a recent-20 author/committer inspection and a commit-message search capped at 20 matches. Gemini reports public noreply identities in that inspected subset. This does not establish an audit of all commits, refs or historical file contents. Full historical coverage is pending a scoped Gemini scan; no historical privacy clearance is claimed.
+- **Task-produced artifacts (bounded)**: Gemini reports inspecting selected packet/diff outputs associated with runs 37174005790 and 37164136438; the supplied transcript does not establish scanning every log/artifact. ChatGPT downloaded PR #21 packet/diff from 37174005790 and inspected packet 37174628859 for evidence identity. These are selected inspections, not an all-artifact privacy audit.
 - **Project-created disposable files & worktree audit**:
   - *Removed disposable files*: Temporary review packet download directories (`temp_packet`), temporary PR body files (`pr_body_temp.txt`), and local Python bytecode directories (`__pycache__/`) were purged and excluded.
   - *Retained local worktrees (with reasons)*:
@@ -501,12 +501,15 @@ In preparation for post-#19 clean handoffs, an automated and bounded privacy aud
     - `issue-6-prevent-dx12-vulkan-deployment` (PR #9): open legacy PR awaiting human merge decision.
     - `docs/issue-20-workflow-cleanup` (PR #21): active cleanup PR awaiting coordinator verification and human merge.
 
-### Unscanned surface boundaries (Pending developer management)
+    - Other observed remote branches: `ai/multi-agent-foundation`, `automation/ai-workflow-foundation`, `docs/pilot-2-current-checkpoint`, `feature/compatibility-and-action-correctness`, `workflow/review-packet-provenance`. Retained; full ancestry/active-use checks were not evidenced, so no deletion was authorized.
 
-Surfaces residing outside the GitHub repository boundary were not scanned and remain the responsibility of the human developer:
+### Unscanned surface boundaries and next owners
+
+The bounded cleanup does not establish exhaustive privacy coverage. Remaining project-only audit work belongs to Gemini in a separately scoped follow-up; unrelated host/chat surfaces are outside this task:
 - **Developer OS user directories & global configs**: Local OS files (`C:\Users\<username>\...`), local user profiles, and gitignored environment files (`.env`, global `.gitconfig`) reside outside git and were not committed.
 - **External chat provider history**: Conversation logs and web chat transcripts stored on external model provider platforms (OpenAI, Anthropic, Google) are outside the repository boundary.
-- **PR discussion comments**: 19 Issue/PR bodies and 4 historical conversation comments were checked with no credential leaks; continuous review of live discussion comments is pending ongoing PR lifecycle activity.
+- **Git history, refs and CI logs/artifacts**: Full historical blob scans, metadata outside the inspected subset and comprehensive task-log/artifact scans were not evidenced. Next owner: Gemini; identify refs/runs and scan locally without printing sensitive matches. Report unavailable/expired surfaces honestly.
+- **PR discussion comments**: ChatGPT's earlier pattern scan covered 19 Issue/PR bodies and four conversation comments at its recorded snapshot. It found no matches for its listed patterns; new edits and native review/comment surfaces were not exhaustively scanned. Next owner: coordinator during lifecycle verification.
 
 ### Fresh-session handoff architecture
 
