@@ -268,45 +268,6 @@ namespace DXVKCompanion.PhaseA.Tests
         }
 
         [Fact]
-        public void GameLibraryStore_LegacyProfilesMigration_ImportsLegacyModernApiCorrectly()
-        {
-            using var testDir = new SyntheticTestDirectory();
-            string libraryPath = Path.Combine(testDir.RootPath, "game-library.json");
-            string backupsPath = Path.Combine(testDir.RootPath, "backups");
-            string legacyPath = Path.Combine(testDir.RootPath, "games.json");
-
-            string gameDir = Path.Combine(testDir.RootPath, "Games", "LegacyGame");
-            Directory.CreateDirectory(gameDir);
-            string gameExe = Path.Combine(gameDir, "LegacyGame.exe");
-            File.WriteAllText(gameExe, "dummy");
-
-            // Legacy games.json containing ModernAPI (ordinal 4)
-            var legacyProfiles = new List<GameProfile>
-            {
-                new(gameExe)
-                {
-                    Api = GraphicsApi.ModernAPI,
-                    Architecture = "x64",
-                    DxvkEnabled = false
-                }
-            };
-            File.WriteAllText(legacyPath, JsonSerializer.Serialize(legacyProfiles, new JsonSerializerOptions { WriteIndented = true }));
-
-            // Act: load GameLibraryStore with missing game-library.json and existing games.json
-            var store = new GameLibraryStore(libraryPath, backupsPath, legacyPath);
-
-            // Assert: migrated with ModernAPI
-            var all = store.GetAll();
-            Assert.Single(all);
-
-            var install = store.FindByInstallationPath(gameDir);
-            Assert.NotNull(install);
-            var exe = install.Executables.FirstOrDefault(e => e.RelativePath == "LegacyGame.exe");
-            Assert.NotNull(exe);
-            Assert.Equal(GraphicsApi.ModernAPI, exe.LastKnownApi);
-        }
-
-        [Fact]
         public void GameLibraryStore_DowngradeBehavior_UnrecognizedEnumString_FailsValidationAndPreservesRecoverySnapshot()
         {
             using var testDir = new SyntheticTestDirectory();
