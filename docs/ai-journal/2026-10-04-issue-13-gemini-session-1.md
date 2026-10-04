@@ -4,7 +4,7 @@
 - **Agent Role & Model**: Gemini (Implementer / Antigravity)
 - **Task / Issue**: [Issue #13](https://github.com/Tiflit/DXVK-Companion/issues/13) — [AI] F8: Reapply must back up pre-existing files for newly required DLLs
 - **Starting Head**: [`093664d38527d359670c404efd13dff7839408e9`](https://github.com/Tiflit/DXVK-Companion/commit/093664d38527d359670c404efd13dff7839408e9) (Merge PR #21 into main)
-- **Reproducer Head**: [`976a3648e42f9b1fe2a3f769018454ff92795810`](https://github.com/Tiflit/DXVK-Companion/commit/976a3648e42f9b1fe2a3f769018454ff92795810)
+- **Reproducer Head**: [`976a364a6973c4f6142c4d90da1c36ba5fa09fc9`](https://github.com/Tiflit/DXVK-Companion/commit/976a364a6973c4f6142c4d90da1c36ba5fa09fc9)
 - **Branch / Worktree**: `fix/issue-13-reapply-original-baseline` (`D:\dev\DXVK-Companion-issue-13`)
 
 ### Purpose & Context

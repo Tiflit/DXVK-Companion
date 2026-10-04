@@ -196,7 +196,7 @@ A correction to earlier broad wording: “PR #9 F5/F6/F8 are all pre-existing”
 
 No new numbered follow-up issues were created as part of this documentation update.
 
-1. Reproduce and fix Reapply original-file baseline/backup safety (PR #9 F8); preserve native DLLs across Restore. *(Resolved in Issue #13)*
+1. Reproduce and fix Reapply original-file baseline/backup safety (PR #9 F8); preserve native DLLs across Restore. *(Reproduced; proposed fix in open PR #23 for Issue #13)*
 2. Decide installation-wide versus per-exe compatibility in shared directories (PR #9 F5).
 3. Late/dynamic API reassessment before queued execution; explicitly decide mixed-module precedence (PR #9 F6).
 4. Pending incompatible/superseded action lifecycle and logging (PR #9 F7).
