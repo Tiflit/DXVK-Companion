@@ -22,19 +22,22 @@ Initiated fresh session using repository URL and Issue #17 via AGENTS.md 4-step 
      - `RequestDisableAsync` while game running queues `PendingActionType.Restore` under DX12.
      - Persisted Restore executes via `ApplyPendingAsync` after exit, restoring native files and clearing pending state.
      - Global `RestoreAllAsync` restores managed games reclassified to DX12.
-4. **Invariant Mutation Analysis**:
-   - *F1 rejection guard mutation*: Bypassing `if (!DxvkCompatibility.IsDxvkSupported(profile.Api))` in `DxvkInstaller.AdoptExisting` (line 678) causes the test to fail because adoption succeeds against physical files.
-   - *F2 rejection guard mutation*: Removing unsupported-API gating in `DxvkManager.ApplyPendingAsync` (line 218) and `ProcessAllPendingActionsAsync` (line 294) causes the test to fail because pending reapply executes against the established managed install.
-   - *F3 restoration gating mutation*: Introducing incorrect restoration gating on unsupported APIs in `QueueOrApplyAsync` (line 110), `ApplyPendingAsync` (line 218), or `RestoreAllAsync` (line 423) causes the test to fail because queued disable, persisted restore, or `RestoreAllAsync` are blocked/rejected.
+4. **Executed Invariant Mutation Evidence**:
+   - *F1 (AdoptExisting Guard)*: Bypassed `!DxvkCompatibility.IsDxvkSupported(profile.Api)` in `DxvkInstaller.AdoptExisting` (line 678). All 4 theories failed at `DxvkModernApiCompatibilityTests.cs:line 755` (`Assert.False` received `true`). Reverted; test passed (4/4).
+   - *F2 (Reapply Unsupported-API Boundary & Dispatch)*:
+     - Mutated `DxvkCompatibility.GetRequiredDlls` line 26 to treat `GraphicsApi.Vulkan` as supported (`new[] { "d3d11.dll", "dxgi.dll" }`). Failed at `DxvkModernApiCompatibilityTests.cs:line 463` (`Assert.False(reapplyPendingOk)` received `true`). Reverted; test passed (1/1).
+     - Confirmed defense-in-depth: if `DxvkManager.ReapplyAsync` returns `true`, test still passes (1/1) because dispatch guards in `ApplyPendingAsync` (line 218) and `ProcessAllPendingActionsAsync` (line 294) block execution before dispatch. Bypassing line 218 alongside `ReapplyAsync` returns `true` fails line 463. Reverted; test passed (1/1).
+   - *F3 Mutation 1 (Queued RequestDisable Gating)*: Gated `QueueOrApplyAsync` line 110 on `!DxvkCompatibility.IsDxvkSupported(profile.Api)`. Failed at `DxvkModernApiCompatibilityTests.cs:line 599` (`Assert.Equal` Expected: `Queued`, Actual: `Failed`). Reverted; test passed (1/1).
+   - *F3 Mutation 2 (Persisted Restore Gating)*: Removed `pendingType != PendingActionType.Restore &&` in `ApplyPendingAsync` line 218. Failed at `DxvkModernApiCompatibilityTests.cs:line 613` (`Assert.True(applyOk)` received `false`). Reverted; test passed (1/1).
+   - *F3 Mutation 3 (RestoreAll Gating)*: Added `|| !DxvkCompatibility.IsDxvkSupported(profile.Api)` to unmanaged skip condition in `RestoreAllAsync` line 423. Failed at `DxvkModernApiCompatibilityTests.cs:line 648` (`Assert.Equal` Expected: `1`, Actual: `0` for `summary.TotalManaged`). Reverted; test passed (1/1).
 
 ### Observable Measurements
 - Human decision/action interventions: 1 (task assignment)
 - Human status queries: 0
 - Repeated investigations from missing context: 0
 - Session blocked: No
-- Quota / elapsed clock time: not measured
-- Journal word count: ~310 words
+- Journal word count: ~330 words
 
 ### Outcome & Next Steps
-- Result: Test weaknesses closed; tests verified locally and in CI.
-- Next Action & Owner: Open PR linked to Issue #17; ChatGPT verifies evidence and mutations; human merges.
+- Result: Test weaknesses closed; all 5 mutations executed, recorded with exact line numbers and assertion outcomes, and reverted to clean baseline (191/191 passed).
+- Next Action & Owner: Update PR #29 description; ChatGPT verification; human merge decision.
