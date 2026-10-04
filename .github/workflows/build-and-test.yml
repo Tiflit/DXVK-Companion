@@ -18,6 +18,22 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v7
 
+      - name: Record build provenance
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts/provenance | Out-Null
+          $headSha = git rev-parse HEAD
+          $provenance = @{
+            head_sha = $headSha
+            ref = "${{ github.ref }}"
+            sha = "${{ github.sha }}"
+            run_id = "${{ github.run_id }}"
+            run_attempt = "${{ github.run_attempt }}"
+            dotnet_version = "8.0.x"
+            timestamp = (Get-Date).ToUniversalTime().ToString("o")
+          }
+          $provenance | ConvertTo-Json | Set-Content -Path artifacts/provenance/build-provenance.json -Encoding utf8
+
       - name: Set up .NET 8
         uses: actions/setup-dotnet@v6
         with:
@@ -60,6 +76,14 @@ jobs:
         with:
           name: phase-a-test-results
           path: '**/TestResults/*.trx'
+          if-no-files-found: ignore
+
+      - name: Upload build provenance
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: build-provenance
+          path: artifacts/provenance/build-provenance.json
           if-no-files-found: ignore
 
       - name: Publish portable self-contained win-x64 binary

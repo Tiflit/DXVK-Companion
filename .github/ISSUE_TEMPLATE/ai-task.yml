@@ -47,10 +47,11 @@ body:
     id: allowed_paths
     attributes:
       label: Allowed paths
-      description: Prefer explicit paths for focused tasks. Use "Not yet constrained" only when the correct scope cannot be known before investigation.
+      description: Specify explicit repository-relative file paths, directory prefixes with trailing '/', or recursive wildcards '/**'. Use exact standalone 'Unconstrained' only when the correct scope cannot be known before investigation.
       placeholder: |
         - src/...
         - tests/...
+        # Or exact standalone: Unconstrained
     validations:
       required: true
 

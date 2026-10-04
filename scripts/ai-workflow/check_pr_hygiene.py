@@ -68,13 +68,39 @@ def verify_pr_body(body: str) -> HygieneResult:
     )
 
 
+def fetch_github_api(url: str, token: str) -> any:
+    import urllib.request
+    req = urllib.request.Request(
+        url,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github.v3+json",
+            "User-Agent": "DXVK-Companion-AI-Workflow",
+        },
+    )
+    with urllib.request.urlopen(req) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Verify PR metadata against hygiene contract.")
+    parser.add_argument("--pr-number", type=int, default=int(os.environ.get("PR_NUMBER", 0)) if os.environ.get("PR_NUMBER") else None)
     parser.add_argument("--pr-body-file", type=Path, help="Path to file containing PR body text.")
     args = parser.parse_args()
 
+    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    repo = os.environ.get("GH_REPO") or os.environ.get("GITHUB_REPOSITORY")
+
     body = ""
-    if args.pr_body_file and args.pr_body_file.exists():
+    if args.pr_number and token and repo:
+        try:
+            import json
+            pr_data = fetch_github_api(f"https://api.github.com/repos/{repo}/pulls/{args.pr_number}", token)
+            body = pr_data.get("body", "")
+        except Exception as e:
+            print(f"ERROR: Could not fetch PR #{args.pr_number} metadata: {e}", file=sys.stderr)
+            return 1
+    elif args.pr_body_file and args.pr_body_file.exists():
         body = args.pr_body_file.read_text(encoding="utf-8")
     else:
         # Read from stdin if available

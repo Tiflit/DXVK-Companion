@@ -455,6 +455,12 @@ def main() -> int:
                 f.write(f"- **WARNING:** Live PR head has moved to `{live_pr_head_sha}` (STALE)\n")
             f.write("\nReview packet generated and attached as an artifact.\n")
 
+    github_output_file = os.environ.get("GITHUB_OUTPUT")
+    if github_output_file:
+        with open(github_output_file, "a", encoding="utf-8") as f:
+            f.write(f"pr_number={pr_number}\n")
+            f.write("has_packet=true\n")
+
     return 0
 
 
