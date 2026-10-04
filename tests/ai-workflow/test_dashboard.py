@@ -4,6 +4,7 @@ import io
 import json
 import os
 import re
+import shlex
 import sys
 import unittest
 import urllib.error
@@ -64,8 +65,49 @@ class TestDashboardGenerator(unittest.TestCase):
     # Item 1: Explicit --publish execution & CLI command verification
     # =========================================================================
 
-    def test_real_yaml_command_with_publish_flag_executes_write(self):
-        """Item 1: Executing the real workflow CLI command with --publish invokes write on authenticated destination."""
+    def _extract_workflow_run_command(self, workflow_path: Path, step_name: str = "Publish snapshot to GitHub") -> str:
+        """Extracts the run: command string from a named step in the workflow file without requiring PyYAML."""
+        content = workflow_path.read_text(encoding="utf-8")
+        lines = content.splitlines()
+        in_step = False
+        in_run_block = False
+        run_lines = []
+
+        for line in lines:
+            stripped = line.strip()
+            if f"name: {step_name}" in stripped:
+                in_step = True
+                continue
+            if in_step:
+                if stripped.startswith("- name:") and step_name not in stripped:
+                    break
+                if stripped.startswith("run:"):
+                    in_run_block = True
+                    rest = stripped[4:].strip()
+                    if rest and rest != "|":
+                        run_lines.append(rest)
+                    continue
+                if in_run_block:
+                    if line.startswith("        ") or line.startswith("          "):
+                        if stripped:
+                            run_lines.append(stripped)
+                    else:
+                        break
+
+        if not run_lines:
+            raise ValueError(f"Could not find run command for step '{step_name}' in {workflow_path}")
+        return " ".join(run_lines)
+
+    def test_real_yaml_command_extracted_and_executed_with_mocked_http(self):
+        """Item 1: Extracts the actual publisher run command from workflow YAML and executes it with mocked HTTP.
+        Asserts one authenticated write. Demonstrates that removing --publish produces zero writes.
+        """
+        wf_path = REPO_ROOT / ".github" / "workflows" / "ai-current-state.yml"
+        self.assertTrue(wf_path.exists(), "Workflow file must exist")
+
+        extracted_cmd = self._extract_workflow_run_command(wf_path, step_name="Publish snapshot to GitHub")
+        self.assertIn("--publish", extracted_cmd, "Extracted workflow command must contain explicit --publish flag")
+
         rendered = update_dashboard.render_dashboard(
             update_dashboard.RepositoryFacts(main_head_sha=self.main_sha),
             self.curated_text,
@@ -95,15 +137,47 @@ class TestDashboardGenerator(unittest.TestCase):
             return MockHttpResponse({})
 
         try:
+            tokens = shlex.split(extracted_cmd)
+            script_idx = -1
+            for i, t in enumerate(tokens):
+                if t.endswith("update_dashboard.py"):
+                    script_idx = i
+                    break
+            self.assertGreaterEqual(script_idx, 0, "Could not find script entrypoint in extracted command")
+
+            raw_args = tokens[script_idx + 1:]
+            resolved_args = []
+            for arg in raw_args:
+                if arg in ("$GH_REPO", '"$GH_REPO"'):
+                    resolved_args.append(self.repo)
+                elif arg in ("$GH_TOKEN", '"$GH_TOKEN"'):
+                    resolved_args.append("mock-token")
+                elif arg == "snapshot.md":
+                    resolved_args.append(str(temp_file))
+                else:
+                    resolved_args.append(arg)
+
+            # 1. Execute extracted command: must invoke authenticated PATCH write
             with patch("urllib.request.urlopen", side_effect=mock_urlopen):
-                # Run the exact command line as invoked in workflow step
-                code = update_dashboard.main([
-                    "--repo", self.repo,
-                    "--publish-file", str(temp_file),
-                    "--publish",
-                ])
+                code = update_dashboard.main(resolved_args)
                 self.assertEqual(code, 0)
-                self.assertEqual(len(patch_called), 1)
+                self.assertEqual(len(patch_called), 1, "Extracted command with --publish must execute exactly one write")
+
+            # 2. Regression verification: demonstrate that removing --publish produces zero writes
+            args_without_publish = [a for a in resolved_args if a != "--publish"]
+            patch_called_reg = []
+
+            def mock_urlopen_reg(req, timeout=30):
+                url = req.full_url
+                if "repos/Tiflit/DXVK-Companion/issues/42" in url and req.get_method() == "PATCH":
+                    patch_called_reg.append(json.loads(req.data.decode("utf-8")))
+                    return MockHttpResponse({"number": 42})
+                return MockHttpResponse({})
+
+            with patch("urllib.request.urlopen", side_effect=mock_urlopen_reg):
+                code_reg = update_dashboard.main(args_without_publish)
+                self.assertEqual(code_reg, 0)
+                self.assertEqual(len(patch_called_reg), 0, "Extracted command without --publish must produce zero writes")
         finally:
             if temp_file.exists():
                 temp_file.unlink()
@@ -408,6 +482,106 @@ class TestDashboardGenerator(unittest.TestCase):
             res = publisher.publish(rendered)
             self.assertEqual(res["status"], "created")
             self.assertEqual(res["issue_number"], 201)
+
+    def test_unrelated_bot_lookalike_receives_no_patch_and_does_not_veto_genuine_destination(self):
+        """Item 4: An unrelated bot (e.g. unrelated-app[bot], type Bot) mimicking title/marker
+        receives NO patch and does NOT veto discovery/update of a genuine github-actions[bot] destination.
+        """
+        client = update_dashboard.GitHubClient(token="mock", repo=self.repo)
+
+        unrelated_bot_lookalike = {
+            "number": 42,
+            "title": update_dashboard.DASHBOARD_TITLE,
+            "body": f"{update_dashboard.DASHBOARD_MARKER}\nUnrelated bot content",
+            "state": "open",
+            "user": {"login": "unrelated-app[bot]", "type": "Bot"},
+        }
+
+        genuine_bot_dashboard = {
+            "number": 100,
+            "title": update_dashboard.DASHBOARD_TITLE,
+            "body": f"{update_dashboard.DASHBOARD_MARKER}\nGenuine dashboard content",
+            "state": "open",
+            "user": {"login": "github-actions[bot]", "type": "Bot"},
+        }
+
+        patched_issues = []
+
+        def mock_urlopen(req, timeout=30):
+            url = req.full_url
+            if "git/ref/heads/main" in url:
+                return MockHttpResponse({"object": {"sha": self.main_sha}})
+            if "issues?state=all" in url:
+                # Return both the unrelated bot lookalike and the genuine dashboard
+                return MockHttpResponse([unrelated_bot_lookalike, genuine_bot_dashboard])
+            if req.get_method() == "PATCH":
+                matched_num = re.search(r"issues/(\d+)", url)
+                if matched_num:
+                    patched_issues.append(int(matched_num.group(1)))
+                return MockHttpResponse({"number": 100})
+            return MockHttpResponse({})
+
+        publisher = update_dashboard.DashboardPublisher(client=client, repo=self.repo)
+        rendered = update_dashboard.render_dashboard(
+            update_dashboard.RepositoryFacts(main_head_sha=self.main_sha),
+            self.curated_text,
+            repo=self.repo,
+        )
+
+        with patch("urllib.request.urlopen", side_effect=mock_urlopen):
+            res = publisher.publish(rendered)
+            # The unrelated bot lookalike was ignored; genuine github-actions[bot] was updated
+            self.assertEqual(res["status"], "updated")
+            self.assertEqual(res["issue_number"], 100)
+            self.assertIn(100, patched_issues)
+            self.assertNotIn(42, patched_issues, "Unrelated bot lookalike must NEVER receive a PATCH")
+
+    def test_unrelated_bot_lookalike_alone_causes_creation_of_genuine_dashboard(self):
+        """Item 4: When only an unrelated bot lookalike exists, it receives NO patch and
+        a new genuine github-actions[bot] dashboard is created.
+        """
+        client = update_dashboard.GitHubClient(token="mock", repo=self.repo)
+
+        unrelated_bot_lookalike = {
+            "number": 42,
+            "title": update_dashboard.DASHBOARD_TITLE,
+            "body": f"{update_dashboard.DASHBOARD_MARKER}\nUnrelated bot content",
+            "state": "open",
+            "user": {"login": "unrelated-app[bot]", "type": "Bot"},
+        }
+
+        patched_issues = []
+        created_issues = []
+
+        def mock_urlopen(req, timeout=30):
+            url = req.full_url
+            if "git/ref/heads/main" in url:
+                return MockHttpResponse({"object": {"sha": self.main_sha}})
+            if "issues?state=all" in url:
+                return MockHttpResponse([unrelated_bot_lookalike])
+            if req.get_method() == "PATCH":
+                matched_num = re.search(r"issues/(\d+)", url)
+                if matched_num:
+                    patched_issues.append(int(matched_num.group(1)))
+                return MockHttpResponse({})
+            if "issues" in url and req.get_method() == "POST":
+                created_issues.append(json.loads(req.data.decode("utf-8")))
+                return MockHttpResponse({"number": 101, "title": update_dashboard.DASHBOARD_TITLE})
+            return MockHttpResponse({})
+
+        publisher = update_dashboard.DashboardPublisher(client=client, repo=self.repo)
+        rendered = update_dashboard.render_dashboard(
+            update_dashboard.RepositoryFacts(main_head_sha=self.main_sha),
+            self.curated_text,
+            repo=self.repo,
+        )
+
+        with patch("urllib.request.urlopen", side_effect=mock_urlopen):
+            res = publisher.publish(rendered)
+            self.assertEqual(res["status"], "created")
+            self.assertEqual(res["issue_number"], 101)
+            self.assertEqual(len(patched_issues), 0, "Unrelated bot lookalike must NEVER receive a PATCH")
+            self.assertEqual(len(created_issues), 1)
 
     def test_authenticated_closed_dashboard_issue_fails_safely(self):
         """Item 4: Closed authenticated dashboard issue causes safe refusal rather than auto-creating duplicate."""

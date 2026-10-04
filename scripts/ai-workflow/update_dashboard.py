@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 DASHBOARD_TITLE = "[AI Dashboard] Current Repository State & Handoff Orientation"
 DASHBOARD_MARKER = "<!-- AI-DASHBOARD-MARKER: v1 -->"
+DASHBOARD_BOT_LOGIN = "github-actions[bot]"
 COMPLETENESS_COMPLETE = "COMPLETE"
 
 VALID_CI_CONCLUSIONS = {
@@ -242,12 +243,11 @@ class GitHubClient:
         query: str = DASHBOARD_MARKER,
         max_pages: int = 5,
         per_page: int = 50,
-        expected_owner: str = "github-actions[bot]",
     ) -> List[Dict[str, Any]]:
         """
         Searches issues across all states (open and closed) to locate the dedicated dashboard issue.
         Authenticates exact machine-owned identity (github-actions[bot]), title, and marker.
-        Ignores unrelated human/PR lookalikes (DoS prevention).
+        Ignores unrelated human, PR, or other bot lookalikes (DoS prevention).
         Fails safely on API errors or unresolved pagination caps.
         """
         matched = []
@@ -270,17 +270,15 @@ class GitHubClient:
                 # Select strictly authenticated machine-owned dashboard destination (Item 4)
                 if not is_pr and has_title and has_marker:
                     user_info = iss.get("user") or {}
-                    user_type = user_info.get("type", "")
-                    user_login = user_info.get("login", "")
+                    user_login = (user_info.get("login") or "").strip()
 
-                    is_bot_owned = (
-                        user_login in (expected_owner, "github-actions[bot]", "app/github-actions")
-                        or user_type == "Bot"
-                    )
-
-                    if is_bot_owned:
+                    # Require creator login exactly 'github-actions[bot]'.
+                    # All other creators (human accounts, PRs, other bot accounts like
+                    # unrelated-app[bot], dependabot[bot], etc.) are ignored so they neither
+                    # receive writes nor veto discovery of a genuine dashboard.
+                    if user_login == DASHBOARD_BOT_LOGIN:
                         matched.append(iss)
-                    # Note: Unrelated human/PR/other entries mimicking title/marker are ignored
+                    # Note: Unrelated human/PR/other-bot entries mimicking title/marker are ignored
                     # rather than raising an error, preventing denial-of-service via public issues.
 
             if len(issues) < per_page:
