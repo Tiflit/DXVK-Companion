@@ -402,6 +402,18 @@ Companion may notify the user of the detected API and state.
 
 It should not deploy DXVK for these APIs.
 
+## 8.1 Persistence and Downgrade Compatibility
+
+API classifications are persisted across two stores:
+
+1. **`GameLibraryStore` (`game-library.json`)**: Uses string-name enum serialization via `JsonStringEnumConverter` (`"Unknown"`, `"DX9"`, `"DX10"`, `"DX11"`, `"ModernAPI"`, `"DX12"`, `"Vulkan"`).
+   - **Legacy Compatibility**: The legacy `"ModernAPI"` string identifier is recognized and deserialized cleanly to `GraphicsApi.ModernAPI`.
+   - **Downgrade Behavior**: Builds older than PR #9 lack `DX12` and `Vulkan` enum members. When an older build encounters `"DX12"` or `"Vulkan"` in `game-library.json`, `JsonStringEnumConverter` throws a `JsonException`. `GameLibraryStore` treats this unparseable payload as `LoadResult.Invalid`, creates a non-destructive recovery snapshot (`game-library.json.recovery.<timestamp>.json`), and leaves active in-memory installations empty rather than corrupting data or silently falling back to stale legacy data.
+
+2. **`ProfileStore` (`games.json`)**: Uses integer ordinal serialization (`0`=Unknown, `1`=DX9, `2`=DX10, `3`=DX11, `4`=ModernAPI, `5`=DX12, `6`=Vulkan).
+   - **Ordinal Stability**: Ordinal numbers are pinned and stable.
+   - **Downgrade Behavior**: In older builds reading integer ordinals `5` or `6`, default `System.Text.Json` deserialization casts the integer directly to `(GraphicsApi)5` or `(GraphicsApi)6` without throwing. In application code that matches only handled enum values 0..4, unhandled values fall through to default/unsupported handling.
+
 ---
 
 # 9. Anti-Cheat Risk

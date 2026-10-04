@@ -116,7 +116,8 @@ Right-clicking the tray icon presents a clean, static, and predictable menu:
   * `GameInstallation`: Tracks installation roots, multiple executables, managed file records, and conflict flags.
   * `ManagedFileRecord`: Tracks original state (`Existing` vs. `DidNotExist`), baseline hashes, and backup pointers.
   * `ManagedFileInspector`: Real-time inspection of managed files, detecting external modifications, deletions, and invalidating stale pending actions.
-  * `GameLibraryStore`: Atomic JSON persistence for game libraries with corruption recovery and seamless legacy `games.json` migration.
+  * `GameLibraryStore`: Atomic JSON persistence for game libraries with corruption recovery, name-based enum serialization (`GraphicsApi`), legacy `ModernAPI` compatibility, and automatic snapshot recovery (`.recovery.*.json`) if downgraded builds encounter unrecognized API values (`DX12` / `Vulkan`).
+  * `ProfileStore`: Flat profile persistence using pinned integer ordinals (`0..6`), where unrecognized numeric values deserialize safely without exception.
   * `CacheStore` & `SettingsStore`: Portable configuration, release caching, and global policy persistence.
 
 * **Detection & Monitoring (`DXVKCompanion.Monitoring`)**:
