@@ -508,30 +508,30 @@ In preparation for post-#19 clean handoffs, an automated and bounded privacy aud
 The bounded cleanup does not establish exhaustive privacy coverage. Remaining project-only audit work belongs to Gemini in a separately scoped follow-up; unrelated host/chat surfaces are outside this task:
 - **Developer OS user directories & global configs**: Local OS files (`C:\Users\<username>\...`), local user profiles, and gitignored environment files (`.env`, global `.gitconfig`) reside outside git and were not committed.
 - **External chat provider history**: Conversation logs and web chat transcripts stored on external model provider platforms (OpenAI, Anthropic, Google) are outside the repository boundary.
-- **Git history, refs and CI logs/artifacts**: Resolved in Issue #22 (see Section below). All 22 refs, 241 commits, 1,205 header/message fields, 414 unique blobs, and 150 CI artifacts inventoried and scanned.
+- **Git history, refs and CI logs/artifacts**: Bounded audit executed under Issue #22 (see section below and [`docs/ai-journal/2026-10-04-issue-22-privacy-evidence-annex.md`](ai-journal/2026-10-04-issue-22-privacy-evidence-annex.md)). 22 refs, 241 commits, 1,205 header/message fields, and 414 unique blobs scanned. 150 CI artifacts inventoried: 35 sampled text artifacts across 9 types scanned; 115 unscanned (41 compiled binaries + 74 older duplicates) remain bounded under GitHub retention. 12 CI workflow run logs (5,141 lines) scanned.
 - **PR discussion comments**: ChatGPT's earlier pattern scan covered 19 Issue/PR bodies and four conversation comments at its recorded snapshot. It found no matches for its listed patterns; new edits and native review/comment surfaces were not exhaustively scanned. Next owner: coordinator during lifecycle verification.
 
-## Comprehensive project-history privacy audit — 2026-10-04 (Issue #22)
+## Bounded project-history and artifact privacy audit — 2026-10-04 (Issue #22)
 
 ### Audit scope & methodology
-In accordance with Issue #22, an automated bounded privacy audit of all git history, commit metadata, repository refs, and accessible CI artifacts was conducted locally:
-- **Project refs inventory**: All 22 project refs (11 local, 11 remote) were inventoried across the repository.
-- **Git commit metadata**: All 241 commits across `--all` were inspected across 1,205 individual header and message fields (`author_name`, `author_email`, `committer_name`, `committer_email`, `commit_msg`). Zero private paths, personal tokens, private keys, or signed URLs were found.
-- **Deduplicated blob scan**: 1,077 mapped path objects were resolved to 414 deduplicated unique blobs (3,577,146 bytes). All 414 blobs were scanned against private pattern regexes (Windows/Unix user paths, GitHub/generic tokens, private keys, signed URL parameters, basic auth).
-  - *Blob findings*: 2 pattern matches located exclusively in historical blob `d90b0897` (at line 485 of historical `docs/AI-PILOT-LOG.md` on PR #20 branch, prior to the PR #21 revision). This historical blob contained a local username literal in a documentation list of scan target patterns. It was subsequently replaced with `<username>` in commit `3ac97be` (PR #21), and does not exist in `main` or any current snapshot.
-  - *Secrets / credentials*: 0 secrets, 0 credentials, 0 private keys, and 0 signed URLs across all 414 historical blobs.
-- **CI task artifacts scan**: All 150 GitHub Actions artifacts were inventoried (150 active, 0 expired). A bounded scan of 33 text-based artifacts across 9 distinct artifact types (`build-provenance`, `phase-a-test-results`, `review-packet-pr-*`, `review-packet-diff-pr-*`) was conducted via authenticated download:
-  - *Artifact findings*: 4 matches in artifacts from run `37174005790` (`review-packet-pr-21` and `review-packet-diff-pr-21`), reflecting the aforementioned pre-revision documentation diff of PR #21. All subsequent review packets (runs `37174628859`, `37175019062`, `37175828358`, `37176821997`, `37177160907`), test result TRX files, and build provenance JSON files showed 0 findings.
-  - *Secrets / credentials*: 0 credentials, 0 private keys, and 0 signed URLs in all scanned CI artifacts.
-- **Local scratch & worktree inventory**:
-  - *Disposable leftovers*: Agent scratch files in conversation workspace and local Python bytecode directories (`__pycache__/`) in `issue-11` worktree.
-  - *Worktrees & retention status*:
-    - `D:/dev/DXVK-Companion`: Primary working copy (`docs/pilot-2-current-checkpoint`). Preserved.
-    - `D:/dev/DXVK-Companion-issue-11`: Merged PR #19 worktree. Disposable; proposed for cleanup after human confirmation.
-    - `D:/dev/DXVK-Companion-issue-13`: Merged PR #23 worktree. Disposable; proposed for cleanup after human confirmation.
-    - `D:/dev/DXVK-Companion-issue-20`: Merged PR #21 worktree. Disposable; proposed for cleanup after human confirmation.
-    - `D:/dev/DXVK-Companion-issue-22`: Active audit worktree (`audit/issue-22-privacy-coverage`). Preserved for Issue #22.
-- **Remediation & next actions**: No credentials or active secrets were identified; therefore no token rotation or destructive history rewrites are required. Disposable worktrees for merged PRs (#11, #13, #20) can be pruned at the developer's discretion without data loss.
+In accordance with Issue #22, an automated bounded privacy audit of git history, commit metadata, repository refs, task artifacts, and CI logs was conducted locally. Complete technical details, rule definitions, artifact manifests, and per-worktree inspection evidence are recorded in the durable annex [`docs/ai-journal/2026-10-04-issue-22-privacy-evidence-annex.md`](ai-journal/2026-10-04-issue-22-privacy-evidence-annex.md).
+- **Project refs inventory**: All 22 project refs (11 local, 11 remote) inventoried.
+- **Git commit metadata**: All 241 commits across `--all` inspected across 1,205 individual header and message fields (`author_name`, `author_email`, `committer_name`, `committer_email`, `commit_msg`). 0 matches for target patterns within stated coverage.
+- **Deduplicated blob scan**: 1,077 mapped path objects resolved to 414 deduplicated unique blobs (3,577,146 bytes). All 414 blobs scanned against private pattern regexes (Windows/Unix user paths, GitHub tokens, generic secrets, private key headers, signed URLs, basic auth).
+  - *Blob findings*: 2 pattern matches reflecting 1 unique private string occurrence in historical blob `d90b0897` (line 485 of historical `docs/AI-PILOT-LOG.md` on PR #20 branch before PR #21 revision, citing a pattern example). Redacted to `<username>` in commit `3ac97be` (PR #21); does not exist in `main` or current working tree, but persists in historical git object storage.
+  - *Secrets clearance*: 0 matches for personal tokens, generic API keys, private key headers, or signed URLs across all 414 historical blobs within stated coverage.
+- **CI task artifacts inventory & scanned cohort**: All 150 GitHub Actions artifacts inventoried (150 active, 0 expired). Bounded scan of 35 sampled text-based artifacts across all 9 text types (`build-provenance`, `phase-a-test-results`, `review-packet-pr-*`, `review-packet-diff-pr-*`):
+  - *Artifact findings*: 4 matches reflecting 1 unique private string occurrence across 2 files in run `37174005790` (`review-packet-pr-21` and `review-packet-diff-pr-21`), capturing the pre-revision documentation diff of PR #21. All subsequent review packets, test result TRX files, and build provenance JSON files showed 0 findings.
+  - *Secrets clearance*: 0 matches for credentials, tokens, private keys, or signed URLs across all scanned artifacts within stated coverage.
+  - *Unscanned cohort*: 115 artifacts remain unscanned (41 compiled binaries `DXVK-Companion-win-x64` excluded due to binary executable format; 74 older historical duplicates bounded by sampling limits). Retained on GitHub Actions subject to standard 90-day retention; next owner: developer / coordinator.
+- **CI workflow logs scan**: Bounded scan of 12 key GitHub Actions workflow runs (5,141 lines, 347,749 bytes) across PRs #9, #19, #21, #23, #24, and `main`: 0 matches for target patterns within stated coverage. Older historical logs remain bounded under default GitHub retention.
+- **Local worktrees inspection**: Inspected all 5 worktrees on `D:\dev` for active branches, HEAD commits, commit ancestry relative to `origin/main`, unpushed commits, and working tree cleanliness:
+  - `D:/dev/DXVK-Companion`: Primary working copy (`docs/pilot-2-current-checkpoint`). Preserved.
+  - `D:/dev/DXVK-Companion-issue-11`: Merged PR #19 worktree. Merged ancestor of `origin/main`; contains untracked `__pycache__/` in `scripts/` and `tests/`. Candidate for cleanup upon developer confirmation.
+  - `D:/dev/DXVK-Companion-issue-13`: Merged PR #23 worktree. Merged ancestor of `origin/main`; clean working tree. Candidate for cleanup upon developer confirmation.
+  - `D:/dev/DXVK-Companion-issue-20`: Merged PR #21 worktree. Merged ancestor of `origin/main`; clean working tree. Candidate for cleanup upon developer confirmation.
+  - `D:/dev/DXVK-Companion-issue-22`: Active worktree for Issue #22 (`audit/issue-22-privacy-coverage`). Preserved for Issue #22.
+- **Remediation conclusions**: No active secrets, personal tokens, or credentials were found within stated coverage. The historical username persists in git object storage (`d90b0897`) and historical CI artifact archives (`37174005790`); however, no destructive history rewrites or token rotations are warranted or authorized under this task. Merged worktrees are recorded as cleanup candidates requiring developer confirmation; no blanket "without-data-loss" guarantee is asserted.
 
 ### Fresh-session handoff architecture
 
