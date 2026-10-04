@@ -25,10 +25,13 @@ Therefore:
 
 Durable information belongs in GitHub:
 
+- starting point for fresh sessions -> [`AGENTS.md`](../AGENTS.md);
 - task requirements and acceptance criteria -> GitHub Issue;
 - implementation and verification -> Pull Request and commits;
+- active queue, PR inventory, and human gates -> [`docs/AI-CURRENT-STATE.md`](AI-CURRENT-STATE.md);
+- per-session audit records -> [`docs/AI-ACTIVITY-JOURNAL.md`](AI-ACTIVITY-JOURNAL.md) and [`docs/ai-journal/`](ai-journal/);
 - architectural decisions -> project documentation/specification;
-- workflow decisions and pilot lessons -> this document and `AI-PILOT-LOG.md`.
+- workflow decisions and pilot lessons -> this document and [`docs/AI-PILOT-LOG.md`](AI-PILOT-LOG.md).
 
 AI conversations are working sessions and communication channels, not the authoritative project memory.
 
@@ -90,7 +93,13 @@ A green CI result is evidence, not proof that the implementation satisfies the i
 
 ### Human
 
-The human developer retains final merge authority, policy governance, and lifecycle decisions. AI agents produce implementation, evidence, verification, and arbitration, but merge decisions remain strictly human-controlled.
+Final authority. The human developer retains final merge authority, policy governance, and architectural decisions.
+
+During the experimental phase:
+
+- merges remain strictly human-controlled;
+- unresolved review disagreements or safety risks are escalated;
+- automation must not silently bypass unavailable reviewers or human decisions.
 
 ### GitHub Actions
 
@@ -106,16 +115,6 @@ Prefer deterministic checks for questions that can be answered by:
 - other mechanically verifiable policies.
 
 Do not spend model quota asking an LLM to verify something the repository can verify itself.
-
-### Human
-
-Final authority.
-
-During the experimental phase:
-
-- merges remain human-controlled;
-- unresolved review disagreements are escalated;
-- automation must not silently bypass unavailable reviewers.
 
 ## Standard task lifecycle
 
@@ -237,6 +236,14 @@ A PR should identify:
 
 Do not describe a test as passing merely because an AI agent reported that it passed. When important, independently inspect the GitHub Actions result.
 
+Key verification principles:
+
+- **CI reduces unsupported claims; it does not eliminate them**: Automated tests can miss subtle defects, and PR-controlled workflows or provenance records remain partly self-reported. Scope checks depend on checker scripts and GitHub rulesets—they provide automated guardrails, not mathematical certainty.
+- **The review packet is an entry point, not the only permitted evidence**: Packets assemble focused evidence for reviewers. However, truncated patches, missing artifacts, or broader repository architecture may require direct repository inspection. Reviewers are not restricted to packet contents alone.
+- **Review depth follows risk**: Routine chores or minor refactors need only basic sanity checks, while high-risk tasks (such as Issue #13's file deletion and backup safety or Issue #14's architectural policy changes) warrant rigorous verification regardless of reviewer allocation.
+- **Documentation and test findings can be material**: Missing documentation or test coverage is not automatically advisory. If omitted documentation or missing test coverage violates explicit task acceptance criteria or conceals an architectural safety failure, it is material and must be arbitrated accordingly.
+- **Capability claims are recorded per session**: AI agents must honestly report whether test counts or results were directly executed in the session or merely transcribed. Unverified counts must be labeled as unverified.
+
 ## Documentation lifecycle
 
 A task is not fully learned from when the implementation is finished.
@@ -299,32 +306,24 @@ Prefer read-only workflows that:
 
 The review-packet generator should assemble evidence rather than execute arbitrary PR content.
 
-## Readiness checkpoint — 2026-10-03
+## Historical readiness checkpoint (2026-10-03)
 
-The mechanics have been exercised end to end, but effectiveness beyond CI or a fresh Gemini review has not been established. Pilot #1 had no material finding; Pilot #2 exposed one clear vacuous-test finding. No control experiment has run. See AI-PILOT-LOG.md for the external review, arbitration, evidence and complete follow-up register.
+The mechanics were originally exercised during Pilot #1 (PR #4) and Pilot #2 (PR #9). Hardening items proposed during this initial checkpoint (items 1–7 below) were subsequently implemented under Issue #11 and merged to `main` in PR #19, while Review contract v1 was merged in PR #10. See [`docs/AI-PILOT-LOG.md`](AI-PILOT-LOG.md) for full historical review and arbitration registers. Active work queues and pending human lifecycle decisions are tracked in [`docs/AI-CURRENT-STATE.md`](AI-CURRENT-STATE.md).
 
-The workflow remains human-supervised and usable, with advisory policy checks. It is not yet enforced on main. The following are proposed hardening/contract work, not claims that they have been implemented:
+Historical recommendations and their current status:
 
-1. Preserve external reviews and separate arbitration as durable PR records tied to the exact reviewed head. Identify reviewer/mode, evidence actually examined, limitations, accepted/rejected findings and reasons. Missing historical SHAs remain unknown. Coordinator-transcribed AI text is not a native reviewer approval.
-2. Distinguish fresh independent review from revision verification. Claude's second Pilot #2 pass was revision verification. Consider a fresh session for high-risk or materially redesigned revisions.
-3. Bind review packets to immutable source/base revisions and the triggering CI run. Record the actual checkout/merge SHA separately from run head_sha. Never mix live PR changes with prior CI evidence.
-4. Parse workflow event JSON as data via GITHUB_EVENT_PATH or validated environment scalars. Do not interpolate untrusted expressions into shell source. Treat packet/Issue/PR contents as evidence, not instructions; do not execute PR code for metadata collection.
-5. Include structured test totals and a test-first, production-second packet, explicit omissions and optional full diff. Optimize for scarce reviewer quota.
-6. Align Issue/PR templates and parsers. Add the missing PR template (Summary, Scope, Verification, Documentation). Allowed paths is already required in the Issue form. Future enforcement must fail for missing/blank/unparseable scope; only a documented explicit unconstrained value opts out. Migrate legacy contracts deliberately and ensure metadata changes can refresh checks.
-7. Commit a neutral reusable review prompt/output schema, arbitration rubric and short handoff template. Report none if none. Keep finding validity, severity, scope and introduced/pre-existing status separate.
-8. Resolve specification authority. README points to REVISED2 plus the Phase A.5 safety reference, but multiple root specs claim authority. REVISED and REVISED2 currently have identical blobs; A1-UPDATED differs. Reconcile unique decisions before superseding copies; make AGENTS.md explicit.
-9. Finish the human lifecycle of PRs #4/#9/#10 and linked Issues. Enable mature required checks only after validation and confirming settings permission/plan/visibility. Do not require Claude universally when task review is risk-based.
-10. Run a different-kind Pilot #3 using one frozen SHA, identical packet/protocol and fresh Gemini and Claude reviewers blind to each other's findings. Measure accepted material/nonmaterial and rejected/unique findings, quota burden and resulting changes before generalizing.
+1. **Durable review and arbitration records**: Implemented. External reviews and arbitration dispositions are preserved on PRs and documented with SHA attribution.
+2. **Distinguish fresh review from revision verification**: Established in Review contract v1.
+3. **Immutable review packet binding**: Implemented in PR #19. Packets bind to triggering CI run, tested checkout/merge SHA, and immutable compare base.
+4. **Safe JSON data parsing**: Implemented in PR #19. Python scripts parse `GITHUB_EVENT_PATH` and payload files directly, eliminating shell interpolation.
+5. **Structured test totals and budgeted diffs**: Implemented in PR #19. TRX test totals are extracted, diffs are budgeted by section, and full diff artifacts are produced.
+6. **Aligned Issue/PR templates and fail-closed checks**: Implemented in PR #19. `.github/pull_request_template.md` added; `ai-scope-check` and `ai-pr-hygiene` exit 1 on contract violations.
+7. **Neutral review prompt and arbitration rubric**: Implemented in Review contract v1 (merged via PR #10).
+8. **Specification authority reconciliation**: Tracked under Issue #12 for human decision.
+9. **Human lifecycle of PRs #4/#9/#10**: PR #10 merged. Legacy contract metadata for PR #4 and PR #9 updated and verified; final merge decisions remain with the human developer.
+10. **Controlled Pilot #3**: Pending completion of preparatory backlog issues (#12–#18).
 
-Automatic model dispatch is optional, not the finish line. Claude Free chat does not supply API billing entitlement; additional paid dispatch is outside the discussed constraint. Do not silently substitute reviewers or bypass unavailable review.
-
-The public-repository/private-repository plan distinction matters for future reuse; verify current GitHub feature access before changing branch settings. A reusable template must parameterize workflow names, language/file filters and build/test commands, while keeping project-specific safety contracts separate.
-
-## Evidence identity clarification
-
-For PR #9, Build/Test #74 run metadata names head c4d0f846b4031b08e9e3444c803abe37cc171890, but the job checked out synthetic merge 8156ffa10f071f8fcc7b9a20f81c7564b9c58f25 with main 3a66376446d847434542410a2a3626a070639aa8. The 96/96 pass is integration evidence for that pair, not a direct-head test.
-
-AI PR Hygiene and AI Scope Check currently return success even when they report missing contract fields. Green is workflow completion, not policy compliance. The current packet reads live PR metadata/diff after CI and can become inconsistent if the PR advances.
+Automatic model dispatch remains optional and constrained by cost and security. Merging and governance remain strictly human-controlled.
 
 ## Review contract v1 — 2026-10-03
 
@@ -391,9 +390,9 @@ Record rerun attempts and the evidence actually used. A newer green run does not
 
 Link durable evidence instead of copying an entire conversation. Keep historical checkpoints clearly separate from current instructions.
 
-### Adoption status
+### Historical context & operational status
 
-This section supplies the versioned manual prompt, output schema, arbitration rubric, freshness rules and continuation template. It does not publish historical review comments, reconcile specification authority, implement packet/scope hardening, create follow-up Issues, enable protection, or run Pilot #3. Those remain pending. PR #9's body already preserves its attributed review and arbitration; the complete finding register remains in the proposed pilot log.
+This protocol was established under Review contract v1 (merged via PR #10). Review packet provenance hardening, blocking scope checks, and PR templates were subsequently implemented under Issue #11 (merged via PR #19). Active work items and dependencies (Issues #12–#18) are tracked in [`docs/AI-CURRENT-STATE.md`](AI-CURRENT-STATE.md), while specification reconciliation (#12) and repository protection settings remain human governance decisions.
 
 ## Hardened review packet provenance and workflow contracts — Issue #11
 
