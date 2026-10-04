@@ -206,8 +206,8 @@ class TestReviewPacket(unittest.TestCase):
             manifest=self.sample_manifest,
             capture_time="2026-10-03T20:00:00Z",
         )
-        self.assertIn("Title:", packet_md)
-        # Markdown should contain the text without throwing any error or executing shell code
+        self.assertIn("PR: #9", packet_md)
+        self.assertIn(malicious_title, packet_md)
 
 
 if __name__ == "__main__":
