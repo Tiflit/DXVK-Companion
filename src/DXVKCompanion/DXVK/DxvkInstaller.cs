@@ -141,16 +141,8 @@ namespace DXVKCompanion.DXVK
                         return false;
                 }
 
-                string[] dllsToDeploy;
-                if (profile.Api == GraphicsApi.DX9)
-                {
-                    dllsToDeploy = new[] { "d3d9.dll" };
-                }
-                else if (profile.Api == GraphicsApi.DX11 || profile.Api == GraphicsApi.ModernAPI || profile.Api == GraphicsApi.DX10)
-                {
-                    dllsToDeploy = new[] { "d3d11.dll", "dxgi.dll" };
-                }
-                else
+                string[] dllsToDeploy = DxvkCompatibility.GetRequiredDlls(profile.Api);
+                if (dllsToDeploy.Length == 0)
                 {
                     Logger.Log($"DxvkInstaller: {profile.ExeName} has an unsupported API ({profile.Api}); skipping.");
                     return false;
@@ -398,16 +390,8 @@ namespace DXVKCompanion.DXVK
                     return false;
                 }
 
-                string[] dllsToDeploy;
-                if (profile.Api == GraphicsApi.DX9)
-                {
-                    dllsToDeploy = new[] { "d3d9.dll" };
-                }
-                else if (profile.Api == GraphicsApi.DX11 || profile.Api == GraphicsApi.ModernAPI || profile.Api == GraphicsApi.DX10)
-                {
-                    dllsToDeploy = new[] { "d3d11.dll", "dxgi.dll" };
-                }
-                else
+                string[] dllsToDeploy = DxvkCompatibility.GetRequiredDlls(profile.Api);
+                if (dllsToDeploy.Length == 0)
                 {
                     Logger.Log($"DxvkInstaller: {profile.ExeName} has unsupported API ({profile.Api}); skipping reapply.");
                     return false;
@@ -691,6 +675,12 @@ namespace DXVKCompanion.DXVK
         {
             try
             {
+                if (!DxvkCompatibility.IsDxvkSupported(profile.Api))
+                {
+                    Logger.Log($"DxvkInstaller: cannot adopt DXVK for {profile.ExeName}; API {profile.Api} is not supported for DXVK.");
+                    return false;
+                }
+
                 if (!assessment.CanBeAdopted || string.IsNullOrEmpty(assessment.MatchedVersion))
                 {
                     Logger.Log($"DxvkInstaller: cannot adopt existing DXVK for {profile.ExeName}; status is {assessment.Status}.");
