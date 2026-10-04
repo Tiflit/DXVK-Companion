@@ -181,12 +181,12 @@ Automated standalone self-contained packaging is built on tag push via `.github/
 
 ## 🗺️ Project Specifications & Roadmap
 
-For complete specifications and architectural contracts, refer to the specification documents:
-* [Master Project Specification (Revised 2)](DXVK-COMPANION-SPEC-REVISED2.md)
-* [Phase A.5 Safety & Identity Design](DXVK-Companion-PhaseA5-Safety-and-Identity-Design-FINAL.md)
+For complete specifications and architectural contracts, refer to the canonical specification and safety supplement:
+* [Canonical Project Specification](docs/spec/DXVK-COMPANION-SPEC.md)
+* [Phase A.5 Safety & Identity Design (Normative Supplement)](docs/spec/DXVK-Companion-PhaseA5-Safety-and-Identity-Design-FINAL.md)
 
 > [!NOTE]
-> **Specification Authority & Precedence**: Precedence between the master specification and phase plans is tracked under [Issue #12](https://github.com/Tiflit/DXVK-Companion/issues/12) awaiting human confirmation. Both specification roots are preserved.
+> **Specification Authority & Precedence**: [`docs/spec/DXVK-COMPANION-SPEC.md`](docs/spec/DXVK-COMPANION-SPEC.md) is the canonical project specification, approved under [Issue #12](https://github.com/Tiflit/DXVK-Companion/issues/12). [`docs/spec/DXVK-Companion-PhaseA5-Safety-and-Identity-Design-FINAL.md`](docs/spec/DXVK-Companion-PhaseA5-Safety-and-Identity-Design-FINAL.md) serves as its normative safety and identity supplement. Superseded historical specifications are archived under `docs/spec/archive/`.
 
 ### Development Progress & Verification Status
 * [x] **Phase A**: Data Foundation (Hierarchical `GameInstallation`, `ExecutableProfile`, `ManagedFileRecord`)

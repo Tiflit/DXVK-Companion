@@ -6,10 +6,8 @@
 >
 > **Selective Reading Rule**: Routine agent sessions must NOT read the entire historical pilot log or journal archive. To conserve context and avoid drift, follow the 4-step startup route in [AGENTS.md](../AGENTS.md).
 
-- **Last Updated**: 2026-10-04 UTC
-- **Active Base Branch**: `origin/main` at commit [`ce74e1e1caba1ee5197788c945826648d4f5a752`](https://github.com/Tiflit/DXVK-Companion/commit/ce74e1e1caba1ee5197788c945826648d4f5a752)
-- **Active Task**: [Issue #25](https://github.com/Tiflit/DXVK-Companion/issues/25) (Automate compact GitHub handoffs and refresh current-state orientation)
-- **Active Branch**: `workflow/issue-25-compact-handoffs`
+- **Live Repository Status**: Maintained in real time by GitHub Actions in authenticated dashboard [**Issue #27**](https://github.com/Tiflit/DXVK-Companion/issues/27) (`[AI Dashboard] Current Repository State & Handoff Orientation`) for live default-branch SHA, open PRs, and active CI runs.
+- **Active Task**: [Issue #12](https://github.com/Tiflit/DXVK-Companion/issues/12) (Spec authority: make one canonical specification) — in progress pending PR review/merge.
 
 ---
 
@@ -19,6 +17,7 @@ All foundational pilot features, bugfixes, and CI harnesses are merged into `ori
 
 | PR / Branch | Merged Head | Target Base | Status | Milestone Summary |
 |---|---|---|---|---|
+| **PR #26** (`workflow/issue-25-compact-handoffs`) | `49dca34` | `main` (`ce74e1e`) | **MERGED** | Compact handoff automation and live dashboard publication (Issue #25). Merged at `955ca78`. |
 | **PR #9** (`issue-6-prevent-dx12-vulkan-deployment`) | `60bd512` | `main` (`230c8ae`) | **MERGED** | Prevent DXVK deployment for DX12/Vulkan (Issue #6). Merged at `ce74e1e`. |
 | **PR #4** (`pilot/companion-version-ordering`) | `a24934d` | `main` (`4f44059`) | **MERGED** | CompanionVersion numeric ordering (Issue #5). Merged at `230c8ae`. |
 | **PR #24** (`audit/issue-22-privacy-coverage`) | `b9c1559` | `main` (`51691ee`) | **MERGED** | Historical privacy audit, rule redaction, and durable evidence annex (Issue #22). Merged at `4f44059`. |
@@ -34,8 +33,7 @@ All foundational pilot features, bugfixes, and CI harnesses are merged into `ori
 
 | Work | Owner | Dependency / Decision | Next Action |
 |---|---|---|---|
-| **#25 handoff automation** | Gemini implements; ChatGPT verifies; human merges | Current `origin/main` (`ce74e1e`) | Open PR with dashboard generator script, workflow, tests, and documentation. |
-| **#12 spec authority** | Human decides; Gemini prepares/implements | Phase-plan / legacy-import confirmation | Confirm A1-UPDATED consolidation to `docs/spec/DXVK-COMPANION-SPEC.md`. |
+| **#12 spec authority** | Gemini implements; ChatGPT verifies; human merges | Human approved canonical spec & phase plan | Open documentation PR consolidating A1-UPDATED to `docs/spec/DXVK-COMPANION-SPEC.md` and verify. |
 | **#14 shared-directory policy** | Human decides; ChatGPT clarifies; Gemini implements | #9 compatibility base, #12 spec location | Prepare per-executable vs installation-wide options and test implications. |
 | **#15 reassessment** | Gemini; ChatGPT verifies | #9 base and #12 normative spec location | Establish source freshness and queued-action evidence. |
 | **#16 incompatible lifecycle** | Gemini; ChatGPT verifies | Terminal/parked/auto-resume decision; coordinate with #15 | Short options brief, then lifecycle tests and implementation. |
@@ -92,7 +90,7 @@ All foundational pilot features, bugfixes, and CI harnesses are merged into `ori
 
 ## 5. Unresolved Architectural & Governance Decisions
 
-1. **Issue #12 (Normative Specification Authority)**: Existing proposal consolidates root `DXVK-COMPANION-SPEC-A1-UPDATED.md` into `docs/spec/DXVK-COMPANION-SPEC.md` as the canonical specification root, with Phase A.5 design as safety supplement and archive of superseded revisions, pending human confirmation of the phase plan and no-legacy-import policy.
+1. **Issue #12 (Normative Specification Authority)**: Resolved by human decision approving `A1-UPDATED`, the §47 development phase plan, and the clean-slate V1 no-legacy-import policy. Canonical specification consolidated into `docs/spec/DXVK-COMPANION-SPEC.md`, Phase A.5 design established as normative safety supplement, and superseded revisions archived.
 2. **Issue #14 (Shared-Directory Multi-Executable Policy)**: Architectural decision regarding whether DXVK installation should be scoped per-executable or across entire shared installation directories.
 3. **Issue #15 (API Reassessment before Queued Execution)**: Document mixed-module precedence and verify API status immediately prior to executing queued actions.
 4. **Issue #16 (Lifecycle for Incompatible Pending Actions)**: Policy decision on terminal vs parked vs auto-resume behavior for actions blocked by modern API classification.
@@ -105,5 +103,5 @@ All foundational pilot features, bugfixes, and CI harnesses are merged into `ori
 
 - **Discovery Mechanism**: The live automated repository state is published to the dedicated machine-owned Issue titled `[AI Dashboard] Current Repository State & Handoff Orientation` (searchable via `gh issue list --search "[AI Dashboard]"` or by label `ai-dashboard`).
 - **Stale / Offline Fallback Protocol**: If the live dashboard Issue is unavailable, closed, rate-limited, or reports an `INCOMPLETE` status, fresh agent sessions must read this curated document (`docs/AI-CURRENT-STATE.md`), verify the latest default-branch commit via `git log -n 1 origin/main`, and inspect open PRs via `gh pr list --state open`.
-- **Publisher Activation**: Publication activates on the default branch `main` upon human merge of PR #26.
+- **Publisher Activation**: Active on `main` following merge of PR #26 (currently publishing to authenticated Issue #27).
 - **Rollback / Disable Procedure**: In the event of unexpected publishing behavior, the workflow can be instantly disabled via `gh workflow disable ai-current-state.yml` without altering credentials or codebase files.

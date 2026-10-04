@@ -2,19 +2,25 @@
 
 ## Status
 
-**Design baseline / authoritative specification**
+**Canonical authoritative project specification**
 
-This document is the current source of truth for the intended architecture, behavior, scope, and design principles of DXVK Companion.
+**Implementation status**
 
-Earlier documents remain useful as historical design notes, but when they conflict with this document, this specification takes precedence.
+- Phase A data foundation: complete and verified in Windows CI.
+- Phase A.1: clean-slate V1 approved — V1 will not import earlier development profiles or `games.json`.
+- Phase A.5 safety & identity design: specification supplement approved in [DXVK-Companion-PhaseA5-Safety-and-Identity-Design-FINAL.md](DXVK-Companion-PhaseA5-Safety-and-Identity-Design-FINAL.md); implementation authorized against synthetic temporary directories only.
 
-### Historical companion documents
+This document is the canonical source of truth for the intended architecture, behavior, scope, and design principles of DXVK Companion. Its normative safety and identity supplement is [DXVK-Companion-PhaseA5-Safety-and-Identity-Design-FINAL.md](DXVK-Companion-PhaseA5-Safety-and-Identity-Design-FINAL.md).
 
+Earlier documents remain useful as historical design notes, but when they conflict with this specification or its supplement, this specification takes precedence.
+
+### Archived and historical companion documents
+
+- `docs/spec/archive/DXVK-COMPANION-SPEC-REVISED.md` (superseded)
+- `docs/spec/archive/DXVK-COMPANION-SPEC-REVISED2.md` (superseded)
 - `DXVK-COMPANION-CONCEPT-DECISIONS.md`
 - `DXVK-COMPANION-DESIGN-SUMMARY.md`
 - `DXVK-COMPANION-MIGRATION-MAP.md`
-
-The public `README.md` should be updated later, after implementation and testing stabilize.
 
 ---
 
@@ -1532,9 +1538,9 @@ These should only be changed when the new architecture requires it.
 
 ---
 
-# 47. Migration Phases
+# 47. Development Phases
 
-## Phase A — Data Foundation
+## Phase A — Data Foundation — Complete
 
 1. Define installation/executable identity.
 2. Define management policy.
@@ -1543,73 +1549,119 @@ These should only be changed when the new architecture requires it.
 5. Define restoration baseline.
 6. Define hidden/disabled state.
 7. Implement persistence.
-8. Provide migration from the existing profile format.
+8. Verify the foundation in Windows CI.
 
-## Phase B — Detection
+Phase A is considered complete after the application and Phase A test project build successfully and the current Phase A test suite passes in GitHub Actions.
 
-9. Refactor process monitoring.
-10. Implement richer detection snapshots.
-11. Improve API classification.
-12. Track architecture.
-13. Improve anti-cheat evidence.
-14. Support multiple executables.
-15. Detect API changes.
+## Phase A.1 — Remove Pre-Release Legacy Migration
 
-## Phase C — DXVK Release Repository
+V1 starts from a clean current-format `GameLibrary`.
 
-16. Support official release metadata.
-17. Support multiple releases.
-18. Support manual update checks.
-19. Implement official-release/file identification.
-20. Implement existing official DXVK adoption.
+Because DXVK Companion has never been distributed or used on a real machine, V1 has no supported migration path from earlier development builds.
 
-## Phase D — Safe File Engine
+For V1:
 
-21. Replace `.bak`-centric logic.
-22. Implement Companion-side backups.
-23. Implement API-specific deployment.
-24. Implement pre-flight validation.
-25. Implement staged deployment.
-26. Implement post-operation verification.
-27. Implement Restore.
-28. Implement external-change conflict handling.
+- remove `TryMigrateLegacyProfiles`;
+- remove the private `pre-release legacy profile shim` compatibility shim;
+- remove migration-only reconciliation helpers;
+- remove migration-specific tests;
+- do not import `games.json` into the current `GameLibrary`;
+- update the specification to state explicitly that V1 starts with an empty current-format library when no current-format library exists.
 
-## Phase E — Manual Mode
+Historical code and data remain useful as reference material but are not part of the V1 compatibility contract.
 
-29. Make manual deployment reliable.
+This phase must not remove `ProfileStore` or `GameProfile` merely because they are older architecture. They remain current code until their consumers are migrated to the new architecture.
+
+## Phase A.5 — Safety Boundary and Official DXVK Identity
+
+Design and test these contracts before implementation.
+
+### A. Transactional file-management engine
+
+1. Define ownership rules.
+2. Define original-baseline capture.
+3. Define Companion-side backup storage.
+4. Define Install / Update / Reapply / Restore transactions.
+5. Define multi-file atomicity and staged deployment.
+6. Define verification after each transaction.
+7. Define partial-failure recovery.
+8. Define interrupted-operation recovery.
+9. Define external-change handling boundaries.
+10. Define persistent transaction/pending state.
+
+### B. Official DXVK identity
+
+11. Define the official-release trust root.
+12. Define package/archive identity.
+13. Define exact release/version/architecture mapping.
+14. Define exact DLL membership for each supported API and architecture.
+15. Define the three resulting classifications:
+    - Known official DXVK
+    - Unknown/external
+    - Not DXVK
+16. Define how existing official DXVK is adopted without trusting Windows file-version metadata alone.
+
+Phase A.5 must be complete at the design/contract level before implementation begins.
+
+## Phase B — Observe-Only Detection
+
+17. Refactor process monitoring.
+18. Implement richer detection snapshots.
+19. Improve API classification.
+20. Track architecture.
+21. Improve anti-cheat evidence.
+22. Support multiple executables per installation.
+23. Detect and report API changes.
+24. Keep all behavior observe-only; no game-file modification.
+
+## Phase C — Manual DXVK Management
+
+25. Connect the safety engine to real disposable game directories.
+26. Implement deliberate Install.
+27. Implement Update.
+28. Implement Reapply.
+29. Implement Restore.
 30. Implement version selection.
-31. Implement Restore UI.
-32. Implement Update UI.
-33. Implement frame limiter.
-34. Implement overlay configuration.
+31. Implement existing-official-DXVK adoption.
+32. Implement `dxvk.conf` management.
+33. Implement frame-limit configuration.
+34. Implement HUD/overlay configuration.
+35. Refuse unsafe or ambiguous operations rather than guessing.
 
-## Phase F — Notifications
+## Phase D — External-Change and Pending-Action Handling
 
-35. Delayed launch notifications.
-36. Update prompts.
-37. 10–15 second timeouts.
-38. Pending-action notifications.
-39. Safety/conflict notifications.
-40. Success/failure notifications.
+36. Detect managed-file changes.
+37. Detect deletion/replacement of managed files.
+38. Implement user-authorized reapplication.
+39. Implement game-update baseline replacement where explicitly authorized.
+40. Implement persistent PendingAction handling.
+41. Implement stale-action cancellation/supersession rules.
+42. Verify safe behavior across application restart.
 
-## Phase G — Automated Mode
+## Phase E — Automated Mode — Experimental
 
-41. Global Automated policy.
-42. Per-game overrides.
-43. Automatic first-time installation.
-44. Automatic maintenance.
-45. Automatic detection of game updates.
-46. Safe reapplication flow.
-47. Evolving compatibility rules.
+43. Global Automated policy.
+44. Per-game overrides.
+45. Automatic first-time installation.
+46. Timed update prompts.
+47. Safe queued operations after game exit.
+48. Automatic maintenance.
+49. Automatic game-update handling.
+50. Safe reapplication flow.
+51. Continue treating Automated mode as Experimental until broad real-world testing supports promotion.
 
-## Phase H — UI Refinement
+## Phase F — UI, Notifications, and Release Hardening
 
-48. Tabs/views.
-49. Hidden games.
-50. Static/simple tray.
-51. Status indicators.
-52. Controller support if justified.
-53. Final branding/iconography.
+52. Main status-oriented game UI.
+53. Hidden/Attention/Updates views as justified.
+54. Simple static tray.
+55. Pending-action and safety notifications.
+56. 10–15 second non-blocking decision prompts.
+57. Update checks.
+58. Startup behavior.
+59. Portable-folder move testing.
+60. First-release end-to-end testing on disposable installations.
+61. Final documentation, packaging, and release checklist.
 
 ---
 
