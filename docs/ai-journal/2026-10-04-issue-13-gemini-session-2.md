@@ -4,7 +4,7 @@
 - **Agent Role & Model**: Gemini (Implementer / Antigravity)
 - **Task / Issue**: [PR #23](https://github.com/Tiflit/DXVK-Companion/pull/23) bounded revision for [Issue #13](https://github.com/Tiflit/DXVK-Companion/issues/13) — [AI] F8: Reapply must back up pre-existing files for newly required DLLs
 - **Revision Starting Head**: [`1f3f0f0d875940ae2f28e279d1c95ca980432298`](https://github.com/Tiflit/DXVK-Companion/commit/1f3f0f0d875940ae2f28e279d1c95ca980432298)
-- **Failing Collision Reproducer Head**: [`91f022a01460360a0f82df3bc4a73752e245a499`](https://github.com/Tiflit/DXVK-Companion/commit/91f022a01460360a0f82df3bc4a73752e245a499)
+- **Failing Collision Reproducer Head**: [`91f022a26b3a22ac3b2d7c41672a50cac8aad995`](https://github.com/Tiflit/DXVK-Companion/commit/91f022a26b3a22ac3b2d7c41672a50cac8aad995)
 - **Branch / Worktree**: `fix/issue-13-reapply-original-baseline` (`D:\dev\DXVK-Companion-issue-13`)
 
 ### Purpose & Context
