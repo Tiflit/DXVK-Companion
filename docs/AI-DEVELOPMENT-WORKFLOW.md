@@ -49,7 +49,7 @@ Use for:
 - regression tests and test generation;
 - local iteration;
 - build/test diagnosis;
-- focused revisions after review findings.
+- focused revisions after review findings and bounded repairs.
 
 A large task should be decomposed by scope and acceptance criteria, not by an arbitrary token/diff budget. Gemini can do substantial repository work when the task genuinely requires it, while CI, scope checks, and independent review provide the safety boundaries.
 
@@ -57,13 +57,27 @@ The workflow should optimize for completed useful work rather than equalizing mo
 
 A revision should normally use a fresh Gemini/Antigravity session rather than continuing the original implementation conversation.
 
+### ChatGPT
+
+Verification, architecture, and arbitration layer.
+
+Use for:
+
+- defining or refining task contracts;
+- tracing architectural boundaries;
+- analyzing ambiguous requirements;
+- independent execution checks and reproduction analysis;
+- arbitrating review findings when agents or reviewers disagree;
+- verifying repairs and revisions prior to merge;
+- designing future workflow automation.
+
 ### Claude
 
-Independent adversarial reviewer.
+Audit and material risk layer.
 
-Claude has substantially tighter usage limits in the current subscription, so its quota is reserved for changes where independent review provides meaningful value.
+Claude usage is reserved for occasional audits and high-risk material decisions where specialized independent review provides distinct value. Under the active allocation, routine implementation revisions and bounded repairs do not require Claude passes when verified by ChatGPT and CI.
 
-Review emphasis:
+Review emphasis when engaged:
 
 1. task contract;
 2. tests and whether they actually prove the required invariants;
@@ -74,20 +88,9 @@ Review emphasis:
 
 A green CI result is evidence, not proof that the implementation satisfies the intended invariant.
 
-### ChatGPT
+### Human
 
-Architecture and reasoning layer.
-
-Use for:
-
-- defining or refining task contracts;
-- tracing architectural boundaries;
-- analyzing ambiguous requirements;
-- interpreting independent review findings;
-- arbitration when agents disagree;
-- designing future workflow automation.
-
-ChatGPT should not be inserted into every routine implementation loop.
+The human developer retains final merge authority, policy governance, and lifecycle decisions. AI agents produce implementation, evidence, verification, and arbitration, but merge decisions remain strictly human-controlled.
 
 ### GitHub Actions
 
@@ -154,32 +157,23 @@ The normal policy is at most one focused revision cycle after a material indepen
 
 ## Risk-based use of independent review
 
-### Low-risk task
+### Active role allocation and execution flow
+
+Under the active allocation (established during Issue #11), model roles are partitioned according to capabilities and quota availability:
+
+- **Gemini**: Implements repository code, test suites, and focused revisions or bounded repairs.
+- **ChatGPT**: Verifies repairs, conducts independent execution checks, and arbitrates findings.
+- **Claude**: Reserved for occasional independent audits and high-risk material decisions.
+- **Human**: Retains final merge authority and lifecycle governance.
 
 ```text
-Gemini -> CI -> human
+Gemini implementation -> CI -> ChatGPT verification & arbitration -> Human merge authority
+                                        ^
+                                        | (occasional audits / material risk)
+                                  Claude audit
 ```
 
-### Normal task
-
-```text
-Gemini -> CI -> Claude -> human
-```
-
-### High-risk or architectural task
-
-```text
-ChatGPT architecture
-        |
-        v
-Gemini -> CI -> Claude
-        |
-        +--> disagreement/ambiguity -> ChatGPT + human
-```
-
-Claude does not need to review every trivial change.
-
-The task Issue should make the expected review level explicit.
+Claude review is not required for routine implementation revisions or bounded repairs verified by ChatGPT and CI. The task Issue should make the expected review level explicit.
 
 ## Task-contract rules
 
@@ -400,3 +394,94 @@ Link durable evidence instead of copying an entire conversation. Keep historical
 ### Adoption status
 
 This section supplies the versioned manual prompt, output schema, arbitration rubric, freshness rules and continuation template. It does not publish historical review comments, reconcile specification authority, implement packet/scope hardening, create follow-up Issues, enable protection, or run Pilot #3. Those remain pending. PR #9's body already preserves its attributed review and arbitration; the complete finding register remains in the proposed pilot log.
+
+## Hardened review packet provenance and workflow contracts — Issue #11
+
+Implemented under Issue #11 and revised under Review contract v1 arbitration to ensure review evidence is tied to immutable revisions, shell injection risks are eliminated, test totals are parsed from structured artifacts, and scope/hygiene checks enforce explicit contracts.
+
+### 1. Packet identity and provenance model
+
+The AI Review Packet is generated by `.github/workflows/ai-review-packet.yml` upon completion of the `Build and Test` workflow:
+
+- **Reviewed head and base**: Diff and changed-file manifests are generated by comparing `tested_base_sha` (from triggering event) and `run_head_sha` directly via immutable comparison APIs. If event base is missing, `tested_base_sha` is marked `unknown` (never falling back to live base), and source comparison is declined. Disagreements between event base and provenance are flagged explicitly.
+- **Tested checkout SHA**: `Build and Test` records `git rev-parse HEAD`, ref, sha, run ID, and attempt into `build-provenance.json` as an artifact (`build-provenance`). This records whether CI tested a direct head or a synthetic merge commit (`refs/pull/PR/merge`).
+- **Attempt & run identity verification**: `build-provenance.json` must contain `run_id`, `run_attempt`, and `head_sha`. Missing identifiers or mismatches are rejected as `incomplete`. Attempt-specific jobs are acquired via `/actions/runs/{run_id}/attempts/{attempt}/jobs`; fallback to run-level jobs filters strictly by attempt and never returns unmatched jobs.
+- **Host-aware credential handling & download bounds**: Urllib artifact downloads follow redirects safely. When GitHub API redirects to Azure Blob Storage, the `Authorization` header is stripped to avoid `HTTP 401 AuthenticationFailed` rejections and credential leakage. Downloads enforce an explicit 30s timeout and a 50 MB / 10 MB maximum size limit. Archive extraction enforces Zip-Slip path traversal defense and uncompressed size bounds.
+- **Base-branch movement detection**: The packet records both `Tested Base SHA` (from event) and `Live Base SHA` (from live PR metadata). If base has moved, the packet emits an explicit warning:
+  `> [!WARNING] BASE-BRANCH MOVEMENT: BASE MOVED (Triggering run tested base X, but live base branch is now Y)`.
+- **Current-head staleness**: If a pull request advances to commit B while CI was executing commit A, the packet generator packages commit A and emits an explicit warning:
+  `> [!WARNING] CURRENT-HEAD STALENESS: STALE (Live PR head is B, packet built for A)`.
+- **Centralized TRX artifact attribution & timestamp limits**: Visual Studio `.trx` test reports are extracted from the triggering run's artifacts. Total, passed, failed (including error/timeout/aborted), and skipped (notExecuted/notRunnable/inconclusive) counts are extracted. Attribution to the triggering run attempt is centralized before downloading or parsing:
+  - *Missing matching jobs or artifact metadata* -> `UNAVAILABLE`.
+  - *Artifact outside execution interval* -> `UNAVAILABLE`. Candidate artifact `created_at` timestamps must fall within `[interval_start, interval_end]` established by matching job `started_at` and `completed_at` timestamps. Both lower and upper boundaries are validated.
+  - *Ambiguous candidates* -> `UNAVAILABLE`. If multiple candidate artifacts fall within the attempt window, attribution is rejected as ambiguous.
+  - *No singleton/order inference*: Attribution is never inferred from singleton artifact count or list order.
+  - *Limits of timestamp evidence*: GitHub Actions artifact and job timestamps are server-assigned metadata that correlate an artifact's upload time with the execution window of a specific job run attempt. They establish chronological containment, not cryptographic content attestation or immutable signatures. If API metadata cannot reliably prove attribution within the attempt window, evidence fails closed as `UNAVAILABLE` rather than guessing.
+  1. Revision and Evidence Identity
+  2. Task Contract & PR Verification
+  3. Deterministic CI & Test Totals
+  4. Complete Changed Files Manifest
+  5. Changed Tests Diff (`tests/**` or `*Tests.cs`)
+  6. Production Changes Diff (`src/**`)
+  7. Workflow, Documentation, and Review Focus
+  Diff sections enforce line budgets (default 500 lines per section) with explicit truncation notices so production context is never starved by large test files. Production files containing "test" in path (e.g. `src/DXVKCompanion/Testing/TestModeHelper.cs`) are correctly classified as production changes.
+- **Manifest completeness vs patch availability**: A full diff artifact `full-diff-pr-<number>.diff` is uploaded alongside the packet. Manifest completeness (`complete` vs `incomplete (capped)`) is strictly separated from patch availability (`all returned patches present` vs `partial`). Capped compare responses (e.g. at 300 files) are marked incomplete even if all returned files have patches. Omitted patches are explicitly marked (`[Patch omitted by GitHub API]`).
+
+### 2. Allowed paths syntax and scope enforcement
+
+Allowed paths defined in the task Issue (`### Allowed paths`) govern PR scope via `.github/workflows/ai-scope-check.yml`:
+
+- **HTML comment stripping**: Commented template text (`<!-- ... -->`) is stripped prior to parsing.
+- **Explicit repository-relative paths**: `src/DXVKCompanion/Utils/CompanionVersion.cs`
+- **Recursive directory wildcards**: `scripts/ai-workflow/**` matches any file under that directory.
+- **Directory prefixes**: `docs/` matches any file under that directory.
+- **Exact standalone opt-out (A1)**: The single keyword `Unconstrained` opts out of scope filtering for exploratory tasks. It must be the sole entry in the section; mixed lists containing `Unconstrained` alongside explicit paths are strictly rejected.
+- **Whole-entry loose synonym rejection (F9)**: Loose synonyms (`None`, `Not yet constrained`, `Any`, `TBD`, `Open`, `All`) are rejected when supplied as opt-out entries. Valid paths containing words like `open` or `all` (e.g. `src/open/all.cs`) are preserved.
+- **Renamed files**: Scope checking inspects both `previous_filename` and `filename`. If either is outside the allowed set, the check fails.
+
+### 3. PR hygiene and primary task contract
+
+PR metadata is validated by `.github/workflows/ai-pr-hygiene.yml`:
+
+- **Required sections**:
+  - `## Primary Issue` (with `#<number>`, or closing keyword `Fixes #X`, `Closes #X`, `Resolves #X`)
+  - `## Summary`
+  - `## Scope`
+  - `## Verification`
+  - `## Documentation`
+- **Strict Issue syntax (F8)**: Naked digits without `#` (such as dates or version numbers) and unedited template placeholders (`Fixes #` without number) are rejected.
+- **Contextual links**: References like `Relates to #Y`, `Tracked in #Z`, or `See #W` are ignored during primary issue resolution and cannot satisfy the requirement.
+
+### 4. Linked-Issue recheck protocol and check-name migration (F10)
+
+- **Snapshot semantics**: Passing status checks on a PR reflect a point-in-time snapshot. Editing a linked Issue description does not automatically trigger GitHub Actions on open PRs.
+- **Recheck procedure**:
+  1. *PR edit*: The author or coordinator edits the PR body (e.g. updating whitespace or adding notes), triggering `pull_request.edited`.
+  2. *Manual dispatch*: Both `ai-scope-check.yml` and `ai-pr-hygiene.yml` support `workflow_dispatch` with a `pr_number` input, allowing on-demand rechecks via GitHub Actions UI or `gh workflow run`.
+- **Check-name migration for repository protection**:
+  To configure required status checks in GitHub Repository Settings (Branches / Rulesets), use the exact job names:
+  - `AI task scope` (workflow: `AI Scope Check`)
+  - `PR hygiene` (workflow: `AI PR Hygiene`)
+  - `Run Python workflow tests` (workflow: `AI Workflow Tests`)
+  - `build-and-test` (workflow: `Build and Test`)
+
+### 5. Trust boundaries and enforcement limits (F11)
+
+- **Self-attesting status checks**: CI workflow checks return non-zero exit codes on contract violations. However, these checks do not block merge unless repository branch protection rulesets are explicitly configured by repository administrators.
+- **PowerShell and shell safety**: Workflow steps do not interpolate `${{ github.event... }}` or `${{ github.ref }}` directly into inline script text. Inputs are passed through environment variables to eliminate command injection vectors.
+- **Untrusted text boundaries**: PR and Issue descriptions are treated as untrusted data; scripts sanitize and fence user text to prevent Markdown document corruption.
+
+### 6. Post-merge workflow_run smoke-test procedure
+
+Because `workflow_run` workflows execute from the default branch, changes to `.github/workflows/ai-review-packet.yml` activate once merged to `main`:
+
+1. Open a test PR or push a commit on a branch configured to trigger `Build and Test`.
+2. Confirm `Build and Test` finishes and produces the `build-provenance` artifact.
+3. Confirm `AI Review Packet` triggers automatically and completes successfully.
+4. Verify the generated artifact `review-packet-pr-<number>` contains:
+   - Verified tested checkout SHA and ref relationship.
+   - Structured TRX test totals.
+   - Budgeted test, production, and workflow diffs.
+   - Attached full diff artifact `review-packet-diff-pr-<number>`.
+5. Verify `AI PR Hygiene` and `AI Scope Check` succeed for conforming PRs and fail (blocking) when required sections or allowed paths are violated.
+

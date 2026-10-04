@@ -2,7 +2,13 @@ name: AI Scope Check
 
 on:
   pull_request:
-    types: [opened, reopened, synchronize, ready_for_review]
+    types: [opened, reopened, synchronize, ready_for_review, edited]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'Pull request number to evaluate'
+        required: true
+        type: number
 
 permissions:
   contents: read
@@ -11,132 +17,23 @@ permissions:
 
 jobs:
   scope-check:
-    name: AI task scope (advisory)
+    name: AI task scope
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
-      PR_NUMBER: ${{ github.event.pull_request.number }}
+      PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+
 
     steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
       - name: Compare changed files with Issue allowed paths
-        shell: bash
         run: |
-          set -euo pipefail
-
-          pr_json="$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER")"
-          pr_body="$(printf '%s' "$pr_json" | jq -r '.body // ""')"
-
-          issue_number="$(printf '%s\n' "$pr_body" |
-            grep -Eio '(closes|fixes|resolves|tracked[[:space:]]+in|relates[[:space:]]+to)[[:space:]]+#[0-9]+' |
-            tail -n 1 |
-            grep -Eo '#[0-9]+' |
-            tr -d '#' || true)"
-
-          {
-            echo "### AI Scope Check"
-            echo
-          } >> "$GITHUB_STEP_SUMMARY"
-
-          if [ -z "$issue_number" ]; then
-            echo "WARNING: no supported GitHub Issue reference found; scope cannot be evaluated."
-            echo "WARNING: no supported GitHub Issue reference found; scope cannot be evaluated." >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-
-          issue_json="$(gh api "repos/$GH_REPO/issues/$issue_number")"
-          issue_body="$(printf '%s' "$issue_json" | jq -r '.body // ""')"
-
-          allowed_block="$(printf '%s\n' "$issue_body" |
-            awk '
-              /^### Allowed paths[[:space:]]*$/ {p=1; next}
-              /^### / {if (p) exit}
-              p {print}
-            ')"
-
-          if [ -z "$allowed_block" ]; then
-            echo "WARNING: Issue #$issue_number has no parseable Allowed paths section; scope check is advisory only."
-            echo "WARNING: Issue #$issue_number has no parseable Allowed paths section." >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-
-          if printf '%s\n' "$allowed_block" | grep -Eiq 'not yet constrained|not constrained|^[-*]?[[:space:]]*none[[:space:]]*$'; then
-            echo "INFO: Issue #$issue_number intentionally leaves paths unconstrained."
-            echo "INFO: Allowed paths are intentionally unconstrained." >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-
-          mapfile -t allowed < <(
-            printf '%s\n' "$allowed_block" |
-              sed -E 's/^[[:space:]]*[-*][[:space:]]*//' |
-              sed -E 's/^[[:space:]]*`//; s/`[[:space:]]*$//' |
-              sed '/^[[:space:]]*$/d'
-          )
-
-          if [ "${#allowed[@]}" -eq 0 ]; then
-            echo "WARNING: Allowed paths section is present but contains no usable path entries."
-            echo "WARNING: Allowed paths section contains no usable path entries." >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-
-          mapfile -t changed < <(
-            gh api "repos/$GH_REPO/pulls/$PR_NUMBER/files?per_page=100" --paginate |
-              jq -r '.[] | .filename'
-          )
-
-          unexpected=()
-
-          matches_allowed() {
-            local file="$1"
-            local pattern raw prefix
-            for raw in "${allowed[@]}"; do
-              pattern="$raw"
-              suffix="${pattern: -3}"
-            if [ "$suffix" = "/**" ]; then
-                prefix="${pattern:0:${#pattern}-3}/"
-                if [[ "$file" == "$prefix"* ]]; then
-                  return 0
-                fi
-              elif [[ "$pattern" == */ ]]; then
-                if [[ "$file" == "$pattern"* ]]; then
-                  return 0
-                fi
-              elif [[ "$file" == "$pattern" ]]; then
-                return 0
-              fi
-            done
-            return 1
-          }
-
-          for file in "${changed[@]}"; do
-            if ! matches_allowed "$file"; then
-              unexpected+=( "$file" )
-            fi
-          done
-
-          echo "Issue: #$issue_number"
-          echo "Allowed entries: ${#allowed[@]}"
-          echo "Changed files: ${#changed[@]}"
-
-          if [ "${#unexpected[@]}" -eq 0 ]; then
-            echo "PASS: every changed file matches an allowed path."
-            {
-              echo "PASS: every changed file matches an allowed path."
-              echo
-              echo "Issue: #$issue_number"
-              echo "Allowed entries: ${#allowed[@]}"
-              echo "Changed files: ${#changed[@]}"
-            } >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "WARNING: changed files outside the Issue allowed-path set:"
-            printf '  - %s\n' "${unexpected[@]}"
-            {
-              echo "WARNING: changed files outside the Issue allowed-path set:"
-              printf -- '- %s\n' "${unexpected[@]}"
-              echo
-              echo "This check is intentionally advisory during the workflow pilot."
-            } >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-          # Advisory phase: report scope drift without blocking the PR.
-          exit 0
+          python scripts/ai-workflow/evaluate_scope.py --pr-number "$PR_NUMBER"

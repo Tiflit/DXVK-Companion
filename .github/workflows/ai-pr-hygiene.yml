@@ -2,66 +2,37 @@ name: AI PR Hygiene
 
 on:
   pull_request:
-    types: [opened, reopened, synchronize, ready_for_review]
+    types: [opened, reopened, synchronize, ready_for_review, edited]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'Pull request number to verify'
+        required: true
+        type: number
 
 permissions:
+  contents: read
   pull-requests: read
 
 jobs:
   pr-hygiene:
-    name: PR hygiene (advisory)
+    name: PR hygiene
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
-      PR_NUMBER: ${{ github.event.pull_request.number }}
+      PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+
 
     steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
       - name: Inspect PR metadata
-        shell: bash
         run: |
-          set -u
-
-          body="$(gh pr view "$PR_NUMBER" --json body --jq '.body // ""')"
-
-          missing=0
-
-          check_heading() {
-            local heading="$1"
-            if printf '%s\n' "$body" | grep -Eiq "^##[[:space:]]+${heading}[[:space:]]*$"; then
-              echo "PASS: PR contains '## ${heading}'"
-            else
-              echo "WARNING: PR is missing '## ${heading}'"
-              missing=1
-            fi
-          }
-
-          check_heading "Summary"
-          check_heading "Scope"
-          check_heading "Verification"
-          check_heading "Documentation"
-
-          if printf '%s\n' "$body" | grep -Eiq '(closes|fixes|resolves|tracked[[:space:]]+in|relates[[:space:]]+to)[[:space:]]+#[0-9]+'; then
-            echo "PASS: PR body references a GitHub Issue"
-          else
-            echo "WARNING: PR body does not visibly reference a GitHub Issue"
-            missing=1
-          fi
-
-          {
-            echo "### AI PR Hygiene"
-            echo
-            if [ "$missing" -eq 0 ]; then
-              echo "All advisory metadata checks passed."
-            else
-              echo "One or more advisory checks need attention."
-              echo
-              echo "Expected headings: `Summary`, `Scope`, `Verification`, `Documentation`"
-              echo "Expected: a visible GitHub Issue reference."
-              echo
-              echo "This check is intentionally advisory during the workflow pilot and does not block merging."
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
-
-          # Advisory phase: report gaps without blocking the PR.
-          exit 0
+          python scripts/ai-workflow/check_pr_hygiene.py --pr-number "$PR_NUMBER"

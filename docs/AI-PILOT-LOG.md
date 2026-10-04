@@ -337,3 +337,187 @@ Added Review contract v1 to AI-DEVELOPMENT-WORKFLOW.md on the existing documenta
 Historical review comments, follow-up Issues, canonical PR template, immutable/safe review-packet generation, fail-closed scope checks, specification reconciliation, protection and the controlled Pilot #3 remain pending. PR #4 still needs current-base integration evidence before a human merge decision. Application implementation remains frozen; no merge, closure, message to another agent or paid dispatch occurred.
 
 Next implementation handoff should focus on packet identity/security and contract parser alignment, in a separately scoped Issue/PR. Do not mix these workflow changes into PR #9.
+
+## Workflow hardening checkpoint — Issue #11 initial implementation (SHA: 0abef8d34a836494cdd882b844c781e32fa35322, 2026-10-03)
+
+### Implementation summary
+
+Implemented hardened review packet provenance, blocking scope/hygiene checks, safe structured TRX parsing, and regression fixtures under Issue #11.
+
+- **Offline regression test suite**: 42 automated tests in `tests/ai-workflow/` verifying contract parsing, allowed-path syntax, directory boundary safety, rename checks, PR hygiene headings, TRX counting, zip-slip defense, packet identity, staleness detection, and diff budgeting.
+- **Workflow integration**:
+  - `.github/workflows/ai-workflow-tests.yml`: runs test suite on push and PR.
+  - `.github/workflows/build-and-test.yml`: instruments minimal `build-provenance` artifact (`build-provenance.json`) capturing checked-out SHA (`git rev-parse HEAD`), ref, run ID, and attempt.
+  - `.github/workflows/ai-review-packet.yml`: checks out trusted default-branch scripts, parses event JSON safely via Python, generates verified packet and full diff artifact.
+  - `.github/workflows/ai-scope-check.yml`: blocking check enforcing repository-relative allowed paths, `/**`, trailing slash, and exact standalone `Unconstrained`. Checks old and new paths for renames.
+  - `.github/workflows/ai-pr-hygiene.yml`: blocking check enforcing `Primary Issue`, `Summary`, `Scope`, `Verification`, and `Documentation`.
+  - `.github/ISSUE_TEMPLATE/ai-task.yml` & `.github/pull_request_template.md`: aligned template grammar.
+
+### Open PR inventory and legacy contract migrations
+
+Before switching policy workflows from advisory to blocking, open PRs were inventoried:
+
+1. **PR #4** (`pilot/companion-version-ordering`):
+   - Head: `944abc08c8722bdfc3b13bf7fda8fdd5a8a25b65`
+   - Task contract: Issue #5 (`CompanionVersion.IsOutdatedComparedTo`).
+   - Migration action: Edit PR #4 body to add `## Primary Issue` with `Fixes #5`. Check allowed paths against Issue #5.
+2. **PR #9** (`issue-6-prevent-dx12-vulkan-deployment`):
+   - Head: `c4d0f846b4031b08e9e3444c803abe37cc171890`
+   - Task contract: Issue #6 (`Prevent DXVK deployment for DX12/Vulkan`).
+   - Migration action: Edit PR #9 body to add `## Primary Issue` with `Fixes #6`. All changed files match Issue #6 allowed paths.
+3. **PR #10** (`docs/review-contract-v1`):
+   - Merged to `main` at `e7b6e06`. No action required.
+
+Coordinator can update PR #4 and PR #9 descriptions via GitHub UI to satisfy the new blocking checks without needing code changes or recreation.
+
+### Human intervention metrics for Issue #11
+
+- Human intervention count: 1 (initial handoff prompt and worktree setup).
+- Human elapsed time: ~5 minutes.
+- Model execution: Fully autonomous implementation across fixtures, parsers, CI workflows, and documentation.
+- Residual limitations: Model dispatch remains manual; human retains final merge authority.
+
+## Workflow hardening revision checkpoint — Issue #11 revision (F1–F12, A1) (2026-10-03)
+
+### Review and arbitration context
+
+External review by Claude of initial implementation commit `0abef8d34a836494cdd882b844c781e32fa35322` yielded 12 findings (F1–F12). Independent arbitration by ChatGPT confirmed findings and established arbitration ruling A1 (prohibiting mixed `Unconstrained` and explicit path entries). This focused revision addresses findings F1–F12 and ruling A1 within the existing workflow scope without touching application code.
+
+### Findings and arbitration dispositions (F1–F12, A1)
+
+| Finding / Item | Description | Disposition | Verification & Implementation |
+|---|---|---|---|
+| **F1** | Provenance parsing failure swallowed via missing `import io` | Accepted | Verified `NameError` empirically. Added top-level `import io` in `generate_review_packet.py`; surfaced download/parse failures. Tested via unit tests and real CI run 37164136438. |
+| **F2** | Monolithic network calls untestable offline | Accepted | Introduced injectable `GitHubClient` class with dedicated `fetch_json` and `download_bytes` methods. Validated with offline unit tests mocking all API interactions. |
+| **F3** | Ambiguous PR associations across multiple PRs | Accepted | Declined ambiguity: `generate_review_packet.py` exits with status 1 if a workflow run maps to multiple PRs unless explicit `--pr-number` is supplied. Tested with ambiguity fixtures. |
+| **F4** | Tested Base SHA bound to live PR branch instead of triggering event | Accepted | Extracted tested base SHA from triggering event payload (`workflow_run.pull_requests[].base.sha`). Live PR base SHA is reported separately; emits warning if base branch moved. |
+| **F5** | Run attempt mismatch and job log attribution | Accepted | Queried attempt-specific jobs API (`/actions/runs/{run_id}/attempts/{attempt}/jobs`). Verified `run_id` and `run_attempt` inside `build-provenance.json` match triggering execution; mismatches marked incomplete. |
+| **F6** | Azure Blob SAS redirect authentication failure & size limits | Accepted | Verified empirically that urllib forwarded Authorization header to Azure Blob Storage, triggering HTTP 401. Implemented host-aware redirect handler stripping Authorization when redirecting off-domain. Enforced 50 MB total / 10 MB per-file limits, canonical destination containment (Zip-Slip defense), and uncompressed size bounds. |
+| **F7** | Legacy contract migration rollout gap | Accepted | Restored original meaning: Issues #5/#6 lack '### Allowed paths' and PRs #4/#9 lack required hygiene headings. Documented exact Issue and PR edits and on-demand rechecks. External edits remain coordinator actions. |
+| **F8** | PR template HTML comments & naked numbers accepted | Accepted | Stripped HTML comments (`<!-- ... -->`) before regex parsing. Enforced `#<number>` format in `extract_primary_issue`, rejecting naked numbers and placeholder `Fixes #`. Tested against shipped templates. |
+| **F9** | Loose opt-out synonyms rejected valid file paths | Accepted | Replaced substring search with exact whole-entry set membership for loose synonyms (`LOOSE_SYNONYMS = {"not yet constrained", "none", "any", "n/a", "open", "all", "tbd"}`). Valid paths containing words like `open` or `all` (e.g. `src/open/all.cs`) are preserved. |
+| **F10** | Lack of manual/advisory recheck mechanism | Accepted | Added `workflow_dispatch` trigger with `pr_number` input to both `ai-scope-check.yml` and `ai-pr-hygiene.yml`, enabling on-demand verification alongside `pull_request.edited`. |
+| **F11** | Direct workflow script interpolation injection risks | Accepted | Replaced inline GitHub Actions context interpolation (`"${{ github.ref }}"`) with environment variables (`$env:GITHUB_REF`, etc.) in `build-and-test.yml`. |
+| **F12** | TRX outcome definitions, categorization, manifest completeness & input validation | Accepted | Standardized TRX result counting (effective failed: failed+error+timeout+aborted; skipped: notExecuted+notRunnable+inconclusive). Enforced regex validation on CLI inputs. Fixed file categorization (`src/` always production). Added full manifest diff and omitted patch flags. |
+| **A1** | Mixed `Unconstrained` and explicit path declarations | Accepted | Enforced arbitration ruling: contracts with mixed `Unconstrained` and explicit paths are strictly rejected. Only a standalone `Unconstrained` entry is permitted as a contract opt-out. |
+
+### Real CI run 37164136438 local execution evidence
+
+The revised generator was executed locally using authenticated GitHub credentials against real Build and Test run `37164136438`:
+
+- **Run Identity**: Run ID `37164136438`, Run Attempt `1`
+- **Head SHA**: `0abef8d34a836494cdd882b844c781e32fa35322`
+- **Tested Checkout SHA**: `faec613332c3a7d5fcee44fc8b257839d150dddf` (synthetic merge ref `refs/pull/19/merge`)
+- **Tested Base SHA**: `e7b6e0640d9a22077fb515b1dfc2a277e987785e`
+- **Live PR Base SHA**: `e7b6e0640d9a22077fb515b1dfc2a277e987785e` (Status: Current, base has not moved)
+- **TRX Test Totals**: 67 passed, 0 failed, 0 skipped, 67 total (across 2 TRX files in `test-results` artifact)
+- **Manifest Completeness**: 21 files changed, 21 diffs included in full diff artifact, 0 omitted patches
+- **Security & Diagnostics**: Zero credentials, tokens, or signed URLs leaked in logs or packet markdown. SAS redirect successfully downloaded build-provenance artifact.
+
+### Trust boundaries and enforcement clarification
+
+GitHub Actions workflows execute as advisory status checks on pull requests. Workflows cannot enforce repository-level merge blocking on their own; blocking branch protection requires GitHub repository settings (Branch Protection Rules or Rulesets) configured with mandatory passing status checks by a repository administrator. The term "blocking check" in workflow descriptions refers to the check concluding with exit code 1 / failure status, not automated platform-level merge prevention.
+
+### Complete open PR and legacy contract migration inventory
+
+To ensure smooth operation when checks are configured as required:
+
+1. **PR #4** (`pilot/companion-version-ordering`):
+   - Head SHA: `944abc08c8722bdfc3b13bf7fda8fdd5a8a25b65`
+   - Primary Task Contract: Issue #5 (`CompanionVersion.IsOutdatedComparedTo`)
+   - Migration Action: Update PR #4 description via GitHub UI to add `## Primary Issue` with `Fixes #5`, along with `## Summary`, `## Scope`, `## Verification`, and `## Documentation`. Verify allowed paths in Issue #5 encompass all PR #4 modified files.
+   - Recheck: Re-run `ai-pr-hygiene` and `ai-scope-check` using `workflow_dispatch` with PR number `4`.
+2. **PR #9** (`issue-6-prevent-dx12-vulkan-deployment`):
+   - Head SHA: `c4d0f846b4031b08e9e3444c803abe37cc171890`
+   - Primary Task Contract: Issue #6 (`Prevent DXVK deployment for DX12/Vulkan`)
+   - Migration Action: Update PR #9 description via GitHub UI to add `## Primary Issue` with `Fixes #6`, along with required hygiene headings.
+   - Recheck: Re-run `ai-pr-hygiene` and `ai-scope-check` using `workflow_dispatch` with PR number `9`.
+
+## Bounded repair exception checkpoint — Issue #11 (F4, F5, F7, F12) (2026-10-03)
+
+### Context & bounded repair scope
+
+Claude's verification pass on revised head `358f9154c2db784e4fead4af4767fd184e8c09a7` noted that four material requirements remained incompletely resolved: F4 (live base fallback), F5 (unmatched job fallback, missing provenance identity, unscoped TRX artifacts & duplicate selection), F7 (restoring original legacy contract migration meaning and documenting exact edits), and F12 (separating manifest completeness from patch availability and testing capped compare responses). The coordinator granted a bounded repair exception targeting strictly these four existing requirements.
+
+### Bounded repair implementation & evidence
+
+| Item | Requirement & Defect | Bounded Repair Implementation | Verification Evidence |
+|---|---|---|---|
+| **F4** | Missing event base previously fell back to live base and was labeled tested. Base disagreement was not flagged. | If event base is missing/empty, `tested_base_sha` is strictly marked `unknown`—never assigned `live_base_sha`. Source comparison is explicitly declined (`compare_commits` not called, diffs report declined status). Base SHA disagreements between event and provenance are detected and flagged. | `test_missing_event_base_declines_comparison_and_reports_unknown`, `test_base_provenance_disagreement_detected`. |
+| **F5** | Unmatched job fallback, missing provenance identifiers, unscoped TRX artifacts and duplicate selection. | In `GitHubClient.get_workflow_run_jobs`, fallback filtering by attempt returns `[]` when no jobs match (unmatched jobs from other attempts are never returned). In `generate_packet`, `build-provenance.json` must contain `run_id`, `run_attempt`, and `head_sha`; missing identifiers cause checkout identity to be marked `incomplete`. Multiple TRX artifacts without unambiguous attempt window attribution are marked `UNAVAILABLE` with an ambiguous attribution diagnostic rather than silently taking the first entry. | `test_github_client_jobs_attempt_filtering_rejects_unmatched_jobs`, `test_missing_provenance_identifiers_marked_incomplete`, `test_duplicate_phase_a_artifacts_marked_unavailable`. |
+| **F7** | Legacy contract migration rollout gap: Issues #5/#6 lack `### Allowed paths` section. | Restored original meaning of F7. Documented exact required metadata edits for Issue #5, PR #4, Issue #6, and PR #9, along with exact recheck commands. Preserved application requirements intact; external metadata edits remain coordinator actions. | Documented in `docs/AI-PILOT-LOG.md`, `docs/AI-DEVELOPMENT-WORKFLOW.md`, and PR #19 description. |
+| **F12** | Conflated manifest completeness with patch availability; capped compare responses were falsely reported as complete. | Separated manifest completeness (`complete` vs `incomplete (capped)`) from patch availability (`all returned patches present` vs `partial`). Verified that 300 files returned with 300 patches is marked `incomplete`, not `complete`, when PR changed files exceed 300. | `test_capped_compare_response_with_all_patches_present_is_not_complete_manifest`. |
+
+### Exact legacy contract migration instructions (Coordinator actions)
+
+1. **Issue #5**: Coordinator adds `### Allowed paths` section:
+   ```markdown
+   ### Allowed paths
+
+   - src/DXVKCompanion/Utils/CompanionVersion.cs
+   - tests/DXVKCompanion.PhaseA.Tests/CompanionVersionTests.cs
+   ```
+2. **PR #4**: Coordinator adds `## Primary Issue` with `Fixes #5`, and `## Documentation` heading.
+   - Recheck: `gh workflow run ai-pr-hygiene.yml -f pr_number=4` and `gh workflow run ai-scope-check.yml -f pr_number=4`.
+3. **Issue #6**: Coordinator adds `### Allowed paths` section:
+   ```markdown
+   ### Allowed paths
+
+   - src/DXVKCompanion/DXVK/DxvkCompatibility.cs
+   - src/DXVKCompanion/DXVK/DxvkInstaller.cs
+   - src/DXVKCompanion/DXVK/DxvkManager.cs
+   - src/DXVKCompanion/Models/GraphicsApi.cs
+   - src/DXVKCompanion/Monitoring/ApiClassifier.cs
+   - src/DXVKCompanion/UI/GameDetailsWindow.cs
+   - src/DXVKCompanion/UI/TrayApp.cs
+   - tests/DXVKCompanion.PhaseA.Tests/DxvkModernApiCompatibilityTests.cs
+   ```
+4. **PR #9**: Coordinator adds `## Primary Issue` with `Fixes #6`.
+   - Recheck: `gh workflow run ai-pr-hygiene.yml -f pr_number=9` and `gh workflow run ai-scope-check.yml -f pr_number=9`.
+
+### Remaining uncertainties and escalation note
+
+- This repair pass is bounded strictly to F4, F5, F7, and F12 per coordinator arbitration. No claim is made that every original finding has been independently verified across the repository.
+- GitHub Actions workflows execute as advisory status checks; platform-level merge blocking requires explicit repository branch protection rulesets configured by administrators.
+- If any material defect remains unresolved after this bounded repair exception, the matter will be escalated explicitly rather than initiating another open-ended revision loop.
+
+## Centralized TRX artifact-attempt attribution and review allocation checkpoint — Issue #11 (2026-10-03)
+
+### Context & coordinator execution check
+
+Following commit `20b0ea81e3fbd5f02e4c39f0720741121ca2930a`, ChatGPT independently executed the 60 offline fixtures (all passed) and conducted two execution checks that reproduced an unresolved F5 defect in `generate_review_packet.py`:
+1. **Reproducer 1**: Trigger attempt 2; `get_workflow_run_jobs` returns `[]`; singleton TRX artifact has an old created_at. Packet previously reported `PASSED`. Expected: `UNAVAILABLE`, because attempt identity cannot be established.
+2. **Reproducer 2**: Trigger attempt 2; matching jobs start `2026-01-02T00:00:00Z` and complete `2026-01-02T00:10:00Z`; singleton TRX artifact created `2026-01-03T00:00:00Z`. Packet previously reported `PASSED`. Expected: `UNAVAILABLE`, because artifact lies outside the attempt interval.
+
+Both reproducers were added to `tests/ai-workflow/test_review_packet.py` and confirmed failing on `20b0ea8` before implementing production fixes.
+
+### Centralized attribution implementation
+
+Attribution logic was removed from ad-hoc branches in `generate_packet` and centralized into `resolve_trx_artifact_for_attempt`:
+- **Missing matching jobs**: If `ci_jobs` is empty, returns `UNAVAILABLE` (`no matching jobs found for attempt`).
+- **Missing/invalid job timestamps**: If jobs lack `started_at` or `completed_at`, returns `UNAVAILABLE` (`cannot establish attempt execution interval`).
+- **Missing artifact metadata**: If candidate artifacts lack `created_at` or have unparseable timestamps, returns `UNAVAILABLE`.
+- **Interval containment**: Candidate artifact `created_at` must fall within `[interval_start, interval_end]`. Validates both lower and upper boundaries. Artifacts outside the interval return `UNAVAILABLE`.
+- **Ambiguous candidates**: If multiple candidate artifacts fall within the attempt window, returns `UNAVAILABLE`.
+- **No singleton or list order inference**: Attribution is never inferred from singleton count or list position. A singleton artifact outside the interval or without matching jobs fails closed as `UNAVAILABLE`.
+- **Prior attempt disambiguation**: When artifacts from prior attempts exist alongside the current attempt's artifact, only the artifact within the current attempt's interval is selected.
+
+### Limits of timestamp evidence
+
+GitHub Actions artifact and job timestamps (`started_at`, `completed_at`, `created_at`) are server-assigned metadata that correlate an artifact's upload time with the execution window of a specific job run attempt. They establish chronological containment within execution windows, not cryptographic signatures or immutable content attestations. If API metadata cannot reliably prove attribution within the attempt window, evidence fails closed as `UNAVAILABLE` rather than guessing.
+
+### Updated review allocation
+
+Per user decision and coordinator execution check:
+- **Gemini**: Primary implementation layer (repository code, unit tests, local verification, focused repairs).
+- **ChatGPT**: Verification, architecture, reproduction analysis, and arbitration layer.
+- **Claude**: Reserved for occasional independent audits and high-risk material decisions (due to quota scarcity).
+- **Human**: Retains final merge authority and policy governance.
+
+### Verification evidence
+
+- **Local test suite**: 68/68 unit tests passing in `tests/ai-workflow/` (including both reproducers and 6 dedicated `resolve_trx_artifact_for_attempt` edge-case tests).
+- **Live acquisition verification**: Executed `generate_review_packet.py` locally against real GitHub Actions runs `37169107191` and `37164136438`. Both runs successfully attributed the TRX artifacts within job execution intervals and extracted all 67 passing test results without leaking credentials or signed URLs.
+
+
+
