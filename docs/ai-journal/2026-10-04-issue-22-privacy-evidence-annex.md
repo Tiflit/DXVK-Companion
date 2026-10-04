@@ -1,6 +1,6 @@
 # Durable Privacy Audit Evidence Annex — Issue #22
 
-**Audit Date / Timestamp**: 2026-10-04T04:38:00Z (00:38 America/Toronto)  
+**Initial audit timestamp**: 2026-10-04T04:38:00Z (00:38 America/Toronto). Revision evidence added by 05:00 UTC; the inventories below span those captures and are not a single live snapshot.  
 **Agent / Auditor**: Gemini (Antigravity)  
 **Task / Objective**: [Issue #22](https://github.com/Tiflit/DXVK-Companion/issues/22) — Complete bounded project-history and artifact privacy audit after #20  
 **Repository Working Copy**: `D:\dev\DXVK-Companion-issue-22`  
@@ -19,7 +19,7 @@ The audit executed automated regular expression matching against repository comm
 | `WINDOWS_USER_PATH` | `[a-zA-Z]:\\Users\\[a-zA-Z0-9_\-\.]+` | Windows user home directory path (`C:\Users\...`) |
 | `WINDOWS_USER_FORWARD_SLASH` | `[a-zA-Z]:/Users/[a-zA-Z0-9_\-\.]+` | Windows user path using forward slashes |
 | `UNIX_USER_PATH` | `/(?:home\|Users)/[a-zA-Z0-9_\-\.]+` | Unix / macOS user home directory path |
-| `SPECIFIC_USER` | `\bphilg\b` (case-insensitive) | Historical local OS username literal |
+| `SPECIFIC_USER` | `\\b<local-username>\\b` (placeholder; actual literal supplied privately, case-insensitive) | Historical local OS username literal |
 | `GITHUB_TOKEN` | `(?:ghp\|gho\|ghu\|ghs\|ghr)_[A-Za-z0-9_]{36}\|github_pat_[A-Za-z0-9_]{82}` | GitHub Personal Access Tokens and Fine-Grained PATs |
 | `GENERIC_SECRET_KEY` | `(?:api[_-]?key\|secret[_-]?key\|access[_-]?token\|auth[_-]?token)\s*[:=]\s*['\"][A-Za-z0-9_\-\.]{16,}['\"]` | Generic API keys and authentication tokens |
 | `PRIVATE_KEY_HEADER` | `-----BEGIN (?:RSA \|EC \|DSA \|OPENSSH )?PRIVATE KEY-----` | Cryptographic private key headers |
@@ -38,7 +38,7 @@ In accordance with Issue #22 acceptance criterion 2 and 5, matched values, priva
 
 ## 2. Complete Fetched Project Refs Inventory
 
-All 22 project refs (11 local heads, 11 remote heads, plus remote symbolic HEAD) present in the repository were inventoried and enumerated:
+22 nonsymbolic project refs (11 local heads and 11 remote heads), plus the remote symbolic HEAD alias, present in the repository were inventoried and enumerated:
 
 | Ref Name | Commit SHA | Subject / Commit Description |
 |---|---|---|
@@ -114,10 +114,10 @@ Fetched via `gh api repos/Tiflit/DXVK-Companion/actions/artifacts --paginate`. T
 | `review-packet-pr-23` | 3 | Markdown review packets for PR #23 | All 3 scanned (100% scanned) |
 | `review-packet-diff-pr-23` | 3 | Full unified diffs for PR #23 | All 3 scanned (100% scanned) |
 | `review-packet-pr-9` | 1 | Markdown review packet for PR #9 | 1 scanned (100% scanned) |
-| **Total** | **150** | | **35 sampled text artifacts scanned; 115 unscanned** |
+| **Total initial inventory** | **150** | | **33 sampled from these categories; 117 unscanned** |
 
 ### Scanned Cohort (35 Sampled Text Artifacts)
-Sampled up to 5 recent artifacts per text artifact type across recent PRs and runs:
+Sampled up to 5 artifacts per named type. The list below contains 33 entries from the initial 150-item category inventory plus two PR #24 packet/diff entries added later. It spans 11 named text types. The combined documented cohort is therefore 152 entries: 35 sampled and 117 unscanned (41 binaries + 76 historical text entries). This arithmetic reconciliation is derived from the supplied tables, not a fresh all-artifact enumeration.
 
 | Artifact ID | Artifact Name | Workflow Run ID | Size (bytes) | Created At |
 |---|---|---|---|---|
@@ -158,7 +158,7 @@ Sampled up to 5 recent artifacts per text artifact type across recent PRs and ru
 | `11262469595` | `review-packet-pr-9` | `37091681190` | 7401 | 2026-10-03T02:59:32Z |
 
 ### Artifact Scan Findings & Adjudication
-- **Run `37174005790`**: Exactly 4 pattern hits representing 1 unique string occurrence across 2 files:
+- **Run `37174005790`**: Exactly 4 pattern hits representing 1 unique value with 2 physical occurrences across 2 files:
   - `11292592307` (`review-packet-pr-21` / `review_packet.md`): Line 203 matched `WINDOWS_USER_PATH` and `SPECIFIC_USER`.
   - `11292377977` (`review-packet-diff-pr-21` / `full-diff-pr-21.diff`): Line 485 diff line matched `WINDOWS_USER_PATH` and `SPECIFIC_USER`.
   - *Adjudication*: Captures the unrevised PR #20 documentation citation before PR #21 redaction in `3ac97be`.
@@ -190,7 +190,7 @@ A bounded scan of 12 key GitHub Actions workflow runs (covering recent PRs #9, #
 | `37173947406` | Build and Test | `docs/issue-20-workflow-cleanup` (PR #21 initial) | 420 | 52,830 | 0 |
 | `37164136438` | Build and Test | `workflow/review-packet-provenance` (PR #19 final) | 415 | 52,397 | 0 |
 | `37091615107` | Build and Test | `issue-6-prevent-dx12-vulkan-deployment` (PR #9 #74) | 407 | 54,910 | 0 |
-| **Total** | | | **5,141** | **347,749** | **0 findings** |
+| **Total** | | | **5,141** | **685,807** | **0 findings** |
 
 ### Unscanned Historical Logs & Boundaries
 - Older runs prior to PR #9 and auxiliary workflow logs (e.g. policy checks) were not downloaded.
@@ -221,7 +221,7 @@ No blanket "without-data-loss" guarantee is asserted. Merged branch association 
 1. **Rule Overlap vs Unique Occurrences**:
    - The historical username literal triggered two distinct regex patterns (`WINDOWS_USER_PATH` and `SPECIFIC_USER`) on the exact same token.
    - Blob `d90b0897` contains 2 pattern matches reflecting 1 unique private string occurrence.
-   - Run `37174005790` text artifacts contain 4 pattern matches reflecting 1 unique private string occurrence across 2 files (`review_packet.md` and `full-diff-pr-21.diff`).
+   - Run `37174005790` text artifacts contain 4 pattern matches reflecting 1 unique private value with 2 physical occurrences across 2 files (`review_packet.md` and `full-diff-pr-21.diff`).
 2. **Historical Persistence**:
    - Redaction in commit `3ac97be` (`<username>`) successfully sanitized the current working tree and `origin/main`.
    - The historical citation remains present in git historical objects (`blob d90b0897`) and historical GitHub Actions artifact archives (run `37174005790`), because git history was not rewritten and historical CI artifacts were not purged.
@@ -230,3 +230,10 @@ No blanket "without-data-loss" guarantee is asserted. Merged branch association 
 4. **Remediation**:
    - No active secrets or credentials were found.
    - No token rotations, destructive git history rewrites (`git filter-repo`, force-pushes), or artifact purges are warranted or authorized under this task.
+
+
+## Coordinator evidence qualification — 2026-10-04
+
+The scan results, local counts and worktree states are Gemini-reported. ChatGPT inspected this specification and manifests, verified selected artifact identities and PR CI, and independently counted the known historical username in retained PR #21 artifacts; it did not rerun the full developer-local scan. Regex coverage and the allowlist can miss other secrets. Scanner download timeouts, size/expansion bounds and per-item error/skip logs were not persisted; no claim that those safeguards were enforced is made. Configured artifact/log retention was not inspected; no automatic purge date is promised.
+
+The revision at `af23ee2c5023c5d00c3c9596f9a4418d0590cd67` accidentally put the literal local username in the SPECIFIC_USER regex. Coordinator replaced it with a private-substitution placeholder in the current document. The literal persists in that historical commit and its packet run 37178660271; these new surfaces postdate the original scan. Destructive history/artifact remediation is outside #22. No universal privacy clearance or no-remediation-needed conclusion follows from this bounded audit.
