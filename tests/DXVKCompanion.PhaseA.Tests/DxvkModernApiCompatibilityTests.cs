@@ -435,23 +435,49 @@ namespace DXVKCompanion.PhaseATests
             Assert.NotNull(instAfterBatch?.PendingAction);
             Assert.True(instAfterBatch!.PendingAction!.IsPending);
 
-            // 2. Unsupported API (Vulkan) with Pending Reapply
-            profile.Api = GraphicsApi.Vulkan;
+            // 2. Pending Reapply subcase (F2): Establish a real managed DX11 install before reclassification
+            profile.Api = GraphicsApi.DX11;
             profileStore.Save(profile);
-            installation.PendingAction = PendingAction.Reapply("2.5", "Queued reapply");
+            installation.PendingAction = null;
             store.Save(installation);
 
+            bool initialInstallOk = await manager.EnableDxvkAsync(profile, "2.5");
+            Assert.True(initialInstallOk);
+            Assert.True(profile.DxvkEnabled);
+            Assert.True(File.Exists(Path.Combine(gameDir.RootPath, "d3d11.dll")));
+            Assert.True(File.Exists(Path.Combine(gameDir.RootPath, "dxgi.dll")));
+
+            var managedInst = store.FindByInstallationPath(gameDir.RootPath);
+            Assert.NotNull(managedInst);
+            Assert.Equal("2.5", managedInst!.ManagedDxvkVersion);
+            Assert.Equal(RestorationState.Managed, managedInst.RestorationState);
+
+            // Reclassify to Vulkan and queue Pending Reapply
+            profile.Api = GraphicsApi.Vulkan;
+            profileStore.Save(profile);
+            managedInst.PendingAction = PendingAction.Reapply("2.5", "Queued reapply");
+            store.Save(managedInst);
+
+            // Both direct apply and batch processing must refuse reapply for Vulkan and preserve the pending action
             bool reapplyPendingOk = await manager.ApplyPendingAsync(exePath);
             Assert.False(reapplyPendingOk);
+
+            var instAfterDirectReapply = store.FindByInstallationPath(gameDir.RootPath);
+            Assert.NotNull(instAfterDirectReapply?.PendingAction);
+            Assert.True(instAfterDirectReapply!.PendingAction!.IsPending);
+            Assert.Equal(PendingActionType.Reapply, instAfterDirectReapply.PendingAction.Type);
 
             int processedVk = await manager.ProcessAllPendingActionsAsync();
             Assert.Equal(0, processedVk);
 
-            // 3. Positive control: supported DX11 API executes pending action cleanly
+            var instAfterBatchReapply = store.FindByInstallationPath(gameDir.RootPath);
+            Assert.NotNull(instAfterBatchReapply?.PendingAction);
+            Assert.True(instAfterBatchReapply!.PendingAction!.IsPending);
+            Assert.Equal(PendingActionType.Reapply, instAfterBatchReapply.PendingAction.Type);
+
+            // 3. Positive control: supported DX11 API allows pending reapply to execute cleanly
             profile.Api = GraphicsApi.DX11;
             profileStore.Save(profile);
-            installation.PendingAction = PendingAction.Install("2.5", "Queued for DX11");
-            store.Save(installation);
 
             int executedPositive = await manager.ProcessAllPendingActionsAsync();
             Assert.Equal(1, executedPositive);
@@ -512,6 +538,124 @@ namespace DXVKCompanion.PhaseATests
             Assert.False(profile.DxvkEnabled);
             Assert.Equal("original-native-d3d11", File.ReadAllText(d3d11Path));
             Assert.False(File.Exists(Path.Combine(gameDir.RootPath, "dxgi.dll")));
+        }
+
+        [Fact]
+        public async Task DxvkManager_RestoreOperations_SucceedWhenGameReclassifiedAsDX12_RestoreAll_QueuedDisable_And_PersistedRestore()
+        {
+            using var testDir = new SyntheticTestDirectory();
+            string gamesDir = Path.Combine(testDir.RootPath, "Games");
+            Directory.CreateDirectory(gamesDir);
+            string storageDir = Path.Combine(testDir.RootPath, "Storage");
+            Directory.CreateDirectory(storageDir);
+            string sourceDir = Path.Combine(testDir.RootPath, "DxvkSource");
+            Directory.CreateDirectory(sourceDir);
+
+            // Prepare official release files
+            var dxvkArchDir = Path.Combine(sourceDir, "2.5", "x64");
+            Directory.CreateDirectory(dxvkArchDir);
+            File.WriteAllText(Path.Combine(dxvkArchDir, "d3d11.dll"), "dxvk-2.5-d3d11");
+            File.WriteAllText(Path.Combine(dxvkArchDir, "dxgi.dll"), "dxvk-2.5-dxgi");
+
+            var store = new GameLibraryStore(
+                Path.Combine(storageDir, "game-library.json"),
+                Path.Combine(storageDir, "backups"));
+            var profileStore = new ProfileStore(Path.Combine(storageDir, "games.json"));
+            var engine = new MultiFileTransactionEngine(Path.Combine(storageDir, "backups"));
+            using var http = new HttpClient();
+            var installer = new DxvkInstaller(http, engine, store, sourceDir);
+            var rollback = new DxvkRollback(engine, store);
+            var github = new DxvkGithubClient(http, new CacheStore(Path.Combine(storageDir, "cache.json")));
+            var manager = new DxvkManager(installer, rollback, github, profileStore, store);
+
+            // --- Game 1: Tests queued RequestDisable (game running) + persisted Restore after exit (F3) ---
+            string game1Dir = Path.Combine(gamesDir, "Game1");
+            Directory.CreateDirectory(game1Dir);
+            string game1Exe = Path.Combine(game1Dir, "Game1.exe");
+            File.WriteAllText(game1Exe, "synthetic-game1-binary");
+            string game1D3D11 = Path.Combine(game1Dir, "d3d11.dll");
+            File.WriteAllText(game1D3D11, "original-native-d3d11-game1");
+
+            var profile1 = profileStore.GetOrCreate(game1Exe);
+            profile1.Api = GraphicsApi.DX11;
+            profile1.Architecture = "x64";
+            profileStore.Save(profile1);
+
+            // Deploy DXVK under DX11
+            bool g1Enabled = await manager.EnableDxvkAsync(profile1, "2.5");
+            Assert.True(g1Enabled);
+            Assert.True(profile1.DxvkEnabled);
+            Assert.Equal("dxvk-2.5-d3d11", File.ReadAllText(game1D3D11));
+            Assert.True(File.Exists(Path.Combine(game1Dir, "dxgi.dll")));
+
+            // Game 1 reclassified to DX12
+            profile1.Api = GraphicsApi.DX12;
+            profileStore.Save(profile1);
+
+            // Game 1 running -> RequestDisable queues pending Restore (F3)
+            using (var runningProc = Process.GetCurrentProcess())
+            {
+                var queueResult = await manager.RequestDisableAsync(profile1, runningProc);
+                Assert.Equal(DxvkActionResult.Queued, queueResult);
+            }
+
+            var inst1 = store.FindByInstallationPath(game1Dir);
+            Assert.NotNull(inst1?.PendingAction);
+            Assert.True(inst1!.PendingAction!.IsPending);
+            Assert.Equal(PendingActionType.Restore, inst1.PendingAction.Type);
+
+            // DXVK files remain active while game was running
+            Assert.Equal("dxvk-2.5-d3d11", File.ReadAllText(game1D3D11));
+            Assert.True(File.Exists(Path.Combine(game1Dir, "dxgi.dll")));
+
+            // Game 1 exits -> Persisted Restore executes and succeeds despite DX12 reclassification (F3)
+            bool applyOk = await manager.ApplyPendingAsync(game1Exe);
+            Assert.True(applyOk);
+            Assert.False(profile1.DxvkEnabled);
+            Assert.Equal("original-native-d3d11-game1", File.ReadAllText(game1D3D11));
+            Assert.False(File.Exists(Path.Combine(game1Dir, "dxgi.dll")));
+
+            var inst1After = store.FindByInstallationPath(game1Dir);
+            Assert.NotNull(inst1After);
+            Assert.Null(inst1After!.PendingAction);
+            Assert.Equal(RestorationState.Restored, inst1After.RestorationState);
+
+            // --- Game 2: Tests global RestoreAllAsync on game reclassified to DX12 (F3) ---
+            string game2Dir = Path.Combine(gamesDir, "Game2");
+            Directory.CreateDirectory(game2Dir);
+            string game2Exe = Path.Combine(game2Dir, "Game2.exe");
+            File.WriteAllText(game2Exe, "synthetic-game2-binary");
+            string game2D3D11 = Path.Combine(game2Dir, "d3d11.dll");
+            File.WriteAllText(game2D3D11, "original-native-d3d11-game2");
+
+            var profile2 = profileStore.GetOrCreate(game2Exe);
+            profile2.Api = GraphicsApi.DX11;
+            profile2.Architecture = "x64";
+            profileStore.Save(profile2);
+
+            bool g2Enabled = await manager.EnableDxvkAsync(profile2, "2.5");
+            Assert.True(g2Enabled);
+            Assert.True(profile2.DxvkEnabled);
+            Assert.Equal("dxvk-2.5-d3d11", File.ReadAllText(game2D3D11));
+            Assert.True(File.Exists(Path.Combine(game2Dir, "dxgi.dll")));
+
+            // Game 2 reclassified to DX12
+            profile2.Api = GraphicsApi.DX12;
+            profileStore.Save(profile2);
+
+            // RestoreAllAsync succeeds and restores Game 2 despite DX12 reclassification (F3)
+            var summary = await manager.RestoreAllAsync();
+            Assert.Equal(1, summary.TotalManaged); // Game 1 is already restored; Game 2 is the only managed game
+            Assert.Equal(1, summary.Restored);
+            Assert.Equal(0, summary.FailedOrAttentionRequired);
+
+            Assert.False(profile2.DxvkEnabled);
+            Assert.Equal("original-native-d3d11-game2", File.ReadAllText(game2D3D11));
+            Assert.False(File.Exists(Path.Combine(game2Dir, "dxgi.dll")));
+
+            var inst2After = store.FindByInstallationPath(game2Dir);
+            Assert.NotNull(inst2After);
+            Assert.Equal(RestorationState.Restored, inst2After!.RestorationState);
         }
 
         [Fact]
@@ -583,6 +727,10 @@ namespace DXVKCompanion.PhaseATests
             using var sourceDir = new SyntheticTestDirectory();
 
             var exePath = gameDir.CreateFile("Game.exe", "synthetic-binary");
+            // Non-vacuous check (F1): create genuine target DLLs on disk so refusal is caused by API guard, not missing files
+            gameDir.CreateFile("d3d11.dll", "official-dxvk-2.5-d3d11");
+            gameDir.CreateFile("dxgi.dll", "official-dxvk-2.5-dxgi");
+
             var store = new GameLibraryStore(
                 Path.Combine(storageDir.RootPath, "game-library.json"),
                 Path.Combine(storageDir.RootPath, "backups"));
@@ -603,7 +751,25 @@ namespace DXVKCompanion.PhaseATests
                 DetectedDlls = new List<string> { "d3d11.dll", "dxgi.dll" }
             };
 
+            // Refuses adoption for unsupported APIs despite valid files and official assessment
             Assert.False(installer.AdoptExisting(profile, assessment));
+            Assert.False(profile.DxvkEnabled);
+            Assert.Null(store.FindByInstallationPath(gameDir.RootPath));
+
+            // Positive control (F1): supported DX11 API adopts the exact same physical files cleanly
+            var profile11 = new GameProfile(exePath)
+            {
+                Api = GraphicsApi.DX11,
+                Architecture = "x64"
+            };
+
+            bool adopted = installer.AdoptExisting(profile11, assessment);
+            Assert.True(adopted);
+            Assert.True(profile11.DxvkEnabled);
+            Assert.Equal("2.5", profile11.DxvkVersion);
+            var inst11 = store.FindByInstallationPath(gameDir.RootPath);
+            Assert.NotNull(inst11);
+            Assert.Equal("2.5", inst11!.ManagedDxvkVersion);
         }
     }
 }
