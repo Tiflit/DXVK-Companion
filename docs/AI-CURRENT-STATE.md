@@ -1,6 +1,8 @@
 # Current AI Development State & Handoff Dashboard
 
-> **Durable Source of Truth**: This document is the primary active dashboard for the multi-agent workflow. Fresh agent sessions should read this file first to establish situational awareness without relying on prior conversational context.
+> **Orientation Snapshot (Live Recheck Required)**: This document is an active orientation aid and point-in-time dashboard for the multi-agent workflow. It does not replace live GitHub state. Every role must recheck live PR metadata, branch heads, and GitHub Actions status before taking action.
+>
+> **Selective Reading Rule**: Routine sessions must NOT read the entire historical pilot log or journal archive. To conserve context and avoid drift, read `AGENTS.md`, this file (`docs/AI-CURRENT-STATE.md`), and the assigned GitHub Issue contract. Consult specific historical records in `docs/AI-PILOT-LOG.md` or `docs/ai-journal/` only when investigating a related finding or explicit dependency.
 
 - **Last Updated**: 2026-10-03 America/Toronto (2026-10-04 UTC)
 - **Active Base Branch**: `origin/main` at commit [`0dcc2bd88d113363b075169e867fccec8892f58c`](https://github.com/Tiflit/DXVK-Companion/commit/0dcc2bd88d113363b075169e867fccec8892f58c)
@@ -16,9 +18,9 @@
 | **PR #19** (`workflow/review-packet-provenance`) | `68aa480` | `main` (`e7b6e06`) | **MERGED** | Provenance hardening, centralized TRX attribution, scope grammar enforcement. Merged at `0dcc2bd`. |
 | **PR #10** (`docs/pilot-2-current-checkpoint`) | `0be0f11` | `main` | **MERGED** | Preserved final Pilot #2 review, workflow handoff, and pilot outcomes. |
 | **PR #8** (`automation/ai-workflow-foundation`) | `38b4d83` | `main` | **MERGED** | Initial GitHub-native workflow foundations. |
-| **PR #4** (`pilot/companion-version-ordering`) | `548b814` | `main` | **OPEN** | CompanionVersion numeric ordering (Issue #5). Rollout rechecks passed ([Hygiene 37173538904](https://github.com/Tiflit/DXVK-Companion/actions/runs/37173538904), [Scope 37173544858](https://github.com/Tiflit/DXVK-Companion/actions/runs/37173544858)). Awaiting fresh integration CI & human merge. |
+| **PR #4** (`pilot/companion-version-ordering`) | `944abc08c8722bdfc3b13bf7fda8fdd5a8a25b65` | `main` | **OPEN** | CompanionVersion numeric ordering (Issue #5). Rollout rechecks passed ([Hygiene 37173538904](https://github.com/Tiflit/DXVK-Companion/actions/runs/37173538904), [Scope 37173544858](https://github.com/Tiflit/DXVK-Companion/actions/runs/37173544858)). Awaiting fresh integration CI & human merge. |
 | **PR #9** (`issue-6-prevent-dx12-vulkan-deployment`) | `c4d0f84` | `main` | **OPEN** | Prevent DXVK deployment for DX12/Vulkan (Issue #6). Rollout rechecks passed ([Hygiene 37173552820](https://github.com/Tiflit/DXVK-Companion/actions/runs/37173552820), [Scope 37173557225](https://github.com/Tiflit/DXVK-Companion/actions/runs/37173557225)). Awaiting fresh integration CI & human merge. |
-| **Active Cleanup** (`docs/issue-20-workflow-cleanup`) | Pending PR | `main` (`0dcc2bd`) | **IN PROGRESS** | Issue #20 documentation consolidation, handoff dashboard, activity journal, and privacy baseline audit. |
+| **PR #21** (`docs/issue-20-workflow-cleanup`) | `364dd76` | `main` (`0dcc2bd`) | **OPEN (Awaiting revision verification)** | Issue #20 post-#19 cleanup, privacy audit, handoff dashboard. Review packet smoke test verified ([Packet Run 37174005790](https://github.com/Tiflit/DXVK-Companion/actions/runs/37174005790) on [Build/Test 37173947406](https://github.com/Tiflit/DXVK-Companion/actions/runs/37173947406); 67/67 tests, 7/7 diffs). Focused documentation revision in progress. |
 
 ---
 
@@ -26,7 +28,7 @@
 
 | Work | Owner | Dependency / Decision | Next Action |
 |---|---|---|---|
-| **#20 cleanup and rollout** | Gemini; ChatGPT verifies | Current `origin/main` | Implement Issue #20, produce real PR review packet, open cleanup PR for verification. |
+| **#20 cleanup and rollout** | Gemini implements revision; ChatGPT verifies | Current `origin/main` | Complete focused documentation revision on PR #21 (correct dashboard, journal policy, audit coverage, policy text) and await coordinator verification. |
 | **#13 original-baseline safety** | Gemini investigation; ChatGPT verifies | Prove suspected defect on exact base; PR #9 dependency is not assumed | First product investigation after #20; construct synthetic reproducer before fix. |
 | **#4 / #9 completion** | Gemini gathers CI; human decides | Fresh integration evidence against current `main` | Refresh integration CI without mixing unrelated changes; record tested pair and request human merge. |
 | **#12 spec authority** | Human decides; Gemini prepares/implements | Phase-plan / legacy-import confirmation | Prepare brief decision summary; canonicalize spec references only after human confirmation. |
@@ -52,9 +54,11 @@
 2. Read the assigned GitHub Issue (`gh issue view <number>`). Note acceptance criteria and `### Allowed paths`.
 3. Verify git status, fetch `origin/main`, and work in an isolated worktree.
 4. Write failing regression fixtures first when addressing a defect.
-5. Run the offline test suite (`python -m unittest discover -s tests/ai-workflow -v`).
+5. Run task-relevant tests:
+   - For application/test changes: `dotnet test tests/DXVKCompanion.PhaseA.Tests/DXVKCompanion.PhaseA.Tests.csproj`.
+   - For workflow automation changes: `python -m unittest discover -s tests/ai-workflow -v`.
 6. Push your branch, open a PR with required headings (`Primary Issue`, `Summary`, `Scope`, `Verification`, `Documentation`), and verify that GitHub Actions CI checks complete successfully.
-7. Record a factual session entry in [docs/AI-ACTIVITY-JOURNAL.md](AI-ACTIVITY-JOURNAL.md) and [docs/ai-journal/](ai-journal/).
+7. Record a factual session entry in a new file in `docs/ai-journal/` (e.g. `YYYY-MM-DD-<issue>-gemini-session-<n>.md`). Do not edit the shared journal index if it is outside your task's allowed paths.
 
 #### For ChatGPT (Verifier / Arbitrator)
 1. Inspect the PR and its generated review packet artifact (`review_packet.md` + `full-diff.diff`).

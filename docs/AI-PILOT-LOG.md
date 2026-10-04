@@ -296,7 +296,10 @@ Pilot #3 proposal: choose a different kind of task (feature/refactor), freeze on
 
 For future extraction: template repository should contain AGENTS.md, Issue form, PR template, three workflows, workflow docs, neutral review prompt and pilot-log template. Parameterize Build and Test workflow name, C# file filters/build/test commands and review thresholds. Keep DXVK-specific safety invariants/spec separate. Extraction follows validation; it is not complete.
 
-## 10. Ordered continuation plan
+## 10. Ordered continuation plan (Historical — Superseded)
+
+> [!NOTE] SUPERSEDED HISTORICAL PLAN
+> The plan below represents the planning state at the conclusion of Pilot #2 (prior to PR #10, #19, and #20). Workflow hardening, test suites, and PR templates were implemented in PR #19; post-#19 cleanup is in PR #21. For current active work items, ownership, and human decisions, consult [`docs/AI-CURRENT-STATE.md`](AI-CURRENT-STATE.md).
 
 1. Recheck live main/PR #4/#9/#10 heads, CI and documentation changes recorded in PR #10.
 2. Preserve revision-specific external review and arbitration records on the relevant PRs. Do not fabricate Pilot #1's reviewed SHA. The current imported documentation is a bridge, not a GitHub native reviewer approval.
@@ -481,11 +484,29 @@ Per user decision and coordinator execution check:
 
 ### Audit scope & findings
 
-In preparation for post-#19 clean handoffs, an automated scan of all git-tracked files in the repository was executed at commit `0dcc2bd88d113363b075169e867fccec8892f58c` (`main`):
-- **Target patterns**: Private local user directory paths (`C:\Users\...`, `philg`), personal access tokens (`ghp_`, `github_pat_`), Authorization headers (`Bearer ...`), and cloud credentials (AWS/Azure SAS signatures).
-- **Result**: **0 private literals found** in tracked repository files.
-- **Unscanned surface boundaries**: Local untracked and gitignored files (e.g., local developer environment files, local `.git/config`, untracked scratch directories, OS user profiles) reside outside the git boundary and were neither scanned nor committed to the public repository.
-- **Project leftover inventory**: Obsolete temporary worktrees, scratch directories, or local task branches outside active PRs can be pruned by the developer when no longer needed.
+In preparation for post-#19 clean handoffs, an automated and bounded privacy audit was executed across the repository at commit `0dcc2bd88d113363b075169e867fccec8892f58c` (`main`) and the PR #21 revision:
+- **Target patterns**: Private local user directory paths (`C:\Users\<username>\...`, `<user-home>`), personal access tokens (`ghp_`, `github_pat_`), Authorization headers (`Bearer ...`), and cloud credentials (AWS/Azure SAS signatures).
+- **Tracked repository files**: Scanned all 108 tracked files at main and task branch. Result: **No matches for the listed patterns on the specified snapshot**.
+- **Git commit history & metadata**: Inspected commit messages and author/committer identities across historical commits via `git log`. All commits use public aliases (`Tiflit <...noreply.github.com>` or `GitHub <noreply.github.com>`); no private email addresses, personal home paths, or credential strings were identified.
+- **Task-produced artifacts**: Inspected generated review packet artifacts (`review_packet.md` and full diff artifacts) from CI runs 37174005790 and 37164136438; no credentials or private local paths are present in packet markdown or diff contents.
+- **Project-created disposable files & worktree audit**:
+  - *Removed disposable files*: Temporary review packet download directories (`temp_packet`), temporary PR body files (`pr_body_temp.txt`), and local Python bytecode directories (`__pycache__/`) were purged and excluded.
+  - *Retained local worktrees (with reasons)*:
+    - `D:/dev/DXVK-Companion` (`docs/pilot-2-current-checkpoint`): main repository checkout.
+    - `D:/dev/DXVK-Companion-issue-11` (`workflow/review-packet-provenance`): preserved historical worktree for merged PR #19 evidence.
+    - `D:/dev/DXVK-Companion-issue-20` (`docs/issue-20-workflow-cleanup`): active worktree for Issue #20 / PR #21 revision until merged.
+  - *Retained remote branches (with reasons)*:
+    - `main`: default branch.
+    - `pilot/companion-version-ordering` (PR #4): open legacy PR awaiting human merge decision.
+    - `issue-6-prevent-dx12-vulkan-deployment` (PR #9): open legacy PR awaiting human merge decision.
+    - `docs/issue-20-workflow-cleanup` (PR #21): active cleanup PR awaiting coordinator verification and human merge.
+
+### Unscanned surface boundaries (Pending developer management)
+
+Surfaces residing outside the GitHub repository boundary were not scanned and remain the responsibility of the human developer:
+- **Developer OS user directories & global configs**: Local OS files (`C:\Users\<username>\...`), local user profiles, and gitignored environment files (`.env`, global `.gitconfig`) reside outside git and were not committed.
+- **External chat provider history**: Conversation logs and web chat transcripts stored on external model provider platforms (OpenAI, Anthropic, Google) are outside the repository boundary.
+- **PR discussion comments**: 19 Issue/PR bodies and 4 historical conversation comments were checked with no credential leaks; continuous review of live discussion comments is pending ongoing PR lifecycle activity.
 
 ### Fresh-session handoff architecture
 

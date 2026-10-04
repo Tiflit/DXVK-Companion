@@ -6,10 +6,10 @@ This repository uses AI-assisted development with GitHub as the durable source o
 
 Before proposing or modifying code:
 
-1. **Check repository status**: Read [docs/AI-CURRENT-STATE.md](docs/AI-CURRENT-STATE.md) for the checked HEAD, active work queue, assigned owners, and pending human decisions.
+1. **Check repository status**: Read [docs/AI-CURRENT-STATE.md](docs/AI-CURRENT-STATE.md) for the active PR inventory, work queue, assigned owners, and pending human decisions. (Do NOT read the entire historical pilot log or journal archive for routine tasks).
 2. **Read the task contract**: Inspect the assigned GitHub Issue (`gh issue view <number>`). Acceptance criteria and `### Allowed paths` are strictly authoritative.
 3. **Follow workflow rules**: Review [docs/AI-DEVELOPMENT-WORKFLOW.md](docs/AI-DEVELOPMENT-WORKFLOW.md) for contract syntax, evidence verification, and review standards.
-4. **Log your activity**: Every meaningful working session must leave a factual record in [docs/AI-ACTIVITY-JOURNAL.md](docs/AI-ACTIVITY-JOURNAL.md) (policy and index) and [docs/ai-journal/](docs/ai-journal/).
+4. **Log your activity**: Every working session must leave a factual session record in [docs/ai-journal/](docs/ai-journal/) (e.g. `YYYY-MM-DD-<issue>-<agent>-<suffix>.md`). Do not edit the shared journal index if it is outside your task's allowed paths.
 
 ## Model Role Allocation
 
@@ -28,8 +28,8 @@ Gemini implementation -> CI -> ChatGPT verification & arbitration -> Human merge
 ## Scope and Invariants
 
 - Make the smallest coherent change that satisfies the task contract.
-- Stay strictly within `### Allowed paths`. Unrelated edits, formatting churn, or touched files outside scope cause CI failure.
-- Application code (`src/**`) and test files (`tests/DXVKCompanion.PhaseA.Tests/**`) must never be modified during workflow or documentation tasks.
+- Stay strictly within the assigned task's `### Allowed paths`. Changes outside allowed paths cause automated CI failure.
+- Never modify application code (`src/**`) or test suites (`tests/DXVKCompanion.PhaseA.Tests/**`) unless explicitly included in the task's allowed paths (e.g. an authorized application feature, bugfix, or integration-test task).
 - Normative specification authority between root specs and phase plans is tracked under Issue #12 pending human decision; do not alter spec precedence unilaterally.
 
 ## Tests and Evidence

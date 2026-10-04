@@ -93,7 +93,13 @@ A green CI result is evidence, not proof that the implementation satisfies the i
 
 ### Human
 
-The human developer retains final merge authority, policy governance, and lifecycle decisions. AI agents produce implementation, evidence, verification, and arbitration, but merge decisions remain strictly human-controlled.
+Final authority. The human developer retains final merge authority, policy governance, and architectural decisions.
+
+During the experimental phase:
+
+- merges remain strictly human-controlled;
+- unresolved review disagreements or safety risks are escalated;
+- automation must not silently bypass unavailable reviewers or human decisions.
 
 ### GitHub Actions
 
@@ -109,16 +115,6 @@ Prefer deterministic checks for questions that can be answered by:
 - other mechanically verifiable policies.
 
 Do not spend model quota asking an LLM to verify something the repository can verify itself.
-
-### Human
-
-Final authority.
-
-During the experimental phase:
-
-- merges remain human-controlled;
-- unresolved review disagreements are escalated;
-- automation must not silently bypass unavailable reviewers.
 
 ## Standard task lifecycle
 
@@ -394,9 +390,9 @@ Record rerun attempts and the evidence actually used. A newer green run does not
 
 Link durable evidence instead of copying an entire conversation. Keep historical checkpoints clearly separate from current instructions.
 
-### Adoption status
+### Historical context & operational status
 
-This section supplies the versioned manual prompt, output schema, arbitration rubric, freshness rules and continuation template. It does not publish historical review comments, reconcile specification authority, implement packet/scope hardening, create follow-up Issues, enable protection, or run Pilot #3. Those remain pending. PR #9's body already preserves its attributed review and arbitration; the complete finding register remains in the proposed pilot log.
+This protocol was established under Review contract v1 (merged via PR #10). Review packet provenance hardening, blocking scope checks, and PR templates were subsequently implemented under Issue #11 (merged via PR #19). Active work items and dependencies (Issues #12–#18) are tracked in [`docs/AI-CURRENT-STATE.md`](AI-CURRENT-STATE.md), while specification reconciliation (#12) and repository protection settings remain human governance decisions.
 
 ## Hardened review packet provenance and workflow contracts — Issue #11
 
