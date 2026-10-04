@@ -36,11 +36,22 @@ except ImportError:
 
 
 RECORD_START_PATTERN = re.compile(r"<!--\s*AI-REVIEW-RECORD:\s*([A-Za-z0-9_.:-]+)\s*-->")
+ANY_START_PATTERN = re.compile(r"<!--\s*AI-REVIEW-RECORD:(.*?)-->")
 RECORD_END_PATTERN = re.compile(r"<!--\s*AI-REVIEW-RECORD-END\s*-->")
 UNMARKED_REVIEW_HEADING_PATTERN = re.compile(
     r"^##\s+(?:(?:ChatGPT|Claude|Independent|Coordinator|Auditor|Reviewer)\s+(?:coordinator\s+)?(?:verification|review|audit|record)|Review\s+History|Verification\s+History).*?$",
     re.MULTILINE | re.IGNORECASE,
 )
+
+
+def mask_code_spans(text: str) -> str:
+    """Masks inline code spans and fenced code blocks with whitespace of equal length."""
+    def mask_match(m):
+        return " " * len(m.group(0))
+
+    masked = re.sub(r"```[\s\S]*?```", mask_match, text)
+    masked = re.sub(r"`[^`\r\n]*`", mask_match, masked)
+    return masked
 
 
 class SecurityValidationError(Exception):
@@ -75,9 +86,16 @@ def parse_and_validate_review_records(body: str) -> Dict[str, ReviewRecord]:
     if not body:
         return records
 
-    # Find all occurrences of start and end tags with positions
-    start_matches = list(RECORD_START_PATTERN.finditer(body))
-    end_matches = list(RECORD_END_PATTERN.finditer(body))
+    # Mask code spans so documentation/code examples do not trigger marker parsing
+    masked_body = mask_code_spans(body)
+
+    any_start_matches = list(ANY_START_PATTERN.finditer(masked_body))
+    start_matches = list(RECORD_START_PATTERN.finditer(masked_body))
+    end_matches = list(RECORD_END_PATTERN.finditer(masked_body))
+
+    # Reject malformed start tags with invalid identifiers
+    if len(any_start_matches) != len(start_matches):
+        raise SecurityValidationError("Malformed review marker: invalid review record identifier syntax.")
 
     # Verify matching counts
     if len(start_matches) != len(end_matches):
@@ -138,7 +156,7 @@ def adopt_unmarked_review_records(body: str) -> Tuple[str, List[str]]:
                 return True
         return False
 
-    matches = list(UNMARKED_REVIEW_HEADING_PATTERN.finditer(body))
+    matches = list(UNMARKED_REVIEW_HEADING_PATTERN.finditer(mask_code_spans(body)))
     if not matches:
         return body, []
 

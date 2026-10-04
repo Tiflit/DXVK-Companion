@@ -216,12 +216,23 @@ def extract_decision_block(issue_body: str) -> Tuple[Optional[str], Optional[str
     return decision_req, status, source
 
 
+def mask_code_spans(text: str) -> str:
+    """Masks inline code spans and fenced code blocks with whitespace of equal length."""
+    def mask_match(m):
+        return " " * len(m.group(0))
+
+    masked = re.sub(r"```[\s\S]*?```", mask_match, text)
+    masked = re.sub(r"`[^`\r\n]*`", mask_match, masked)
+    return masked
+
+
 def extract_review_record_ids(pr_body: str) -> List[str]:
-    """Extracts all protected review record IDs from a PR description."""
+    """Extracts all protected review record IDs from a PR description outside code blocks."""
     if not pr_body:
         return []
+    masked = mask_code_spans(pr_body)
     pattern = r"<!--\s*AI-REVIEW-RECORD:\s*([A-Za-z0-9_.:-]+)\s*-->"
-    return re.findall(pattern, pr_body)
+    return re.findall(pattern, masked)
 
 
 def collect_handoff_snapshot(
