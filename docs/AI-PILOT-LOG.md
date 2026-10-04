@@ -77,119 +77,472 @@ The useful result of a pilot includes the workflow lesson, not just the code cha
 
 **Decision:** Significant pilots update durable repository documentation.
 
-## Pilot #2 — DX12/Vulkan ModernAPI deployment invariant
 
-### Task
+### Status and provenance as of 2026-10-03
 
-Prevent DXVK deployment for DX12/Vulkan while retaining detection/reporting.
+PR #4 remains open at 944abc08c8722bdfc3b13bf7fda8fdd5a8a25b65. The historical external review summary does not establish its exact reviewed SHA; do not retrospectively stamp the current head as reviewed without original evidence. Before this documentation update PR #4 had no conversation comments or submitted GitHub reviews.
 
-Tracked by Issue #6.
+## Workflow foundation — Issue #7 / PR #8
 
-### Current status
+PR #8 merged into main at 3a66376446d847434542410a2a3626a070639aa8. It added AGENTS.md, AI-DEVELOPMENT-WORKFLOW.md, this pilot log, the structured AI Issue form and advisory hygiene/scope plus post-CI review-packet workflows. No external orchestrator or automatic model invocation/merge was introduced. The packet has been exercised, but its source/CI association needs hardening.
 
-Gemini / Antigravity is implementing the task.
+## Checkpoint supersession — 2026-10-03
 
-Independent post-implementation review is intentionally deferred until a completed PR exists and Claude is available.
+This update replaces PR #10's old d9051cab/build-failure checkpoint. Those failures remain historical below. PR #9 now has successful integration CI and external Claude PASS. PR #4 and PR #9 remain open. Documentation is proposed through PR #10; human merge authority is unchanged.
 
-### Known architectural risk
+The imported review is attributed to Claude and the arbitration to ChatGPT. Neither is a native GitHub approval. Issue #6 already contains three earlier checkpoint comments; the final review had not previously been recorded on PR #9.
 
-The existing main-branch behavior was observed to allow a path conceptually equivalent to:
+## 4. Pilot #2 contract and implementation history
 
-```text
-DX12 / Vulkan
-    -> ModernAPI classification
-    -> compatibility decision
-    -> DXVK manager
-    -> installer
-    -> d3d11.dll + dxgi.dll deployment
-```
+Issue #6: detect/report DX12 and Vulkan but prevent DXVK deployment through automated, manual/direct, update, Reapply, adoption and pending-action paths. Retain DX9/DX10/DX11 support and safe Disable/Restore behavior. No new translation layer or expanded DX12/Vulkan support.
 
-The task is therefore an architectural invariant problem spanning multiple layers rather than merely a UI condition.
+The original broad product invariant needs careful qualification: PR #9 enforces compatibility given the target profile's classified API. It does not prove safety for every executable sharing a directory, nor correct classification of every late-loaded graphics runtime.
 
-### Review priorities
+Compatibility contract at the reviewed revision:
 
-When the PR is ready, verify:
+| GraphicsApi | Ordinal | DXVK behavior |
+|---|---:|---|
+| Unknown | 0 | unsupported |
+| DX9 | 1 | d3d9.dll |
+| DX10 | 2 | d3d11.dll + dxgi.dll |
+| DX11 | 3 | d3d11.dll + dxgi.dll |
+| ModernAPI | 4 | retained legacy informational value; unsupported |
+| DX12 | 5 | native/informational; unsupported |
+| Vulkan | 6 | native/informational; unsupported |
 
-- DX12 detection still works;
-- Vulkan detection still works;
-- automated installation is blocked;
-- direct/manual deployment is blocked;
-- queued/pending deployment cannot bypass the rule;
-- update paths cannot bypass the rule;
-- reapply paths cannot bypass the rule;
-- D3D9/D3D10/D3D11 behavior remains intact;
-- tests cannot pass while a deployment bypass still exists.
+Before the fix, ModernAPI could pass the compatibility/deployment boundary and receive d3d11.dll + dxgi.dll.
 
-The independent reviewer should inspect test quality before trusting green CI.
+History:
+1. First implementation at fc5ca58e9ebef34f28ad71a8a6afece60d2333a4; Claude returned CHANGES REQUIRED.
+2. The clear material catch was a vacuous installer Reapply test: it could return false because the installation was unmanaged, before exercising the API guard.
+3. Other first-review priorities: pending execution, restore safety after reclassification, supported positive controls, mixed-module classification, removal of unnecessary enum aliases/serialization changes, and real CI evidence.
+4. A planned pre-implementation Claude design review did not happen because quota ran out.
+5. Head fb04a0cb3139bc915876a6fd110d8b15b9bed429 failed Phase A test compilation with malformed/duplicated test content.
+6. Head d9051cab30d5e5bde3d066fa8e04527e5e386f04 cleaned the malformed file and removed enum aliases/converter, then Build/Test #70 failed application compilation: Logger was not in scope at DxvkManager.cs lines 219 and 295. Tests did not run. The tested synthetic merge was 93dab27f030584e496e7517400f0d8a5135544f6.
+7. A later CI failure involved a missing PeParser import, as reported in this conversation; its intermediate SHA/run is not reconstructed here.
+8. Final reviewed head c4d0f846b4031b08e9e3444c803abe37cc171890 passed Build/Test #74.
+9. Claude's final review returned PASS, with F1–F9 below.
 
-### Workflow experiment
+Do not call these merely “two compile failures”: the conversation records malformed tests, missing Logger, and missing PeParser as three distinct compile problems.
 
-The implementation agent was deliberately not given a preselected list of defective files.
+## 5. Exact CI evidence and the head/merge correction
 
-The purpose is to observe whether it can trace the cross-component invariant independently.
+Build and Test #74:
+https://github.com/Tiflit/DXVK-Companion/actions/runs/37091615107
 
-A planned pre-implementation Claude analysis was not completed because Claude reached its usage limit. That experiment should not be treated as having occurred.
+- Run ID: 37091615107.
+- Job ID: 111112972258; job name: build-and-test.
+- Event: pull_request.
+- Run metadata head_sha: c4d0f846b4031b08e9e3444c803abe37cc171890.
+- Actual checkout/tested SHA: 8156ffa10f071f8fcc7b9a20f81c7564b9c58f25.
+- Merge parents: main 3a66376446d847434542410a2a3626a070639aa8 and PR head c4d0f846b4031b08e9e3444c803abe37cc171890.
+- Application and Phase A test builds: success; each reports 0 warnings / 0 errors.
+- Full Phase A execution: 96 total / 96 passed.
+- Portable self-contained win-x64 publish and artifact upload: successful.
 
-## Workflow Foundation — Issue #7 / PR #8
+These details were rechecked in the job log and merge commit metadata during this handoff. This is integration evidence for the exact PR head/base pair, NOT evidence of a test run directly checking out the head alone.
 
-### Purpose
+Actual test command:
+    dotnet test tests/DXVKCompanion.PhaseA.Tests/DXVKCompanion.PhaseA.Tests.csproj --configuration Release --no-build --no-restore --logger "console;verbosity=detailed" --logger "trx;LogFileName=phase-a-tests.trx"
 
-Create the first repository-native automation layer for the multi-agent workflow without changing application behavior.
+TRX artifact name: phase-a-test-results.
+Executable artifact name: DXVK-Companion-win-x64.
 
-### Changes
+Other successful runs associated with this head:
+- AI PR Hygiene #19, run 37091615109.
+- AI Scope Check #13, run 37091615185.
 
-The foundation branch adds:
+Both policy workflows are advisory. Their green status is not proof of compliance. The conversation's inspected logs reported missing Scope and Documentation PR headings, and no parseable Allowed paths in Issue #6. The current scripts and pre-edit PR/Issue bodies confirm why those warnings occur. Neither workflow was an effective blocking policy gate in this pilot.
 
-- `AGENTS.md` for concise agent operating rules;
-- `docs/AI-DEVELOPMENT-WORKFLOW.md` for durable workflow policy;
-- this pilot log entry/history;
-- `.github/ISSUE_TEMPLATE/ai-task.yml` for structured task contracts;
-- `.github/workflows/ai-pr-hygiene.yml` for advisory PR metadata checks;
-- `.github/workflows/ai-scope-check.yml` for advisory allowed-path checking;
-- `.github/workflows/ai-review-packet.yml` for a compact post-CI review evidence artifact.
+Claude said it did not execute tests or inspect CI job logs; its 96-test count was explicitly unverified. The coordinator's log verification is distinct evidence and must not be attributed to Claude.
 
-### Observations
+## 6. Claude's final review: provenance, coverage and full finding register
 
-- GitHub can serve as the state/audit layer without an external orchestrator.
-- Read-only PR metadata checks are straightforward to run safely.
-- Allowed-path enforcement should remain advisory until several real tasks prove the contract format and matching rules.
-- Documentation impact is important enough to appear explicitly in both task and PR contracts.
-- Review-packet generation should assemble evidence, not execute reviewed PR code.
-- Gemini should not be artificially constrained by a fixed diff budget; task scope and deterministic gates are safer controls.
-- The first workflow automation is deliberately non-blocking so we can observe its behavior before making it a merge gate.
+Source: the user's pasted Claude review of PR #9 at c4d0f84, whose full head SHA is recorded above. This is an external AI review, not a GitHub approval submitted by Claude. Its second pass knew the first pass's findings; classify it as REVISION VERIFICATION, not a fresh independent review.
 
-### Current limitation
+Claude read the full diff, head DxvkManager.cs and DxvkInstaller.cs, MultiFileTransactionEngine.cs and ExistingDxvkAssessment.cs. It did not run code. It found no contract violation or deployment bypass for the target exe under its recorded API and returned PASS.
 
-The review-packet workflow uses `workflow_run` and therefore is intended to become operational after the workflow is present on the default branch. PR #8 is the bootstrap vehicle; the packet should not yet be treated as production automation until that activation path is verified.
+Coverage traced:
+- Automated enable: TrayApp.HandleGameDetected IsDxvkSupported check plus manager.
+- Manual enable/update/UpdateAll: QueueOrApplyAsync and EnableDxvkAsync.
+- Reapply: QueueOrApplyReapplyAsync, manager ReapplyAsync and installer.
+- Pending/persisted execution: ApplyPendingAsync and ProcessAllPendingActionsAsync; guards redundant with deeper boundaries.
+- Adoption: manager and installer.
+- Restore/Disable: deliberately ungated.
+- Transaction engine callers: DxvkInstaller and DxvkRollback; no new caller in this PR.
+- ApplyToGameAsync may download to cache before rejecting unsupported APIs, but rejects before game-directory writes/state changes. Only manager calls it in the traced code.
+- Direct install tests genuinely cover unsupported APIs and DX9/10/11 positive behavior.
+- Revised installer Reapply test uses a managed installation, verifies unchanged files and has a DX11 positive control on the same fixture.
 
-## Future pilot records
+| Finding | Severity / scope | Detail, disposition and next action |
+|---|---|---|
+| PR #9 F1: direct adoption test is vacuous | Low; test weakness, nonmaterial | DxvkInstaller_AdoptExisting_DirectCall_RefusesUnsupportedApis has no d3d11.dll/dxgi.dll, so it can reject for missing DLLs with the API gate removed. Manager adoption test is meaningful. Follow-up: create DLLs and add DX11 positive control. Adoption itself writes no game DLLs. |
+| PR #9 F2: pending Reapply subcase is vacuous | Low; test weakness, nonmaterial | Case 2 of the pending BlocksExecutionForUnsupportedApis test never manages the installation; “not managed” can reject before the guard. Meaningful installer-level Reapply coverage exists. Follow-up: establish a real DX11 install first. |
+| PR #9 F3: restore coverage incomplete | Low–Medium; nonmaterial now | DisableDxvkAsync after reclassification is covered; queued RequestDisable with a running game, RestoreAllAsync and persisted Restore are not. Production guards intentionally exclude Restore. Follow-up: managed DX11 → reclassify DX12 → verify Restore All and pending Restore succeed. |
+| PR #9 F4: missing remaining uncertainty in PR body | Low; process | Issue #6 requires remaining design uncertainty. Add Scope/Documentation and residual limitations before merge. Correct the unclosed test-command fence and evidence wording as part of metadata maintenance. |
+| PR #9 F5: shared-directory mixed executables | Medium; architecture, outside accepted target-profile scope | Game_DX11.exe and Game_DX12.exe in one directory can both encounter deployed dxgi.dll. The selected profile gate does not isolate siblings. GameInstallation records each exe's LastKnownApi. Decide whether compatibility is installation-wide; consider refusing recorded modern-API siblings and add a test. Spec §5.2 is relevant. |
+| PR #9 F6: classification precedence/timing | Medium uncertainty | DX11 + Vulkan now selects Vulkan, conservatively rejecting a D3D11 process that loads Vulkan incidentally. This precedence behavior IS changed/pinned by the PR, even though late-load limitations predate it. One-time classification at first window can miss dynamic/late DX12/Vulkan loading; pending execution does not reclassify. Document precedence and investigate reclassification at execution (spec §21). |
+| PR #9 F7: blocked pending actions retained | Low; behavior/follow-up | Test pins retained pending work; safe from the blocked operation, but retried/logged on exits/startup, including older persisted actions. Spec §§20–21 expects reassessment. Consider explicit superseded/incompatible state rather than silently retrying forever. No hurried deletion patch. |
+| PR #9 F8: Reapply baseline/backup gap | Medium; pre-existing, outside #6; reproduced; proposed fix in open PR #23 | For a newly required DLL lacking a managed record, Reapply recorded DidNotExist even if a file already existed, captured identity without backing it up, overwrote it and deleted it on Restore (reproduced in CI run 37175559899). Proposed fix in PR #23 for Issue #13: ReapplyAsync now detects pre-existing native files for unmanaged/unknown records and dxvk.conf, marks OriginalFileState.Existing, stores Companion backup, and records OriginalSha256; Restore returns byte-identical files. |
+| PR #9 F9: enum persistence coverage/downgrade limit | Low; out of scope | Explicit 0–6 ordinals preserve ProfileStore numeric mapping. GameLibraryStore writes enum names; older builds cannot parse DX12/Vulkan, preserve invalid library copy and start empty. Numeric stability does not prove downgrade compatibility. Add legacy ModernAPI/new-member round-trip tests and document downgrade behavior. |
 
-For each future non-trivial pilot, record:
+Claude's closing qualification: PASS means Issue #6 acceptance criteria met for the target exe. It does not establish “never deployed” for mixed-exe folders or late API detection. PR #9 F4 should be fixed before merge; PR #9 F1/F2 optional follow-ups; PR #9 F5–F8 deserve follow-up issues.
 
-### Task
+ChatGPT arbitration: accept the scoped PASS, freeze implementation at c4d0f84, fix documentation and track residual work. Do not spend another focused implementation/review cycle on PR #9 F1/F2 solely to polish nonmaterial coverage. Broader safety findings remain real work; accepting a scoped PASS does not resolve them.
 
-What was being changed and why?
+A correction to earlier broad wording: “PR #9 F5/F6/F8 are all pre-existing” needs the PR #9 F6 distinction above. The one-time timing gap is pre-existing, while the mixed DX11+Vulkan precedence changes with this PR.
 
-### Agents
+## 7. Application follow-up backlog
 
-Which systems implemented, reviewed, and arbitrated?
+No new numbered follow-up issues were created as part of this documentation update.
 
-### Evidence
+1. Reproduce and fix Reapply original-file baseline/backup safety (PR #9 F8); preserve native DLLs across Restore. *(Reproduced; proposed fix in open PR #23 for Issue #13)*
+2. Decide installation-wide versus per-exe compatibility in shared directories (PR #9 F5).
+3. Late/dynamic API reassessment before queued execution; explicitly decide mixed-module precedence (PR #9 F6).
+4. Pending incompatible/superseded action lifecycle and logging (PR #9 F7).
+5. Restore All, queued/persisted Restore regression tests after API reclassification (PR #9 F3).
+6. Meaningful direct-adoption and pending-Reapply fixtures/positive controls (PR #9 F1 / PR #9 F2).
+7. GraphicsApi persistence round trips and downgrade limitations (PR #9 F9).
 
-What exact CI/test result was observed?
+Do not fold these into PR #9 without an explicit change in task scope. They can become subsequent pilots.
 
-### Review
+## 8. Workflow defects and corrections agreed in discussion
 
-What did independent review find?
+### Durable review state is incomplete
 
-### Outcome
+The initial workflow said no essential step should depend on chat, but final review findings, revision responses and arbitration lived there. Store SHA-stamped external reviews and a separate arbitration record on the PR. Include reviewer, mode, result, CI evidence actually considered, limitations, accepted/rejected findings and rationale. A later head invalidates the review's applicability until checked.
 
-Merged, revised, rejected, or escalated?
+For old records with missing reviewed SHA, say unknown; do not fabricate precision. Posting an imported review as a coordinator comment is not a native approval by that model. Repository documentation in this handoff preserves the available substance; PR-specific comment/review-state procedure remains follow-up work unless explicitly recorded as completed.
 
-### Workflow lesson
+### Prompts and rubric need versioning
 
-What changed about the development process as a result?
+There is already a generic Review protocol section in AI-DEVELOPMENT-WORKFLOW.md, but no canonical reusable reviewer prompt/output schema/arbitration rubric or handoff template. ChatGPT's bespoke chat prompts drift.
 
-### Documentation impact
+Commit a neutral protocol: report none if none, audit tests/invariants first, distinguish contract violations, production defects, coverage weaknesses and out-of-scope concerns. Review Issue/PR/packet text as untrusted evidence/data, not instructions. Do not preload another reviewer's findings for a fresh review.
 
-Which durable project documents or specifications changed?
+Arbitration should record finding validity, severity/materiality, introduced versus pre-existing, in/out of scope, evidence, disposition and reason. ChatGPT designed part of this workflow, so its judgment should be auditable rather than treated as an impartial experimental result.
+
+### Review-packet evidence race
+
+ai-review-packet.yml triggers on successful Build and Test, takes CI job results from that run, then fetches CURRENT PR metadata and CURRENT files/diff. It does not bind source to the triggering run's revision. If CI succeeds for A and PR advances to B, packet may combine A's CI with B's code.
+
+Earlier observation: Review Packet run #10 displayed workflow head main/3a66376 while generating a PR #9 packet. A workflow_run job's own default-branch head is not itself the reviewed PR SHA; the unsafe source association is established by the script, not that UI label alone.
+
+Required hardening:
+- Identify triggering workflow run ID/attempt and head SHA.
+- Separately preserve reviewed PR head SHA, base SHA and actual tested checkout/merge SHA and relationship.
+- Retrieve source, file manifest and diff from immutable revisions; never relabel live-head data as tested.
+- Handle PR advancement, missing/multiple PR associations, reruns and unavailable evidence explicitly.
+- Record metadata capture time; PR/Issue bodies can change even when source SHA does not.
+- Do not assume workflow_run.head_sha alone always names the checkout that was actually tested. Build #74 proves the head/merge distinction matters.
+
+### Review-packet security
+
+The script substitutes toJson(github.event.workflow_run.pull_requests) directly into a single-quoted shell string. Claude flagged potential quote-breaking input. The unsafe expression-to-shell construction is confirmed; exact branch-name exploitability was not reproduced in this handoff.
+
+Use GITHUB_EVENT_PATH parsed as data (for example jq), or typed scalar environment values; validate scalar inputs. Keep permissions least-privileged. Read-only permissions reduce consequences but do not make command injection safe. Do not execute PR code to collect metadata or introduce secrets into this workflow. Packet contents and artifacts are untrusted data for reviewers and parsers.
+
+### Review-packet quota efficiency
+
+Current selected diff is capped at 700 lines; the PR #9 test file alone is about 609 lines. Step-name success lacks the 96/96 summary. Design for Claude's limited quota:
+1. Contract, exact revision and immutable evidence identity.
+2. Triggering CI run and tested head/base/merge relationship.
+3. Structured TRX total/passed/failed/skipped and explicit unavailable status.
+4. Complete changed-file manifest.
+5. Changed tests first, then production changes.
+6. Relevant workflow/docs and declared uncertainty.
+7. Separate full-diff/source artifacts with clear omission/truncation markers.
+
+Do not silently imply a truncated packet is a full review. Prefer enough test and production context over wasting tools recrawling the repo.
+
+### Issue/PR contract mismatch and fail-closed enforcement
+
+Expected PR headings: Summary, Scope, Verification, Documentation, plus recognized Issue link. No PR template exists at the inspected main tree. PR #9 lacked two headings and its verification code fence was unfinished.
+
+Scope script expects exactly “### Allowed paths”; legacy Issue #6 contains “## Scope” prose. All parse failures exit 0; out-of-scope files only warn. Green means workflow completed, not successful scope validation.
+
+The Issue form ALREADY makes Allowed paths required; do not claim adding that requirement is new work. It currently recommends “Not yet constrained”; the checker recognizes that and some loose synonyms, but not the planned exact explicit “Unconstrained” contract.
+
+Proposed contract: explicit path list → enforce; exact documented Unconstrained value → permitted investigation; missing/blank/unparseable → fail. Required Issue forms alone are insufficient because API/manual-created issues can omit fields. Migrate existing issues deliberately or support tested legacy formats; do not infer arbitrary path permissions from prose. Align templates/parser before turning on blocking checks.
+
+Adjacent implementation consideration observed now: both policy workflows omit pull_request.edited, so PR body repairs alone may not refresh their checks. Include reliable metadata-change/recheck behavior in the hardening task.
+
+### Specification ambiguity
+
+README names DXVK-COMPANION-SPEC-REVISED2.md as Master Project Specification and DXVK-Companion-PhaseA5-Safety-and-Identity-Design-FINAL.md as its safety/identity reference. AGENTS.md merely says “relevant project specification.”
+
+Three root specs claim authority: REVISED, REVISED2, and A1-UPDATED. At inspected main, REVISED and REVISED2 have identical blob SHA 5a7e3d4627089775482795237b8e03aaad4627a5. A1-UPDATED differs and includes a Phase A.1 no-legacy-import decision, so do not blindly discard it.
+
+Follow-up: reconcile authority and unique decisions, explicitly identify canonical master/supplement and precedence in AGENTS.md, mark old copies historical/superseded. Do not silently choose precedence for substantive conflicting requirements based only on filenames.
+
+### Enforcement and cost
+
+main's protected flag is false. Repository is public. Prior discussion checked GitHub documentation and concluded public GitHub Free repos can use required checks/protection; before changing settings, recheck actual account/visibility/features and available administration permission. Private-repo reuse may require a paid plan. This handoff does not claim rulesets or branch protection were enabled.
+
+Require mature deterministic gates after parser and packet fixes. Review remains risk-based; do not globally require a Claude account approval. A provider, quota or reviewer failure must not silently become PASS.
+
+## 9. What the experiment does and does not show
+
+Proven mechanically: Issue → Gemini implementation → CI catches compile defects → corrections → successful integration CI → Claude review/revision verification → arbitration.
+
+A useful reviewer catch occurred: the first Reapply test was vacuous. Pilot #1 had no material finding. There was no fresh Gemini control review. Therefore added value of Claude over a fresh Gemini session/CI is not established, and no general dependable-workflow claim is warranted.
+
+Review modes:
+- Fresh independent review: clean session, same neutral evidence, no other reviewer's conclusions.
+- Revision verification: knows prior findings and checks repairs/regressions; this describes Claude's second Pilot #2 pass.
+- Consider a new fresh review for high-risk work or substantial design changes beyond the original fixes, with quota tradeoff explicit.
+
+Pilot #3 proposal: choose a different kind of task (feature/refactor), freeze one SHA and identical packet/protocol, run fresh Gemini reviewer and fresh Claude reviewer without cross-contamination, then adjudicate. Record material valid, nonmaterial valid, false-positive/rejected and unique findings, quota/tool burden and resulting implementation changes. Do not claim this experiment has happened.
+
+For future extraction: template repository should contain AGENTS.md, Issue form, PR template, three workflows, workflow docs, neutral review prompt and pilot-log template. Parameterize Build and Test workflow name, C# file filters/build/test commands and review thresholds. Keep DXVK-specific safety invariants/spec separate. Extraction follows validation; it is not complete.
+
+## 10. Ordered continuation plan (Historical — Superseded)
+
+> [!NOTE] SUPERSEDED HISTORICAL PLAN
+> The plan below represents the planning state at the conclusion of Pilot #2 (prior to PR #10, #19, and #20). Workflow hardening, test suites, and PR templates were implemented in PR #19; post-#19 cleanup is in PR #21. For current active work items, ownership, and human decisions, consult [`docs/AI-CURRENT-STATE.md`](AI-CURRENT-STATE.md).
+
+1. Recheck live main/PR #4/#9/#10 heads, CI and documentation changes recorded in PR #10.
+2. Preserve revision-specific external review and arbitration records on the relevant PRs. Do not fabricate Pilot #1's reviewed SHA. The current imported documentation is a bridge, not a GitHub native reviewer approval.
+3. Verify the completed PR #9 metadata correction (F4) and inspect its current CI relationship. Keep implementation frozen unless material new evidence appears.
+4. Workflow-hardening task/PR: immutable packet binding; safe event parsing; test summary; quota-efficient packet; fail-closed scope with tested format alignment and metadata refresh.
+5. Workflow-contract task/PR: canonical PR template, neutral versioned reviewer prompt, output schema, arbitration rubric, handoff template, explicit review-state/freshness protocol, spec authority reconciliation.
+6. Human decides PR #4 and #9 merges; then close linked Issues as appropriate. Refresh or supersede PR #10 instead of merging an obsolete checkpoint. Record final outcomes rather than declaring pilots complete while PRs remain open.
+7. Enable suitable required checks/protection once checks are tested and settings access is confirmed. Preserve human merge authority and risk-based review.
+8. Run Pilot #3 with the Gemini control and fresh Claude review; assess effectiveness.
+9. Extract a reusable parameterized template only when justified. Automatic model dispatch remains optional and constrained by cost/authentication/security.
+
+No need to ask the user to restate the project. The next session can start from this document and repository evidence.
+
+
+## Evidence links
+
+- [Pilot #1 PR #4](https://github.com/Tiflit/DXVK-Companion/pull/4)
+- [Pilot #2 Issue #6](https://github.com/Tiflit/DXVK-Companion/issues/6)
+- [Pilot #2 PR #9](https://github.com/Tiflit/DXVK-Companion/pull/9)
+- [Build/Test #74](https://github.com/Tiflit/DXVK-Companion/actions/runs/37091615107)
+- [Tested integration commit](https://github.com/Tiflit/DXVK-Companion/commit/8156ffa10f071f8fcc7b9a20f81c7564b9c58f25)
+- [Documentation PR #10](https://github.com/Tiflit/DXVK-Companion/pull/10)
+
+## Future pilot record fields
+
+Record task/contract; implementation/reviewer/arbitrator and review mode; exact source/base/tested SHA and CI run; tests; findings and evidence; materiality and scope; accepted/rejected disposition; false positives/unique findings; quota/tool burden; implementation changes caused by review; human merge/reject/escalate outcome; documentation impact. Use “none” or “unknown” when appropriate. Do not invent findings or precision.
+
+## Documentation actions completed on 2026-10-03
+
+PR #10 was refreshed in place, preserving the existing branch and human merge review. It now updates this pilot log and AI-DEVELOPMENT-WORKFLOW.md. PR #9's body now includes the missing headings, a closed command fence, precise CI identity, external-review attribution and residual limitations. Its implementation head remains c4d0f846b4031b08e9e3444c803abe37cc171890. No application/workflow implementation or main-branch changes were made. No native reviews or PR comments were posted; review substance is durable in these documents and the PR body, while a standardized comment/review-state protocol is still pending. No new follow-up Issues, merge, closure, branch protection, paid dispatch or Pilot #3 experiment was performed.
+
+## Continuation checkpoint — 2026-10-03: manual review contract v1
+
+Rechecked live main and PRs #4/#9/#10. Main remains 3a66376446d847434542410a2a3626a070639aa8; PR #9 remains c4d0f846b4031b08e9e3444c803abe37cc171890, with successful Build/Test run 37091615107. PRs remain open; PR #9's corrected metadata is present. This check reconfirmed run status, not a new execution or another review of implementation.
+
+Added Review contract v1 to AI-DEVELOPMENT-WORKFLOW.md on the existing documentation branch: neutral reviewer prompt, required output, separate arbitration rubric, manual states/freshness and compact continuation template. Read back the committed workflow document and verified its exact contents. This is protocol documentation, not automated enforcement or a fresh external review.
+
+Historical review comments, follow-up Issues, canonical PR template, immutable/safe review-packet generation, fail-closed scope checks, specification reconciliation, protection and the controlled Pilot #3 remain pending. PR #4 still needs current-base integration evidence before a human merge decision. Application implementation remains frozen; no merge, closure, message to another agent or paid dispatch occurred.
+
+Next implementation handoff should focus on packet identity/security and contract parser alignment, in a separately scoped Issue/PR. Do not mix these workflow changes into PR #9.
+
+## Workflow hardening checkpoint — Issue #11 initial implementation (SHA: 0abef8d34a836494cdd882b844c781e32fa35322, 2026-10-03)
+
+### Implementation summary
+
+Implemented hardened review packet provenance, blocking scope/hygiene checks, safe structured TRX parsing, and regression fixtures under Issue #11.
+
+- **Offline regression test suite**: 42 automated tests in `tests/ai-workflow/` verifying contract parsing, allowed-path syntax, directory boundary safety, rename checks, PR hygiene headings, TRX counting, zip-slip defense, packet identity, staleness detection, and diff budgeting.
+- **Workflow integration**:
+  - `.github/workflows/ai-workflow-tests.yml`: runs test suite on push and PR.
+  - `.github/workflows/build-and-test.yml`: instruments minimal `build-provenance` artifact (`build-provenance.json`) capturing checked-out SHA (`git rev-parse HEAD`), ref, run ID, and attempt.
+  - `.github/workflows/ai-review-packet.yml`: checks out trusted default-branch scripts, parses event JSON safely via Python, generates verified packet and full diff artifact.
+  - `.github/workflows/ai-scope-check.yml`: blocking check enforcing repository-relative allowed paths, `/**`, trailing slash, and exact standalone `Unconstrained`. Checks old and new paths for renames.
+  - `.github/workflows/ai-pr-hygiene.yml`: blocking check enforcing `Primary Issue`, `Summary`, `Scope`, `Verification`, and `Documentation`.
+  - `.github/ISSUE_TEMPLATE/ai-task.yml` & `.github/pull_request_template.md`: aligned template grammar.
+
+### Open PR inventory and legacy contract migrations
+
+Before switching policy workflows from advisory to blocking, open PRs were inventoried for contract compliance: PR #4 (Issue #5), PR #9 (Issue #6), and PR #10 (merged). Required contract metadata edits were subsequently completed and verified by coordinator execution on 2026-10-03 (detailed in the consolidated outcome below).
+
+
+### Human intervention metrics for Issue #11
+
+- Human intervention count: not measured.
+- Human elapsed time: not measured.
+- Model execution: Autonomous implementation across fixtures, parsers, CI workflows, and documentation under coordinator direction.
+- Residual limitations: Model dispatch remains manual; human retains final merge authority.
+
+## Workflow hardening revision checkpoint — Issue #11 revision (F1–F12, A1) (2026-10-03)
+
+### Review and arbitration context
+
+External review by Claude of initial implementation commit `0abef8d34a836494cdd882b844c781e32fa35322` yielded 12 findings (F1–F12). Independent arbitration by ChatGPT confirmed findings and established arbitration ruling A1 (prohibiting mixed `Unconstrained` and explicit path entries). This focused revision addresses findings F1–F12 and ruling A1 within the existing workflow scope without touching application code.
+
+### Findings and arbitration dispositions (PR #19 F1–F12, A1)
+
+| Finding / Item | Description | Disposition | Verification & Implementation |
+|---|---|---|---|
+| **PR #19 F1** | Provenance parsing failure swallowed via missing `import io` | Accepted | Verified `NameError` empirically. Added top-level `import io` in `generate_review_packet.py`; surfaced download/parse failures. Tested via unit tests and real CI run 37164136438. |
+| **PR #19 F2** | Monolithic network calls untestable offline | Accepted | Introduced injectable `GitHubClient` class with dedicated `fetch_json` and `download_bytes` methods. Validated with offline unit tests mocking all API interactions. |
+| **PR #19 F3** | Ambiguous PR associations across multiple PRs | Accepted | Declined ambiguity: `generate_review_packet.py` exits with status 1 if a workflow run maps to multiple PRs unless explicit `--pr-number` is supplied. Tested with ambiguity fixtures. |
+| **PR #19 F4** | Tested Base SHA bound to live PR branch instead of triggering event | Accepted | Extracted tested base SHA from triggering event payload (`workflow_run.pull_requests[].base.sha`). Live PR base SHA is reported separately; emits warning if base branch moved. |
+| **PR #19 F5** | Run attempt mismatch and job log attribution | Accepted | Queried attempt-specific jobs API (`/actions/runs/{run_id}/attempts/{attempt}/jobs`). Verified `run_id` and `run_attempt` inside `build-provenance.json` match triggering execution; mismatches marked incomplete. |
+| **PR #19 F6** | Azure Blob SAS redirect authentication failure & size limits | Accepted | Verified empirically that urllib forwarded Authorization header to Azure Blob Storage, triggering HTTP 401. Implemented host-aware redirect handler stripping Authorization when redirecting off-domain. Enforced 50 MB total / 10 MB per-file limits, canonical destination containment (Zip-Slip defense), and uncompressed size bounds. |
+| **PR #19 F7** | Legacy contract migration rollout gap | Accepted | Restored original meaning: Issues #5/#6 lack '### Allowed paths' and PRs #4/#9 lack required hygiene headings. Documented exact Issue and PR edits and on-demand rechecks. External edits remain coordinator actions. |
+| **PR #19 F8** | PR template HTML comments & naked numbers accepted | Accepted | Stripped HTML comments (`<!-- ... -->`) before regex parsing. Enforced `#<number>` format in `extract_primary_issue`, rejecting naked numbers and placeholder `Fixes #`. Tested against shipped templates. |
+| **PR #19 F9** | Loose opt-out synonyms rejected valid file paths | Accepted | Replaced substring search with exact whole-entry set membership for loose synonyms (`LOOSE_SYNONYMS = {"not yet constrained", "none", "any", "n/a", "open", "all", "tbd"}`). Valid paths containing words like `open` or `all` (e.g. `src/open/all.cs`) are preserved. |
+| **PR #19 F10** | Lack of manual/advisory recheck mechanism | Accepted | Added `workflow_dispatch` trigger with `pr_number` input to both `ai-scope-check.yml` and `ai-pr-hygiene.yml`, enabling on-demand verification alongside `pull_request.edited`. |
+| **PR #19 F11** | Direct workflow script interpolation injection risks | Accepted | Replaced inline GitHub Actions context interpolation (`"${{ github.ref }}"`) with environment variables (`$env:GITHUB_REF`, etc.) in `build-and-test.yml`. |
+| **PR #19 F12** | TRX outcome definitions, categorization, manifest completeness & input validation | Accepted | Standardized TRX result counting (effective failed: failed+error+timeout+aborted; skipped: notExecuted+notRunnable+inconclusive). Enforced regex validation on CLI inputs. Fixed file categorization (`src/` always production). Added full manifest diff and omitted patch flags. |
+| **PR #19 A1** | Mixed `Unconstrained` and explicit path declarations | Accepted | Enforced arbitration ruling: contracts with mixed `Unconstrained` and explicit paths are strictly rejected. Only a standalone `Unconstrained` entry is permitted as a contract opt-out. |
+
+### Real CI run 37164136438 local execution evidence
+
+The revised generator was executed locally using authenticated GitHub credentials against real Build and Test run `37164136438`:
+
+- **Run Identity**: Run ID `37164136438`, Run Attempt `1`
+- **Head SHA**: `0abef8d34a836494cdd882b844c781e32fa35322`
+- **Tested Checkout SHA**: `faec613332c3a7d5fcee44fc8b257839d150dddf` (synthetic merge ref `refs/pull/19/merge`)
+- **Tested Base SHA**: `e7b6e0640d9a22077fb515b1dfc2a277e987785e`
+- **Live PR Base SHA**: `e7b6e0640d9a22077fb515b1dfc2a277e987785e` (Status: Current, base has not moved)
+- **TRX Test Totals**: 67 passed, 0 failed, 0 skipped, 67 total (across 2 TRX files in `test-results` artifact)
+- **Manifest Completeness**: 21 files changed, 21 diffs included in full diff artifact, 0 omitted patches
+- **Security & Diagnostics**: Zero credentials, tokens, or signed URLs leaked in logs or packet markdown. SAS redirect successfully downloaded build-provenance artifact.
+
+### Trust boundaries and enforcement clarification
+
+GitHub Actions workflows execute as advisory status checks on pull requests. Workflows cannot enforce repository-level merge blocking on their own; blocking branch protection requires GitHub repository settings (Branch Protection Rules or Rulesets) configured with mandatory passing status checks by a repository administrator. The term "blocking check" in workflow descriptions refers to the check concluding with exit code 1 / failure status, not automated platform-level merge prevention.
+
+## Bounded repair exception checkpoint — Issue #11 (F4, F5, F7, F12) (2026-10-03)
+
+### Context & bounded repair scope
+
+Claude's verification pass on revised head `358f9154c2db784e4fead4af4767fd184e8c09a7` noted that four material requirements remained incompletely resolved: F4 (live base fallback), F5 (unmatched job fallback, missing provenance identity, unscoped TRX artifacts & duplicate selection), F7 (restoring original legacy contract migration meaning and documenting exact edits), and F12 (separating manifest completeness from patch availability and testing capped compare responses). The coordinator granted a bounded repair exception targeting strictly these four existing requirements.
+
+### Bounded repair implementation & evidence
+
+| Item | Requirement & Defect | Bounded Repair Implementation | Verification Evidence |
+|---|---|---|---|
+| **PR #19 F4** | Missing event base previously fell back to live base and was labeled tested. Base disagreement was not flagged. | If event base is missing/empty, `tested_base_sha` is strictly marked `unknown`—never assigned `live_base_sha`. Source comparison is explicitly declined (`compare_commits` not called, diffs report declined status). Base SHA disagreements between event and provenance are detected and flagged. | `test_missing_event_base_declines_comparison_and_reports_unknown`, `test_base_provenance_disagreement_detected`. |
+| **PR #19 F5** | Unmatched job fallback, missing provenance identifiers, unscoped TRX artifacts and duplicate selection. | In `GitHubClient.get_workflow_run_jobs`, fallback filtering by attempt returns `[]` when no jobs match (unmatched jobs from other attempts are never returned). In `generate_packet`, `build-provenance.json` must contain `run_id`, `run_attempt`, and `head_sha`; missing identifiers cause checkout identity to be marked `incomplete`. Multiple TRX artifacts without unambiguous attempt window attribution are marked `UNAVAILABLE` with an ambiguous attribution diagnostic rather than silently taking the first entry. | `test_github_client_jobs_attempt_filtering_rejects_unmatched_jobs`, `test_missing_provenance_identifiers_marked_incomplete`, `test_duplicate_phase_a_artifacts_marked_unavailable`. |
+| **PR #19 F7** | Legacy contract migration rollout gap: Issues #5/#6 lack `### Allowed paths` section. | Restored original meaning of F7. Documented exact required metadata edits for Issue #5, PR #4, Issue #6, and PR #9, along with exact recheck commands. Preserved application requirements intact; external metadata edits remain coordinator actions. | Documented in `docs/AI-PILOT-LOG.md`, `docs/AI-DEVELOPMENT-WORKFLOW.md`, and PR #19 description. |
+| **PR #19 F12** | Conflated manifest completeness with patch availability; capped compare responses were falsely reported as complete. | Separated manifest completeness (`complete` vs `incomplete (capped)`) from patch availability (`all returned patches present` vs `partial`). Verified that 300 files returned with 300 patches is marked `incomplete`, not `complete`, when PR changed files exceed 300. | `test_capped_compare_response_with_all_patches_present_is_not_complete_manifest`. |
+
+### Consolidated legacy contract migration outcome (Issues #5/#6, PRs #4/#9)
+
+On 2026-10-03, the coordinator applied the required contract metadata edits to GitHub Issues #5 and #6 and PR descriptions for PR #4 and PR #9:
+- **Issue #5 & PR #4**: Added `### Allowed paths` to Issue #5; added `## Primary Issue` with `Fixes #5` and `## Documentation` to PR #4. On-demand workflow runs verified:
+  - `AI PR Hygiene` run [37173538904](https://github.com/Tiflit/DXVK-Companion/actions/runs/37173538904) -> SUCCESS
+  - `AI Scope Check` run [37173544858](https://github.com/Tiflit/DXVK-Companion/actions/runs/37173544858) -> SUCCESS
+- **Issue #6 & PR #9**: Added `### Allowed paths` to Issue #6; added `## Primary Issue` with `Fixes #6` to PR #9. On-demand workflow runs verified:
+  - `AI PR Hygiene` run [37173552820](https://github.com/Tiflit/DXVK-Companion/actions/runs/37173552820) -> SUCCESS
+  - `AI Scope Check` run [37173557225](https://github.com/Tiflit/DXVK-Companion/actions/runs/37173557225) -> SUCCESS
+
+Both legacy PRs now comply with the hardened blocking check policies.
+
+### Remaining uncertainties and escalation note
+
+- This repair pass is bounded strictly to PR #19 F4, F5, F7, and F12 per coordinator arbitration. No claim is made that every original finding has been independently verified across the repository.
+- GitHub Actions workflows execute as advisory status checks; platform-level merge blocking requires explicit repository branch protection rulesets configured by administrators.
+- If any material defect remains unresolved after this bounded repair exception, the matter will be escalated explicitly rather than initiating another open-ended revision loop.
+
+## Centralized TRX artifact-attempt attribution and review allocation checkpoint — Issue #11 (2026-10-03)
+
+### Context & coordinator execution check
+
+Following commit `20b0ea81e3fbd5f02e4c39f0720741121ca2930a`, ChatGPT independently executed the 60 offline fixtures (all passed) and conducted two execution checks that reproduced an unresolved F5 defect in `generate_review_packet.py`:
+1. **Reproducer 1**: Trigger attempt 2; `get_workflow_run_jobs` returns `[]`; singleton TRX artifact has an old created_at. Packet previously reported `PASSED`. Expected: `UNAVAILABLE`, because attempt identity cannot be established.
+2. **Reproducer 2**: Trigger attempt 2; matching jobs start `2026-01-02T00:00:00Z` and complete `2026-01-02T00:10:00Z`; singleton TRX artifact created `2026-01-03T00:00:00Z`. Packet previously reported `PASSED`. Expected: `UNAVAILABLE`, because artifact lies outside the attempt interval.
+
+Both reproducers were added to `tests/ai-workflow/test_review_packet.py` and confirmed failing on `20b0ea8` before implementing production fixes.
+
+### Centralized attribution implementation
+
+Attribution logic was removed from ad-hoc branches in `generate_packet` and centralized into `resolve_trx_artifact_for_attempt`:
+- **Missing matching jobs**: If `ci_jobs` is empty, returns `UNAVAILABLE` (`no matching jobs found for attempt`).
+- **Missing/invalid job timestamps**: If jobs lack `started_at` or `completed_at`, returns `UNAVAILABLE` (`cannot establish attempt execution interval`).
+- **Missing artifact metadata**: If candidate artifacts lack `created_at` or have unparseable timestamps, returns `UNAVAILABLE`.
+- **Interval containment**: Candidate artifact `created_at` must fall within `[interval_start, interval_end]`. Validates both lower and upper boundaries. Artifacts outside the interval return `UNAVAILABLE`.
+- **Ambiguous candidates**: If multiple candidate artifacts fall within the attempt window, returns `UNAVAILABLE`.
+- **No singleton or list order inference**: Attribution is never inferred from singleton count or list position. A singleton artifact outside the interval or without matching jobs fails closed as `UNAVAILABLE`.
+- **Prior attempt disambiguation**: When artifacts from prior attempts exist alongside the current attempt's artifact, only the artifact within the current attempt's interval is selected.
+
+### Limits of timestamp evidence
+
+GitHub Actions artifact and job timestamps (`started_at`, `completed_at`, `created_at`) are server-assigned metadata that correlate an artifact's upload time with the execution window of a specific job run attempt. They establish chronological containment within execution windows, not cryptographic signatures or immutable content attestations. If API metadata cannot reliably prove attribution within the attempt window, evidence fails closed as `UNAVAILABLE` rather than guessing.
+
+### Updated review allocation
+
+Per user decision and coordinator execution check:
+- **Gemini**: Primary implementation layer (repository code, unit tests, local verification, focused repairs).
+- **ChatGPT**: Verification, architecture, reproduction analysis, and arbitration layer.
+- **Claude**: Reserved for occasional independent audits and high-risk material decisions (due to quota scarcity).
+- **Human**: Retains final merge authority and policy governance.
+
+### Verification evidence
+
+- **Local test suite**: 68/68 unit tests passing in `tests/ai-workflow/` (including both reproducers and 6 dedicated `resolve_trx_artifact_for_attempt` edge-case tests).
+- **Live acquisition verification**: Executed `generate_review_packet.py` locally against real GitHub Actions runs `37169107191` and `37164136438`. Both runs successfully attributed the TRX artifacts within job execution intervals and extracted all 67 passing test results without leaking credentials or signed URLs.
+
+## Repository privacy audit and fresh-session handoff — 2026-10-03 (Issue #20)
+
+### Audit scope & findings
+
+In preparation for post-#19 clean handoffs, an automated and bounded privacy audit was executed across the repository at commit `0dcc2bd88d113363b075169e867fccec8892f58c` (`main`) and the PR #21 revision:
+- **Target patterns**: Private local user directory paths (`C:\Users\<username>\...`, `<user-home>`), personal access tokens (`ghp_`, `github_pat_`), Authorization headers (`Bearer ...`), and cloud credentials (AWS/Azure SAS signatures).
+- **Tracked repository files**: Gemini reports scanning the 108 tracked text files at starting main; task-branch documentation received targeted rescans. Result: **No matches for the listed patterns on the specified snapshot**.
+- **Git commit metadata (bounded)**: The supplied execution report shows a recent-20 author/committer inspection and a commit-message search capped at 20 matches. Gemini reports public noreply identities in that inspected subset. This does not establish an audit of all commits, refs or historical file contents. Full historical coverage is pending a scoped Gemini scan; no historical privacy clearance is claimed.
+- **Task-produced artifacts (bounded)**: Gemini reports inspecting selected packet/diff outputs associated with runs 37174005790 and 37164136438; the supplied transcript does not establish scanning every log/artifact. ChatGPT downloaded PR #21 packet/diff from 37174005790 and inspected packet 37174628859 for evidence identity. These are selected inspections, not an all-artifact privacy audit.
+- **Project-created disposable files & worktree audit**:
+  - *Removed disposable files*: Temporary review packet download directories (`temp_packet`), temporary PR body files (`pr_body_temp.txt`), and local Python bytecode directories (`__pycache__/`) were purged and excluded.
+  - *Retained local worktrees (with reasons)*:
+    - `D:/dev/DXVK-Companion` (`docs/pilot-2-current-checkpoint`): main repository checkout.
+    - `D:/dev/DXVK-Companion-issue-11` (`workflow/review-packet-provenance`): preserved historical worktree for merged PR #19 evidence.
+    - `D:/dev/DXVK-Companion-issue-20` (`docs/issue-20-workflow-cleanup`): active worktree for Issue #20 / PR #21 revision until merged.
+  - *Retained remote branches (with reasons)*:
+    - `main`: default branch.
+    - `pilot/companion-version-ordering` (PR #4): open legacy PR awaiting human merge decision.
+    - `issue-6-prevent-dx12-vulkan-deployment` (PR #9): open legacy PR awaiting human merge decision.
+    - `docs/issue-20-workflow-cleanup` (PR #21): active cleanup PR awaiting coordinator verification and human merge.
+
+    - Other observed remote branches: `ai/multi-agent-foundation`, `automation/ai-workflow-foundation`, `docs/pilot-2-current-checkpoint`, `feature/compatibility-and-action-correctness`, `workflow/review-packet-provenance`. Retained; full ancestry/active-use checks were not evidenced, so no deletion was authorized.
+
+### Unscanned surface boundaries and next owners
+
+The bounded cleanup does not establish exhaustive privacy coverage. Remaining project-only audit work belongs to Gemini in a separately scoped follow-up; unrelated host/chat surfaces are outside this task:
+- **Developer OS user directories & global configs**: Local OS files (`C:\Users\<username>\...`), local user profiles, and gitignored environment files (`.env`, global `.gitconfig`) reside outside git and were not committed.
+- **External chat provider history**: Conversation logs and web chat transcripts stored on external model provider platforms (OpenAI, Anthropic, Google) are outside the repository boundary.
+- **Git history, refs and CI logs/artifacts**: Bounded audit executed under Issue #22 (see section below and [`docs/ai-journal/2026-10-04-issue-22-privacy-evidence-annex.md`](ai-journal/2026-10-04-issue-22-privacy-evidence-annex.md)). 22 refs, 241 commits, 1,205 header/message fields, and 414 unique blobs scanned. 150 CI artifacts inventoried: 33 of the initial 150 artifacts sampled; two later PR #24 packet/diff entries also sampled. Combined documented cohort: 35 sampled, 117 unscanned (41 binaries + 76 historical text entries) remain bounded under GitHub retention. 12 CI workflow run logs (5,141 lines) scanned.
+- **PR discussion comments**: ChatGPT's earlier pattern scan covered 19 Issue/PR bodies and four conversation comments at its recorded snapshot. It found no matches for its listed patterns; new edits and native review/comment surfaces were not exhaustively scanned. Next owner: coordinator during lifecycle verification.
+
+## Bounded project-history and artifact privacy audit — 2026-10-04 (Issue #22)
+
+### Audit scope & methodology
+In accordance with Issue #22, an automated bounded privacy audit of git history, commit metadata, repository refs, task artifacts, and CI logs was conducted locally. Complete technical details, rule definitions, artifact manifests, and per-worktree inspection evidence are recorded in the durable annex [`docs/ai-journal/2026-10-04-issue-22-privacy-evidence-annex.md`](ai-journal/2026-10-04-issue-22-privacy-evidence-annex.md).
+- **Project refs inventory**: All 22 project refs (11 local, 11 remote) inventoried.
+- **Git commit metadata**: All 241 commits across `--all` inspected across 1,205 individual header and message fields (`author_name`, `author_email`, `committer_name`, `committer_email`, `commit_msg`). 0 matches for target patterns within stated coverage.
+- **Deduplicated blob scan**: 1,077 mapped path objects resolved to 414 deduplicated unique blobs (3,577,146 bytes). All 414 blobs scanned against private pattern regexes (Windows/Unix user paths, GitHub tokens, generic secrets, private key headers, signed URLs, basic auth).
+  - *Blob findings*: 2 pattern matches reflecting 1 unique private string occurrence in historical blob `d90b0897` (line 485 of historical `docs/AI-PILOT-LOG.md` on PR #20 branch before PR #21 revision, citing a pattern example). Redacted to `<username>` in commit `3ac97be` (PR #21); does not exist in `main` or current working tree, but persists in historical git object storage.
+  - *Secrets clearance*: 0 matches for personal tokens, generic API keys, private key headers, or signed URLs across all 414 historical blobs within stated coverage.
+- **CI task artifacts inventory & scanned cohort**: All 150 GitHub Actions artifacts inventoried (150 active, 0 expired). Bounded scan of 35 sampled text-based artifacts across 11 named text types in the expanded cohort (`build-provenance`, `phase-a-test-results`, `review-packet-pr-*`, `review-packet-diff-pr-*`):
+  - *Artifact findings*: 4 matches reflecting 1 unique private value occurring once in each of 2 files in run `37174005790` (`review-packet-pr-21` and `review-packet-diff-pr-21`), capturing the pre-revision documentation diff of PR #21. The other 33 sampled entries had no reported matches; later/unscanned artifacts are outside this conclusion.
+  - *Secrets clearance*: 0 matches for credentials, tokens, private keys, or signed URLs across all scanned artifacts within stated coverage.
+  - *Unscanned cohort*: 117 artifacts remain unscanned in the combined documented cohort (41 compiled binaries `DXVK-Companion-win-x64` excluded due to binary executable format; 76 older historical text entries bounded by sampling limits). Retained on GitHub Actions subject to configured retention (not independently inspected); next owner: developer / coordinator.
+- **CI workflow logs scan**: Bounded scan of 12 key GitHub Actions workflow runs (5,141 lines, 685,807 bytes (sum of the annex rows)) across PRs #9, #19, #21, #23, #24, and `main`: 0 matches for target patterns within stated coverage. Older historical logs remain bounded under configured GitHub retention (not independently inspected).
+- **Local worktrees inspection**: Inspected all 5 worktrees on `D:\dev` for active branches, HEAD commits, commit ancestry relative to `origin/main`, unpushed commits, and working tree cleanliness:
+  - `D:/dev/DXVK-Companion`: Primary working copy (`docs/pilot-2-current-checkpoint`). Preserved.
+  - `D:/dev/DXVK-Companion-issue-11`: Merged PR #19 worktree. Merged ancestor of `origin/main`; contains untracked `__pycache__/` in `scripts/` and `tests/`. Candidate for cleanup upon developer confirmation.
+  - `D:/dev/DXVK-Companion-issue-13`: Merged PR #23 worktree. Merged ancestor of `origin/main`; clean working tree. Candidate for cleanup upon developer confirmation.
+  - `D:/dev/DXVK-Companion-issue-20`: Merged PR #21 worktree. Merged ancestor of `origin/main`; clean working tree. Candidate for cleanup upon developer confirmation.
+  - `D:/dev/DXVK-Companion-issue-22`: Active worktree for Issue #22 (`audit/issue-22-privacy-coverage`). Preserved for Issue #22.
+- **Remediation conclusions**: No active secrets, personal tokens, or credentials were found within stated coverage. The historical username persists in git object storage (`d90b0897`) and historical CI artifact archives (`37174005790`); however, no destructive remediation is authorized under this task; the reported pattern results do not establish universal clearance. Merged worktrees are recorded as cleanup candidates requiring developer confirmation; no blanket "without-data-loss" guarantee is asserted.
+
+### Fresh-session handoff architecture
+
+Following the completion and merge of Issue #11 / PR #19 and Review contract v1 / PR #10, the workflow documentation was restructured for durable multi-agent operation:
+- **Single entry point**: [`AGENTS.md`](../AGENTS.md) serves as the primary orientation document for any fresh AI session, detailing repository layout, active model roles, execution rules, and security boundaries.
+- **Dynamic state separation**: [`docs/AI-CURRENT-STATE.md`](AI-CURRENT-STATE.md) maintains active PR status, work queue, and human decision checkpoints without bloating the workflow manual.
+- **Session activity journal**: [`docs/AI-ACTIVITY-JOURNAL.md`](AI-ACTIVITY-JOURNAL.md) and individual logs in [`docs/ai-journal/`](ai-journal/) record per-session audit trails to prevent chat transcript loss while keeping PR descriptions and core documentation concise.
+- **Historical preservation**: Detailed review findings, arbitration rulings, and defect reproducers from Pilot #1, Pilot #2, and Issue #11 remain preserved in this pilot log.
+
+
+
+
+
+Coordinator qualification: results are Gemini-reported within the listed rules/cohort, not a coordinator rerun of the full scan. Annex totals were reconciled arithmetically across captures. An accidental literal username in revision `af23ee2` was replaced with a placeholder; that historical commit and packet run 37178660271 still retain it. The original audit does not clear these later surfaces. See the annex's coordinator evidence qualification for unrecorded scanner bounds and configured-retention limits.

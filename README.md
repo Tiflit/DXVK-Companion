@@ -181,11 +181,14 @@ Automated standalone self-contained packaging is built on tag push via `.github/
 
 ## 🗺️ Project Specifications & Roadmap
 
-For complete specifications and architectural contracts, refer to the authoritative specification documents:
+For complete specifications and architectural contracts, refer to the specification documents:
 * [Master Project Specification (Revised 2)](DXVK-COMPANION-SPEC-REVISED2.md)
 * [Phase A.5 Safety & Identity Design](DXVK-Companion-PhaseA5-Safety-and-Identity-Design-FINAL.md)
 
-### Development Progress
+> [!NOTE]
+> **Specification Authority & Precedence**: Precedence between the master specification and phase plans is tracked under [Issue #12](https://github.com/Tiflit/DXVK-Companion/issues/12) awaiting human confirmation. Both specification roots are preserved.
+
+### Development Progress & Verification Status
 * [x] **Phase A**: Data Foundation (Hierarchical `GameInstallation`, `ExecutableProfile`, `ManagedFileRecord`)
 * [x] **Phase A.1**: Legacy Profile Migration (`games.json` -> `game-library.json`)
 * [x] **Phase A.5**: Multi-File Atomic Transaction Engine (`MultiFileTransactionEngine`, `FileIdentity`)
@@ -196,3 +199,18 @@ For complete specifications and architectural contracts, refer to the authoritat
 * [x] **Phase G**: Automated Maintenance Mode (`GlobalPolicy` engine, per-game policy overrides, automated deployment on exit, automated reapply)
 * [x] **Phase H**: UI Refinement & Restore All (Minimal static tray menu, view filtering, global Restore All with error isolation)
 * [x] **Release CI**: Standalone self-contained `win-x64` GitHub release pipeline
+
+> [!NOTE]
+> Completed checkboxes reflect implementation and unit test coverage in Phase A. Active product safety investigations (such as potential baseline overwrite during Reapply under [Issue #13](https://github.com/Tiflit/DXVK-Companion/issues/13)) and multi-executable policy choices ([Issue #14](https://github.com/Tiflit/DXVK-Companion/issues/14)) are tracked as open issues.
+
+---
+
+## 🤖 AI Development & Workflow
+
+This project uses a GitHub-native multi-agent development workflow:
+* [Agent Operating Rules](AGENTS.md): Core rules for AI contributors
+* [Current Development State & Handoff](docs/AI-CURRENT-STATE.md): Active dashboard, branch heads, and work queue
+* [AI Development Workflow](docs/AI-DEVELOPMENT-WORKFLOW.md): Operating policies, review standards, and contract grammar
+* [Agent Activity Journal](docs/AI-ACTIVITY-JOURNAL.md): Session logs and activity records
+* [Pilot & Review Log](docs/AI-PILOT-LOG.md): Historical record of review findings and arbitration
+
