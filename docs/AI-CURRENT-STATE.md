@@ -7,37 +7,40 @@
 > **Selective Reading Rule**: Routine agent sessions must NOT read the entire historical pilot log or journal archive. To conserve context and avoid drift, follow the 4-step startup route in [AGENTS.md](../AGENTS.md).
 
 - **Live Repository Status**: Maintained in real time by GitHub Actions in authenticated dashboard [**Issue #27**](https://github.com/Tiflit/DXVK-Companion/issues/27) (`[AI Dashboard] Current Repository State & Handoff Orientation`) for live default-branch SHA, open PRs, and active CI runs.
-- **Active Task**: [Issue #12](https://github.com/Tiflit/DXVK-Companion/issues/12) (Spec authority: make one canonical specification) — in progress pending PR review/merge.
+- **Active Task & PR Tracking**: Live task assignments and open PR inventories are tracked dynamically in the automated dashboard and via GitHub queries (`gh issue list`, `gh pr list`). This curated document provides stable architecture, role allocation, and governance protocols; it does not maintain a second live inventory by hand.
 
 ---
 
-## 1. Merged Pilot PR Inventory & Milestones
+## 1. Foundational Milestones & Merged PRs (Historical through 2026-10-04)
 
-All foundational pilot features, bugfixes, and CI harnesses are merged into `origin/main`:
+Major foundational pilot features, bugfixes, and CI harnesses merged into `main` include:
 
-| PR / Branch | Merged Head | Target Base | Status | Milestone Summary |
-|---|---|---|---|---|
-| **PR #26** (`workflow/issue-25-compact-handoffs`) | `49dca34` | `main` (`ce74e1e`) | **MERGED** | Compact handoff automation and live dashboard publication (Issue #25). Merged at `955ca78`. |
-| **PR #9** (`issue-6-prevent-dx12-vulkan-deployment`) | `60bd512` | `main` (`230c8ae`) | **MERGED** | Prevent DXVK deployment for DX12/Vulkan (Issue #6). Merged at `ce74e1e`. |
-| **PR #4** (`pilot/companion-version-ordering`) | `a24934d` | `main` (`4f44059`) | **MERGED** | CompanionVersion numeric ordering (Issue #5). Merged at `230c8ae`. |
-| **PR #24** (`audit/issue-22-privacy-coverage`) | `b9c1559` | `main` (`51691ee`) | **MERGED** | Historical privacy audit, rule redaction, and durable evidence annex (Issue #22). Merged at `4f44059`. |
-| **PR #23** (`fix/issue-13-reapply-original-baseline`) | `f8331d3` | `main` (`093664d`) | **MERGED** | Reapply original-baseline capture and backup preservation defect repair + 8 regressions (Issue #13). Merged at `51691ee`. |
-| **PR #21** (`docs/issue-20-workflow-cleanup`) | `8d9c2d6` | `main` (`0dcc2bd`) | **MERGED** | Post-#19 cleanup, connector journaling, and dashboard orientation (Issue #20). Merged at `093664d`. |
-| **PR #19** (`workflow/review-packet-provenance`) | `68aa480` | `main` (`e7b6e06`) | **MERGED** | Review packet provenance hardening, TRX parsing, blocking scope/hygiene gates (Issue #11). Merged at `0dcc2bd`. |
-| **PR #10** (`docs/pilot-2-current-checkpoint`) | `0be0f11` | `main` | **MERGED** | Preserved final Pilot #2 review, workflow handoff, and pilot outcomes. |
-| **PR #8** (`automation/ai-workflow-foundation`) | `38b4d83` | `main` | **MERGED** | Initial GitHub-native workflow foundations. |
-
----
-
-## 2. Active Work Queue & Ownership
-
-| Work | Owner | Dependency / Decision | Next Action |
+| PR / Branch | Merged Commit | Status | Milestone Summary |
 |---|---|---|---|
-| **#12 spec authority** | Gemini implements; ChatGPT verifies; human merges | Human approved canonical spec & phase plan | Open documentation PR consolidating A1-UPDATED to `docs/spec/DXVK-COMPANION-SPEC.md` and verify. |
-| **#14 shared-directory policy** | Human decides; ChatGPT clarifies; Gemini implements | #9 compatibility base, #12 spec location | Prepare per-executable vs installation-wide options and test implications. |
-| **#15 reassessment** | Gemini; ChatGPT verifies | #9 base and #12 normative spec location | Establish source freshness and queued-action evidence. |
-| **#16 incompatible lifecycle** | Gemini; ChatGPT verifies | Terminal/parked/auto-resume decision; coordinate with #15 | Short options brief, then lifecycle tests and implementation. |
-| **#17 / #18 coverage** | Gemini; targeted ChatGPT evidence check | #9 merged; #18 spec docs depend on #12 | Run independent small sessions for non-vacuous coverage and persistence round-trips. |
+| **PR #30** (`test/issue-18-graphicsapi-persistence-downgrade`) | `f576ddd` | **MERGED** | `GraphicsApi` enum persistence downgrade verification and clean-slate V1 alignment (Issue #18). |
+| **PR #29** (`test/issue-17-non-vacuous-guard-coverage`) | `56808e5` | **MERGED** | Non-vacuous test coverage for adoption, reapply, and restore guards (Issue #17). |
+| **PR #28** (`spec/issue-12-canonical-specification`) | `68c604e` | **MERGED** | Canonical specification consolidation and Phase A.5 safety invariant restoration (Issue #12). |
+| **PR #26** (`workflow/issue-25-compact-handoffs`) | `955ca78` | **MERGED** | Compact handoff automation and live dashboard publication (Issue #25). |
+| **PR #9** (`issue-6-prevent-dx12-vulkan-deployment`) | `ce74e1e` | **MERGED** | Prevent DXVK deployment for DX12/Vulkan (Issue #6). |
+| **PR #4** (`pilot/companion-version-ordering`) | `230c8ae` | **MERGED** | CompanionVersion numeric ordering (Issue #5). |
+| **PR #24** (`audit/issue-22-privacy-coverage`) | `4f44059` | **MERGED** | Historical privacy audit, rule redaction, and durable evidence annex (Issue #22). |
+| **PR #23** (`fix/issue-13-reapply-original-baseline`) | `51691ee` | **MERGED** | Reapply original-baseline capture and backup preservation defect repair (Issue #13). |
+| **PR #21** (`docs/issue-20-workflow-cleanup`) | `093664d` | **MERGED** | Post-#19 cleanup, connector journaling, and dashboard orientation (Issue #20). |
+| **PR #19** (`workflow/review-packet-provenance`) | `0dcc2bd` | **MERGED** | Review packet provenance hardening, TRX parsing, blocking scope/hygiene gates (Issue #11). |
+| **PR #10** (`docs/pilot-2-current-checkpoint`) | `e7b6e06` | **MERGED** | Preserved final Pilot #2 review, workflow handoff, and pilot outcomes. |
+| **PR #8** (`automation/ai-workflow-foundation`) | `38b4d83` | **MERGED** | Initial GitHub-native workflow foundations. |
+
+---
+
+## 2. Active Work Governance & Decision Prerequisites
+
+Active task assignments, in-flight work, and open PR inventories are derived dynamically from GitHub (see authenticated dashboard [Issue #27](https://github.com/Tiflit/DXVK-Companion/issues/27) and `gh issue list` / `gh pr list`). Static documentation maintains stable governance rules, architecture, and role allocation without duplicating a secondary live task inventory.
+
+### Decision Governance Rules
+- **Decision Governance Block**: Tasks requiring architectural or policy choices must contain a structured Decision Governance Block in the GitHub Issue description (`Decision required`, `Proposed option`, `Status`, `Source of explicit human approval`).
+- **Human Approval Preflight**: Policy implementation is blocked until explicit human approval is authenticated in the task Issue. Agent recommendations (e.g. from ChatGPT or Gemini) do not constitute approval.
+- **Investigation Allowed**: Preparatory investigation, options analysis, and decision briefs may proceed while decisions are pending, but policy changes to production code or canonical specifications must not be implemented or merged without recorded approval.
+
 
 ---
 
@@ -52,7 +55,7 @@ All foundational pilot features, bugfixes, and CI harnesses are merged into `ori
 ### Fresh-Session Operating Instructions
 
 #### For Gemini (Implementer)
-1. Read [AGENTS.md](../AGENTS.md) and the live dashboard issue (or `docs/AI-CURRENT-STATE.md`).
+1. Read [AGENTS.md](../AGENTS.md) and the live dashboard issue for compact orientation. Underlying GitHub records are authoritative—verify task-critical facts and live identities directly; this static document provides stable governance, not live task state.
 2. Read the assigned GitHub Issue (`gh issue view <number>`). Note acceptance criteria and `### Allowed paths`.
 3. Verify git status, fetch `origin/main`, and work in an isolated worktree.
 4. Write failing regression fixtures first when addressing a defect.
@@ -90,18 +93,23 @@ All foundational pilot features, bugfixes, and CI harnesses are merged into `ori
 
 ## 5. Unresolved Architectural & Governance Decisions
 
-1. **Issue #12 (Normative Specification Authority)**: Resolved by human decision approving `A1-UPDATED`, the §47 development phase plan, and the clean-slate V1 no-legacy-import policy. Canonical specification consolidated into `docs/spec/DXVK-COMPANION-SPEC.md`, Phase A.5 design established as normative safety supplement, and superseded revisions archived.
-2. **Issue #14 (Shared-Directory Multi-Executable Policy)**: Architectural decision regarding whether DXVK installation should be scoped per-executable or across entire shared installation directories.
-3. **Issue #15 (API Reassessment before Queued Execution)**: Document mixed-module precedence and verify API status immediately prior to executing queued actions.
-4. **Issue #16 (Lifecycle for Incompatible Pending Actions)**: Policy decision on terminal vs parked vs auto-resume behavior for actions blocked by modern API classification.
-5. **Issue #17 & #18 (Follow-up Coverage & Persistence)**: Non-vacuous testing for adoption/reapply/restore and `GraphicsApi` enum persistence downgrade behavior.
-6. **Repository Protection Rulesets**: GitHub Actions workflows (`ai-scope-check`, `ai-pr-hygiene`, `build-and-test`) currently run as status checks. Enabling mandatory branch protection rulesets remains a human administrative choice.
+1. **Issue #14 (Shared-Directory Multi-Executable Policy)**: Architectural decision regarding whether DXVK installation should be scoped per-executable or across entire shared installation directories. Agent recommendation (Option A: installation-wide refusal) is pending human decision; policy implementation is blocked until human approval is recorded.
+2. **Issue #15 (API Reassessment before Queued Execution)**: Verify API status and enforce mixed-module precedence immediately prior to executing queued actions.
+3. **Issue #16 (Lifecycle for Incompatible Pending Actions)**: Architectural policy choice on terminal cancellation vs parked actions when actions are blocked by modern API classification.
+4. **Issue #32 (Clean-Slate V1 Legacy-Import Removal)**: Tracked implementation task following Issue #18 to remove legacy profile import logic per approved clean-slate V1 specification.
+5. **Repository Protection Rulesets**: GitHub Actions workflows (`ai-scope-check`, `ai-pr-hygiene`, `build-and-test`) currently run as status checks. Enabling mandatory branch protection rulesets remains a human administrative choice.
+
+> **Preserved Approved Decisions**:
+> - **Normative Specification Authority (Issue #12)**: Canonical specification is [`docs/spec/DXVK-COMPANION-SPEC.md`](../docs/spec/DXVK-COMPANION-SPEC.md), with [`docs/spec/DXVK-Companion-PhaseA5-Safety-and-Identity-Design-FINAL.md`](../docs/spec/DXVK-Companion-PhaseA5-Safety-and-Identity-Design-FINAL.md) as normative safety supplement.
+> - **Clean-Slate V1 Policy**: No legacy configuration import; modern clean-slate setup.
+> - **Deployment Guards**: Refuse DXVK deployment for DX12 and Vulkan executables, while preserving restore operations.
+
 
 ---
 
 ## 6. Live Dashboard Discovery, Fallback & Operations
 
 - **Discovery Mechanism**: The live automated repository state is published to the dedicated machine-owned Issue titled `[AI Dashboard] Current Repository State & Handoff Orientation` (searchable via `gh issue list --search "[AI Dashboard]"` or by label `ai-dashboard`).
-- **Stale / Offline Fallback Protocol**: If the live dashboard Issue is unavailable, closed, rate-limited, or reports an `INCOMPLETE` status, fresh agent sessions must read this curated document (`docs/AI-CURRENT-STATE.md`), verify the latest default-branch commit via `git log -n 1 origin/main`, and inspect open PRs via `gh pr list --state open`.
+- **Stale / Offline Fallback Protocol**: If the live dashboard Issue is unavailable, closed, rate-limited, or reports an `INCOMPLETE` status, fresh agent sessions must inspect underlying GitHub records directly (verify latest default-branch commit via `git log -n 1 origin/main`, and open PRs via `gh pr list --state open`), consulting `docs/AI-CURRENT-STATE.md` only for stable governance rules and role allocation.
 - **Publisher Activation**: Active on `main` following merge of PR #26 (currently publishing to authenticated Issue #27).
 - **Rollback / Disable Procedure**: In the event of unexpected publishing behavior, the workflow can be instantly disabled via `gh workflow disable ai-current-state.yml` without altering credentials or codebase files.

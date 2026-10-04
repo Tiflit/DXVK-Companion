@@ -14,16 +14,22 @@ Every agent engaging in a meaningful work session on this repository must leave 
 
 ### Core Recording Rules
 
-1. **Concise by default**: Target 100–200 words. Expand beyond this only when recording essential evidence, reproducer definitions, or critical diagnostics.
+1. **Concise by default**: Target 100–200 words. Expand beyond this only when recording essential evidence, reproducer definitions, or critical diagnostics. Record conclusions and rationale, not long transcripts.
 2. **Key elements required**:
    - Purpose of the session
    - Decisions made and underlying rationale
    - Evidence identity, test results, and residual limitations
    - Next concrete action and owner
    - Partial or no-change outcomes if stopped early
-3. **Checkpointing**: Record a checkpoint at material milestones (e.g. after verifying a reproducer or passing a test suite) and before stopping or switching models.
-4. **Accurate attribution**: Attribute each entry strictly to the agent that performed the actions. Do not conflate implementer actions with coordinator or auditor actions.
-5. **No guessed model versions**: Record only confirmed agent identities (e.g., `Gemini (Implementer)`, `ChatGPT (Coordinator)`, `Claude (Auditor)`, `Human`).
+3. **Structured Checkpoint Instructions**: Record a checkpoint at material milestones and before stopping or switching models. Each checkpoint must clearly capture:
+   - Completed work
+   - Changed and uncommitted files
+   - Verified evidence and test results
+   - Open findings and pending decisions
+   - Exact next action and assigned owner
+4. **Session Continuity vs Reset**: Continue a reliable implementation session for focused revisions and bounded repairs; restart into a fresh session only when context window saturation, tool failure, or capability degradation requires it. Independent audits and reviews retain strict fresh-context discipline.
+5. **Accurate attribution**: Attribute each entry strictly to the agent that performed the actions. Do not conflate implementer actions with coordinator or auditor actions.
+6. **No guessed model versions**: Record only confirmed agent identities (e.g., `Gemini (Implementer)`, `ChatGPT (Coordinator)`, `Claude (Auditor)`, `Human`).
 
 ### Persistence Channels
 
@@ -86,4 +92,7 @@ The index is updated opportunistically during authorized documentation tasks:
 | **2026-10-04** | Issue #13 Baseline safety repair | Gemini (Implementer) | REPAIRED (Merged PR #23) | [2026-10-04-issue-13-gemini-session-2.md](ai-journal/2026-10-04-issue-13-gemini-session-2.md) |
 | **2026-10-04** | Issue #22 Privacy audit & scanning | Gemini (Implementer) | AUDITED (Merged PR #24) | [2026-10-04-issue-22-gemini-session-1.md](ai-journal/2026-10-04-issue-22-gemini-session-1.md) |
 | **2026-10-04** | Issue #22 Privacy evidence annex | Gemini (Implementer) | DOCUMENTED | [2026-10-04-issue-22-privacy-evidence-annex.md](ai-journal/2026-10-04-issue-22-privacy-evidence-annex.md) |
-| **2026-10-04** | Issue #25 Handoff dashboard automation | Gemini (Implementer) | SUCCESS (PR pending) | [2026-10-04-issue-25-gemini-session-1.md](ai-journal/2026-10-04-issue-25-gemini-session-1.md) |
+| **2026-10-04** | Issue #25 Handoff dashboard automation | Gemini (Implementer) | SUCCESS (Merged PR #26) | [2026-10-04-issue-25-gemini-session-1.md](ai-journal/2026-10-04-issue-25-gemini-session-1.md) |
+| **2026-10-04** | Issue #31 Handoff automation & review preservation | Gemini (Implementer) | SUCCESS (PR #33) | [2026-10-04-issue-31-gemini-session-1.md](ai-journal/2026-10-04-issue-31-gemini-session-1.md) |
+| **2026-10-04** | Issue #31 PR #33 focused revision (R1-R4) | Gemini (Implementer) | SUCCESS (PR #33 revision) | [2026-10-04-issue-31-gemini-session-2.md](ai-journal/2026-10-04-issue-31-gemini-session-2.md) |
+| **2026-10-04** | Issue #31 PR #33 authorized reduced closeout | Gemini (Implementer) | SUCCESS (PR #33 closeout) | [2026-10-04-issue-31-gemini-session-3.md](ai-journal/2026-10-04-issue-31-gemini-session-3.md) |
