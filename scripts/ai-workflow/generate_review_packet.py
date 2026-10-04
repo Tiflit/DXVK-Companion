@@ -124,8 +124,7 @@ class GitHubClient:
         jobs = data.get("jobs", [])
         if attempt:
             filtered = [j for j in jobs if str(j.get("run_attempt", "")) == str(attempt)]
-            if filtered:
-                return filtered
+            return filtered
         return jobs
 
     def get_run_artifacts(self, run_id: str) -> List[Dict[str, Any]]:
@@ -157,12 +156,14 @@ def build_packet_content(
     max_diff_lines_per_section: int = 500,
     live_base_sha: Optional[str] = None,
     provenance_diagnostic: str = "",
+    manifest_completeness: Optional[str] = None,
+    patch_availability: Optional[str] = None,
 ) -> str:
     """Builds the formatted markdown content of the AI Review Packet in strict section order."""
     lines: List[str] = []
 
     tested_base_sha = base_sha
-    actual_live_base = live_base_sha if live_base_sha is not None else base_sha
+    actual_live_base = live_base_sha if live_base_sha is not None else (base_sha if base_sha != "unknown" else "unknown")
 
     # Title & Introduction
     lines.append("# AI Review Packet")
@@ -196,16 +197,31 @@ def build_packet_content(
         diag_str = f" ({provenance_diagnostic})" if provenance_diagnostic else " (build-provenance.json was unavailable; checkout identity is not assumed)"
         lines.append(f"- Tested checkout SHA: `incomplete`{diag_str}")
 
-    lines.append(f"- Tested Base SHA: `{tested_base_sha}`")
-    if actual_live_base and actual_live_base != tested_base_sha:
-        lines.append(f"- Live Base SHA: `{actual_live_base}`")
+    if tested_base_sha == "unknown" or not tested_base_sha:
+        lines.append("- Tested Base SHA: `unknown` (missing from triggering workflow_run event and provenance; live base is not substituted)")
+        if actual_live_base and actual_live_base != "unknown":
+            lines.append(f"- Live Base SHA: `{actual_live_base}`")
         lines.append("")
         lines.append("> [!WARNING]")
-        lines.append("> BASE-BRANCH MOVEMENT: BASE MOVED")
-        lines.append(f"> Triggering run was based on `{tested_base_sha}`, but live base branch is now `{actual_live_base}`.")
-        lines.append("> Integration CI evidence reflects the tested base; re-run CI if updated base integration is required.")
+        lines.append("> BASE RELATIONSHIP UNKNOWN: Live base metadata was not substituted as tested evidence. Source comparison declined.")
     else:
-        lines.append(f"- Live Base SHA: `{actual_live_base}` (matches tested base)")
+        lines.append(f"- Tested Base SHA: `{tested_base_sha}`")
+        if actual_live_base and actual_live_base != "unknown" and actual_live_base != tested_base_sha:
+            lines.append(f"- Live Base SHA: `{actual_live_base}`")
+            lines.append("")
+            lines.append("> [!WARNING]")
+            lines.append("> BASE-BRANCH MOVEMENT: BASE MOVED")
+            lines.append(f"> Triggering run was based on `{tested_base_sha}`, but live base branch is now `{actual_live_base}`.")
+            lines.append("> Integration CI evidence reflects the tested base; re-run CI if updated base integration is required.")
+        elif actual_live_base and actual_live_base != "unknown":
+            lines.append(f"- Live Base SHA: `{actual_live_base}` (matches tested base)")
+        else:
+            lines.append("- Live Base SHA: `unknown`")
+
+    if provenance_diagnostic and "Base SHA disagreement" in provenance_diagnostic:
+        lines.append("")
+        lines.append("> [!WARNING]")
+        lines.append(f"> BASE SHA DISAGREEMENT: {provenance_diagnostic}")
 
     lines.append(f"- Metadata capture time: `{capture_time}`")
 
@@ -288,8 +304,18 @@ def build_packet_content(
     files_with_patches = sum(1 for f in manifest if f.get("patch"))
     lines.append("## 4. Complete Changed Files Manifest")
     lines.append("")
-    if manifest:
-        if files_with_patches < total_manifest_files:
+    if manifest_completeness:
+        lines.append(f"- Manifest completeness: `{manifest_completeness}`")
+    if patch_availability:
+        lines.append(f"- Patch availability: `{patch_availability}`")
+    if manifest_completeness or patch_availability:
+        lines.append("")
+
+    if tested_base_sha == "unknown" or not tested_base_sha:
+        lines.append("Source comparison declined: immutable tested base SHA is unknown/incomplete.")
+        lines.append("")
+    elif manifest:
+        if files_with_patches < total_manifest_files and not patch_availability:
             lines.append(f"> Manifest reports {total_manifest_files} changed files; {files_with_patches} file patches available via API ({total_manifest_files - files_with_patches} omitted or binary).")
             lines.append("")
         for item in manifest:
@@ -300,9 +326,10 @@ def build_packet_content(
             has_patch = bool(item.get("patch"))
             patch_note = "" if has_patch else " [patch omitted/binary]"
             lines.append(f"- `{filename}` (+{additions}/-{deletions}) — {status}{patch_note}")
+        lines.append("")
     else:
         lines.append("No changed files in manifest.")
-    lines.append("")
+        lines.append("")
 
     # Split files into categories for budgeted diffs (F12)
     test_files = []
@@ -322,6 +349,11 @@ def build_packet_content(
         sec_lines: List[str] = [f"## {title}", ""]
         current_lines = 0
         truncated = False
+
+        if tested_base_sha == "unknown" or not tested_base_sha:
+            sec_lines.append("Source comparison declined: immutable tested base SHA is unknown/incomplete.")
+            sec_lines.append("")
+            return sec_lines, False
 
         if not files:
             sec_lines.append(f"No changes in this category.")
@@ -454,8 +486,8 @@ def generate_packet(
 
     # Bind tested base SHA from triggering run event payload if available (F4)
     event_base_sha = target_pr.get("base", {}).get("sha", "")
-    tested_base_sha = event_base_sha if event_base_sha else live_base_sha
-    if tested_base_sha:
+    tested_base_sha = event_base_sha if event_base_sha else "unknown"
+    if tested_base_sha != "unknown":
         validate_identifier(tested_base_sha, "tested_base_sha", r"^[0-9a-fA-F]{40}$")
 
     # Resolve task contract issue
@@ -482,9 +514,25 @@ def generate_packet(
     # Fetch attempt-specific jobs (F5)
     ci_jobs = client.get_workflow_run_jobs(run_id, attempt=run_attempt)
 
-    # Fetch changed files comparison between tested base and run_head_sha (F4)
-    compare_data = client.compare_commits(tested_base_sha, run_head_sha)
-    manifest = compare_data.get("files", [])
+    # Fetch changed files comparison between tested base and run_head_sha (F4, F12)
+    if tested_base_sha == "unknown":
+        manifest = []
+        compare_data = {"files": []}
+        manifest_completeness = "unknown (source comparison declined: immutable tested base SHA is unknown/incomplete)"
+        patch_availability = "unavailable"
+    else:
+        compare_data = client.compare_commits(tested_base_sha, run_head_sha)
+        manifest = compare_data.get("files", [])
+        pr_changed_files = pr_data.get("changed_files")
+        total_manifest_files = len(manifest)
+        files_with_patches = sum(1 for f in manifest if f.get("patch"))
+
+        if total_manifest_files >= 300 or (pr_changed_files is not None and pr_changed_files > total_manifest_files):
+            manifest_completeness = f"incomplete (API compare response capped at {total_manifest_files} files; total changed files: {pr_changed_files if pr_changed_files is not None else 'unknown'})"
+            patch_availability = f"all returned patches present ({files_with_patches}/{total_manifest_files})" if files_with_patches == total_manifest_files else f"partial ({files_with_patches}/{total_manifest_files} returned patches present)"
+        else:
+            manifest_completeness = f"complete ({total_manifest_files} files)"
+            patch_availability = f"all returned patches present ({files_with_patches}/{total_manifest_files})" if files_with_patches == total_manifest_files else f"partial ({files_with_patches}/{total_manifest_files} returned patches present; {total_manifest_files - files_with_patches} omitted by GitHub API or binary)"
 
     # Process TRX results and provenance from run artifacts (F1, F5, F6)
     artifacts = client.get_run_artifacts(run_id)
@@ -495,13 +543,45 @@ def generate_packet(
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    for art in artifacts:
-        art_name = art.get("name", "")
-        art_download_url = art.get("archive_download_url", "")
-        if not art_download_url:
-            continue
+    trx_artifacts = [a for a in artifacts if a.get("name") == "phase-a-test-results"]
+    selected_trx_artifact = None
 
-        if art_name == "phase-a-test-results":
+    if not trx_artifacts:
+        trx_totals = {"status": "unavailable", "reason": "No TRX artifact found"}
+    elif len(trx_artifacts) == 1:
+        art = trx_artifacts[0]
+        art_created = art.get("created_at")
+        if str(run_attempt) != "1" and ci_jobs and art_created:
+            job_starts = [j.get("started_at") for j in ci_jobs if j.get("started_at")]
+            if job_starts and min(job_starts) and art_created < min(job_starts):
+                trx_totals = {"status": "unavailable", "reason": f"Ambiguous artifact attribution: artifact created_at ({art_created}) precedes attempt {run_attempt} start ({min(job_starts)})"}
+            else:
+                selected_trx_artifact = art
+        else:
+            selected_trx_artifact = art
+    else:
+        # Multiple artifacts with name 'phase-a-test-results'
+        matching = []
+        if ci_jobs:
+            job_starts = [j.get("started_at") for j in ci_jobs if j.get("started_at")]
+            job_ends = [j.get("completed_at") for j in ci_jobs if j.get("completed_at")]
+            if job_starts and job_ends and min(job_starts):
+                min_start = min(job_starts)
+                for a in trx_artifacts:
+                    c = a.get("created_at")
+                    if c and c >= min_start:
+                        matching.append(a)
+        if len(matching) == 1:
+            selected_trx_artifact = matching[0]
+        else:
+            trx_totals = {
+                "status": "unavailable",
+                "reason": f"Ambiguous artifact attribution: {len(trx_artifacts)} duplicate 'phase-a-test-results' artifacts found; cannot reliably attribute to attempt {run_attempt}",
+            }
+
+    if selected_trx_artifact:
+        art_download_url = selected_trx_artifact.get("archive_download_url", "")
+        if art_download_url:
             try:
                 zip_data = client.download_bytes(art_download_url, max_bytes=50 * 1024 * 1024, timeout=30)
                 with tempfile.TemporaryDirectory() as tmp_dir:
@@ -521,19 +601,29 @@ def generate_packet(
             except Exception as e:
                 trx_totals = {"status": "unavailable", "reason": f"Failed to download/parse TRX: {e}"}
 
-        elif art_name == "build-provenance":
+    # Process build-provenance artifacts
+    prov_artifacts = [a for a in artifacts if a.get("name") == "build-provenance"]
+    selected_prov = prov_artifacts[0] if len(prov_artifacts) == 1 else (prov_artifacts[-1] if prov_artifacts else None)
+    if selected_prov:
+        art_download_url = selected_prov.get("archive_download_url", "")
+        if art_download_url:
             try:
                 zip_data = client.download_bytes(art_download_url, max_bytes=10 * 1024 * 1024, timeout=30)
                 parsed_prov = safe_extract_json_from_zip(zip_data, "build-provenance.json", max_uncompressed_bytes=10 * 1024 * 1024)
                 if parsed_prov:
                     prov_run_id = str(parsed_prov.get("run_id", ""))
                     prov_attempt = str(parsed_prov.get("run_attempt", ""))
-                    # Verify attempt and run identity (F5)
-                    if prov_run_id and prov_run_id != run_id:
+                    prov_head_sha = str(parsed_prov.get("head_sha", ""))
+                    if not prov_run_id or not prov_attempt or not prov_head_sha:
+                        provenance_diagnostic = "Incomplete provenance identity: missing run_id, run_attempt, or head_sha in build-provenance.json"
+                    elif prov_run_id != run_id:
                         provenance_diagnostic = f"Run ID mismatch: provenance recorded {prov_run_id} vs triggering run {run_id}"
-                    elif prov_attempt and prov_attempt != run_attempt:
+                    elif prov_attempt != run_attempt:
                         provenance_diagnostic = f"Attempt mismatch: provenance recorded attempt {prov_attempt} vs triggering attempt {run_attempt}"
                     else:
+                        prov_base_sha = str(parsed_prov.get("base_sha", ""))
+                        if prov_base_sha and event_base_sha and prov_base_sha != event_base_sha:
+                            provenance_diagnostic = f"Base SHA disagreement: event recorded {event_base_sha} vs provenance recorded {prov_base_sha}"
                         build_provenance = parsed_prov
                 else:
                     provenance_diagnostic = "build-provenance.json not found inside artifact zip"
@@ -562,6 +652,8 @@ def generate_packet(
         pr_verification=pr_verification,
         live_base_sha=live_base_sha,
         provenance_diagnostic=provenance_diagnostic,
+        manifest_completeness=manifest_completeness,
+        patch_availability=patch_availability,
     )
 
     packet_file = output_dir / "review_packet.md"
@@ -569,27 +661,28 @@ def generate_packet(
     print(f"Generated review packet at {packet_file}")
 
     # Generate full diff artifact with explicit omission and status reporting (F12)
-    total_manifest_files = len(manifest)
-    files_with_patches = sum(1 for f in manifest if f.get("patch"))
-    manifest_status = "complete" if files_with_patches == total_manifest_files else f"partial ({files_with_patches}/{total_manifest_files} patches present)"
-
     full_diff_file = output_dir / f"full-diff-pr-{pr_number}.diff"
     full_diff_content = [
         f"# AI Review Packet Diff for PR #{pr_number} — {pr_title}",
         f"# Triggering run: {run_id} (attempt {run_attempt})",
         f"# Tested Base SHA: {tested_base_sha} -> Run Head SHA: {run_head_sha}",
-        f"# Manifest status: {manifest_status}",
+        f"# Manifest completeness: {manifest_completeness}",
+        f"# Patch availability: {patch_availability}",
         "",
     ]
-    for f in manifest:
-        patch = f.get("patch")
-        fname = f.get("filename", "")
-        full_diff_content.append(f"diff --git a/{fname} b/{fname}")
-        if patch:
-            full_diff_content.append(patch)
-        else:
-            full_diff_content.append(f"# [Patch omitted by GitHub API for {fname}; inspect repository diff directly]")
+    if tested_base_sha == "unknown":
+        full_diff_content.append("# Source comparison declined: immutable tested base SHA is unknown/incomplete.")
         full_diff_content.append("")
+    else:
+        for f in manifest:
+            patch = f.get("patch")
+            fname = f.get("filename", "")
+            full_diff_content.append(f"diff --git a/{fname} b/{fname}")
+            if patch:
+                full_diff_content.append(patch)
+            else:
+                full_diff_content.append(f"# [Patch omitted by GitHub API for {fname}; inspect repository diff directly]")
+            full_diff_content.append("")
     full_diff_file.write_text("\n".join(full_diff_content), encoding="utf-8")
     print(f"Generated full diff artifact at {full_diff_file}")
 

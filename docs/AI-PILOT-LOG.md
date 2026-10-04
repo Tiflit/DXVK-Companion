@@ -392,8 +392,8 @@ External review by Claude of initial implementation commit `0abef8d34a836494cdd8
 | **F3** | Ambiguous PR associations across multiple PRs | Accepted | Declined ambiguity: `generate_review_packet.py` exits with status 1 if a workflow run maps to multiple PRs unless explicit `--pr-number` is supplied. Tested with ambiguity fixtures. |
 | **F4** | Tested Base SHA bound to live PR branch instead of triggering event | Accepted | Extracted tested base SHA from triggering event payload (`workflow_run.pull_requests[].base.sha`). Live PR base SHA is reported separately; emits warning if base branch moved. |
 | **F5** | Run attempt mismatch and job log attribution | Accepted | Queried attempt-specific jobs API (`/actions/runs/{run_id}/attempts/{attempt}/jobs`). Verified `run_id` and `run_attempt` inside `build-provenance.json` match triggering execution; mismatches marked incomplete. |
-| **F6** | Azure Blob SAS redirect authentication failure & size limits | Accepted | Verified empirically that urllib forwarded Authorization header to Azure Blob Storage, triggering HTTP 401. Implemented host-aware redirect handler stripping Authorization when redirecting off-domain. Enforced 50 MB total / 10 MB per-file limits. |
-| **F7** | Path traversal (Zip-Slip) & decompression bombs | Accepted | Added `safe_extract_json_from_zip` enforcing canonical destination containment and uncompressed size bounds. Tested with zip-slip fixtures. |
+| **F6** | Azure Blob SAS redirect authentication failure & size limits | Accepted | Verified empirically that urllib forwarded Authorization header to Azure Blob Storage, triggering HTTP 401. Implemented host-aware redirect handler stripping Authorization when redirecting off-domain. Enforced 50 MB total / 10 MB per-file limits, canonical destination containment (Zip-Slip defense), and uncompressed size bounds. |
+| **F7** | Legacy contract migration rollout gap | Accepted | Restored original meaning: Issues #5/#6 lack '### Allowed paths' and PRs #4/#9 lack required hygiene headings. Documented exact Issue and PR edits and on-demand rechecks. External edits remain coordinator actions. |
 | **F8** | PR template HTML comments & naked numbers accepted | Accepted | Stripped HTML comments (`<!-- ... -->`) before regex parsing. Enforced `#<number>` format in `extract_primary_issue`, rejecting naked numbers and placeholder `Fixes #`. Tested against shipped templates. |
 | **F9** | Loose opt-out synonyms rejected valid file paths | Accepted | Replaced substring search with exact whole-entry set membership for loose synonyms (`LOOSE_SYNONYMS = {"not yet constrained", "none", "any", "n/a", "open", "all", "tbd"}`). Valid paths containing words like `open` or `all` (e.g. `src/open/all.cs`) are preserved. |
 | **F10** | Lack of manual/advisory recheck mechanism | Accepted | Added `workflow_dispatch` trigger with `pr_number` input to both `ai-scope-check.yml` and `ai-pr-hygiene.yml`, enabling on-demand verification alongside `pull_request.edited`. |
@@ -432,4 +432,53 @@ To ensure smooth operation when checks are configured as required:
    - Primary Task Contract: Issue #6 (`Prevent DXVK deployment for DX12/Vulkan`)
    - Migration Action: Update PR #9 description via GitHub UI to add `## Primary Issue` with `Fixes #6`, along with required hygiene headings.
    - Recheck: Re-run `ai-pr-hygiene` and `ai-scope-check` using `workflow_dispatch` with PR number `9`.
+
+## Bounded repair exception checkpoint — Issue #11 (F4, F5, F7, F12) (2026-10-03)
+
+### Context & bounded repair scope
+
+Claude's verification pass on revised head `358f9154c2db784e4fead4af4767fd184e8c09a7` noted that four material requirements remained incompletely resolved: F4 (live base fallback), F5 (unmatched job fallback, missing provenance identity, unscoped TRX artifacts & duplicate selection), F7 (restoring original legacy contract migration meaning and documenting exact edits), and F12 (separating manifest completeness from patch availability and testing capped compare responses). The coordinator granted a bounded repair exception targeting strictly these four existing requirements.
+
+### Bounded repair implementation & evidence
+
+| Item | Requirement & Defect | Bounded Repair Implementation | Verification Evidence |
+|---|---|---|---|
+| **F4** | Missing event base previously fell back to live base and was labeled tested. Base disagreement was not flagged. | If event base is missing/empty, `tested_base_sha` is strictly marked `unknown`—never assigned `live_base_sha`. Source comparison is explicitly declined (`compare_commits` not called, diffs report declined status). Base SHA disagreements between event and provenance are detected and flagged. | `test_missing_event_base_declines_comparison_and_reports_unknown`, `test_base_provenance_disagreement_detected`. |
+| **F5** | Unmatched job fallback, missing provenance identifiers, unscoped TRX artifacts and duplicate selection. | In `GitHubClient.get_workflow_run_jobs`, fallback filtering by attempt returns `[]` when no jobs match (unmatched jobs from other attempts are never returned). In `generate_packet`, `build-provenance.json` must contain `run_id`, `run_attempt`, and `head_sha`; missing identifiers cause checkout identity to be marked `incomplete`. Multiple TRX artifacts without unambiguous attempt window attribution are marked `UNAVAILABLE` with an ambiguous attribution diagnostic rather than silently taking the first entry. | `test_github_client_jobs_attempt_filtering_rejects_unmatched_jobs`, `test_missing_provenance_identifiers_marked_incomplete`, `test_duplicate_phase_a_artifacts_marked_unavailable`. |
+| **F7** | Legacy contract migration rollout gap: Issues #5/#6 lack `### Allowed paths` section. | Restored original meaning of F7. Documented exact required metadata edits for Issue #5, PR #4, Issue #6, and PR #9, along with exact recheck commands. Preserved application requirements intact; external metadata edits remain coordinator actions. | Documented in `docs/AI-PILOT-LOG.md`, `docs/AI-DEVELOPMENT-WORKFLOW.md`, and PR #19 description. |
+| **F12** | Conflated manifest completeness with patch availability; capped compare responses were falsely reported as complete. | Separated manifest completeness (`complete` vs `incomplete (capped)`) from patch availability (`all returned patches present` vs `partial`). Verified that 300 files returned with 300 patches is marked `incomplete`, not `complete`, when PR changed files exceed 300. | `test_capped_compare_response_with_all_patches_present_is_not_complete_manifest`. |
+
+### Exact legacy contract migration instructions (Coordinator actions)
+
+1. **Issue #5**: Coordinator adds `### Allowed paths` section:
+   ```markdown
+   ### Allowed paths
+
+   - src/DXVKCompanion/Utils/CompanionVersion.cs
+   - tests/DXVKCompanion.PhaseA.Tests/CompanionVersionTests.cs
+   ```
+2. **PR #4**: Coordinator adds `## Primary Issue` with `Fixes #5`, and `## Documentation` heading.
+   - Recheck: `gh workflow run ai-pr-hygiene.yml -f pr_number=4` and `gh workflow run ai-scope-check.yml -f pr_number=4`.
+3. **Issue #6**: Coordinator adds `### Allowed paths` section:
+   ```markdown
+   ### Allowed paths
+
+   - src/DXVKCompanion/DXVK/DxvkCompatibility.cs
+   - src/DXVKCompanion/DXVK/DxvkInstaller.cs
+   - src/DXVKCompanion/DXVK/DxvkManager.cs
+   - src/DXVKCompanion/Models/GraphicsApi.cs
+   - src/DXVKCompanion/Monitoring/ApiClassifier.cs
+   - src/DXVKCompanion/UI/GameDetailsWindow.cs
+   - src/DXVKCompanion/UI/TrayApp.cs
+   - tests/DXVKCompanion.PhaseA.Tests/DxvkModernApiCompatibilityTests.cs
+   ```
+4. **PR #9**: Coordinator adds `## Primary Issue` with `Fixes #6`.
+   - Recheck: `gh workflow run ai-pr-hygiene.yml -f pr_number=9` and `gh workflow run ai-scope-check.yml -f pr_number=9`.
+
+### Remaining uncertainties and escalation note
+
+- This repair pass is bounded strictly to F4, F5, F7, and F12 per coordinator arbitration. No claim is made that every original finding has been independently verified across the repository.
+- GitHub Actions workflows execute as advisory status checks; platform-level merge blocking requires explicit repository branch protection rulesets configured by administrators.
+- If any material defect remains unresolved after this bounded repair exception, the matter will be escalated explicitly rather than initiating another open-ended revision loop.
+
 

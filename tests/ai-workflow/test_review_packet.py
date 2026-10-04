@@ -502,7 +502,251 @@ class TestReviewPacket(unittest.TestCase):
             packet_text = (Path(tmpdir) / "review_packet.md").read_text(encoding="utf-8")
             self.assertIn("Attempt mismatch: provenance recorded attempt 2 vs triggering attempt 1", packet_text)
 
+    def test_missing_event_base_declines_comparison_and_reports_unknown(self):
+        # F4: Missing event base must NEVER fall back to live base as tested evidence.
+        # It must report Tested Base SHA as unknown/incomplete and decline source comparison.
+        event = {
+            "workflow_run": {
+                "id": 12345,
+                "run_attempt": 1,
+                "head_sha": "0abef8d34a836494cdd882b844c781e32fa35322",
+                "pull_requests": [{"number": 19, "base": {}}],  # Missing base SHA!
+            }
+        }
+        compare_called = []
+        class MockClient(generate_review_packet.GitHubClient):
+            def __init__(self):
+                super().__init__(token="dummy", repo="Tiflit/DXVK-Companion")
+            def get_pr(self, num):
+                return {
+                    "head": {"sha": "0abef8d34a836494cdd882b844c781e32fa35322"},
+                    "base": {"sha": "2222222222222222222222222222222222222222"},
+                    "title": "PR 19",
+                    "changed_files": 1,
+                }
+            def get_issue(self, num): return {}
+            def get_workflow_run_jobs(self, run_id, attempt=None): return []
+            def compare_commits(self, base_sha, head_sha):
+                compare_called.append((base_sha, head_sha))
+                return {"files": []}
+            def get_run_artifacts(self, run_id): return []
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            res = generate_review_packet.generate_packet(
+                event=event,
+                client=MockClient(),
+                output_dir=Path(tmpdir),
+                override_pr_number=19,
+            )
+            self.assertEqual(res, 0)
+            packet_text = (Path(tmpdir) / "review_packet.md").read_text(encoding="utf-8")
+            # Tested base must NOT be 2222... (live base)
+            self.assertNotIn("Tested Base SHA: `2222222222222222222222222222222222222222`", packet_text)
+            self.assertIn("Tested Base SHA: `unknown`", packet_text)
+            self.assertIn("Live Base SHA: `2222222222222222222222222222222222222222`", packet_text)
+            self.assertIn("comparison declined", packet_text.lower())
+            # compare_commits must NOT have been called with live base or unknown base
+            self.assertEqual(len(compare_called), 0)
+
+    def test_base_provenance_disagreement_detected(self):
+        # F4: If provenance contains a base SHA that disagrees with event base SHA, detect and flag it.
+        prov_json = (
+            '{"head_sha": "faec613332c3a7d5fcee44fc8b257839d150dddf",'
+            ' "base_sha": "3333333333333333333333333333333333333333",'  # Differs from event base 1111...
+            ' "ref": "refs/pull/19/merge",'
+            ' "run_id": "12345",'
+            ' "run_attempt": "1"}'
+        )
+        bio = io.BytesIO()
+        with zipfile.ZipFile(bio, "w") as zf:
+            zf.writestr("build-provenance.json", prov_json)
+        zip_bytes = bio.getvalue()
+
+        event = {
+            "workflow_run": {
+                "id": 12345,
+                "run_attempt": 1,
+                "head_sha": "0abef8d34a836494cdd882b844c781e32fa35322",
+                "pull_requests": [{"number": 19, "base": {"sha": "1111111111111111111111111111111111111111"}}],
+            }
+        }
+        class MockClient(generate_review_packet.GitHubClient):
+            def __init__(self):
+                super().__init__(token="dummy", repo="Tiflit/DXVK-Companion")
+            def get_pr(self, num): return {"head": {"sha": "0abef8d34a836494cdd882b844c781e32fa35322"}, "base": {"sha": "1111111111111111111111111111111111111111"}}
+            def get_issue(self, num): return {}
+            def get_workflow_run_jobs(self, run_id, attempt=None): return []
+            def compare_commits(self, base_sha, head_sha): return {"files": []}
+            def get_run_artifacts(self, run_id):
+                return [{"name": "build-provenance", "archive_download_url": "https://api.github.com/prov"}]
+            def download_bytes(self, url, max_bytes=50*1024*1024, timeout=30): return zip_bytes
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            res = generate_review_packet.generate_packet(
+                event=event,
+                client=MockClient(),
+                output_dir=Path(tmpdir),
+                override_pr_number=19,
+            )
+            self.assertEqual(res, 0)
+            packet_text = (Path(tmpdir) / "review_packet.md").read_text(encoding="utf-8")
+            self.assertIn("Base SHA disagreement", packet_text)
+
+    def test_github_client_jobs_attempt_filtering_rejects_unmatched_jobs(self):
+        # F5: When attempt endpoint 404s, fallback to run-level jobs must filter by attempt
+        # and NEVER return unmatched jobs from other attempts.
+        class MockClient(generate_review_packet.GitHubClient):
+            def __init__(self):
+                super().__init__(token="dummy", repo="Tiflit/DXVK-Companion")
+            def fetch_json(self, url, timeout=30):
+                if "/attempts/2/jobs" in url:
+                    import urllib.error
+                    raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
+                if "/actions/runs/123/jobs" in url:
+                    return {"jobs": [
+                        {"id": 1, "run_attempt": 1, "name": "build-and-test"},
+                        {"id": 2, "run_attempt": 1, "name": "other-job"},
+                    ]}
+                return {}
+
+        client = MockClient()
+        jobs = client.get_workflow_run_jobs(run_id="123", attempt="2")
+        # Must NOT return attempt 1 jobs when attempt 2 was requested!
+        self.assertEqual(jobs, [])
+
+    def test_missing_provenance_identifiers_marked_incomplete(self):
+        # F5: build-provenance missing run_id or run_attempt must be rejected as incomplete.
+        prov_json = (
+            '{"head_sha": "faec613332c3a7d5fcee44fc8b257839d150dddf",'
+            ' "ref": "refs/pull/19/merge"}'  # Missing run_id and run_attempt!
+        )
+        bio = io.BytesIO()
+        with zipfile.ZipFile(bio, "w") as zf:
+            zf.writestr("build-provenance.json", prov_json)
+        zip_bytes = bio.getvalue()
+
+        event = {
+            "workflow_run": {
+                "id": 12345,
+                "run_attempt": 1,
+                "head_sha": "0abef8d34a836494cdd882b844c781e32fa35322",
+                "pull_requests": [{"number": 19, "base": {"sha": "1111111111111111111111111111111111111111"}}],
+            }
+        }
+        class MockClient(generate_review_packet.GitHubClient):
+            def __init__(self):
+                super().__init__(token="dummy", repo="Tiflit/DXVK-Companion")
+            def get_pr(self, num): return {"head": {"sha": "0abef8d34a836494cdd882b844c781e32fa35322"}, "base": {"sha": "1111111111111111111111111111111111111111"}}
+            def get_issue(self, num): return {}
+            def get_workflow_run_jobs(self, run_id, attempt=None): return []
+            def compare_commits(self, base_sha, head_sha): return {"files": []}
+            def get_run_artifacts(self, run_id):
+                return [{"name": "build-provenance", "archive_download_url": "https://api.github.com/prov"}]
+            def download_bytes(self, url, max_bytes=50*1024*1024, timeout=30): return zip_bytes
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            res = generate_review_packet.generate_packet(
+                event=event,
+                client=MockClient(),
+                output_dir=Path(tmpdir),
+                override_pr_number=19,
+            )
+            self.assertEqual(res, 0)
+            packet_text = (Path(tmpdir) / "review_packet.md").read_text(encoding="utf-8")
+            self.assertIn("Tested checkout SHA: `incomplete`", packet_text)
+            self.assertIn("Incomplete provenance identity", packet_text)
+
+    def test_duplicate_phase_a_artifacts_marked_unavailable(self):
+        # F5: Multiple phase-a-test-results artifacts without unambiguous attempt window attribution must mark TRX unavailable.
+        event = {
+            "workflow_run": {
+                "id": 12345,
+                "run_attempt": 2,  # Rerun attempt 2
+                "head_sha": "0abef8d34a836494cdd882b844c781e32fa35322",
+                "pull_requests": [{"number": 19, "base": {"sha": "1111111111111111111111111111111111111111"}}],
+            }
+        }
+        class MockClient(generate_review_packet.GitHubClient):
+            def __init__(self):
+                super().__init__(token="dummy", repo="Tiflit/DXVK-Companion")
+            def get_pr(self, num): return {"head": {"sha": "0abef8d34a836494cdd882b844c781e32fa35322"}, "base": {"sha": "1111111111111111111111111111111111111111"}}
+            def get_issue(self, num): return {}
+            def get_workflow_run_jobs(self, run_id, attempt=None): return []
+            def compare_commits(self, base_sha, head_sha): return {"files": []}
+            def get_run_artifacts(self, run_id):
+                # Two duplicate artifacts for the run
+                return [
+                    {"id": 1, "name": "phase-a-test-results", "archive_download_url": "https://api.github.com/trx1", "created_at": "2026-10-03T10:00:00Z"},
+                    {"id": 2, "name": "phase-a-test-results", "archive_download_url": "https://api.github.com/trx2", "created_at": "2026-10-03T11:00:00Z"},
+                ]
+            def download_bytes(self, url, max_bytes=50*1024*1024, timeout=30):
+                return b"PK\x05\x06" + b"\x00" * 18
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            res = generate_review_packet.generate_packet(
+                event=event,
+                client=MockClient(),
+                output_dir=Path(tmpdir),
+                override_pr_number=19,
+            )
+            self.assertEqual(res, 0)
+            packet_text = (Path(tmpdir) / "review_packet.md").read_text(encoding="utf-8")
+            self.assertIn("Status: `UNAVAILABLE`", packet_text)
+            self.assertIn("Ambiguous artifact attribution", packet_text)
+
+    def test_capped_compare_response_with_all_patches_present_is_not_complete_manifest(self):
+        # F12: If compare endpoint returns 300 files and all 300 files have a patch,
+        # but PR changed 350 files, manifest completeness must be marked incomplete/capped,
+        # and separated from patch availability.
+        event = {
+            "workflow_run": {
+                "id": 12345,
+                "run_attempt": 1,
+                "head_sha": "0abef8d34a836494cdd882b844c781e32fa35322",
+                "pull_requests": [{"number": 19, "base": {"sha": "1111111111111111111111111111111111111111"}}],
+            }
+        }
+        class MockClient(generate_review_packet.GitHubClient):
+            def __init__(self):
+                super().__init__(token="dummy", repo="Tiflit/DXVK-Companion")
+            def get_pr(self, num):
+                return {
+                    "head": {"sha": "0abef8d34a836494cdd882b844c781e32fa35322"},
+                    "base": {"sha": "1111111111111111111111111111111111111111"},
+                    "title": "Large PR",
+                    "changed_files": 350,  # 350 files changed in PR!
+                }
+            def get_issue(self, num): return {}
+            def get_workflow_run_jobs(self, run_id, attempt=None): return []
+            def compare_commits(self, base_sha, head_sha):
+                # 300 files returned (capped at GitHub API limit), ALL with patches!
+                return {
+                    "files": [
+                        {"filename": f"file_{i}.txt", "patch": "@@ -1 +1 @@\n+x", "additions": 1, "deletions": 0}
+                        for i in range(300)
+                    ]
+                }
+            def get_run_artifacts(self, run_id): return []
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            res = generate_review_packet.generate_packet(
+                event=event,
+                client=MockClient(),
+                output_dir=Path(tmpdir),
+                override_pr_number=19,
+            )
+            self.assertEqual(res, 0)
+            diff_file = Path(tmpdir) / "full-diff-pr-19.diff"
+            diff_text = diff_file.read_text(encoding="utf-8")
+            packet_text = (Path(tmpdir) / "review_packet.md").read_text(encoding="utf-8")
+
+            # Must NOT claim manifest is complete just because all 300 patches are present!
+            self.assertIn("Manifest completeness: incomplete", diff_text)
+            self.assertIn("Patch availability: all returned patches present (300/300)", diff_text)
+            self.assertIn("Manifest completeness: `incomplete", packet_text)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
