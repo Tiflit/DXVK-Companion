@@ -31,6 +31,7 @@ Gemini implementation -> CI -> ChatGPT verification & arbitration -> Human merge
 
 - Make the smallest coherent change that satisfies the task contract.
 - Stay strictly within the assigned task's `### Allowed paths`. Changes outside allowed paths cause automated CI failure.
+- Never modify application code (`src/**`) or test suites (`tests/DXVKCompanion.PhaseA.Tests/**`) unless explicitly included in the task's allowed paths (e.g. an authorized application feature, bugfix, or integration-test task).
 - **Specification Authority & Precedence**: The canonical project specification is [`docs/spec/DXVK-COMPANION-SPEC.md`](docs/spec/DXVK-COMPANION-SPEC.md), with [`docs/spec/DXVK-Companion-PhaseA5-Safety-and-Identity-Design-FINAL.md`](docs/spec/DXVK-Companion-PhaseA5-Safety-and-Identity-Design-FINAL.md) as the normative safety and identity supplement.
 - **Precedence Order**: `Assigned Task Contract (Issue) > Canonical Specification > Safety Supplement`.
 - **Safety Invariant Protection**: Task Issues cannot silently override safety invariants without an explicit human decision.

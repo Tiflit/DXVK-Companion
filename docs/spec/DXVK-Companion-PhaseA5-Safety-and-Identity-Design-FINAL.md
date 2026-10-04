@@ -1,6 +1,6 @@
 # DXVK Companion — Phase A.5 Safety & Identity Design
 
-**Status:** Approved design — normative safety and identity supplement to [DXVK-COMPANION-SPEC.md](DXVK-COMPANION-SPEC.md). Implementation is authorized in subsequent phases (Phase C safe file engine); core safety contracts verified against synthetic test directories.
+**Status:** Approved design — normative safety and identity supplement to [DXVK-COMPANION-SPEC.md](DXVK-COMPANION-SPEC.md). Implementation authorized against synthetic temporary directories only.
 
 ## 1. Purpose
 

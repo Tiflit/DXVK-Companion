@@ -8,7 +8,7 @@
 
 - Phase A data foundation: complete and verified in Windows CI.
 - Phase A.1: clean-slate V1 approved — V1 will not import earlier development profiles or `games.json`.
-- Phase A.5 safety & identity design: specification supplement approved in [DXVK-Companion-PhaseA5-Safety-and-Identity-Design-FINAL.md](DXVK-Companion-PhaseA5-Safety-and-Identity-Design-FINAL.md); core safety contracts verified against synthetic test directories; full implementation planned for subsequent phases (Phase C safe file engine).
+- Phase A.5 safety & identity design: specification supplement approved in [DXVK-Companion-PhaseA5-Safety-and-Identity-Design-FINAL.md](DXVK-Companion-PhaseA5-Safety-and-Identity-Design-FINAL.md); implementation authorized against synthetic temporary directories only.
 
 This document is the canonical source of truth for the intended architecture, behavior, scope, and design principles of DXVK Companion. Its normative safety and identity supplement is [DXVK-Companion-PhaseA5-Safety-and-Identity-Design-FINAL.md](DXVK-Companion-PhaseA5-Safety-and-Identity-Design-FINAL.md).
 
