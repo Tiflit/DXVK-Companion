@@ -80,6 +80,17 @@ class TestPrHygiene(unittest.TestCase):
         self.assertTrue(result.is_valid)
         self.assertEqual(result.primary_issue, 11)
 
+    def test_unedited_pr_template_fails_hygiene(self):
+
+        # The shipped .github/pull_request_template.md without user edits must fail hygiene (F8)
+        template_file = REPO_ROOT / ".github" / "pull_request_template.md"
+        self.assertTrue(template_file.exists())
+        content = template_file.read_text(encoding="utf-8")
+        result = check_pr_hygiene.verify_pr_body(content)
+        self.assertFalse(result.is_valid)
+        self.assertIn("Primary Issue", result.missing_sections)
+
 
 if __name__ == "__main__":
     unittest.main()
+

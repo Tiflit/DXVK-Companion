@@ -1,14 +1,18 @@
 import datetime
+import io
 import json
 import os
 import sys
+import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT / "scripts" / "ai-workflow"))
 
 import generate_review_packet
+
 
 
 class TestReviewPacket(unittest.TestCase):
@@ -209,6 +213,296 @@ class TestReviewPacket(unittest.TestCase):
         self.assertIn("PR: #9", packet_md)
         self.assertIn(malicious_title, packet_md)
 
+    def test_production_file_with_test_in_name_classified_as_production(self):
+        # A file like src/.../TestModeHelper.cs must be classified under Production Changes, NOT Changed Tests (F12).
+        manifest = [
+            {"filename": "src/DXVKCompanion/Testing/TestModeHelper.cs", "additions": 10, "deletions": 2, "status": "modified", "patch": "@@ -1 +1 @@\n+code"},
+            {"filename": "tests/DXVKCompanion.PhaseA.Tests/SomeTests.cs", "additions": 5, "deletions": 0, "status": "modified", "patch": "@@ -1 +1 @@\n+test"},
+        ]
+        packet_md = generate_review_packet.build_packet_content(
+            repo="Tiflit/DXVK-Companion",
+            pr_number=19,
+            pr_title="Title",
+            pr_url="https://github.com/...",
+            reviewed_head_sha="head",
+            base_sha="base",
+            live_pr_head_sha="head",
+            run_id="12345",
+            run_attempt="1",
+            run_head_sha="head",
+            build_provenance=None,
+            task_contract=None,
+            ci_jobs=[],
+            trx_totals={"status": "passed", "total": 1, "passed": 1, "failed": 0, "skipped": 0, "source": "t.trx"},
+            manifest=manifest,
+            capture_time="2026-10-03T20:00:00Z",
+        )
+        # Check production section contains TestModeHelper
+        prod_idx = packet_md.find("## 6. Production Changes")
+        test_idx = packet_md.find("## 5. Changed Tests")
+        helper_idx = packet_md.find("`src/DXVKCompanion/Testing/TestModeHelper.cs`", prod_idx)
+        self.assertNotEqual(helper_idx, -1, "TestModeHelper.cs must appear under Production Changes section")
+        test_section = packet_md[test_idx:prod_idx]
+        self.assertNotIn("TestModeHelper.cs", test_section)
+
+    def test_generate_packet_orchestration_happy_path(self):
+
+        # Tests end-to-end event -> API -> artifact download -> TRX & provenance parsing -> packet & diff (F1, F2).
+        import io
+        import tempfile
+        import zipfile
+
+        def make_zip(entries):
+            bio = io.BytesIO()
+            with zipfile.ZipFile(bio, "w") as zf:
+                for k, v in entries.items():
+                    zf.writestr(k, v.encode("utf-8") if isinstance(v, str) else v)
+            return bio.getvalue()
+
+        trx_xml = (
+            '<?xml version="1.0" encoding="utf-8"?>'
+            '<TestRun xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010">'
+            '  <ResultSummary outcome="Completed">'
+            '    <Counters total="67" passed="67" failed="0" error="0" timeout="0" aborted="0" inconclusive="0" notRunnable="0" notExecuted="0" />'
+            '  </ResultSummary>'
+            '</TestRun>'
+        )
+        prov_json = (
+            '{"head_sha": "faec613332c3a7d5fcee44fc8b257839d150dddf",'
+            ' "ref": "refs/pull/19/merge",'
+            ' "sha": "faec613332c3a7d5fcee44fc8b257839d150dddf",'
+            ' "run_id": "37164136438",'
+            ' "run_attempt": "1"}'
+        )
+
+        class MockClient(generate_review_packet.GitHubClient):
+            def __init__(self):
+                super().__init__(token="dummy", repo="Tiflit/DXVK-Companion")
+
+            def get_pr(self, num):
+                return {
+                    "head": {"sha": "0abef8d34a836494cdd882b844c781e32fa35322"},
+                    "base": {"sha": "e7b6e0640d9a22077fb515b1dfc2a277e987785e"},
+                    "title": "Harden provenance",
+                    "html_url": "https://github.com/Tiflit/DXVK-Companion/pull/19",
+                    "body": "## Primary Issue\n\nFixes #11\n\n## Verification\n\nAll tests pass.\n",
+                }
+
+            def get_issue(self, num):
+                return {"title": "Issue 11", "body": "### Allowed paths\n- scripts/ai-workflow/**\n"}
+
+            def get_workflow_run_jobs(self, run_id, attempt=None):
+                return [{"name": "build-and-test", "conclusion": "success", "steps": []}]
+
+            def compare_commits(self, base_sha, head_sha):
+                return {
+                    "files": [
+                        {"filename": "scripts/ai-workflow/generate_review_packet.py", "additions": 10, "deletions": 2, "status": "modified", "patch": "@@ -1 +1 @@\n+code"},
+                        {"filename": "docs/AI-PILOT-LOG.md", "additions": 5, "deletions": 0, "status": "modified", "patch": None},
+                    ]
+                }
+
+            def get_run_artifacts(self, run_id):
+                return [
+                    {"name": "build-provenance", "archive_download_url": "https://api.github.com/art/prov/zip"},
+                    {"name": "phase-a-test-results", "archive_download_url": "https://api.github.com/art/trx/zip"},
+                ]
+
+            def download_bytes(self, url, max_bytes=50*1024*1024, timeout=30):
+                if "prov" in url:
+                    return make_zip({"build-provenance.json": prov_json})
+                if "trx" in url:
+                    return make_zip({"phase-a-tests.trx": trx_xml})
+                raise ValueError(url)
+
+        event = {
+            "workflow_run": {
+                "id": 37164136438,
+                "run_attempt": 1,
+                "head_sha": "0abef8d34a836494cdd882b844c781e32fa35322",
+                "pull_requests": [{
+                    "number": 19,
+                    "base": {"sha": "e7b6e0640d9a22077fb515b1dfc2a277e987785e"},
+                    "head": {"sha": "0abef8d34a836494cdd882b844c781e32fa35322"},
+                }],
+            }
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out_dir = Path(tmpdir) / "packet"
+            summary_p = Path(tmpdir) / "summary.md"
+            github_out_p = Path(tmpdir) / "output.txt"
+
+            res = generate_review_packet.generate_packet(
+                event=event,
+                client=MockClient(),
+                output_dir=out_dir,
+                step_summary_path=summary_p,
+                github_output_path=github_out_p,
+            )
+            self.assertEqual(res, 0)
+            packet_file = out_dir / "review_packet.md"
+            self.assertTrue(packet_file.exists())
+            packet_text = packet_file.read_text(encoding="utf-8")
+
+            # Check parsed provenance
+            self.assertIn("Tested checkout SHA: `faec613332c3a7d5fcee44fc8b257839d150dddf`", packet_text)
+            self.assertIn("Checkout relationship: `synthetic merge ref refs/pull/19/merge`", packet_text)
+            # Check parsed TRX
+            self.assertIn("Total tests: 67", packet_text)
+            self.assertIn("Passed: 67", packet_text)
+            # Check diff artifact
+            diff_file = out_dir / "full-diff-pr-19.diff"
+            self.assertTrue(diff_file.exists())
+            diff_text = diff_file.read_text(encoding="utf-8")
+            self.assertIn("Patch omitted by GitHub API for docs/AI-PILOT-LOG.md", diff_text)
+
+    def test_generate_packet_declines_ambiguous_pr_associations(self):
+        # Multiple associated PRs without explicit disambiguation must fail (F3).
+        event = {
+            "workflow_run": {
+                "id": 12345,
+                "run_attempt": 1,
+                "head_sha": "0abef8d34a836494cdd882b844c781e32fa35322",
+                "pull_requests": [
+                    {"number": 19, "base": {"sha": "e7b6e0640d9a22077fb515b1dfc2a277e987785e"}},
+                    {"number": 20, "base": {"sha": "e7b6e0640d9a22077fb515b1dfc2a277e987785e"}},
+                ],
+            }
+        }
+        client = generate_review_packet.GitHubClient(token="dummy", repo="Tiflit/DXVK-Companion")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            res = generate_review_packet.generate_packet(
+                event=event,
+                client=client,
+                output_dir=Path(tmpdir),
+                override_pr_number=None,  # No disambiguation provided
+            )
+            self.assertEqual(res, 1)
+
+    def test_generate_packet_disambiguates_multiple_prs_with_arg(self):
+        # Multiple associated PRs with valid --pr-number succeeds (F3).
+        event = {
+            "workflow_run": {
+                "id": 12345,
+                "run_attempt": 1,
+                "head_sha": "0abef8d34a836494cdd882b844c781e32fa35322",
+                "pull_requests": [
+                    {"number": 19, "base": {"sha": "e7b6e0640d9a22077fb515b1dfc2a277e987785e"}},
+                    {"number": 20, "base": {"sha": "e7b6e0640d9a22077fb515b1dfc2a277e987785e"}},
+                ],
+            }
+        }
+        class MockClient(generate_review_packet.GitHubClient):
+            def __init__(self):
+                super().__init__(token="dummy", repo="Tiflit/DXVK-Companion")
+            def get_pr(self, num):
+                return {"head": {"sha": "0abef8d34a836494cdd882b844c781e32fa35322"}, "base": {"sha": "e7b6e0640d9a22077fb515b1dfc2a277e987785e"}, "title": "PR 19"}
+            def get_issue(self, num):
+                return {}
+            def get_workflow_run_jobs(self, run_id, attempt=None):
+                return []
+            def compare_commits(self, base_sha, head_sha):
+                return {"files": []}
+            def get_run_artifacts(self, run_id):
+                return []
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            res = generate_review_packet.generate_packet(
+                event=event,
+                client=MockClient(),
+                output_dir=Path(tmpdir),
+                override_pr_number=19,
+            )
+            self.assertEqual(res, 0)
+
+    def test_generate_packet_detects_base_movement(self):
+        # If live PR base has moved beyond triggering event's tested base SHA, emit warning (F4).
+        event = {
+            "workflow_run": {
+                "id": 12345,
+                "run_attempt": 1,
+                "head_sha": "0abef8d34a836494cdd882b844c781e32fa35322",
+                "pull_requests": [{
+                    "number": 19,
+                    "base": {"sha": "1111111111111111111111111111111111111111"},
+                }],
+            }
+        }
+        class MockClient(generate_review_packet.GitHubClient):
+            def __init__(self):
+                super().__init__(token="dummy", repo="Tiflit/DXVK-Companion")
+            def get_pr(self, num):
+                # Live base moved to 22222...
+                return {
+                    "head": {"sha": "0abef8d34a836494cdd882b844c781e32fa35322"},
+                    "base": {"sha": "2222222222222222222222222222222222222222"},
+                    "title": "PR 19",
+                }
+            def get_issue(self, num): return {}
+            def get_workflow_run_jobs(self, run_id, attempt=None): return []
+            def compare_commits(self, base_sha, head_sha): return {"files": []}
+            def get_run_artifacts(self, run_id): return []
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            res = generate_review_packet.generate_packet(
+                event=event,
+                client=MockClient(),
+                output_dir=Path(tmpdir),
+                override_pr_number=19,
+            )
+            self.assertEqual(res, 0)
+            packet_text = (Path(tmpdir) / "review_packet.md").read_text(encoding="utf-8")
+            self.assertIn("BASE-BRANCH MOVEMENT: BASE MOVED", packet_text)
+            self.assertIn("Tested Base SHA: `1111111111111111111111111111111111111111`", packet_text)
+            self.assertIn("Live Base SHA: `2222222222222222222222222222222222222222`", packet_text)
+
+    def test_generate_packet_rejects_attempt_mismatch(self):
+        # Provenance from a different attempt must be rejected (F5).
+        import io, zipfile
+
+        prov_json = (
+            '{"head_sha": "faec613332c3a7d5fcee44fc8b257839d150dddf",'
+            ' "ref": "refs/pull/19/merge",'
+            ' "run_id": "12345",'
+            ' "run_attempt": "2"}'  # Attempt 2!
+        )
+        bio = io.BytesIO()
+        with zipfile.ZipFile(bio, "w") as zf:
+            zf.writestr("build-provenance.json", prov_json)
+        zip_bytes = bio.getvalue()
+
+        event = {
+            "workflow_run": {
+                "id": 12345,
+                "run_attempt": 1,  # Attempt 1!
+                "head_sha": "0abef8d34a836494cdd882b844c781e32fa35322",
+                "pull_requests": [{"number": 19, "base": {"sha": "1111111111111111111111111111111111111111"}}],
+            }
+        }
+        class MockClient(generate_review_packet.GitHubClient):
+            def __init__(self):
+                super().__init__(token="dummy", repo="Tiflit/DXVK-Companion")
+            def get_pr(self, num): return {"head": {"sha": "0abef8d34a836494cdd882b844c781e32fa35322"}, "base": {"sha": "1111111111111111111111111111111111111111"}}
+            def get_issue(self, num): return {}
+            def get_workflow_run_jobs(self, run_id, attempt=None): return []
+            def compare_commits(self, base_sha, head_sha): return {"files": []}
+            def get_run_artifacts(self, run_id):
+                return [{"name": "build-provenance", "archive_download_url": "https://api.github.com/prov"}]
+            def download_bytes(self, url, max_bytes=50*1024*1024, timeout=30): return zip_bytes
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            res = generate_review_packet.generate_packet(
+                event=event,
+                client=MockClient(),
+                output_dir=Path(tmpdir),
+                override_pr_number=19,
+            )
+            self.assertEqual(res, 0)
+            packet_text = (Path(tmpdir) / "review_packet.md").read_text(encoding="utf-8")
+            self.assertIn("Attempt mismatch: provenance recorded attempt 2 vs triggering attempt 1", packet_text)
+
 
 if __name__ == "__main__":
     unittest.main()
+

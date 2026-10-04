@@ -174,7 +174,7 @@ def main() -> int:
     # 2. Local / file-based mode
     issue_body = ""
     if args.issue_body_file and args.issue_body_file.exists():
-        issue_body = args.issue_body_file.read_text(encoding="utf-8")
+        issue_body = args.issue_body_file.read_text(encoding="utf-8-sig")
     else:
         print("ERROR: Neither GitHub API context nor --issue-body-file was provided.", file=sys.stderr)
         return 1
@@ -187,8 +187,9 @@ def main() -> int:
 
     files_data = []
     if args.files_json and args.files_json.exists():
-        with open(args.files_json, "r", encoding="utf-8") as f:
+        with open(args.files_json, "r", encoding="utf-8-sig") as f:
             files_data = json.load(f)
+
     else:
         print("ERROR: Files JSON file not provided or does not exist.", file=sys.stderr)
         return 1

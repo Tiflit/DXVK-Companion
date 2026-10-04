@@ -338,7 +338,7 @@ Historical review comments, follow-up Issues, canonical PR template, immutable/s
 
 Next implementation handoff should focus on packet identity/security and contract parser alignment, in a separately scoped Issue/PR. Do not mix these workflow changes into PR #9.
 
-## Workflow hardening checkpoint — Issue #11 (2026-10-03)
+## Workflow hardening checkpoint — Issue #11 initial implementation (SHA: 0abef8d34a836494cdd882b844c781e32fa35322, 2026-10-03)
 
 ### Implementation summary
 
@@ -376,3 +376,60 @@ Coordinator can update PR #4 and PR #9 descriptions via GitHub UI to satisfy the
 - Human elapsed time: ~5 minutes.
 - Model execution: Fully autonomous implementation across fixtures, parsers, CI workflows, and documentation.
 - Residual limitations: Model dispatch remains manual; human retains final merge authority.
+
+## Workflow hardening revision checkpoint — Issue #11 revision (F1–F12, A1) (2026-10-03)
+
+### Review and arbitration context
+
+External review by Claude of initial implementation commit `0abef8d34a836494cdd882b844c781e32fa35322` yielded 12 findings (F1–F12). Independent arbitration by ChatGPT confirmed findings and established arbitration ruling A1 (prohibiting mixed `Unconstrained` and explicit path entries). This focused revision addresses findings F1–F12 and ruling A1 within the existing workflow scope without touching application code.
+
+### Findings and arbitration dispositions (F1–F12, A1)
+
+| Finding / Item | Description | Disposition | Verification & Implementation |
+|---|---|---|---|
+| **F1** | Provenance parsing failure swallowed via missing `import io` | Accepted | Verified `NameError` empirically. Added top-level `import io` in `generate_review_packet.py`; surfaced download/parse failures. Tested via unit tests and real CI run 37164136438. |
+| **F2** | Monolithic network calls untestable offline | Accepted | Introduced injectable `GitHubClient` class with dedicated `fetch_json` and `download_bytes` methods. Validated with offline unit tests mocking all API interactions. |
+| **F3** | Ambiguous PR associations across multiple PRs | Accepted | Declined ambiguity: `generate_review_packet.py` exits with status 1 if a workflow run maps to multiple PRs unless explicit `--pr-number` is supplied. Tested with ambiguity fixtures. |
+| **F4** | Tested Base SHA bound to live PR branch instead of triggering event | Accepted | Extracted tested base SHA from triggering event payload (`workflow_run.pull_requests[].base.sha`). Live PR base SHA is reported separately; emits warning if base branch moved. |
+| **F5** | Run attempt mismatch and job log attribution | Accepted | Queried attempt-specific jobs API (`/actions/runs/{run_id}/attempts/{attempt}/jobs`). Verified `run_id` and `run_attempt` inside `build-provenance.json` match triggering execution; mismatches marked incomplete. |
+| **F6** | Azure Blob SAS redirect authentication failure & size limits | Accepted | Verified empirically that urllib forwarded Authorization header to Azure Blob Storage, triggering HTTP 401. Implemented host-aware redirect handler stripping Authorization when redirecting off-domain. Enforced 50 MB total / 10 MB per-file limits. |
+| **F7** | Path traversal (Zip-Slip) & decompression bombs | Accepted | Added `safe_extract_json_from_zip` enforcing canonical destination containment and uncompressed size bounds. Tested with zip-slip fixtures. |
+| **F8** | PR template HTML comments & naked numbers accepted | Accepted | Stripped HTML comments (`<!-- ... -->`) before regex parsing. Enforced `#<number>` format in `extract_primary_issue`, rejecting naked numbers and placeholder `Fixes #`. Tested against shipped templates. |
+| **F9** | Loose opt-out synonyms rejected valid file paths | Accepted | Replaced substring search with exact whole-entry set membership for loose synonyms (`LOOSE_SYNONYMS = {"not yet constrained", "none", "any", "n/a", "open", "all", "tbd"}`). Valid paths containing words like `open` or `all` (e.g. `src/open/all.cs`) are preserved. |
+| **F10** | Lack of manual/advisory recheck mechanism | Accepted | Added `workflow_dispatch` trigger with `pr_number` input to both `ai-scope-check.yml` and `ai-pr-hygiene.yml`, enabling on-demand verification alongside `pull_request.edited`. |
+| **F11** | Direct workflow script interpolation injection risks | Accepted | Replaced inline GitHub Actions context interpolation (`"${{ github.ref }}"`) with environment variables (`$env:GITHUB_REF`, etc.) in `build-and-test.yml`. |
+| **F12** | TRX outcome definitions, categorization, manifest completeness & input validation | Accepted | Standardized TRX result counting (effective failed: failed+error+timeout+aborted; skipped: notExecuted+notRunnable+inconclusive). Enforced regex validation on CLI inputs. Fixed file categorization (`src/` always production). Added full manifest diff and omitted patch flags. |
+| **A1** | Mixed `Unconstrained` and explicit path declarations | Accepted | Enforced arbitration ruling: contracts with mixed `Unconstrained` and explicit paths are strictly rejected. Only a standalone `Unconstrained` entry is permitted as a contract opt-out. |
+
+### Real CI run 37164136438 local execution evidence
+
+The revised generator was executed locally using authenticated GitHub credentials against real Build and Test run `37164136438`:
+
+- **Run Identity**: Run ID `37164136438`, Run Attempt `1`
+- **Head SHA**: `0abef8d34a836494cdd882b844c781e32fa35322`
+- **Tested Checkout SHA**: `faec613332c3a7d5fcee44fc8b257839d150dddf` (synthetic merge ref `refs/pull/19/merge`)
+- **Tested Base SHA**: `e7b6e0640d9a22077fb515b1dfc2a277e987785e`
+- **Live PR Base SHA**: `e7b6e0640d9a22077fb515b1dfc2a277e987785e` (Status: Current, base has not moved)
+- **TRX Test Totals**: 67 passed, 0 failed, 0 skipped, 67 total (across 2 TRX files in `test-results` artifact)
+- **Manifest Completeness**: 21 files changed, 21 diffs included in full diff artifact, 0 omitted patches
+- **Security & Diagnostics**: Zero credentials, tokens, or signed URLs leaked in logs or packet markdown. SAS redirect successfully downloaded build-provenance artifact.
+
+### Trust boundaries and enforcement clarification
+
+GitHub Actions workflows execute as advisory status checks on pull requests. Workflows cannot enforce repository-level merge blocking on their own; blocking branch protection requires GitHub repository settings (Branch Protection Rules or Rulesets) configured with mandatory passing status checks by a repository administrator. The term "blocking check" in workflow descriptions refers to the check concluding with exit code 1 / failure status, not automated platform-level merge prevention.
+
+### Complete open PR and legacy contract migration inventory
+
+To ensure smooth operation when checks are configured as required:
+
+1. **PR #4** (`pilot/companion-version-ordering`):
+   - Head SHA: `944abc08c8722bdfc3b13bf7fda8fdd5a8a25b65`
+   - Primary Task Contract: Issue #5 (`CompanionVersion.IsOutdatedComparedTo`)
+   - Migration Action: Update PR #4 description via GitHub UI to add `## Primary Issue` with `Fixes #5`, along with `## Summary`, `## Scope`, `## Verification`, and `## Documentation`. Verify allowed paths in Issue #5 encompass all PR #4 modified files.
+   - Recheck: Re-run `ai-pr-hygiene` and `ai-scope-check` using `workflow_dispatch` with PR number `4`.
+2. **PR #9** (`issue-6-prevent-dx12-vulkan-deployment`):
+   - Head SHA: `c4d0f846b4031b08e9e3444c803abe37cc171890`
+   - Primary Task Contract: Issue #6 (`Prevent DXVK deployment for DX12/Vulkan`)
+   - Migration Action: Update PR #9 description via GitHub UI to add `## Primary Issue` with `Fixes #6`, along with required hygiene headings.
+   - Recheck: Re-run `ai-pr-hygiene` and `ai-scope-check` using `workflow_dispatch` with PR number `9`.
+

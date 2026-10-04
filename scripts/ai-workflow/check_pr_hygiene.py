@@ -104,7 +104,8 @@ def main() -> int:
             print(f"ERROR: Could not fetch PR #{args.pr_number} metadata: {e}", file=sys.stderr)
             return 1
     elif args.pr_body_file and args.pr_body_file.exists():
-        body = args.pr_body_file.read_text(encoding="utf-8")
+        body = args.pr_body_file.read_text(encoding="utf-8-sig")
+
     else:
         print("ERROR: Neither --pr-number nor a valid --pr-body-file was provided.", file=sys.stderr)
         return 1

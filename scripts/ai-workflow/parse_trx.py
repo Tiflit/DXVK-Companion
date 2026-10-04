@@ -200,3 +200,37 @@ def safe_extract_zip(
                 extracted_files.append(target_path)
 
     return extracted_files
+
+
+
+def safe_extract_json_from_zip(
+    zip_bytes: bytes,
+    target_filename: str = "build-provenance.json",
+    max_uncompressed_bytes: int = 10 * 1024 * 1024,
+) -> Optional[dict]:
+    """
+    Safely extracts and parses a specific JSON file from a zip archive in memory.
+    Enforces Zip-Slip protection, size bounding, and JSON validation.
+    """
+    import json
+    total_uncompressed = 0
+    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+        for info in zf.infolist():
+            total_uncompressed += info.file_size
+            if total_uncompressed > max_uncompressed_bytes:
+                raise SecurityValidationError(
+                    f"Archive uncompressed size ({total_uncompressed} bytes) exceeds limit ({max_uncompressed_bytes} bytes)."
+                )
+
+        for info in zf.infolist():
+            if info.is_dir():
+                continue
+            normalized_name = os.path.normpath(info.filename).replace("\\", "/")
+            if normalized_name.startswith("../") or "/../" in normalized_name or normalized_name.startswith("/"):
+                raise SecurityValidationError(f"Path traversal detected in archive entry: {info.filename}")
+
+            if Path(info.filename).name == target_filename:
+                content = zf.read(info).decode("utf-8")
+                return json.loads(content)
+    return None
+

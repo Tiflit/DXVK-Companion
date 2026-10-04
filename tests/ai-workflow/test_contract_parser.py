@@ -181,6 +181,61 @@ class TestContractParser(unittest.TestCase):
                 with self.assertRaises(parse_contract.ContractParseError):
                     parse_contract.parse_allowed_paths(body)
 
+    def test_shipped_pr_template_fails_primary_issue_extraction(self):
+        # Shipped PR template has HTML comments with example #11 and 'Fixes #' without number.
+        # Stripping comments means it must fail to find an issue reference (F8).
+        template_path = REPO_ROOT / ".github" / "pull_request_template.md"
+        self.assertTrue(template_path.exists())
+        template_content = template_path.read_text(encoding="utf-8")
+        with self.assertRaises(parse_contract.ContractParseError) as cm:
+            parse_contract.extract_primary_issue(template_content)
+        self.assertIn("no primary issue reference found", str(cm.exception).lower())
+
+    def test_primary_issue_rejects_naked_numbers_without_hash(self):
+        # Naked dates or numbers like 2026 or 42 without # must not be treated as issue references (F8).
+        bad_bodies = [
+            "## Primary Issue\n\n2026-10-03\n\n## Summary\nText",
+            "## Primary Issue\n\n42\n\n## Summary\nText",
+            "## Primary Issue\n\nRelease 1.0\n\n## Summary\nText",
+        ]
+        for body in bad_bodies:
+            with self.subTest(body=body):
+                with self.assertRaises(parse_contract.ContractParseError):
+                    parse_contract.extract_primary_issue(body)
+
+    def test_parse_allowed_paths_allows_paths_containing_open_or_all(self):
+        # Valid repository paths containing words like 'open' or 'all' must not be rejected (F9).
+        body = (
+            "### Allowed paths\n\n"
+            "- src/open/all.cs\n"
+            "- tests/all_tests.py\n"
+            "- scripts/open_report.py\n"
+        )
+        allowed = parse_contract.parse_allowed_paths(body)
+        self.assertEqual(
+            allowed.patterns,
+            [
+                "src/open/all.cs",
+                "tests/all_tests.py",
+                "scripts/open_report.py",
+            ],
+        )
+        self.assertFalse(allowed.is_unconstrained)
+
+    def test_parse_allowed_paths_rejects_mixed_unconstrained(self):
+        # Unconstrained must be the sole entry; mixed entries must fail (A1).
+        mixed_cases = [
+            "### Allowed paths\n\n- Unconstrained\n- src/DXVKCompanion/DxvkManager.cs\n",
+            "### Allowed paths\n\n- src/DXVKCompanion/DxvkManager.cs\n- Unconstrained\n",
+            "### Allowed paths\n\nUnconstrained\nsrc/file.cs\n",
+        ]
+        for body in mixed_cases:
+            with self.subTest(body=body):
+                with self.assertRaises(parse_contract.ContractParseError) as cm:
+                    parse_contract.parse_allowed_paths(body)
+                self.assertIn("mixed", str(cm.exception).lower())
+
 
 if __name__ == "__main__":
     unittest.main()
+

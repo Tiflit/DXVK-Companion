@@ -86,6 +86,25 @@ class TestTrxParser(unittest.TestCase):
                 parse_trx.safe_extract_zip(zip_bytes, Path(temp_dir), max_uncompressed_bytes=500)
             self.assertIn("exceeds size limit", str(cm.exception).lower())
 
+    def test_safe_extract_json_from_zip_valid_and_bounds(self):
+        # Tests safe_extract_json_from_zip (F1, F6)
+        zip_buf = io.BytesIO()
+        with zipfile.ZipFile(zip_buf, "w") as zf:
+            zf.writestr("build-provenance.json", '{"head_sha": "abc", "run_id": "123"}')
+        zip_bytes = zip_buf.getvalue()
+
+        parsed = parse_trx.safe_extract_json_from_zip(zip_bytes, "build-provenance.json")
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed.get("head_sha"), "abc")
+
+        # Missing target returns None
+        self.assertIsNone(parse_trx.safe_extract_json_from_zip(zip_bytes, "other.json"))
+
+        # Bounded size check
+        with self.assertRaises(parse_trx.SecurityValidationError):
+            parse_trx.safe_extract_json_from_zip(zip_bytes, "build-provenance.json", max_uncompressed_bytes=10)
+
 
 if __name__ == "__main__":
     unittest.main()
+
