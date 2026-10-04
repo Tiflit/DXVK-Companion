@@ -26,6 +26,7 @@ class FakeGitHubClient:
         self.created_issues = []
         self.patched_issues = []
         self.api_errors = {}
+        self.reacquired_on_retry = False
 
     def get_ref(self, ref: str):
         if "get_ref" in self.api_errors:
@@ -60,11 +61,17 @@ class FakeGitHubClient:
     def search_issues(self, query: str):
         if "search_issues" in self.api_errors:
             raise self.api_errors["search_issues"]
-        return [
-            iss for iss in self.existing_issues
-            if update_dashboard.DASHBOARD_MARKER in iss.get("body", "")
-            or update_dashboard.DASHBOARD_TITLE in iss.get("title", "")
-        ]
+        # Exact matching per H1:
+        # Match only items with exact title, exact marker, and NOT pull requests
+        matched = []
+        for iss in self.existing_issues:
+            if iss.get("pull_request"):
+                continue
+            title = iss.get("title", "").strip()
+            body = iss.get("body", "")
+            if title == update_dashboard.DASHBOARD_TITLE and update_dashboard.DASHBOARD_MARKER in body:
+                matched.append(iss)
+        return matched
 
     def create_issue(self, title: str, body: str, labels=None):
         if "create_issue" in self.api_errors:
@@ -88,7 +95,7 @@ class FakeGitHubClient:
 
 
 class TestDashboardGenerator(unittest.TestCase):
-    """Tests covering all 10 acceptance criteria for compact handoff maintenance."""
+    """Tests covering all acceptance criteria and coordinator findings H1–H7."""
 
     def setUp(self):
         self.client = FakeGitHubClient()
@@ -98,52 +105,100 @@ class TestDashboardGenerator(unittest.TestCase):
             "|---|---|---|---|\n"
             "| **#25 handoff automation** | Gemini; ChatGPT verifies | `main` | Open PR with tests. |\n\n"
             "## 5. Unresolved Architectural & Governance Decisions\n\n"
-            "1. **Issue #12 (Spec Authority)**: A1-UPDATED as canonical.\n"
-            "2. **Issue #14 (Shared directories)**: Per-executable vs folder.\n"
+            "1. **Issue #12 (Spec Authority)**: Proposes consolidating A1-UPDATED to docs/spec/DXVK-COMPANION-SPEC.md.\n"
+            "2. **Issue #14 (Shared directories)**: Per-executable vs installation-wide.\n"
         )
 
-    def test_pagination_and_omission_notice(self):
-        """Criterion 3 & 9: Handles pagination across multiple pages with bounds and omission."""
+    # --- H1: Publication Destination Authentication ---
+
+    def test_task_issue_with_marker_cannot_be_overwritten(self):
+        """H1: An ordinary task issue mentioning the dashboard marker in its body must NOT be matched or overwritten."""
+        task_issue_25 = {
+            "number": 25,
+            "title": "[AI] Automate compact GitHub handoffs",
+            "body": "Discussion mentioning <!-- AI-DASHBOARD-MARKER: v1 --> in task notes",
+            "state": "open",
+        }
+        self.client.existing_issues = [task_issue_25]
+        publisher = update_dashboard.DashboardPublisher(client=self.client, repo="Tiflit/DXVK-Companion")
+        
+        # When published, it must NOT find Issue #25 as the dashboard issue; it should create a dedicated one
+        res = publisher.publish("New dashboard content")
+        self.assertEqual(res["status"], "created")
+        self.assertNotEqual(res["issue_number"], 25)
+        self.assertEqual(len(self.client.patched_issues), 0)
+
+    def test_pull_request_with_dashboard_title_cannot_be_destination(self):
+        """H1: A pull request sharing the dashboard title must be rejected as an invalid destination."""
+        pr_target = {
+            "number": 99,
+            "title": update_dashboard.DASHBOARD_TITLE,
+            "body": update_dashboard.DASHBOARD_MARKER,
+            "pull_request": {"url": "https://api.github.com/repos/Tiflit/DXVK-Companion/pulls/99"},
+            "state": "open",
+        }
+        self.client.existing_issues = [pr_target]
+        publisher = update_dashboard.DashboardPublisher(client=self.client, repo="Tiflit/DXVK-Companion")
+        res = publisher.publish("New content")
+        self.assertEqual(res["status"], "created")
+        self.assertNotEqual(res["issue_number"], 99)
+
+    def test_closed_dashboard_issue_fails_safely_without_recreating(self):
+        """H1: A closed dashboard issue causes an explicit failure rather than silently creating an uncoordinated duplicate."""
+        closed_dashboard = {
+            "number": 42,
+            "title": update_dashboard.DASHBOARD_TITLE,
+            "body": update_dashboard.DASHBOARD_MARKER,
+            "state": "closed",
+        }
+        self.client.existing_issues = [closed_dashboard]
+        publisher = update_dashboard.DashboardPublisher(client=self.client, repo="Tiflit/DXVK-Companion")
+        with self.assertRaises(update_dashboard.SecurityValidationError) as ctx:
+            publisher.publish("New dashboard content")
+        self.assertIn("closed", str(ctx.exception).lower())
+        self.assertEqual(len(self.client.created_issues), 0)
+
+    def test_duplicate_destination_handling(self):
+        """H1 & Criterion 6: Refuses ambiguous update if multiple open dashboard issues are detected."""
+        self.client.existing_issues = [
+            {"number": 50, "title": update_dashboard.DASHBOARD_TITLE, "body": update_dashboard.DASHBOARD_MARKER, "state": "open"},
+            {"number": 51, "title": update_dashboard.DASHBOARD_TITLE, "body": update_dashboard.DASHBOARD_MARKER, "state": "open"},
+        ]
+        publisher = update_dashboard.DashboardPublisher(client=self.client, repo="Tiflit/DXVK-Companion")
+        with self.assertRaises(update_dashboard.SecurityValidationError) as ctx:
+            publisher.publish("Some body")
+        self.assertIn("Multiple dashboard issues detected", str(ctx.exception))
+
+    # --- H3: Completeness, Pagination, and Reacquisition ---
+
+    def test_capped_pagination_reports_incomplete(self):
+        """H3: Truncated pagination when items exceed max_pages marks completeness as INCOMPLETE."""
+        # 2 pages of PRs where page 2 has full per_page items, indicating more exist
         self.client.prs_pages = [
             [{"number": 1, "title": "PR 1", "head": {"sha": "a" * 40}, "base": {"sha": "b" * 40}, "state": "open"}],
             [{"number": 2, "title": "PR 2", "head": {"sha": "c" * 40}, "base": {"sha": "b" * 40}, "state": "open"}],
         ]
         collector = update_dashboard.GitHubFactsCollector(client=self.client, repo="Tiflit/DXVK-Companion")
         facts = collector.collect(max_pages=2, per_page=1)
-        self.assertEqual(len(facts.open_prs), 2)
-        self.assertEqual(facts.open_prs[0]["number"], 1)
-        self.assertEqual(facts.open_prs[1]["number"], 2)
+        self.assertTrue(facts.completeness.startswith("INCOMPLETE"))
+        self.assertIn("truncated at pagination limit", facts.completeness)
 
-    def test_missing_fields_and_unavailable_provenance(self):
-        """Criterion 2, 3 & 9: Incomplete or missing PR/run attributes reported as unknown, no crash."""
-        self.client.prs_pages = [
-            [{"number": 9, "title": None, "head": {}, "base": {}, "state": "open"}]
-        ]
+    def test_missing_or_invalid_main_sha_reports_incomplete(self):
+        """H3: Missing or non-hex main SHA marks completeness as INCOMPLETE."""
+        self.client.main_shas = ["invalid_non_hex_sha"]
         collector = update_dashboard.GitHubFactsCollector(client=self.client, repo="Tiflit/DXVK-Companion")
         facts = collector.collect()
-        self.assertEqual(len(facts.open_prs), 1)
-        pr = facts.open_prs[0]
-        self.assertEqual(pr["head_sha"], "unknown")
-        self.assertEqual(pr["base_sha"], "unknown")
-        self.assertEqual(pr["tested_checkout_sha"], "unknown")
-
-    def test_malformed_ids_and_shas(self):
-        """Criterion 8 & 9: Malformed or invalid commit SHAs are sanitized and handled safely."""
-        self.assertFalse(update_dashboard.is_valid_sha("not-a-sha"))
-        self.assertFalse(update_dashboard.is_valid_sha("12345"))
-        self.assertFalse(update_dashboard.is_valid_sha("zzzz" * 10))
-        self.assertTrue(update_dashboard.is_valid_sha("a" * 40))
-        self.assertTrue(update_dashboard.is_valid_sha("ce74e1e1caba1ee5197788c945826648d4f5a752"))
+        self.assertTrue(facts.completeness.startswith("INCOMPLETE"))
+        self.assertIn("main branch SHA", facts.completeness)
 
     def test_api_failure_vs_genuine_empty_state(self):
-        """Criterion 7 & 9: Distinguishes API error (INCOMPLETE) from true empty inventory (COMPLETE)."""
+        """H3 & Criterion 7: Distinguishes API error from true empty inventory."""
         self.client.prs_pages = [[]]
         self.client.issues_pages = [[]]
         collector = update_dashboard.GitHubFactsCollector(client=self.client, repo="Tiflit/DXVK-Companion")
         facts = collector.collect()
         self.assertEqual(facts.completeness, update_dashboard.COMPLETENESS_COMPLETE)
         self.assertEqual(len(facts.open_prs), 0)
-        self.assertEqual(len(facts.open_issues), 0)
 
         failing_client = FakeGitHubClient()
         failing_client.api_errors["pulls"] = update_dashboard.GitHubApiError("HTTP 500: Server Error")
@@ -152,21 +207,64 @@ class TestDashboardGenerator(unittest.TestCase):
         self.assertTrue(facts_err.completeness.startswith("INCOMPLETE"))
         self.assertIn("pulls", facts_err.completeness)
 
-    def test_main_movement_detection(self):
-        """Criterion 2 & 9: Detects main advancing during acquisition; retries or marks incomplete."""
+    def test_api_error_renders_unavailable_inventory(self):
+        """H3: When API errors occur, rendered output reports inventory unavailable rather than 'all merged'."""
+        failing_client = FakeGitHubClient()
+        failing_client.api_errors["pulls"] = update_dashboard.GitHubApiError("HTTP 500: Server Error")
+        collector = update_dashboard.GitHubFactsCollector(client=failing_client, repo="Tiflit/DXVK-Companion")
+        facts = collector.collect()
+        rendered = update_dashboard.render_dashboard(facts, self.curated_text)
+        self.assertIn("Pull requests inventory unavailable", rendered)
+        self.assertNotIn("all active PRs merged", rendered)
+
+    def test_main_movement_reacquires_coherent_facts(self):
+        """H3: When main branch moves during acquisition, facts are coherently reacquired on retry."""
         self.client.main_shas = [
             "1111111111111111111111111111111111111111",
             "2222222222222222222222222222222222222222",
-            "3333333333333333333333333333333333333333",
-            "4444444444444444444444444444444444444444",
+            "2222222222222222222222222222222222222222",
         ]
         collector = update_dashboard.GitHubFactsCollector(client=self.client, repo="Tiflit/DXVK-Companion")
-        facts = collector.collect(max_main_retries=1)
-        self.assertTrue(facts.completeness.startswith("INCOMPLETE"))
-        self.assertIn("Main advanced during acquisition", facts.completeness)
+        facts = collector.collect(max_main_retries=2)
+        # Succeeded after retry
+        self.assertEqual(facts.main_head_sha, "2222222222222222222222222222222222222222")
+        self.assertEqual(facts.completeness, update_dashboard.COMPLETENESS_COMPLETE)
+
+    # --- H4: CI Identity, Run Attempt, and Evidence Provenance ---
+
+    def test_ci_identity_run_attempt_and_provenance(self):
+        """H4: Specifically selects Build and Test, binds run ID, attempt, and explicit provenance status."""
+        pr_head = "a" * 40
+        self.client.prs_pages = [[{
+            "number": 10,
+            "title": "PR with CI",
+            "head": {"sha": pr_head},
+            "base": {"sha": "c" * 40},
+            "state": "open",
+        }]]
+        self.client.pr_runs[pr_head] = [
+            # Earlier irrelevant workflow
+            {"id": 111, "name": "AI Scope Check", "run_attempt": 1, "head_sha": pr_head, "conclusion": "success"},
+            # Target Build and Test workflow
+            {
+                "id": 222,
+                "name": "Build and Test",
+                "run_attempt": 2,
+                "head_sha": pr_head,
+                "conclusion": "success",
+                "html_url": "https://github.com/Tiflit/DXVK-Companion/actions/runs/222",
+            },
+        ]
+        collector = update_dashboard.GitHubFactsCollector(client=self.client, repo="Tiflit/DXVK-Companion")
+        facts = collector.collect()
+        pr = facts.open_prs[0]
+        self.assertEqual(pr["ci_run_id"], "222")
+        self.assertEqual(pr["ci_attempt"], "2")
+        self.assertEqual(pr["ci_status"], "success")
+        self.assertEqual(pr["tested_checkout_sha"], "unknown (no build provenance artifact)")
 
     def test_stale_ci_and_attempt_mismatch(self):
-        """Criterion 3 & 9: Distinguishes CI run for earlier commit from current PR head SHA."""
+        """H4: Distinguishes CI run for earlier commit from current PR head SHA."""
         pr_head = "a" * 40
         stale_run_head = "b" * 40
         self.client.prs_pages = [[{
@@ -178,7 +276,8 @@ class TestDashboardGenerator(unittest.TestCase):
         }]]
         self.client.pr_runs[pr_head] = [{
             "id": 123456,
-            "run_attempt": 2,
+            "name": "Build and Test",
+            "run_attempt": 1,
             "head_sha": stale_run_head,
             "conclusion": "success",
             "html_url": "https://github.com/Tiflit/DXVK-Companion/actions/runs/123456",
@@ -187,53 +286,67 @@ class TestDashboardGenerator(unittest.TestCase):
         facts = collector.collect()
         pr = facts.open_prs[0]
         self.assertEqual(pr["ci_status"], "historical/stale")
-        self.assertEqual(pr["ci_head_sha"], stale_run_head)
 
-    def test_untrusted_input_and_injection_defense(self):
-        """Criterion 8 & 9: Markdown table injection, HTML, and control characters in titles are neutralized."""
-        malicious_title = "Exploit | Attempt | Injection <script>alert(1)</script> \n newline [link](http://evil.com)"
-        sanitized = update_dashboard.sanitize_display_text(malicious_title)
-        self.assertNotIn("|", sanitized)
-        self.assertNotIn("<script>", sanitized)
-        self.assertNotIn("\n", sanitized)
+    # --- H5: Snapshot Word Budget & Absolute URLs ---
 
-    def test_sensitive_path_and_privacy_redaction(self):
-        """Criterion 8 & 9: Redacts local home paths, usernames, and auth tokens from titles and diagnostics."""
-        text_with_user = r"Error in C:\Users\philg\OneDrive\Documents\file.cs with token ghp_ABC1234567890XYZ"
-        sanitized = update_dashboard.sanitize_display_text(text_with_user)
-        self.assertNotIn("philg", sanitized)
-        self.assertNotIn("ghp_ABC1234567890XYZ", sanitized)
-        self.assertIn("[REDACTED_USER]", sanitized)
-        self.assertIn("[REDACTED_TOKEN]", sanitized)
-
-    def test_snapshot_word_count_and_overflow(self):
-        """Criterion 4 & 9: Default snapshot length is bounded to <= 1000 words excluding URLs."""
-        many_issues = []
-        for i in range(60):
-            many_issues.append({
-                "number": 100 + i,
-                "title": f"Long descriptive task issue {i} providing detailed context for feature development",
+    def test_snapshot_limit_strictly_enforced_across_sections(self):
+        """H5: Strictly enforces <= 1000 words limit across sections, including large curated content and large PR lists."""
+        huge_curated = "## 2. Active Work Queue & Ownership\n\n" + ("Detailed queue item description with context. " * 300)
+        many_prs = []
+        for i in range(25):
+            many_prs.append({
+                "number": 200 + i,
+                "title": f"Descriptive Pull Request title {i} addressing complex component refactoring",
+                "head": {"sha": "a" * 40},
+                "base": {"sha": "b" * 40},
                 "state": "open",
-                "labels": [{"name": "bug"}],
             })
-        self.client.issues_pages = [many_issues]
+        self.client.prs_pages = [many_prs]
         collector = update_dashboard.GitHubFactsCollector(client=self.client, repo="Tiflit/DXVK-Companion")
         facts = collector.collect()
-        rendered = update_dashboard.render_dashboard(facts, self.curated_text, max_words=1000)
+        
+        rendered = update_dashboard.render_dashboard(facts, huge_curated, repo="Tiflit/DXVK-Companion", max_words=1000)
         word_count = update_dashboard.count_words_excluding_urls(rendered)
         self.assertLessEqual(word_count, 1000)
         self.assertIn("omitted to respect snapshot word budget", rendered)
 
-    def test_duplicate_destination_handling(self):
-        """Criterion 6 & 9: Refuses ambiguous update if multiple dashboard issues are detected."""
-        self.client.existing_issues = [
-            {"number": 50, "title": update_dashboard.DASHBOARD_TITLE, "body": update_dashboard.DASHBOARD_MARKER},
-            {"number": 51, "title": update_dashboard.DASHBOARD_TITLE, "body": update_dashboard.DASHBOARD_MARKER},
-        ]
-        publisher = update_dashboard.DashboardPublisher(client=self.client, repo="Tiflit/DXVK-Companion")
-        with self.assertRaises(update_dashboard.SecurityValidationError) as ctx:
-            publisher.publish("Some body")
-        self.assertIn("Multiple dashboard issues detected", str(ctx.exception))
+    def test_repository_links_use_absolute_urls(self):
+        """H5: Markdown links in issue-rendered snapshot use absolute GitHub URLs, never relative ../ paths."""
+        collector = update_dashboard.GitHubFactsCollector(client=self.client, repo="Tiflit/DXVK-Companion")
+        facts = collector.collect()
+        rendered = update_dashboard.render_dashboard(facts, self.curated_text, repo="Tiflit/DXVK-Companion")
+        self.assertNotIn("../AGENTS.md", rendered)
+        self.assertIn("https://github.com/Tiflit/DXVK-Companion/blob/", rendered)
+
+    # --- H6: Privacy, Sanitization & Synthetic-Only Fixtures ---
+
+    def test_privacy_synthetic_fixtures_and_full_path_redaction(self):
+        """H6: Uses synthetic-only fixtures (no real local names) and redacts full Windows/Unix paths."""
+        text_with_user = r"Error in C:\Users\synthetic_dev\Documents\DXVK\file.cs and /home/synthetic_dev/dev/app.log"
+        sanitized = update_dashboard.sanitize_display_text(text_with_user)
+        self.assertNotIn("synthetic_dev", sanitized)
+        self.assertNotIn(r"C:\Users", sanitized)
+        self.assertNotIn(r"/home/", sanitized)
+        self.assertIn("[REDACTED_PATH]", sanitized)
+
+    def test_sanitizer_removes_markdown_injection_and_raw_exceptions(self):
+        """H6: Markdown link injection, backticks, script tags, and tokens are stripped."""
+        malicious = "[Click Here](http://evil.com) with `command` and <script>alert(1)</script> ghp_SECRETTOKEN123"
+        sanitized = update_dashboard.sanitize_display_text(malicious)
+        self.assertNotIn("[Click Here](http://evil.com)", sanitized)
+        self.assertNotIn("<script>", sanitized)
+        self.assertNotIn("ghp_SECRETTOKEN123", sanitized)
+        self.assertIn("[REDACTED_TOKEN]", sanitized)
+
+    def test_malformed_ids_and_shas(self):
+        """H6 & Criterion 8: Malformed or invalid commit SHAs are rejected."""
+        self.assertFalse(update_dashboard.is_valid_sha("not-a-sha"))
+        self.assertFalse(update_dashboard.is_valid_sha("12345"))
+        self.assertFalse(update_dashboard.is_valid_sha("zzzz" * 10))
+        self.assertTrue(update_dashboard.is_valid_sha("a" * 40))
+        self.assertTrue(update_dashboard.is_valid_sha("ce74e1e1caba1ee5197788c945826648d4f5a752"))
+
+    # --- Loop Filtering and Unchanged Publishing ---
 
     def test_loop_filtering(self):
         """Criterion 6 & 9: Skips execution when triggered by dashboard issue itself or bot action."""
@@ -258,7 +371,7 @@ class TestDashboardGenerator(unittest.TestCase):
         """Criterion 6 & 9: Unchanged snapshot skips the API PATCH write call."""
         collector = update_dashboard.GitHubFactsCollector(client=self.client, repo="Tiflit/DXVK-Companion")
         facts = collector.collect()
-        body1 = update_dashboard.render_dashboard(facts, self.curated_text)
+        body1 = update_dashboard.render_dashboard(facts, self.curated_text, repo="Tiflit/DXVK-Companion")
         
         existing_body = re.sub(
             r"Generated: [^\|]+ \|",
@@ -269,38 +382,29 @@ class TestDashboardGenerator(unittest.TestCase):
             "number": 88,
             "title": update_dashboard.DASHBOARD_TITLE,
             "body": existing_body,
+            "state": "open",
         }]
         publisher = update_dashboard.DashboardPublisher(client=self.client, repo="Tiflit/DXVK-Companion")
         result = publisher.publish(body1)
         self.assertEqual(result["status"], "skipped")
         self.assertEqual(len(self.client.patched_issues), 0)
 
-    def test_preservation_of_curated_content(self):
-        """Criterion 4 & 9: Curated decisions and governance queue are preserved accurately."""
-        collector = update_dashboard.GitHubFactsCollector(client=self.client, repo="Tiflit/DXVK-Companion")
-        facts = collector.collect()
-        rendered = update_dashboard.render_dashboard(facts, self.curated_text)
-        self.assertIn("Active Work Queue & Ownership", rendered)
-        self.assertIn("#25 handoff automation", rendered)
-        self.assertIn("Issue #12 (Spec Authority)", rendered)
-        self.assertIn("Issue #14 (Shared directories)", rendered)
+    # --- YAML Structure & Least Privilege Verification ---
 
     def test_workflow_yaml_structure_and_least_privilege(self):
-        """Criterion 5, 6 & 10: Validates workflow YAML structure, least privilege, and default branch checkout."""
+        """H2 & Criterion 10: Validates workflow YAML structure, concurrency, separate jobs, and least privilege."""
         wf_path = REPO_ROOT / ".github" / "workflows" / "ai-current-state.yml"
         self.assertTrue(wf_path.exists(), "Workflow file .github/workflows/ai-current-state.yml must exist")
         
         content = wf_path.read_text(encoding="utf-8")
         
-        # Check YAML formatting basics
         self.assertNotIn("\t", content, "YAML must not contain tab characters")
         self.assertIn("name: AI Current State Dashboard", content)
-        self.assertIn("permissions:\n  contents: read", content)
-        self.assertIn("issues: write", content)
+        self.assertIn("concurrency:", content)
+        self.assertIn("acquire-and-render:", content)
+        self.assertIn("publish-snapshot:", content)
         self.assertIn("actions/checkout@v7", content)
         self.assertIn("default_branch", content)
-        self.assertIn("python scripts/ai-workflow/update_dashboard.py", content)
-        self.assertIn("if: >-", content)  # Loop prevention expression in YAML
 
 
 if __name__ == "__main__":

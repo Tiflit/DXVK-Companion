@@ -12,16 +12,19 @@ on:
   issues:
     types: [opened, closed, reopened, edited]
   pull_request_target:
-    types: [opened, closed, reopened, synchronize]
+    types: [opened, closed, reopened, synchronize, edited]
+
+concurrency:
+  group: ai-dashboard-publish
+  cancel-in-progress: false
 
 permissions:
   contents: read
 
 jobs:
-  publish-dashboard:
-    name: Publish AI Current State Dashboard
+  acquire-and-render:
+    name: Acquire Facts and Render Snapshot
     runs-on: ubuntu-latest
-    # Prevent execution on pull requests directly; ensure run on default branch
     # Prevent self-trigger loop on the dashboard issue itself
     if: >-
       github.event_name != 'issues' ||
@@ -31,7 +34,7 @@ jobs:
       )
     permissions:
       contents: read
-      issues: write
+      issues: read
       pull-requests: read
       actions: read
 
@@ -46,10 +49,55 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Update and publish AI Dashboard
+      - name: Render snapshot preview
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           GITHUB_EVENT_PATH: ${{ github.event_path }}
         run: |
-          python scripts/ai-workflow/update_dashboard.py --publish --repo "$GH_REPO" --token "$GH_TOKEN" --event-path "$GITHUB_EVENT_PATH"
+          python scripts/ai-workflow/update_dashboard.py --preview --repo "$GH_REPO" --token "$GH_TOKEN" --event-path "$GITHUB_EVENT_PATH" --output-file snapshot.md
+
+      - name: Upload dashboard snapshot artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: ai-dashboard-snapshot
+          path: snapshot.md
+          if-no-files-found: error
+
+  publish-snapshot:
+    name: Publish Dashboard to Dedicated Issue
+    needs: acquire-and-render
+    runs-on: ubuntu-latest
+    # Only publish from default branch executions or authorized triggers
+    if: >-
+      github.ref == 'refs/heads/main' ||
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'push' ||
+      (github.event_name == 'pull_request_target' && github.event.action == 'closed' && github.event.pull_request.merged == true)
+    permissions:
+      contents: read
+      issues: write
+
+    steps:
+      - name: Check out default-branch workflow tooling
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch || 'main' }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Download dashboard snapshot artifact
+        uses: actions/download-artifact@v6
+        with:
+          name: ai-dashboard-snapshot
+
+      - name: Publish snapshot to GitHub
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          python scripts/ai-workflow/update_dashboard.py --publish-file snapshot.md --repo "$GH_REPO" --token "$GH_TOKEN"
