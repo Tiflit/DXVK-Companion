@@ -28,7 +28,8 @@ Durable information belongs in GitHub:
 - starting point for fresh sessions -> [`AGENTS.md`](../AGENTS.md);
 - task requirements and acceptance criteria -> GitHub Issue;
 - implementation and verification -> Pull Request and commits;
-- active queue, PR inventory, and human gates -> [`docs/AI-CURRENT-STATE.md`](AI-CURRENT-STATE.md);
+- live repository status and PR inventory -> Automated GitHub Dashboard Issue (`[AI Dashboard] Current Repository State & Handoff Orientation`);
+- active queue, role allocation, and human gates -> [`docs/AI-CURRENT-STATE.md`](AI-CURRENT-STATE.md);
 - per-session audit records -> [`docs/AI-ACTIVITY-JOURNAL.md`](AI-ACTIVITY-JOURNAL.md) and [`docs/ai-journal/`](ai-journal/);
 - architectural decisions -> project documentation/specification;
 - workflow decisions and pilot lessons -> this document and [`docs/AI-PILOT-LOG.md`](AI-PILOT-LOG.md).

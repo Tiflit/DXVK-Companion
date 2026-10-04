@@ -80,4 +80,10 @@ The index is updated opportunistically during authorized documentation tasks:
 | Date | Task / Issue | Role & Model | Result | Journal Link |
 |---|---|---|---|---|
 | **2026-10-03** | Issue #20 Post-#19 cleanup | Gemini (Implementer) | CHANGES_REQUIRED (Revision) | [2026-10-03-issue-20-gemini-session-1.md](ai-journal/2026-10-03-issue-20-gemini-session-1.md) |
-| **2026-10-03** | Issue #20 Post-#19 cleanup revision | Gemini (Implementer) | REVISED (Awaiting verification) | [2026-10-03-issue-20-gemini-session-2.md](ai-journal/2026-10-03-issue-20-gemini-session-2.md) |
+| **2026-10-03** | Issue #20 Post-#19 cleanup revision | Gemini (Implementer) | REVISED (Merged PR #21) | [2026-10-03-issue-20-gemini-session-2.md](ai-journal/2026-10-03-issue-20-gemini-session-2.md) |
+| **2026-10-03** | Issue #20 Verification | ChatGPT (Coordinator) | VERIFIED | [2026-10-03-issue-20-chatgpt-verification-1.md](ai-journal/2026-10-03-issue-20-chatgpt-verification-1.md) |
+| **2026-10-04** | Issue #13 Baseline safety reproduction | Gemini (Implementer) | DEFECT_CONFIRMED | [2026-10-04-issue-13-gemini-session-1.md](ai-journal/2026-10-04-issue-13-gemini-session-1.md) |
+| **2026-10-04** | Issue #13 Baseline safety repair | Gemini (Implementer) | REPAIRED (Merged PR #23) | [2026-10-04-issue-13-gemini-session-2.md](ai-journal/2026-10-04-issue-13-gemini-session-2.md) |
+| **2026-10-04** | Issue #22 Privacy audit & scanning | Gemini (Implementer) | AUDITED (Merged PR #24) | [2026-10-04-issue-22-gemini-session-1.md](ai-journal/2026-10-04-issue-22-gemini-session-1.md) |
+| **2026-10-04** | Issue #22 Privacy evidence annex | Gemini (Implementer) | DOCUMENTED | [2026-10-04-issue-22-privacy-evidence-annex.md](ai-journal/2026-10-04-issue-22-privacy-evidence-annex.md) |
+| **2026-10-04** | Issue #25 Handoff dashboard automation | Gemini (Implementer) | SUCCESS (PR pending) | [2026-10-04-issue-25-gemini-session-1.md](ai-journal/2026-10-04-issue-25-gemini-session-1.md) |
