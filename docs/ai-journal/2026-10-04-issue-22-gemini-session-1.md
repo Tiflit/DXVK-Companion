@@ -22,7 +22,7 @@ Execute the bounded project-history and artifact privacy audit requested by Issu
 - **CI Workflow Logs**: Bounded scan of 12 key CI workflow runs (5,141 lines, 685,807 bytes (sum of the annex rows)): 0 findings. Unscanned historical logs documented.
 - **Local Worktrees Inspection**: Inspected all 5 local worktrees (`D:\dev`), verifying active branches, commit ancestry relative to `origin/main`, unpushed commits, and working tree cleanliness. Qualified merged worktrees (`issue-11`, `issue-13`, `issue-20`) as cleanup candidates requiring developer confirmation.
 - **Coordinator Revision (Findings A1, A2, A3)**:
-  - Addressed Finding A1 (Coverage overclaim): Narrowed universal clearance claims to the actual scanned cohort; accounted for 115 unscanned artifacts and older CI logs.
+  - Addressed Finding A1 (Coverage overclaim): Narrowed universal clearance claims to the actual scanned cohort; accounted for the bounded unscanned artifact cohort and older CI logs (corrected combined total: 117).
   - Addressed Finding A2 (Durable evidence missing): Created durable evidence annex [`docs/ai-journal/2026-10-04-issue-22-privacy-evidence-annex.md`](2026-10-04-issue-22-privacy-evidence-annex.md) detailing exact refs, rules, deduplication, artifact IDs, run IDs, and inspected worktree tables.
   - Addressed Finding A3 (Pruning guarantee unsupported): Replaced blanket "without-data-loss" claims with per-worktree inspected candidate status.
 

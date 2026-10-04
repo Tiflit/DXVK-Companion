@@ -32,7 +32,7 @@ The scanner applies an allowlist to ignore synthetic documentation placeholders 
 - **CI Runner Paths**: `runneradmin`, `/home/runner`, `C:\Users\runneradmin`, `C:/Users/runneradmin`, `D:\a\`
 
 ### Strict Privacy Invariant
-In accordance with Issue #22 acceptance criterion 2 and 5, matched values, private usernames, credentials, and signed URLs are **never printed, committed to git, or transmitted to GitHub**. Scanner logs record only the matched rule name, line number, and context label (redacted metadata only).
+In accordance with Issue #22 acceptance criterion 2 and 5, reports must omit matched values, private usernames, credentials and signed URLs. The revision's accidental literal is a recorded policy violation, not evidence that the rule was always followed. Scanner logs record only the matched rule name, line number, and context label (redacted metadata only).
 
 ---
 
@@ -228,8 +228,8 @@ No blanket "without-data-loss" guarantee is asserted. Merged branch association 
 3. **Secrets Clearance within Stated Coverage**:
    - **0 matches** for personal tokens, generic API keys, private key headers, or signed URLs across all 414 historical blobs, 1,205 commit fields, 35 sampled text artifacts, and 12 CI run logs (5,141 lines) within stated coverage.
 4. **Remediation**:
-   - No active secrets or credentials were found.
-   - No token rotations, destructive git history rewrites (`git filter-repo`, force-pushes), or artifact purges are warranted or authorized under this task.
+   - Gemini reports no secret-rule matches within the specified coverage.
+   - No destructive git history rewrites (`git filter-repo`, force-pushes) or artifact purges are authorized under this task. Historical-username cleanup remains a separate human decision; these pattern results do not establish that no remediation could ever be needed.
 
 
 ## Coordinator evidence qualification — 2026-10-04
@@ -237,3 +237,5 @@ No blanket "without-data-loss" guarantee is asserted. Merged branch association 
 The scan results, local counts and worktree states are Gemini-reported. ChatGPT inspected this specification and manifests, verified selected artifact identities and PR CI, and independently counted the known historical username in retained PR #21 artifacts; it did not rerun the full developer-local scan. Regex coverage and the allowlist can miss other secrets. Scanner download timeouts, size/expansion bounds and per-item error/skip logs were not persisted; no claim that those safeguards were enforced is made. Configured artifact/log retention was not inspected; no automatic purge date is promised.
 
 The revision at `af23ee2c5023c5d00c3c9596f9a4418d0590cd67` accidentally put the literal local username in the SPECIFIC_USER regex. Coordinator replaced it with a private-substitution placeholder in the current document. The literal persists in that historical commit and its packet run 37178660271; these new surfaces postdate the original scan. Destructive history/artifact remediation is outside #22. No universal privacy clearance or no-remediation-needed conclusion follows from this bounded audit.
+
+Later review diffs can include the removed literal as a deleted line; redacting current text does not sanitize historical commits or generated diff artifacts.
