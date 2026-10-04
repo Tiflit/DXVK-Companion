@@ -55,7 +55,7 @@ Active task assignments, in-flight work, and open PR inventories are derived dyn
 ### Fresh-Session Operating Instructions
 
 #### For Gemini (Implementer)
-1. Read [AGENTS.md](../AGENTS.md) and the live dashboard issue (or `docs/AI-CURRENT-STATE.md`).
+1. Read [AGENTS.md](../AGENTS.md) and the live dashboard issue for compact orientation. Underlying GitHub records are authoritative—verify task-critical facts and live identities directly; this static document provides stable governance, not live task state.
 2. Read the assigned GitHub Issue (`gh issue view <number>`). Note acceptance criteria and `### Allowed paths`.
 3. Verify git status, fetch `origin/main`, and work in an isolated worktree.
 4. Write failing regression fixtures first when addressing a defect.
@@ -110,6 +110,6 @@ Active task assignments, in-flight work, and open PR inventories are derived dyn
 ## 6. Live Dashboard Discovery, Fallback & Operations
 
 - **Discovery Mechanism**: The live automated repository state is published to the dedicated machine-owned Issue titled `[AI Dashboard] Current Repository State & Handoff Orientation` (searchable via `gh issue list --search "[AI Dashboard]"` or by label `ai-dashboard`).
-- **Stale / Offline Fallback Protocol**: If the live dashboard Issue is unavailable, closed, rate-limited, or reports an `INCOMPLETE` status, fresh agent sessions must read this curated document (`docs/AI-CURRENT-STATE.md`), verify the latest default-branch commit via `git log -n 1 origin/main`, and inspect open PRs via `gh pr list --state open`.
+- **Stale / Offline Fallback Protocol**: If the live dashboard Issue is unavailable, closed, rate-limited, or reports an `INCOMPLETE` status, fresh agent sessions must inspect underlying GitHub records directly (verify latest default-branch commit via `git log -n 1 origin/main`, and open PRs via `gh pr list --state open`), consulting `docs/AI-CURRENT-STATE.md` only for stable governance rules and role allocation.
 - **Publisher Activation**: Active on `main` following merge of PR #26 (currently publishing to authenticated Issue #27).
 - **Rollback / Disable Procedure**: In the event of unexpected publishing behavior, the workflow can be instantly disabled via `gh workflow disable ai-current-state.yml` without altering credentials or codebase files.

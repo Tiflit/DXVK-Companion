@@ -609,11 +609,11 @@ class TestHandoffGenerator(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         output = stdout_capture.getvalue()
         self.assertIn("Next Owner**: **ChatGPT**", output)
-        self.assertIn("Independent review of current head", output)
+        self.assertIn("Coordinator verification of current head", output)
 
     @patch("urllib.request.urlopen")
-    def test_cli_review_routing_pass_on_current_head_routes_to_human_merge(self, mock_urlopen):
-        """Verifies that an approved PASS on the current head with green CI routes to Human merge."""
+    def test_cli_review_routing_pass_on_current_head_does_not_infer_merge_readiness(self, mock_urlopen):
+        """Verifies that an approved PASS on the current head displays factually and does not claim merge readiness."""
         pr_with_approved_review = dict(self.sample_pr)
         pr_with_approved_review["body"] = (
             "## Primary Issue\nFixes #31\n\n"
@@ -655,8 +655,10 @@ class TestHandoffGenerator(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         output = stdout_capture.getvalue()
-        self.assertIn("Next Owner**: **Human**", output)
-        self.assertIn("Final review and merge decision", output)
+        self.assertIn("chatgpt-20261004-pr31-rev1`: **PASS**", output)
+        self.assertIn("Next Owner**: **ChatGPT**", output)
+        self.assertIn("Coordinator verification of current head", output)
+        self.assertNotIn("Final review and merge decision", output)
 
     # =========================================================================
     # R3: Decision Block & Sync State CLI Tests
@@ -831,6 +833,357 @@ class TestHandoffGenerator(unittest.TestCase):
         self.assertIn("`unknown` (UNKNOWN (default branch ref unavailable))", output)
         self.assertNotIn("`unknown` (synced)", output)
 
+    # =========================================================================
+    # Authorized Reduced Closeout Regression Tests (Issue #31 / PR #33)
+    # =========================================================================
+
+    @patch("urllib.request.build_opener")
+    @patch("urllib.request.urlopen")
+    def test_cli_invalid_checkout_sha_with_wrong_pr_merge_ref(self, mock_urlopen, mock_build_opener):
+        """Verifies that invalid checkout SHA ('not-a-sha') on wrong-PR merge ref emits UNPROVEN and no merge readiness."""
+        prov_bytes = create_provenance_zip({
+            "run_id": "10",
+            "run_attempt": "2",
+            "head_sha": "not-a-sha",
+            "ref": "refs/pull/999/merge",
+        })
+
+        clean_issue = dict(self.sample_issue)
+        clean_issue["body"] = "### Objective\nStandard task without pending decisions.\n"
+
+        def fake_urlopen(req, *args, **kwargs):
+            url = req.full_url if hasattr(req, "full_url") else str(req)
+            if "/pulls/31" in url:
+                return MockHttpResponse(self.sample_pr)
+            if f"/repos/{self.repo}" in url and "/git" not in url and "/pulls" not in url and "/issues" not in url and "/actions" not in url:
+                return MockHttpResponse({"default_branch": "main"})
+            if "/git/ref/heads/main" in url:
+                return MockHttpResponse({"object": {"sha": self.main_sha}})
+            if "/issues/31" in url:
+                return MockHttpResponse(clean_issue)
+            if "/actions/runs?head_sha=" in url:
+                return MockHttpResponse({
+                    "workflow_runs": [
+                        {
+                            "id": 10,
+                            "name": "Build and Test",
+                            "run_attempt": 2,
+                            "conclusion": "success",
+                            "head_sha": self.head_sha,
+                        }
+                    ]
+                })
+            if "/actions/runs/10/artifacts" in url:
+                return MockHttpResponse({
+                    "artifacts": [
+                        {
+                            "id": 1,
+                            "name": "build-provenance",
+                            "archive_download_url": "https://api.github.com/artifacts/prov.zip",
+                        }
+                    ]
+                })
+            if "/actions/runs/10/attempts/2/jobs" in url:
+                return MockHttpResponse({"jobs": []})
+            if "prov.zip" in url:
+                return MockHttpResponse(prov_bytes)
+            return MockHttpResponse({})
+
+        mock_urlopen.side_effect = fake_urlopen
+        mock_opener = MagicMock()
+        mock_opener.open.side_effect = fake_urlopen
+        mock_build_opener.return_value = mock_opener
+
+        stdout_capture = io.StringIO()
+        with patch("sys.stdout", stdout_capture):
+            exit_code = generate_handoff.main(["--pr", "31", "--token", "mock-token"])
+
+        self.assertEqual(exit_code, 0)
+        output = stdout_capture.getvalue()
+        self.assertIn("Tested Checkout SHA**: UNAVAILABLE / UNPROVEN", output)
+        self.assertNotIn("Tested Checkout SHA**: `not-a-sha`", output)
+        self.assertIn("Provenance checkout SHA is invalid: 'not-a-sha'", output)
+        self.assertIn("Next Owner**: **ChatGPT**", output)
+        self.assertNotIn("Final review and merge decision", output)
+
+    @patch("urllib.request.urlopen")
+    def test_cli_same_prefix_different_full_review_sha(self, mock_urlopen):
+        """Verifies that a review sharing the 7-character prefix but having a different full 40-hex SHA does not match current head."""
+        different_full_sha = self.head_sha[:7] + "f" * 33
+        pr_with_prefix_review = dict(self.sample_pr)
+        pr_with_prefix_review["body"] = (
+            "## Primary Issue\nFixes #31\n\n"
+            "<!-- AI-REVIEW-RECORD: chatgpt-20261004-pr31-rev1 -->\n"
+            "## ChatGPT coordinator verification\n\n"
+            f"**Result: PASS.** Reviewed head `{different_full_sha}`\n"
+            "<!-- AI-REVIEW-RECORD-END -->\n"
+        )
+        clean_issue = dict(self.sample_issue)
+        clean_issue["body"] = "### Objective\nStandard task without pending decisions.\n"
+
+        def fake_urlopen(req, *args, **kwargs):
+            url = req.full_url if hasattr(req, "full_url") else str(req)
+            if "/pulls/31" in url:
+                return MockHttpResponse(pr_with_prefix_review)
+            if f"/repos/{self.repo}" in url and "/git" not in url and "/pulls" not in url and "/issues" not in url and "/actions" not in url:
+                return MockHttpResponse({"default_branch": "main"})
+            if "/git/ref/heads/main" in url:
+                return MockHttpResponse({"object": {"sha": self.main_sha}})
+            if "/issues/31" in url:
+                return MockHttpResponse(clean_issue)
+            if "/actions/runs?head_sha=" in url:
+                return MockHttpResponse({
+                    "workflow_runs": [
+                        {"id": 1, "name": "Build and Test", "run_attempt": 1, "conclusion": "success", "head_sha": self.head_sha}
+                    ]
+                })
+            if "/actions/runs/1/artifacts" in url:
+                return MockHttpResponse({"artifacts": []})
+            if "/actions/runs/1/jobs" in url:
+                return MockHttpResponse({"jobs": []})
+            return MockHttpResponse({})
+
+        mock_urlopen.side_effect = fake_urlopen
+
+        stdout_capture = io.StringIO()
+        with patch("sys.stdout", stdout_capture):
+            exit_code = generate_handoff.main(["--pr", "31", "--token", "mock-token"])
+
+        self.assertEqual(exit_code, 0)
+        output = stdout_capture.getvalue()
+        # Should record the review, but route to ChatGPT verification of current head, not Human merge
+        self.assertIn("chatgpt-20261004-pr31-rev1`: **PASS**", output)
+        self.assertIn("Next Owner**: **ChatGPT**", output)
+        self.assertIn("Coordinator verification of current head", output)
+        self.assertNotIn("Final review and merge decision", output)
+
+    @patch("urllib.request.urlopen")
+    def test_cli_pass_on_different_base_with_missing_provenance_and_trx(self, mock_urlopen):
+        """Verifies that PASS against a different base branch commit with missing provenance/TRX never routes to Human merge."""
+        different_base_sha = "f" * 40
+        pr_with_diff_base_review = dict(self.sample_pr)
+        pr_with_diff_base_review["body"] = (
+            "## Primary Issue\nFixes #31\n\n"
+            "<!-- AI-REVIEW-RECORD: chatgpt-20261004-pr31-rev1 -->\n"
+            "## ChatGPT coordinator verification\n\n"
+            f"**Result: PASS.** Reviewed head `{self.head_sha}` against base `{different_base_sha}`\n"
+            "<!-- AI-REVIEW-RECORD-END -->\n"
+        )
+        clean_issue = dict(self.sample_issue)
+        clean_issue["body"] = "### Objective\nStandard task without pending decisions.\n"
+
+        def fake_urlopen(req, *args, **kwargs):
+            url = req.full_url if hasattr(req, "full_url") else str(req)
+            if "/pulls/31" in url:
+                return MockHttpResponse(pr_with_diff_base_review)
+            if f"/repos/{self.repo}" in url and "/git" not in url and "/pulls" not in url and "/issues" not in url and "/actions" not in url:
+                return MockHttpResponse({"default_branch": "main"})
+            if "/git/ref/heads/main" in url:
+                return MockHttpResponse({"object": {"sha": self.main_sha}})
+            if "/issues/31" in url:
+                return MockHttpResponse(clean_issue)
+            if "/actions/runs?head_sha=" in url:
+                return MockHttpResponse({
+                    "workflow_runs": [
+                        {"id": 1, "name": "Build and Test", "run_attempt": 1, "conclusion": "success", "head_sha": self.head_sha}
+                    ]
+                })
+            if "/actions/runs/1/artifacts" in url:
+                return MockHttpResponse({"artifacts": []})
+            if "/actions/runs/1/jobs" in url:
+                return MockHttpResponse({"jobs": []})
+            return MockHttpResponse({})
+
+        mock_urlopen.side_effect = fake_urlopen
+
+        stdout_capture = io.StringIO()
+        with patch("sys.stdout", stdout_capture):
+            exit_code = generate_handoff.main(["--pr", "31", "--token", "mock-token"])
+
+        self.assertEqual(exit_code, 0)
+        output = stdout_capture.getvalue()
+        self.assertIn("Tested Checkout SHA**: UNAVAILABLE / UNPROVEN", output)
+        self.assertIn("TRX Test Totals**: UNAVAILABLE", output)
+        self.assertIn("Next Owner**: **ChatGPT**", output)
+        self.assertIn("Coordinator verification of current head", output)
+        self.assertNotIn("Final review and merge decision", output)
+
+    @patch("urllib.request.urlopen")
+    def test_cli_incomplete_result_containing_pass_does_not_route_to_merge(self, mock_urlopen):
+        """Verifies that review with 'Result: INCOMPLETE - some tests PASS' is parsed as INCOMPLETE and does not route to merge."""
+        pr_with_incomplete_review = dict(self.sample_pr)
+        pr_with_incomplete_review["body"] = (
+            "## Primary Issue\nFixes #31\n\n"
+            "<!-- AI-REVIEW-RECORD: chatgpt-20261004-pr31-rev1 -->\n"
+            "## ChatGPT coordinator verification\n\n"
+            f"**Result: INCOMPLETE - some tests PASS.** Reviewed head `{self.head_sha}`\n"
+            "<!-- AI-REVIEW-RECORD-END -->\n"
+        )
+        clean_issue = dict(self.sample_issue)
+        clean_issue["body"] = "### Objective\nStandard task without pending decisions.\n"
+
+        def fake_urlopen(req, *args, **kwargs):
+            url = req.full_url if hasattr(req, "full_url") else str(req)
+            if "/pulls/31" in url:
+                return MockHttpResponse(pr_with_incomplete_review)
+            if f"/repos/{self.repo}" in url and "/git" not in url and "/pulls" not in url and "/issues" not in url and "/actions" not in url:
+                return MockHttpResponse({"default_branch": "main"})
+            if "/git/ref/heads/main" in url:
+                return MockHttpResponse({"object": {"sha": self.main_sha}})
+            if "/issues/31" in url:
+                return MockHttpResponse(clean_issue)
+            if "/actions/runs?head_sha=" in url:
+                return MockHttpResponse({
+                    "workflow_runs": [
+                        {"id": 1, "name": "Build and Test", "run_attempt": 1, "conclusion": "success", "head_sha": self.head_sha}
+                    ]
+                })
+            if "/actions/runs/1/artifacts" in url:
+                return MockHttpResponse({"artifacts": []})
+            if "/actions/runs/1/jobs" in url:
+                return MockHttpResponse({"jobs": []})
+            return MockHttpResponse({})
+
+        mock_urlopen.side_effect = fake_urlopen
+
+        stdout_capture = io.StringIO()
+        with patch("sys.stdout", stdout_capture):
+            exit_code = generate_handoff.main(["--pr", "31", "--token", "mock-token"])
+
+        self.assertEqual(exit_code, 0)
+        output = stdout_capture.getvalue()
+        self.assertIn("chatgpt-20261004-pr31-rev1`: **INCOMPLETE**", output)
+        self.assertNotIn("chatgpt-20261004-pr31-rev1`: **PASS**", output)
+        self.assertIn("Next Owner**: **ChatGPT**", output)
+        self.assertIn("Coordinator verification of current head", output)
+        self.assertNotIn("Final review and merge decision", output)
+
+    @patch("urllib.request.urlopen")
+    def test_cli_mismatched_ci_run_head_sha_reported_as_uncertain(self, mock_urlopen):
+        """Verifies that workflow run with mismatched head_sha is flagged as uncertainty."""
+        mismatched_head_sha = "d" * 40
+
+        def fake_urlopen(req, *args, **kwargs):
+            url = req.full_url if hasattr(req, "full_url") else str(req)
+            if "/pulls/31" in url:
+                return MockHttpResponse(self.sample_pr)
+            if f"/repos/{self.repo}" in url and "/git" not in url and "/pulls" not in url and "/issues" not in url and "/actions" not in url:
+                return MockHttpResponse({"default_branch": "main"})
+            if "/git/ref/heads/main" in url:
+                return MockHttpResponse({"object": {"sha": self.main_sha}})
+            if "/issues/31" in url:
+                return MockHttpResponse(self.sample_issue)
+            if "/actions/runs?head_sha=" in url:
+                return MockHttpResponse({
+                    "workflow_runs": [
+                        {
+                            "id": 1,
+                            "name": "Build and Test",
+                            "run_attempt": 1,
+                            "conclusion": "success",
+                            "head_sha": mismatched_head_sha,
+                        }
+                    ]
+                })
+            if "/actions/runs/1/artifacts" in url:
+                return MockHttpResponse({"artifacts": []})
+            if "/actions/runs/1/jobs" in url:
+                return MockHttpResponse({"jobs": []})
+            return MockHttpResponse({})
+
+        mock_urlopen.side_effect = fake_urlopen
+
+        stdout_capture = io.StringIO()
+        with patch("sys.stdout", stdout_capture):
+            exit_code = generate_handoff.main(["--pr", "31", "--token", "mock-token"])
+
+        self.assertEqual(exit_code, 0)
+        output = stdout_capture.getvalue()
+        self.assertIn("CI run head SHA mismatch", output)
+
+    @patch("urllib.request.urlopen")
+    def test_cli_unknown_decision_status_scoped_block(self, mock_urlopen):
+        """Verifies that an unrecognized decision status in the governance block reports UNKNOWN."""
+        malformed_issue = {
+            "number": 31,
+            "title": "Task with unrecognized status",
+            "state": "open",
+            "body": (
+                "### Objective\nStandard task.\n\n"
+                "### Decision Governance Block\n"
+                "- **Decision required**: Option A vs Option B\n"
+                "- **Proposed option**: Option A\n"
+                "- **Status**: UNRECOGNIZED_STATUS\n"
+                "- **Source of explicit human approval**: None\n"
+            ),
+        }
+
+        def fake_urlopen(req, *args, **kwargs):
+            url = req.full_url if hasattr(req, "full_url") else str(req)
+            if "/pulls/31" in url:
+                return MockHttpResponse(self.sample_pr)
+            if f"/repos/{self.repo}" in url and "/git" not in url and "/pulls" not in url and "/issues" not in url and "/actions" not in url:
+                return MockHttpResponse({"default_branch": "main"})
+            if "/git/ref/heads/main" in url:
+                return MockHttpResponse({"object": {"sha": self.main_sha}})
+            if "/issues/31" in url:
+                return MockHttpResponse(malformed_issue)
+            if "/actions/runs?head_sha=" in url:
+                return MockHttpResponse({"workflow_runs": []})
+            return MockHttpResponse({})
+
+        mock_urlopen.side_effect = fake_urlopen
+
+        stdout_capture = io.StringIO()
+        with patch("sys.stdout", stdout_capture):
+            exit_code = generate_handoff.main(["--pr", "31", "--token", "mock-token"])
+
+        self.assertEqual(exit_code, 0)
+        output = stdout_capture.getvalue()
+        self.assertIn("Decision Governance**: `UNKNOWN (UNRECOGNIZED_STATUS)`", output)
+
+    @patch("urllib.request.urlopen")
+    def test_cli_ambiguous_provenance_candidates_rejected(self, mock_urlopen):
+        """Verifies that ambiguous build-provenance candidates are rejected as uncertain."""
+        def fake_urlopen(req, *args, **kwargs):
+            url = req.full_url if hasattr(req, "full_url") else str(req)
+            if "/pulls/31" in url:
+                return MockHttpResponse(self.sample_pr)
+            if f"/repos/{self.repo}" in url and "/git" not in url and "/pulls" not in url and "/issues" not in url and "/actions" not in url:
+                return MockHttpResponse({"default_branch": "main"})
+            if "/git/ref/heads/main" in url:
+                return MockHttpResponse({"object": {"sha": self.main_sha}})
+            if "/issues/31" in url:
+                return MockHttpResponse(self.sample_issue)
+            if "/actions/runs?head_sha=" in url:
+                return MockHttpResponse({
+                    "workflow_runs": [
+                        {"id": 1, "name": "Build and Test", "run_attempt": 1, "conclusion": "success", "head_sha": self.head_sha}
+                    ]
+                })
+            if "/actions/runs/1/artifacts" in url:
+                return MockHttpResponse({
+                    "artifacts": [
+                        {"id": 10, "name": "build-provenance", "archive_download_url": "https://api.github.com/prov1.zip"},
+                        {"id": 11, "name": "build-provenance", "archive_download_url": "https://api.github.com/prov2.zip"},
+                    ]
+                })
+            if "/actions/runs/1/jobs" in url:
+                return MockHttpResponse({"jobs": []})
+            return MockHttpResponse({})
+
+        mock_urlopen.side_effect = fake_urlopen
+
+        stdout_capture = io.StringIO()
+        with patch("sys.stdout", stdout_capture):
+            exit_code = generate_handoff.main(["--pr", "31", "--token", "mock-token"])
+
+        self.assertEqual(exit_code, 0)
+        output = stdout_capture.getvalue()
+        self.assertIn("Ambiguous build-provenance artifacts: found 2 candidates; rejected", output)
+        self.assertIn("Tested Checkout SHA**: UNAVAILABLE / UNPROVEN", output)
+
 
 if __name__ == "__main__":
     unittest.main()
+

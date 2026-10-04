@@ -524,8 +524,8 @@ python scripts/ai-workflow/generate_handoff.py --pr 33 --json
 
 - **Identity Verification**: Queries live GitHub PR metadata (`head.sha`, `base.sha`) and live default branch ref (`git/ref/heads/main`). Validates full 40-character SHAs and flags base branch movement (`BASE MOVED`) immediately.
 - **Workspace Disambiguation**: Local git state (`git rev-parse HEAD`, branch, status) is distinctly labeled as `Local Workspace` and never conflated with live GitHub base revisions.
-- **Evidence Provenance**: Pulls triggering workflow run, attempt, tested checkout SHA, and TRX totals from build provenance artifacts. If unverified, reports `UNAVAILABLE` rather than guessing.
-- **Separation of Facts from Conclusions**: Acquired facts (revisions, test totals, CI statuses) are strictly separated from model conclusions and pending decision prerequisites. Successful CI is never translated into reviewer approval.
+- **Evidence Provenance & Reduced Capability Boundary**: Pulls triggering workflow run, attempt, tested checkout SHA, and TRX totals from build provenance artifacts. Requires full 40-hex SHAs and exact PR merge ref (`refs/pull/{pr_number}/merge`). If commit relationships are unverified or artifacts unavailable, checkout is marked `UNAVAILABLE / UNPROVEN`.
+- **Fact Separation & Intentional Capability Reduction**: Acquired facts (revisions, test totals, CI statuses) are strictly separated from model conclusions and pending decision prerequisites. The tool intentionally does not infer review approval or merge readiness from prose keywords, prefixes, or green CI; attributed review records are displayed factually and approval/merge decisions are left to coordinator verification and human authority.
 
 ### 3. Review Preservation and PR-Body Update Helper (`update_pr_body.py`)
 

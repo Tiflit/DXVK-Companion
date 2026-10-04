@@ -582,7 +582,7 @@ def render_dashboard(
     startup_route = (
         "\n## 3. Fresh-Session Startup Route\n\n"
         f"1. **Operating Rules**: Read [AGENTS.md]({base_url}/AGENTS.md) for role allocation and invariants.\n"
-        f"2. **Live Dashboard**: Read this issue (or [docs/AI-CURRENT-STATE.md]({base_url}/docs/AI-CURRENT-STATE.md) if offline/stale).\n"
+        f"2. **Live Dashboard**: Inspect this machine-owned issue for compact orientation. Underlying GitHub records are authoritative; static [docs/AI-CURRENT-STATE.md]({base_url}/docs/AI-CURRENT-STATE.md) provides stable governance rules, not live identities.\n"
         f"3. **Assigned Task Contract**: Read `gh issue view <number>` (authoritative scope & acceptance criteria).\n"
         f"4. **Latest Relevant Activity/Evidence**: Inspect latest session in `docs/ai-journal/` or task PR review packet.\n"
         f"5. **Selective History**: Historical pilot logs ([docs/AI-PILOT-LOG.md]({base_url}/docs/AI-PILOT-LOG.md)) are for selective reference only.\n"

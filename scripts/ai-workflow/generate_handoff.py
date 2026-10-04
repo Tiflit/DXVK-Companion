@@ -79,6 +79,10 @@ class HandoffGitHubClient(GitHubClient):
     def get_repo(self) -> Dict[str, Any]:
         return self._request("GET", f"repos/{self.repo}")
 
+    def get_commit(self, commit_sha: str) -> Dict[str, Any]:
+        """Fetches commit details by SHA."""
+        return self._request("GET", f"repos/{self.repo}/commits/{commit_sha}")
+
     def get_workflow_run_jobs(self, run_id: int, attempt: Optional[str] = None) -> List[Dict[str, Any]]:
         """Fetches jobs for the workflow run, preferring attempt-specific API when attempt is provided."""
         if attempt:
@@ -184,6 +188,7 @@ class HandoffSnapshot:
     ci_head_sha: Optional[str] = None
     tested_checkout_sha: Optional[str] = None
     tested_checkout_ref: Optional[str] = None
+    unverified_checkout_details: Optional[str] = None
     trx_totals: Optional[TrxTotals] = None
     reviews: List[AttributedReview] = field(default_factory=list)
     next_owner: str = "ChatGPT"
@@ -239,24 +244,36 @@ def inspect_local_workspace(cwd: Optional[Path] = None) -> LocalWorkspaceIdentit
 
 def extract_decision_block(issue_body: str) -> Tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
     """
-    Extracts Decision Governance Block from an Issue description.
+    Extracts Decision Governance Block strictly from its defined section in an Issue description.
     Returns: (decision_required, proposed_option, status, approval_source)
     """
     if not issue_body:
         return None, None, None, None
 
-    req_match = re.search(r"\*\*Decision required\*\*:\s*([^\r\n]+)", issue_body, re.IGNORECASE)
-    opt_match = re.search(r"\*\*Proposed option\*\*:\s*([^\r\n]+)", issue_body, re.IGNORECASE)
-    status_match = re.search(r"\*\*Status\*\*:\s*([^\r\n]+)", issue_body, re.IGNORECASE)
-    source_match = re.search(r"\*\*Source of explicit human approval\*\*:\s*([^\r\n]+)", issue_body, re.IGNORECASE)
+    block_match = re.search(r"(?:^|\n)#{2,4}\s+Decision\s+Governance\s+Block\s*\n([\s\S]*?)(?=\n#{1,4}\s+|\Z)", issue_body, re.IGNORECASE)
+    if not block_match:
+        return None, None, None, None
+
+    section_text = block_match.group(1)
+
+    req_match = re.search(r"\*\*Decision required\*\*:\s*([^\r\n]+)", section_text, re.IGNORECASE)
+    opt_match = re.search(r"\*\*Proposed option\*\*:\s*([^\r\n]+)", section_text, re.IGNORECASE)
+    status_match = re.search(r"\*\*Status\*\*:\s*([^\r\n]+)", section_text, re.IGNORECASE)
+    source_match = re.search(r"\*\*Source of explicit human approval\*\*:\s*([^\r\n]+)", section_text, re.IGNORECASE)
 
     decision_req = req_match.group(1).strip() if req_match else None
     proposed_opt = opt_match.group(1).strip() if opt_match else None
-    status = status_match.group(1).strip() if status_match else None
+    raw_status = status_match.group(1).strip() if status_match else None
     source = source_match.group(1).strip() if source_match else None
 
-    if status:
-        status = re.sub(r"[`*]", "", status).strip().upper()
+    if raw_status:
+        cleaned_status = re.sub(r"[`*]", "", raw_status).strip().upper()
+        if cleaned_status in ("PENDING", "DECIDED", "NONE", "NOT_REQUIRED"):
+            status = cleaned_status
+        else:
+            status = f"UNKNOWN ({cleaned_status})"
+    else:
+        status = "UNKNOWN (status line missing)"
 
     return decision_req, proposed_opt, status, source
 
@@ -274,7 +291,7 @@ def mask_code_spans(text: str) -> str:
 def parse_review_records(pr_body: str) -> List[AttributedReview]:
     """
     Extracts and parses all protected review records from a PR description outside code blocks.
-    Identifies reviewer, outcome (PASS, CHANGES REQUIRED, etc.), and reviewed head SHA.
+    Identifies reviewer, outcome (PASS, CHANGES REQUIRED, INCOMPLETE, etc.), and reviewed head SHA.
     """
     if not pr_body:
         return []
@@ -299,15 +316,17 @@ def parse_review_records(pr_body: str) -> List[AttributedReview]:
 
         res_match = re.search(r"\*\*Result(?:\*\*)?:?\s*([^*.\r\n]+)", block_text, re.I)
         raw_res = res_match.group(1).strip() if res_match else ""
-        if "CHANGES REQUIRED" in raw_res.upper() or "CHANGES_REQUIRED" in raw_res.upper():
+        if re.search(r"\bCHANGES[\s_]+REQUIRED\b", raw_res, re.I):
             result = "CHANGES REQUIRED"
-        elif "PASS" in raw_res.upper() or "APPROVE" in raw_res.upper() or "APPROVED" in raw_res.upper():
-            result = "PASS"
-        elif "INCOMPLETE" in raw_res.upper():
+        elif re.search(r"\bINCOMPLETE\b", raw_res, re.I):
             result = "INCOMPLETE"
-        elif re.search(r"\bCHANGES REQUIRED\b", block_text, re.I):
+        elif re.search(r"\b(?:PASS|APPROVED?)\b", raw_res, re.I):
+            result = "PASS"
+        elif re.search(r"\bCHANGES[\s_]+REQUIRED\b", block_text, re.I):
             result = "CHANGES REQUIRED"
-        elif re.search(r"\bPASS\b", block_text):
+        elif re.search(r"\bINCOMPLETE\b", block_text, re.I):
+            result = "INCOMPLETE"
+        elif re.search(r"\b(?:PASS|APPROVED)\b", block_text):
             result = "PASS"
         else:
             result = "UNKNOWN"
@@ -473,6 +492,7 @@ def collect_handoff_snapshot(
     ci_head_sha = None
     tested_checkout_sha = None
     tested_checkout_ref = None
+    unverified_checkout_details = None
     trx_totals: Optional[TrxTotals] = None
     uncertainties: List[str] = []
 
@@ -483,18 +503,44 @@ def collect_handoff_snapshot(
         if not build_run:
             uncertainties.append(f"No 'Build and Test' workflow run found matching head SHA {live_pr_head_sha[:7]}")
         else:
-            ci_run_id = str(build_run.get("id"))
+            raw_run_id = str(build_run.get("id"))
+            raw_run_attempt = str(build_run.get("run_attempt", 1))
+            run_head_sha = str(build_run.get("head_sha", ""))
+
+            if not is_valid_positive_int(raw_run_id):
+                uncertainties.append(f"CI run ID is not a positive integer: '{raw_run_id}'")
+            else:
+                ci_run_id = raw_run_id
+
+            if not is_valid_positive_int(raw_run_attempt):
+                uncertainties.append(f"CI run attempt is not a positive integer: '{raw_run_attempt}'")
+            else:
+                ci_run_attempt = raw_run_attempt
+
             ci_run_name = build_run.get("name")
-            ci_run_attempt = str(build_run.get("run_attempt", 1))
             ci_run_conclusion = build_run.get("conclusion") or build_run.get("status", "unknown")
-            ci_head_sha = build_run.get("head_sha")
+
+            if not is_valid_sha(run_head_sha):
+                uncertainties.append(f"CI run head SHA is invalid: '{run_head_sha}'")
+            elif run_head_sha != live_pr_head_sha:
+                uncertainties.append(f"CI run head SHA mismatch: run recorded {run_head_sha[:7]} vs queried PR head {live_pr_head_sha[:7]}")
+            else:
+                ci_head_sha = run_head_sha
 
             # Check artifacts and jobs for this attempt
-            artifacts = client.get_run_artifacts(int(ci_run_id)) if ci_run_id.isdigit() else []
-            ci_jobs = client.get_workflow_run_jobs(int(ci_run_id), attempt=ci_run_attempt) if ci_run_id.isdigit() else []
+            artifacts = client.get_run_artifacts(int(ci_run_id)) if ci_run_id else []
+            ci_jobs = client.get_workflow_run_jobs(int(ci_run_id), attempt=ci_run_attempt) if ci_run_id else []
 
             # 1. Process build-provenance
-            prov_art = next((a for a in artifacts if a.get("name") == "build-provenance"), None)
+            prov_candidates = [a for a in artifacts if a.get("name") == "build-provenance"]
+            if len(prov_candidates) > 1:
+                uncertainties.append(f"Ambiguous build-provenance artifacts: found {len(prov_candidates)} candidates; rejected")
+                prov_art = None
+            elif len(prov_candidates) == 1:
+                prov_art = prov_candidates[0]
+            else:
+                prov_art = None
+
             if prov_art and hasattr(client, "download_bytes"):
                 try:
                     zip_bytes = client.download_bytes(prov_art["archive_download_url"])
@@ -508,28 +554,55 @@ def collect_handoff_snapshot(
                         prov_base_sha = str(prov_json.get("base_sha", ""))
                         prov_ref = str(prov_json.get("ref", ""))
 
-                        if not prov_run_id or not prov_attempt or not prov_head_sha:
-                            uncertainties.append("Provenance incomplete: missing run_id, run_attempt, or head_sha")
+                        if not is_valid_positive_int(prov_run_id) or not is_valid_positive_int(prov_attempt):
+                            uncertainties.append("Provenance incomplete or invalid run_id/run_attempt identifiers")
+                        elif not is_valid_sha(prov_head_sha):
+                            uncertainties.append(f"Provenance checkout SHA is invalid: '{prov_head_sha}'")
                         elif prov_run_id != ci_run_id:
                             uncertainties.append(f"Provenance run ID mismatch: recorded {prov_run_id} vs triggering run {ci_run_id}")
                         elif prov_attempt != ci_run_attempt:
                             uncertainties.append(f"Provenance attempt mismatch: recorded attempt {prov_attempt} vs triggering attempt {ci_run_attempt}")
                         else:
-                            if "merge" in prov_ref:
-                                tested_checkout_sha = prov_head_sha
-                                tested_checkout_ref = f"synthetic merge ref {prov_ref}"
-                            elif prov_head_sha == live_pr_head_sha or live_pr_head_sha.startswith(prov_head_sha):
+                            exact_merge_ref = f"refs/pull/{pr_number}/merge"
+                            if prov_ref == exact_merge_ref:
+                                verified_rel = False
+                                if hasattr(client, "get_commit"):
+                                    try:
+                                        commit_obj = client.get_commit(prov_head_sha)
+                                        parents = [p.get("sha") for p in commit_obj.get("parents", []) if is_valid_sha(p.get("sha"))]
+                                        if len(parents) == 2 and live_pr_head_sha in parents:
+                                            base_parent = [p for p in parents if p != live_pr_head_sha][0]
+                                            if base_parent == live_pr_base_sha:
+                                                verified_rel = True
+                                                tested_checkout_sha = prov_head_sha
+                                                tested_checkout_ref = f"synthetic merge ref {prov_ref} (verified parents: base {live_pr_base_sha[:7]}, head {live_pr_head_sha[:7]})"
+                                            elif prov_base_sha and base_parent == prov_base_sha:
+                                                verified_rel = True
+                                                tested_checkout_sha = prov_head_sha
+                                                tested_checkout_ref = f"synthetic merge ref {prov_ref} (verified parents: older base {base_parent[:7]}, head {live_pr_head_sha[:7]}; BASE MOVED)"
+                                    except Exception:
+                                        pass
+                                if not verified_rel:
+                                    tested_checkout_sha = None
+                                    tested_checkout_ref = None
+                                    unverified_checkout_details = f"recorded commit `{prov_head_sha[:7]}` on merge ref `{prov_ref}` (relationship unestablished)"
+                                    uncertainties.append(f"Checkout relationship UNPROVEN: merge ref {prov_ref} commit {prov_head_sha[:7]} relationship to PR head not established")
+                            elif prov_head_sha == live_pr_head_sha:
                                 tested_checkout_sha = prov_head_sha
                                 tested_checkout_ref = "direct head checkout"
                             else:
-                                uncertainties.append(f"Provenance checkout SHA mismatch: recorded {prov_head_sha[:7]} vs PR head {live_pr_head_sha[:7]}")
+                                tested_checkout_sha = None
+                                tested_checkout_ref = None
+                                unverified_checkout_details = f"recorded checkout `{prov_head_sha[:7]}` on ref `{prov_ref}`"
+                                uncertainties.append(f"Checkout relationship UNPROVEN: recorded checkout {prov_head_sha[:7]} does not match PR head {live_pr_head_sha[:7]} on ref {prov_ref}")
 
-                            if prov_base_sha and live_pr_base_sha and prov_base_sha != live_pr_base_sha:
-                                uncertainties.append(f"Base SHA disagreement: provenance recorded {prov_base_sha[:7]} vs PR base {live_pr_base_sha[:7]}")
+                            if prov_base_sha and is_valid_sha(prov_base_sha) and live_pr_base_sha and prov_base_sha != live_pr_base_sha:
+                                uncertainties.append(f"Base SHA disagreement: provenance recorded {prov_base_sha[:7]} vs live PR base {live_pr_base_sha[:7]} (BASE MOVED)")
                 except Exception as e:
                     uncertainties.append(f"Provenance artifact parsing failed: {sanitize_diagnostic(str(e))}")
             else:
-                uncertainties.append("No 'build-provenance' artifact found for triggering run")
+                if not prov_art and len(prov_candidates) == 0:
+                    uncertainties.append("No 'build-provenance' artifact found for triggering run")
 
             # 2. Process TRX test results using attempt attribution helper
             selected_trx, trx_unavail_reason = resolve_trx_artifact_for_attempt(
@@ -555,14 +628,12 @@ def collect_handoff_snapshot(
     except Exception as e:
         uncertainties.append(f"CI query failed: {sanitize_diagnostic(str(e))}")
 
-    # Determine next owner & concrete action
+    # Determine next owner & concrete action (under reduced functionality: no automatic merge-readiness inference)
     current_head_reviews = [
         r for r in reviews
-        if r.reviewed_head_sha and (
-            r.reviewed_head_sha == live_pr_head_sha or
-            live_pr_head_sha.startswith(r.reviewed_head_sha) or
-            r.reviewed_head_sha.startswith(live_pr_head_sha[:7])
-        )
+        if r.reviewed_head_sha and len(r.reviewed_head_sha) == 40 and is_valid_sha(r.reviewed_head_sha) and
+        r.reviewed_head_sha == live_pr_head_sha and
+        (not r.reviewed_base_sha or (len(r.reviewed_base_sha) == 40 and is_valid_sha(r.reviewed_base_sha) and r.reviewed_base_sha == live_pr_base_sha))
     ]
 
     if ci_run_conclusion in ("failure", "timed_out", "cancelled"):
@@ -579,25 +650,8 @@ def collect_handoff_snapshot(
         next_owner = "Human"
         next_action = f"Explicit decision required on Issue #{resolved_issue_number}"
     elif pr_state == "open":
-        if not reviews:
-            next_owner = "ChatGPT"
-            next_action = "Independent review and verification"
-        elif not current_head_reviews:
-            old_ids = ", ".join(f"`{r.record_id}`" for r in reviews)
-            next_owner = "ChatGPT"
-            next_action = f"Independent review of current head `{live_pr_head_sha[:7]}` (prior reviews on older heads: {old_ids})"
-        else:
-            latest_review = current_head_reviews[-1]
-            if latest_review.result == "PASS":
-                if ci_run_conclusion == "success":
-                    next_owner = "Human"
-                    next_action = "Final review and merge decision"
-                else:
-                    next_owner = "Human"
-                    next_action = "Merge decision pending CI verification"
-            else:
-                next_owner = "ChatGPT"
-                next_action = f"Clarify review status on current head ({latest_review.record_id} reported {latest_review.result})"
+        next_owner = "ChatGPT"
+        next_action = "Coordinator verification of current head"
     else:
         next_owner = "Human"
         next_action = "Lifecycle closeout"
@@ -631,6 +685,7 @@ def collect_handoff_snapshot(
         ci_head_sha=ci_head_sha,
         tested_checkout_sha=tested_checkout_sha,
         tested_checkout_ref=tested_checkout_ref,
+        unverified_checkout_details=unverified_checkout_details,
         trx_totals=trx_totals,
         reviews=reviews,
         next_owner=next_owner,
@@ -679,6 +734,8 @@ def format_handoff_markdown(snap: HandoffSnapshot, max_words: int = MAX_HANDOFF_
         lines.append(f"- **Tested Checkout SHA**: `{snap.tested_checkout_sha}`{rel}")
     else:
         lines.append("- **Tested Checkout SHA**: UNAVAILABLE / UNPROVEN")
+        if snap.unverified_checkout_details:
+            lines.append(f"- **Unverified Self-Reported Checkout**: {snap.unverified_checkout_details}")
 
     if snap.trx_totals:
         lines.append(f"- **TRX Test Totals**: {snap.trx_totals.passed} passed, {snap.trx_totals.failed} failed, {snap.trx_totals.skipped} skipped (total {snap.trx_totals.total})")
@@ -784,6 +841,7 @@ def format_handoff_json(snap: HandoffSnapshot) -> str:
             "head_sha": snap.ci_head_sha,
             "tested_checkout_sha": snap.tested_checkout_sha,
             "tested_checkout_ref": snap.tested_checkout_ref,
+            "unverified_checkout_details": snap.unverified_checkout_details,
             "trx_totals": {
                 "passed": snap.trx_totals.passed,
                 "failed": snap.trx_totals.failed,
