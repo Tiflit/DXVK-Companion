@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import sys
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
@@ -69,7 +71,6 @@ def verify_pr_body(body: str) -> HygieneResult:
 
 
 def fetch_github_api(url: str, token: str) -> any:
-    import urllib.request
     req = urllib.request.Request(
         url,
         headers={
@@ -92,9 +93,11 @@ def main() -> int:
     repo = os.environ.get("GH_REPO") or os.environ.get("GITHUB_REPOSITORY")
 
     body = ""
-    if args.pr_number and token and repo:
+    if args.pr_number:
+        if not token or not repo:
+            print("ERROR: GH_TOKEN and GH_REPO must be set when --pr-number is specified.", file=sys.stderr)
+            return 1
         try:
-            import json
             pr_data = fetch_github_api(f"https://api.github.com/repos/{repo}/pulls/{args.pr_number}", token)
             body = pr_data.get("body", "")
         except Exception as e:
@@ -103,9 +106,8 @@ def main() -> int:
     elif args.pr_body_file and args.pr_body_file.exists():
         body = args.pr_body_file.read_text(encoding="utf-8")
     else:
-        # Read from stdin if available
-        if not sys.stdin.isatty():
-            body = sys.stdin.read()
+        print("ERROR: Neither --pr-number nor a valid --pr-body-file was provided.", file=sys.stderr)
+        return 1
 
     result = verify_pr_body(body)
 

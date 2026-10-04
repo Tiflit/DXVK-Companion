@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import sys
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -83,7 +84,6 @@ def check_files(
 
 
 def fetch_github_api(url: str, token: str) -> any:
-    import urllib.request
     req = urllib.request.Request(
         url,
         headers={
@@ -130,7 +130,10 @@ def main() -> int:
                 sf.write(text)
 
     # 1. Direct GitHub API mode
-    if args.pr_number and token and repo:
+    if args.pr_number:
+        if not token or not repo:
+            print("ERROR: GH_TOKEN and GH_REPO must be set when --pr-number is specified.", file=sys.stderr)
+            return 1
         try:
             pr_data = fetch_github_api(f"https://api.github.com/repos/{repo}/pulls/{args.pr_number}", token)
             pr_body = pr_data.get("body", "")
