@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import io
 import json
 import os
 import re
@@ -12,6 +13,7 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -19,6 +21,23 @@ from typing import Any, Dict, List, Optional, Tuple
 DASHBOARD_TITLE = "[AI Dashboard] Current Repository State & Handoff Orientation"
 DASHBOARD_MARKER = "<!-- AI-DASHBOARD-MARKER: v1 -->"
 COMPLETENESS_COMPLETE = "COMPLETE"
+
+VALID_CI_CONCLUSIONS = {
+    "success",
+    "failure",
+    "neutral",
+    "cancelled",
+    "timed_out",
+    "action_required",
+    "stale",
+    "historical/stale",
+    "in_progress",
+    "queued",
+    "none",
+    "no build run",
+    "unavailable",
+    "unknown",
+}
 
 
 class SecurityValidationError(Exception):
@@ -31,27 +50,55 @@ class GitHubApiError(Exception):
     pass
 
 
-def get_tooling_revision() -> str:
-    """Returns the tooling script path and commit SHA if available."""
-    script_rel = "scripts/ai-workflow/update_dashboard.py"
-    sha = os.environ.get("GITHUB_SHA")
-    if not sha:
-        try:
-            res = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, timeout=5)
-            if res.returncode == 0 and res.stdout.strip():
-                sha = res.stdout.strip()
-        except Exception:
-            pass
-    if sha and is_valid_sha(sha):
-        return f"{script_rel}@{sha[:10]}"
-    return script_rel
-
-
 def is_valid_sha(sha: Optional[str]) -> bool:
     """Validates that a string is a 40-character hex commit SHA."""
     if not sha or not isinstance(sha, str):
         return False
     return bool(re.match(r"^[0-9a-fA-F]{40}$", sha.strip()))
+
+
+def is_valid_repo_name(repo: Optional[str]) -> bool:
+    """Validates that a repository name matches owner/repo format."""
+    if not repo or not isinstance(repo, str):
+        return False
+    return bool(re.match(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", repo.strip()))
+
+
+def is_valid_positive_int(val: Any) -> bool:
+    """Validates that a value is a positive integer or positive integer digit string."""
+    if isinstance(val, int) and val > 0:
+        return True
+    if isinstance(val, str) and val.isdigit() and int(val) > 0:
+        return True
+    return False
+
+
+def get_tooling_revision(repo_root: Optional[Path] = None) -> str:
+    """
+    Returns the tooling script path and commit SHA of actual checked-out tooling HEAD.
+    Attributes the actual git commit in the checked-out workspace first, not event GITHUB_SHA.
+    """
+    script_rel = "scripts/ai-workflow/update_dashboard.py"
+    sha = None
+    try:
+        cwd = str(repo_root) if repo_root else None
+        res = subprocess.run(["git", "rev-parse", "HEAD"], cwd=cwd, capture_output=True, text=True, timeout=5)
+        if res.returncode == 0 and res.stdout.strip():
+            candidate = res.stdout.strip()
+            if is_valid_sha(candidate):
+                sha = candidate
+    except Exception:
+        pass
+
+    # Only fall back to TOOLING_SHA if git is unavailable
+    if not sha:
+        env_sha = os.environ.get("TOOLING_SHA")
+        if env_sha and is_valid_sha(env_sha):
+            sha = env_sha
+
+    if sha and is_valid_sha(sha):
+        return f"{script_rel}@{sha[:10]}"
+    return script_rel
 
 
 def sanitize_display_text(text: Optional[str], max_len: int = 100) -> str:
@@ -62,36 +109,36 @@ def sanitize_display_text(text: Optional[str], max_len: int = 100) -> str:
     """
     if not text:
         return ""
-    
+
     sanitized = re.sub(r"[\r\n\t]+", " ", str(text))
-    
+
     # Strip HTML tags
     sanitized = re.sub(r"<[^>]+>", "", sanitized)
-    
+
     # Strip Markdown link syntax: [title](url) -> title
     sanitized = re.sub(r"\[([^\]]+)\]\([^\)]+\)", r"\1", sanitized)
-    
+
     # Strip backticks
     sanitized = sanitized.replace("`", "")
-    
+
     # Redact full local Windows drive paths: C:\Users\... or D:\dev\...
     sanitized = re.sub(r"[A-Za-z]:\\[^:\r\n\t|<>\"`]+", "[REDACTED_PATH]", sanitized)
-    
+
     # Redact full Unix paths: /home/... or /Users/...
     sanitized = re.sub(r"/(?:home|Users)/[^/\s]+(?:/[^\s]*)?", "[REDACTED_PATH]", sanitized)
-    
+
     # Redact tokens (ghp_, github_pat_, Bearer ...)
     sanitized = re.sub(r"(?:ghp_|github_pat_|bearer\s+)[A-Za-z0-9_]+", "[REDACTED_TOKEN]", sanitized, flags=re.I)
-    
+
     # Escape Markdown table pipes
     sanitized = sanitized.replace("|", "/")
-    
+
     # Collapse consecutive whitespace
     sanitized = re.sub(r"\s+", " ", sanitized).strip()
-    
+
     if len(sanitized) > max_len:
         sanitized = sanitized[: max_len - 3].rstrip() + "..."
-    
+
     return sanitized
 
 
@@ -153,10 +200,13 @@ class GitHubClient:
         req = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
-                content = resp.read().decode("utf-8")
-                if content:
-                    return json.loads(content)
-                return {}
+                content = resp.read()
+                if not content:
+                    return {}
+                try:
+                    return json.loads(content.decode("utf-8"))
+                except Exception:
+                    return content
         except urllib.error.HTTPError as e:
             msg = e.read().decode("utf-8", errors="replace")
             clean_msg = sanitize_diagnostic(msg)
@@ -176,29 +226,94 @@ class GitHubClient:
     def get_runs_for_commit(self, commit_sha: str) -> List[Dict[str, Any]]:
         url = f"repos/{self.repo}/actions/runs?head_sha={commit_sha}&per_page=20"
         res = self._request("GET", url)
-        return res.get("workflow_runs", [])
+        if isinstance(res, dict):
+            return res.get("workflow_runs", [])
+        return []
 
-    def search_issues(self, query: str) -> List[Dict[str, Any]]:
+    def get_run_artifacts(self, run_id: int) -> List[Dict[str, Any]]:
+        """Fetches artifacts list for a workflow run."""
+        url = f"repos/{self.repo}/actions/runs/{run_id}/artifacts"
+        res = self._request("GET", url)
+        if isinstance(res, dict):
+            return res.get("artifacts", [])
+        return []
+
+    def download_artifact_zip(self, artifact_id: int) -> bytes:
+        """Downloads artifact zip archive bytes."""
+        url = f"repos/{self.repo}/actions/artifacts/{artifact_id}/zip"
+        res = self._request("GET", url)
+        if isinstance(res, bytes):
+            return res
+        return b""
+
+    def search_issues(
+        self,
+        query: str = DASHBOARD_MARKER,
+        max_pages: int = 5,
+        per_page: int = 50,
+        expected_owner: str = "github-actions[bot]",
+    ) -> List[Dict[str, Any]]:
         """
-        Searches issues (including closed) for exact dedicated dashboard issue match.
-        Filters out pull requests and non-matching titles/markers.
+        Searches issues across all states (open and closed) to locate the dedicated dashboard issue.
+        Authenticates machine-owned identity, detects human lookalikes and PRs, and fails safely
+        on API errors or unresolved pagination caps.
         """
         matched = []
-        # Paginate across issues state=all
-        for page in range(1, 4):
-            try:
-                issues = self._request("GET", f"repos/{self.repo}/issues?state=all&per_page=50&page={page}")
-                if not issues:
-                    break
-                for iss in issues:
-                    if iss.get("pull_request"):
-                        continue
-                    title = (iss.get("title") or "").strip()
-                    body = iss.get("body") or ""
-                    if title == DASHBOARD_TITLE and DASHBOARD_MARKER in body:
-                        matched.append(iss)
-            except Exception:
+        for page in range(1, max_pages + 1):
+            # Real HTTP request; errors are NOT caught here so discovery failures never become absence
+            issues = self._request("GET", f"repos/{self.repo}/issues?state=all&per_page={per_page}&page={page}")
+            if not isinstance(issues, list):
+                raise GitHubApiError(f"Unexpected response format during issue discovery on page {page}")
+
+            if not issues:
                 break
+
+            for iss in issues:
+                title = (iss.get("title") or "").strip()
+                body = iss.get("body") or ""
+                is_pr = bool(iss.get("pull_request"))
+
+                has_marker = DASHBOARD_MARKER in body
+                has_title = title == DASHBOARD_TITLE
+
+                # Reject PR lookalikes mimicking dashboard title or marker
+                if is_pr and (has_title or has_marker):
+                    raise SecurityValidationError(
+                        f"Pull request #{iss.get('number')} detected mimicking dashboard title/marker; "
+                        "refusing publication to prevent target confusion."
+                    )
+
+                if has_title and has_marker:
+                    # Authenticate dedicated machine-owned identity
+                    user_info = iss.get("user") or {}
+                    user_type = user_info.get("type", "")
+                    user_login = user_info.get("login", "")
+
+                    is_bot_owned = (
+                        user_type == "Bot"
+                        or user_login in (expected_owner, "github-actions[bot]", "app/github-actions")
+                    )
+
+                    if not is_bot_owned:
+                        raise SecurityValidationError(
+                            f"Issue #{iss.get('number')} matches dashboard title and marker but is owned by "
+                            f"human user '{sanitize_display_text(user_login)}'; "
+                            "refusing overwrite or duplicate creation."
+                        )
+
+                    matched.append(iss)
+
+            if len(issues) < per_page:
+                # Exhausted all issues in the repository cleanly
+                break
+
+            if page == max_pages:
+                # Reached pagination cap without concluding all issues
+                raise SecurityValidationError(
+                    f"Dashboard discovery reached pagination limit ({max_pages} pages / {max_pages * per_page} items) "
+                    "without concluding repository issue inventory; refusing creation to prevent duplicate."
+                )
+
         return matched
 
     def create_issue(self, title: str, body: str, labels: Optional[List[str]] = None) -> Dict[str, Any]:
@@ -236,7 +351,7 @@ class GitHubFactsCollector:
             completeness = f"INCOMPLETE: Failed to fetch main ref: {sanitize_diagnostic(str(e))}"
 
         if not is_valid_sha(main_sha) and not completeness.startswith("INCOMPLETE"):
-            completeness = f"INCOMPLETE: Missing or invalid main branch SHA ('{main_sha}')"
+            completeness = f"INCOMPLETE: Missing or invalid main branch SHA ('{sanitize_diagnostic(main_sha)}')"
 
         # 2. Fetch open pull requests with pagination
         open_prs: List[Dict[str, Any]] = []
@@ -248,22 +363,27 @@ class GitHubFactsCollector:
                     break
                 for pr in page_prs:
                     pr_num = pr.get("number")
+                    if not is_valid_positive_int(pr_num):
+                        continue
+                    pr_num = int(pr_num)
                     pr_title = sanitize_display_text(pr.get("title"), max_len=70)
                     head_info = pr.get("head") or {}
                     base_info = pr.get("base") or {}
                     head_sha = head_info.get("sha") if isinstance(head_info, dict) else "unknown"
                     base_sha = base_info.get("sha") if isinstance(base_info, dict) else "unknown"
                     if not is_valid_sha(head_sha):
-                        head_sha = "unknown"
+                        head_sha = "invalid-sha"
                     if not is_valid_sha(base_sha):
-                        base_sha = "unknown"
+                        base_sha = "invalid-sha"
 
-                    # Look up specifically Build and Test CI runs for PR head (H4)
+                    # Look up specifically Build and Test CI runs for PR head (Exit Check 3)
                     ci_status = "none"
                     ci_run_id = "-"
                     ci_attempt = "-"
+                    ci_url = ""
                     ci_head_sha = "unknown"
-                    tested_checkout = "unknown (no build provenance artifact)"
+                    tested_checkout = "unknown"
+
                     if is_valid_sha(head_sha):
                         try:
                             runs = self.client.get_runs_for_commit(head_sha)
@@ -272,18 +392,58 @@ class GitHubFactsCollector:
                                 if r.get("name") == "Build and Test":
                                     target_run = r
                                     break
-                            if not target_run and runs:
-                                target_run = runs[0]
 
                             if target_run:
-                                ci_run_id = str(target_run.get("id", "-"))
-                                ci_attempt = str(target_run.get("run_attempt", "1"))
+                                raw_run_id = target_run.get("id")
+                                if is_valid_positive_int(raw_run_id):
+                                    ci_run_id = str(raw_run_id)
+                                    ci_url = target_run.get("html_url") or f"https://github.com/{self.repo}/actions/runs/{ci_run_id}"
+
+                                raw_attempt = target_run.get("run_attempt")
+                                if is_valid_positive_int(raw_attempt):
+                                    ci_attempt = str(raw_attempt)
+                                else:
+                                    ci_attempt = "unknown"
+
                                 ci_head_sha = target_run.get("head_sha", "unknown")
                                 conclusion = target_run.get("conclusion") or target_run.get("status") or "unknown"
                                 if ci_head_sha != head_sha:
                                     ci_status = "historical/stale"
-                                else:
+                                elif conclusion in VALID_CI_CONCLUSIONS:
                                     ci_status = conclusion
+                                else:
+                                    ci_status = "unknown"
+
+                                # Truthfully query run artifacts for provenance
+                                if is_valid_positive_int(raw_run_id):
+                                    try:
+                                        artifacts = self.client.get_run_artifacts(int(raw_run_id))
+                                        has_provenance = any(a.get("name") == "build-provenance" for a in artifacts)
+                                        if has_provenance:
+                                            bound_checkout = None
+                                            try:
+                                                prov_artifact = next(a for a in artifacts if a.get("name") == "build-provenance")
+                                                art_id = prov_artifact.get("id")
+                                                if art_id and hasattr(self.client, "download_artifact_zip"):
+                                                    zip_bytes = self.client.download_artifact_zip(int(art_id))
+                                                    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as z:
+                                                        with z.open("artifacts/provenance/build-provenance.json") as pf:
+                                                            pdata = json.load(pf)
+                                                            if is_valid_sha(pdata.get("head_sha")):
+                                                                bound_checkout = pdata.get("head_sha")
+                                            except Exception:
+                                                pass
+
+                                            if bound_checkout:
+                                                tested_checkout = bound_checkout
+                                            else:
+                                                tested_checkout = "artifact present (checkout unparsed)"
+                                        else:
+                                            tested_checkout = "unknown (no build-provenance artifact)"
+                                    except Exception:
+                                        tested_checkout = "unknown (artifact query failed)"
+                            else:
+                                ci_status = "no build run"
                         except Exception:
                             ci_status = "unavailable"
 
@@ -294,6 +454,7 @@ class GitHubFactsCollector:
                         "base_sha": base_sha,
                         "ci_status": ci_status,
                         "ci_run_id": ci_run_id,
+                        "ci_url": ci_url,
                         "ci_attempt": ci_attempt,
                         "ci_head_sha": ci_head_sha,
                         "tested_checkout_sha": tested_checkout,
@@ -317,14 +478,21 @@ class GitHubFactsCollector:
                 for iss in page_issues:
                     if iss.get("pull_request"):
                         continue
+                    iss_num = iss.get("number")
+                    if not is_valid_positive_int(iss_num):
+                        continue
+                    iss_num = int(iss_num)
                     iss_title_raw = iss.get("title") or ""
                     if iss_title_raw.strip().startswith("[AI Dashboard]"):
                         continue
-                    
-                    iss_num = iss.get("number")
+
                     iss_title = sanitize_display_text(iss_title_raw, max_len=75)
-                    labels = [sanitize_display_text(l.get("name", ""), max_len=20) for l in iss.get("labels", []) if isinstance(l, dict)]
-                    
+                    labels = [
+                        sanitize_display_text(l.get("name", ""), max_len=20)
+                        for l in iss.get("labels", [])
+                        if isinstance(l, dict)
+                    ]
+
                     open_issues.append({
                         "number": iss_num,
                         "title": iss_title,
@@ -354,7 +522,6 @@ class GitHubFactsCollector:
                     "created_at": r.get("created_at", ""),
                 })
         except Exception as e:
-            # If main runs fail, record diagnostic
             if completeness == COMPLETENESS_COMPLETE:
                 completeness = f"INCOMPLETE: Failed fetching main runs: {sanitize_diagnostic(str(e))}"
 
@@ -379,7 +546,7 @@ class GitHubFactsCollector:
         """Collects repository facts with full coherent reacquisition if main advances."""
         for attempt in range(max_main_retries + 1):
             facts, _ = self._acquire_facts_once(max_pages=max_pages, per_page=per_page)
-            
+
             # Recheck main ref
             try:
                 recheck_ref = self.client.get_ref("heads/main")
@@ -404,22 +571,22 @@ def extract_curated_content(curated_text: str) -> str:
     """Extracts curated work queue and governance sections from docs/AI-CURRENT-STATE.md."""
     if not curated_text:
         return ""
-    
+
     extracted = []
-    
+
     # Extract Work Queue section
     queue_match = re.search(r"(## 2\. Active Work Queue & Ownership[\s\S]*?)(?=\n## 3\.|\Z)", curated_text)
     if queue_match:
         extracted.append(queue_match.group(1).strip())
-    
+
     # Extract Unresolved Decisions section
     decisions_match = re.search(r"(## 5\. Unresolved Architectural & Governance Decisions[\s\S]*?)(?=\Z)", curated_text)
     if decisions_match:
         extracted.append(decisions_match.group(1).strip())
-    
+
     if not extracted:
         return curated_text.strip()
-    
+
     return "\n\n".join(extracted)
 
 
@@ -430,16 +597,26 @@ def render_dashboard(
     max_words: int = 1000,
 ) -> str:
     """Renders the markdown dashboard bounded strictly to max_words excluding URLs, using absolute GitHub links."""
-    base_url = f"https://github.com/{repo}/blob/{facts.main_head_sha}"
+    if not is_valid_repo_name(repo):
+        raise SecurityValidationError(f"Invalid repository identity '{repo}'")
+
+    if is_valid_sha(facts.main_head_sha):
+        base_url = f"https://github.com/{repo}/blob/{facts.main_head_sha}"
+        main_display = facts.main_head_sha[:10]
+    else:
+        base_url = f"https://github.com/{repo}"
+        main_display = sanitize_display_text(facts.main_head_sha, max_len=15)
+
     issues_url = f"https://github.com/{repo}/issues"
     pulls_url = f"https://github.com/{repo}/pulls"
-    
+
     tooling_rev = get_tooling_revision()
     status_badge = f"`{facts.completeness}`"
+    capture_time = facts.capture_time_utc or datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     header = (
         f"# AI Current State & Handoff Dashboard\n\n"
         f"{DASHBOARD_MARKER}\n\n"
-        f"> **Automated Snapshot** | Generated: {facts.capture_time_utc} | Main: `{facts.main_head_sha[:10] if is_valid_sha(facts.main_head_sha) else facts.main_head_sha}` | Status: {status_badge}\n"
+        f"> **Automated Snapshot** | Generated: {capture_time} | Main: `{main_display}` | Status: {status_badge}\n"
         f"> Tooling: `{tooling_rev}` | Repo: `{repo}` | Queries: `{', '.join(facts.queries_executed)}`\n"
     )
 
@@ -455,7 +632,7 @@ def render_dashboard(
     def render_doc(limit_issues: Optional[int] = None, limit_prs: Optional[int] = None, link_curated_only: bool = False) -> str:
         sec1 = ["\n## 1. Live Repository Status\n"]
         sec1.append(f"- **Default Branch (`main`)**: `{facts.main_head_sha}`\n")
-        
+
         # PRs
         sec1.append(f"### Open Pull Requests ({len(facts.open_prs)})\n")
         if facts.prs_error:
@@ -463,13 +640,19 @@ def render_dashboard(
         elif not facts.open_prs:
             sec1.append("_None (all active PRs merged)._\n")
         else:
-            sec1.append("| PR | Title | Head SHA | Base SHA | CI Run | Attempt | Status |\n")
-            sec1.append("|---|---|---|---|---|---|---|\n")
+            sec1.append("| PR | Title | Head SHA | Base SHA | CI Run | Attempt | Status | Tested Checkout |\n")
+            sec1.append("|---|---|---|---|---|---|---|---|\n")
             displayed_prs = facts.open_prs[:limit_prs] if limit_prs else facts.open_prs
             for pr in displayed_prs:
                 h_short = pr['head_sha'][:7] if is_valid_sha(pr['head_sha']) else pr['head_sha']
                 b_short = pr['base_sha'][:7] if is_valid_sha(pr['base_sha']) else pr['base_sha']
-                sec1.append(f"| **#{pr['number']}** | {pr['title']} | `{h_short}` | `{b_short}` | {pr['ci_run_id']} | {pr.get('ci_attempt', '-')} | {pr['ci_status']} |\n")
+                run_cell = f"[{pr['ci_run_id']}]({pr['ci_url']})" if pr.get('ci_url') else pr['ci_run_id']
+                chk = pr.get('tested_checkout_sha', 'unknown')
+                chk_short = chk[:7] if is_valid_sha(chk) else chk
+                sec1.append(
+                    f"| **#{pr['number']}** | {pr['title']} | `{h_short}` | `{b_short}` | "
+                    f"{run_cell} | {pr.get('ci_attempt', '-')} | {pr['ci_status']} | `{chk_short}` |\n"
+                )
             if limit_prs and len(facts.open_prs) > limit_prs:
                 omitted_prs = len(facts.open_prs) - limit_prs
                 sec1.append(f"\n> ... [{omitted_prs} PRs omitted to respect snapshot word budget; view all via [{pulls_url}]({pulls_url})]\n")
@@ -502,7 +685,7 @@ def render_dashboard(
 
         return header + "".join(sec1) + sec2 + startup_route
 
-    # Multi-stage strict budget enforcement (H5)
+    # Multi-stage strict budget enforcement
     doc = render_doc()
     if count_words_excluding_urls(doc) <= max_words:
         return doc
@@ -540,7 +723,7 @@ class DashboardPublisher:
         """Detects if event was triggered by the dashboard issue itself or bot action (loop prevention)."""
         if not event_data or not isinstance(event_data, dict):
             return False, ""
-        
+
         issue_info = event_data.get("issue") or {}
         title = (issue_info.get("title") or "").strip()
         body = issue_info.get("body") or ""
@@ -563,15 +746,64 @@ class DashboardPublisher:
         norm_new = re.sub(r"Generated:\s*[^\|]+", "Generated: <TS>", new_body or "").strip()
         return norm_existing == norm_new
 
-    def publish(self, new_body: str, preview: bool = False) -> Dict[str, Any]:
+    def publish(
+        self,
+        new_body: str,
+        preview: bool = False,
+        expected_tooling_rev: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """Publishes the rendered dashboard to the authenticated dedicated dashboard issue."""
         if preview:
             return {"status": "preview", "action": "none"}
 
+        # Validate repository name
+        if not is_valid_repo_name(self.repo):
+            raise SecurityValidationError(f"Invalid repository identity: '{self.repo}'")
+
+        # Validate structured snapshot header before publishing
+        header_match = re.search(
+            r"> \*\*Automated Snapshot\*\* \| Generated: ([^\|]+) \| Main: `([^`]+)` \| Status: `([^`]+)`\n> Tooling: `([^`]+)` \| Repo: `([^`]+)`(?: \| Queries:[^\n]*)?",
+            new_body,
+        )
+        if not header_match:
+            raise SecurityValidationError("Rendered snapshot is missing required structured identity header.")
+
+        snap_gen = header_match.group(1).strip()
+        snap_main = header_match.group(2).strip()
+        snap_status = header_match.group(3).strip()
+        snap_tooling = header_match.group(4).strip()
+        snap_repo = header_match.group(5).strip()
+
+        if snap_repo != self.repo:
+            raise SecurityValidationError(f"Snapshot repo '{snap_repo}' does not match publisher repo '{self.repo}'.")
+
+        # Validate captured main SHA
+        if not is_valid_sha(snap_main) and not (len(snap_main) == 10 and re.match(r"^[0-9a-fA-F]{10}$", snap_main)):
+            raise SecurityValidationError(f"Snapshot contains invalid main SHA: '{snap_main}'")
+
+        # Recheck live main immediately before writing
+        live_ref = self.client.get_ref("heads/main")
+        live_main_sha = live_ref.get("object", {}).get("sha", "")
+        if not is_valid_sha(live_main_sha):
+            raise SecurityValidationError(f"Live main ref is invalid or missing SHA: '{live_main_sha}'")
+
+        if not live_main_sha.startswith(snap_main[:10]):
+            raise SecurityValidationError(
+                f"Main branch moved ({snap_main[:10]} -> {live_main_sha[:10]}) "
+                "between snapshot generation and publication; refusing stale publication."
+            )
+
+        # Check current tooling HEAD
+        current_tooling = get_tooling_revision()
+        if expected_tooling_rev and current_tooling != expected_tooling_rev:
+            raise SecurityValidationError(
+                f"Tooling changed ({expected_tooling_rev} -> {current_tooling}) before publication; refusing stale publication."
+            )
+
         # Search for existing dedicated dashboard issue
         matched = self.client.search_issues(DASHBOARD_MARKER)
-        
-        # Check for closed dashboard issue (H1)
+
+        # Check for closed dashboard issue
         closed_matched = [m for m in matched if m.get("state") == "closed"]
         if closed_matched:
             raise SecurityValidationError(
@@ -607,7 +839,7 @@ class DashboardPublisher:
                 "issue_number": issue_number,
             }
 
-        # Create initial dashboard issue
+        # Create initial dedicated dashboard issue
         new_issue = self.client.create_issue(
             title=DASHBOARD_TITLE,
             body=new_body,
@@ -638,8 +870,15 @@ def main(argv: Optional[List[str]] = None) -> int:
         sys.stderr.write("Error: Repository not specified. Set --repo or GH_REPO/GITHUB_REPOSITORY.\n")
         return 1
 
+    if not is_valid_repo_name(args.repo):
+        sys.stderr.write(f"Error: Invalid repository format '{args.repo}'. Must be owner/repo.\n")
+        return 1
+
     client = GitHubClient(token=args.token, repo=args.repo)
     publisher = DashboardPublisher(client=client, repo=args.repo)
+
+    # Preview contract: any preview or dry-run argument combination causes zero writes
+    is_preview = bool(args.preview or args.dry_run or not args.publish)
 
     # 1. Event-aware loop check
     if args.event_path and os.path.exists(args.event_path):
@@ -654,11 +893,20 @@ def main(argv: Optional[List[str]] = None) -> int:
             sys.stderr.write(f"Warning: Failed reading event path: {e}\n")
 
     # If publishing pre-rendered file directly (Job 2 in workflow)
-    if args.publish_file and os.path.exists(args.publish_file):
+    if args.publish_file:
+        if not os.path.exists(args.publish_file):
+            sys.stderr.write(f"Error: Publish file '{args.publish_file}' does not exist.\n")
+            return 1
+        with open(args.publish_file, "r", encoding="utf-8") as f:
+            rendered_content = f.read()
+
+        if is_preview:
+            # Preview mode: print content, perform zero writes
+            print(rendered_content)
+            return 0
+
         try:
-            with open(args.publish_file, "r", encoding="utf-8") as f:
-                rendered_content = f.read()
-            res = publisher.publish(rendered_content)
+            res = publisher.publish(rendered_content, preview=False)
             print(f"Dashboard publication result: {res}")
             return 0
         except SecurityValidationError as e:
@@ -682,7 +930,11 @@ def main(argv: Optional[List[str]] = None) -> int:
             sys.stderr.write(f"Warning: Failed reading curated file {args.curated_file}: {e}\n")
 
     # 4. Render markdown snapshot
-    rendered = render_dashboard(facts, curated_text, repo=args.repo)
+    try:
+        rendered = render_dashboard(facts, curated_text, repo=args.repo)
+    except SecurityValidationError as e:
+        sys.stderr.write(f"Security/Validation error during rendering: {e}\n")
+        return 2
 
     # 5. Output handling
     if args.output_file:
@@ -695,13 +947,13 @@ def main(argv: Optional[List[str]] = None) -> int:
             sys.stderr.write(f"Error writing to {args.output_file}: {e}\n")
             return 1
 
-    if args.preview or args.dry_run or not args.publish:
+    if is_preview:
         print(rendered)
         return 0
 
     # 6. Publish to GitHub
     try:
-        res = publisher.publish(rendered)
+        res = publisher.publish(rendered, preview=False)
         print(f"Dashboard publication result: {res}")
         return 0
     except SecurityValidationError as e:
