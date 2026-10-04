@@ -15,32 +15,31 @@
 
 Major foundational pilot features, bugfixes, and CI harnesses merged into `main` include:
 
-| PR / Branch | Merged Head | Target Base | Status | Milestone Summary |
-|---|---|---|---|---|
-| **PR #30** (`test/issue-18-graphicsapi-persistence-downgrade`) | `bbdedf5` | `main` | **MERGED** | `GraphicsApi` enum persistence downgrade verification and clean-slate V1 alignment (Issue #18). Merged at `f576ddd`. |
-| **PR #29** (`test/issue-17-non-vacuous-guard-coverage`) | `68c604e` | `main` | **MERGED** | Non-vacuous test coverage for adoption, reapply, and restore guards (Issue #17). Merged at `bbdedf5`. |
-| **PR #26** (`workflow/issue-25-compact-handoffs`) | `49dca34` | `main` (`ce74e1e`) | **MERGED** | Compact handoff automation and live dashboard publication (Issue #25). Merged at `955ca78`. |
-| **PR #9** (`issue-6-prevent-dx12-vulkan-deployment`) | `60bd512` | `main` (`230c8ae`) | **MERGED** | Prevent DXVK deployment for DX12/Vulkan (Issue #6). Merged at `ce74e1e`. |
-| **PR #4** (`pilot/companion-version-ordering`) | `a24934d` | `main` (`4f44059`) | **MERGED** | CompanionVersion numeric ordering (Issue #5). Merged at `230c8ae`. |
-| **PR #24** (`audit/issue-22-privacy-coverage`) | `b9c1559` | `main` (`51691ee`) | **MERGED** | Historical privacy audit, rule redaction, and durable evidence annex (Issue #22). Merged at `4f44059`. |
-| **PR #23** (`fix/issue-13-reapply-original-baseline`) | `f8331d3` | `main` (`093664d`) | **MERGED** | Reapply original-baseline capture and backup preservation defect repair + 8 regressions (Issue #13). Merged at `51691ee`. |
-| **PR #21** (`docs/issue-20-workflow-cleanup`) | `8d9c2d6` | `main` (`0dcc2bd`) | **MERGED** | Post-#19 cleanup, connector journaling, and dashboard orientation (Issue #20). Merged at `093664d`. |
-| **PR #19** (`workflow/review-packet-provenance`) | `68aa480` | `main` (`e7b6e06`) | **MERGED** | Review packet provenance hardening, TRX parsing, blocking scope/hygiene gates (Issue #11). Merged at `0dcc2bd`. |
-| **PR #10** (`docs/pilot-2-current-checkpoint`) | `0be0f11` | `main` | **MERGED** | Preserved final Pilot #2 review, workflow handoff, and pilot outcomes. |
-| **PR #8** (`automation/ai-workflow-foundation`) | `38b4d83` | `main` | **MERGED** | Initial GitHub-native workflow foundations. |
+| PR / Branch | Merged Commit | Status | Milestone Summary |
+|---|---|---|---|
+| **PR #30** (`test/issue-18-graphicsapi-persistence-downgrade`) | `f576ddd` | **MERGED** | `GraphicsApi` enum persistence downgrade verification and clean-slate V1 alignment (Issue #18). |
+| **PR #29** (`test/issue-17-non-vacuous-guard-coverage`) | `56808e5` | **MERGED** | Non-vacuous test coverage for adoption, reapply, and restore guards (Issue #17). |
+| **PR #28** (`spec/issue-12-canonical-specification`) | `68c604e` | **MERGED** | Canonical specification consolidation and Phase A.5 safety invariant restoration (Issue #12). |
+| **PR #26** (`workflow/issue-25-compact-handoffs`) | `955ca78` | **MERGED** | Compact handoff automation and live dashboard publication (Issue #25). |
+| **PR #9** (`issue-6-prevent-dx12-vulkan-deployment`) | `ce74e1e` | **MERGED** | Prevent DXVK deployment for DX12/Vulkan (Issue #6). |
+| **PR #4** (`pilot/companion-version-ordering`) | `230c8ae` | **MERGED** | CompanionVersion numeric ordering (Issue #5). |
+| **PR #24** (`audit/issue-22-privacy-coverage`) | `4f44059` | **MERGED** | Historical privacy audit, rule redaction, and durable evidence annex (Issue #22). |
+| **PR #23** (`fix/issue-13-reapply-original-baseline`) | `51691ee` | **MERGED** | Reapply original-baseline capture and backup preservation defect repair (Issue #13). |
+| **PR #21** (`docs/issue-20-workflow-cleanup`) | `093664d` | **MERGED** | Post-#19 cleanup, connector journaling, and dashboard orientation (Issue #20). |
+| **PR #19** (`workflow/review-packet-provenance`) | `0dcc2bd` | **MERGED** | Review packet provenance hardening, TRX parsing, blocking scope/hygiene gates (Issue #11). |
+| **PR #10** (`docs/pilot-2-current-checkpoint`) | `e7b6e06` | **MERGED** | Preserved final Pilot #2 review, workflow handoff, and pilot outcomes. |
+| **PR #8** (`automation/ai-workflow-foundation`) | `38b4d83` | **MERGED** | Initial GitHub-native workflow foundations. |
 
 ---
 
 ## 2. Active Work Governance & Decision Prerequisites
 
-Active tasks and current PR states are derived live from GitHub. Do not maintain a parallel active-task inventory table in static documentation.
+Active task assignments, in-flight work, and open PR inventories are derived dynamically from GitHub (see authenticated dashboard [Issue #27](https://github.com/Tiflit/DXVK-Companion/issues/27) and `gh issue list` / `gh pr list`). Static documentation maintains stable governance rules, architecture, and role allocation without duplicating a secondary live task inventory.
 
-Upcoming and in-flight work tracks adhere to the following governance prerequisites:
-- **Issue #31 (Workflow Automation)**: Implement compact handoff snapshot generator, PR-body review preservation helper, and decision preflight rules. (Active workflow task).
-- **Issue #14 (Shared-Directory Multi-Executable Policy)**: Awaiting explicit human decision. Agent recommendation (Option A: installation-wide refusal) is pending human approval; policy implementation is blocked until approval is recorded in the Issue.
-- **Issue #15 (API Reassessment before Queued Execution)**: Document mixed-module precedence and verify API status immediately prior to queued execution.
-- **Issue #16 (Lifecycle for Incompatible Pending Actions)**: Architectural policy choice on terminal cancellation vs parked actions; requires human decision.
-- **Issue #32 (Clean-Slate V1 Legacy-Import Removal)**: Application code refactoring tracked as a follow-up to Issue #18 to remove legacy import code per approved V1 specification.
+### Decision Governance Rules
+- **Decision Governance Block**: Tasks requiring architectural or policy choices must contain a structured Decision Governance Block in the GitHub Issue description (`Decision required`, `Proposed option`, `Status`, `Source of explicit human approval`).
+- **Human Approval Preflight**: Policy implementation is blocked until explicit human approval is authenticated in the task Issue. Agent recommendations (e.g. from ChatGPT or Gemini) do not constitute approval.
+- **Investigation Allowed**: Preparatory investigation, options analysis, and decision briefs may proceed while decisions are pending, but policy changes to production code or canonical specifications must not be implemented or merged without recorded approval.
 
 
 ---

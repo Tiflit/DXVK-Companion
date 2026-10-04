@@ -92,4 +92,6 @@ The index is updated opportunistically during authorized documentation tasks:
 | **2026-10-04** | Issue #13 Baseline safety repair | Gemini (Implementer) | REPAIRED (Merged PR #23) | [2026-10-04-issue-13-gemini-session-2.md](ai-journal/2026-10-04-issue-13-gemini-session-2.md) |
 | **2026-10-04** | Issue #22 Privacy audit & scanning | Gemini (Implementer) | AUDITED (Merged PR #24) | [2026-10-04-issue-22-gemini-session-1.md](ai-journal/2026-10-04-issue-22-gemini-session-1.md) |
 | **2026-10-04** | Issue #22 Privacy evidence annex | Gemini (Implementer) | DOCUMENTED | [2026-10-04-issue-22-privacy-evidence-annex.md](ai-journal/2026-10-04-issue-22-privacy-evidence-annex.md) |
-| **2026-10-04** | Issue #25 Handoff dashboard automation | Gemini (Implementer) | SUCCESS (PR pending) | [2026-10-04-issue-25-gemini-session-1.md](ai-journal/2026-10-04-issue-25-gemini-session-1.md) |
+| **2026-10-04** | Issue #25 Handoff dashboard automation | Gemini (Implementer) | SUCCESS (Merged PR #26) | [2026-10-04-issue-25-gemini-session-1.md](ai-journal/2026-10-04-issue-25-gemini-session-1.md) |
+| **2026-10-04** | Issue #31 Handoff automation & review preservation | Gemini (Implementer) | SUCCESS (PR #33) | [2026-10-04-issue-31-gemini-session-1.md](ai-journal/2026-10-04-issue-31-gemini-session-1.md) |
+| **2026-10-04** | Issue #31 PR #33 focused revision (R1-R4) | Gemini (Implementer) | SUCCESS (PR #33 revision) | [2026-10-04-issue-31-gemini-session-2.md](ai-journal/2026-10-04-issue-31-gemini-session-2.md) |

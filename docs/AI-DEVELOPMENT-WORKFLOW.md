@@ -321,7 +321,7 @@ Historical recommendations and their current status:
 6. **Aligned Issue/PR templates and fail-closed checks**: Implemented in PR #19. `.github/pull_request_template.md` added; `ai-scope-check` and `ai-pr-hygiene` exit 1 on contract violations.
 7. **Neutral review prompt and arbitration rubric**: Implemented in Review contract v1 (merged via PR #10).
 8. **Specification authority reconciliation**: Resolved under Issue #12 by human decision approving `A1-UPDATED` and consolidating canonical specification to `docs/spec/DXVK-COMPANION-SPEC.md`.
-9. **Human lifecycle of PRs #4/#9/#10**: PR #10 merged. Legacy contract metadata for PR #4 and PR #9 updated and verified; final merge decisions remain with the human developer.
+9. **Human lifecycle of PRs #4/#9/#10**: PR #4, PR #9, and PR #10 merged to `main`. Verified legacy contract metadata and archived pilot registers.
 10. **Controlled Pilot #3**: Preparatory backlog issues (#13, #17, #18, #20, #22, #25) completed and merged; pending policy governance (#14, #16).
 
 Automatic model dispatch remains optional and constrained by cost and security. Merging and governance remain strictly human-controlled.
@@ -515,11 +515,11 @@ When an issue involves an unresolved architectural or policy decision (e.g. Issu
 A read-only snapshot command producing an evidence-bound markdown or JSON summary constrained to a 300-word budget:
 
 ```bash
-# Preview compact task handoff for PR #31
-python scripts/ai-workflow/generate_handoff.py --pr 31
+# Preview compact task handoff for PR <PR_NUMBER> (e.g. PR #33)
+python scripts/ai-workflow/generate_handoff.py --pr 33
 
 # Output structured JSON snapshot
-python scripts/ai-workflow/generate_handoff.py --pr 31 --json
+python scripts/ai-workflow/generate_handoff.py --pr 33 --json
 ```
 
 - **Identity Verification**: Queries live GitHub PR metadata (`head.sha`, `base.sha`) and live default branch ref (`git/ref/heads/main`). Validates full 40-character SHAs and flags base branch movement (`BASE MOVED`) immediately.
@@ -532,14 +532,14 @@ python scripts/ai-workflow/generate_handoff.py --pr 31 --json
 An opt-in update helper preventing accidental review history loss, detecting concurrent PR modifications, and protecting marked records:
 
 ```bash
-# Preview update (default: dry run, zero writes)
-python scripts/ai-workflow/update_pr_body.py --pr 31 --body-file new_pr_body.md
+# Preview update for PR <PR_NUMBER> (default: dry run, zero writes)
+python scripts/ai-workflow/update_pr_body.py --pr 33 --body-file new_pr_body.md
 
 # Preview with adoption of existing unmarked reviewer headings
-python scripts/ai-workflow/update_pr_body.py --pr 31 --body-file new_pr_body.md --adopt-unmarked
+python scripts/ai-workflow/update_pr_body.py --pr 33 --body-file new_pr_body.md --adopt-unmarked
 
 # Execute update with explicit opt-in write
-python scripts/ai-workflow/update_pr_body.py --pr 31 --body-file new_pr_body.md --write
+python scripts/ai-workflow/update_pr_body.py --pr 33 --body-file new_pr_body.md --write
 ```
 
 - **Protected Review Markers**: Preserves blocks bounded by:
@@ -551,7 +551,7 @@ python scripts/ai-workflow/update_pr_body.py --pr 31 --body-file new_pr_body.md 
 - **Integrity Validation**: Rejects malformed tags (unclosed, orphan end, nested, invalid IDs, duplicate IDs). Rejects accidental modification or deletion of historical review records.
 - **Previewed Adoption Route**: `--adopt-unmarked` detects candidate legacy review headings (e.g. `## ChatGPT coordinator verification`, `## Claude audit`) and wraps them in review markers, without silently classifying arbitrary headings.
 - **Lost-Update Guard**: Checks expected base hash, saves a local recovery backup file before write, re-reads the live body immediately before issuing `PATCH`, and verifies the post-write body.
-- **Residual Race Disclosure**: Documents the residual race window inherent in REST API updates lacking conditional HTTP ETags.
+- **Residual Race Disclosure**: Discloses the residual write race window between final check and write inherent in GitHub's REST API, which lacks conditional `If-Match` ETags on pull request body updates. This helper provides best-effort detection and deterministic local backup, not an atomic distributed lock.
 
 ### 4. Session Continuity and Checkpoint Guidelines
 
