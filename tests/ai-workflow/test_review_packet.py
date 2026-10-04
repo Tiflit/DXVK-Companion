@@ -292,7 +292,13 @@ class TestReviewPacket(unittest.TestCase):
                 return {"title": "Issue 11", "body": "### Allowed paths\n- scripts/ai-workflow/**\n"}
 
             def get_workflow_run_jobs(self, run_id, attempt=None):
-                return [{"name": "build-and-test", "conclusion": "success", "steps": []}]
+                return [{
+                    "name": "build-and-test",
+                    "conclusion": "success",
+                    "steps": [],
+                    "started_at": "2026-10-04T00:10:52Z",
+                    "completed_at": "2026-10-04T00:12:20Z",
+                }]
 
             def compare_commits(self, base_sha, head_sha):
                 return {
@@ -305,7 +311,11 @@ class TestReviewPacket(unittest.TestCase):
             def get_run_artifacts(self, run_id):
                 return [
                     {"name": "build-provenance", "archive_download_url": "https://api.github.com/art/prov/zip"},
-                    {"name": "phase-a-test-results", "archive_download_url": "https://api.github.com/art/trx/zip"},
+                    {
+                        "name": "phase-a-test-results",
+                        "archive_download_url": "https://api.github.com/art/trx/zip",
+                        "created_at": "2026-10-04T00:11:50Z",
+                    },
                 ]
 
             def download_bytes(self, url, max_bytes=50*1024*1024, timeout=30):
@@ -745,8 +755,182 @@ class TestReviewPacket(unittest.TestCase):
             self.assertIn("Patch availability: all returned patches present (300/300)", diff_text)
             self.assertIn("Manifest completeness: `incomplete", packet_text)
 
+    def test_reproducer_1_trx_attribution_missing_matching_jobs(self):
+        # Reproducer 1 from PR #19:
+        # Trigger attempt 2; get_workflow_run_jobs returns []; singleton TRX artifact has an old created_at.
+        # Actual packet previously reported PASSED.
+        # Expected: UNAVAILABLE, because attempt identity cannot be established.
+        event = {
+            "workflow_run": {
+                "id": 12345,
+                "run_attempt": 2,
+                "head_sha": "0abef8d34a836494cdd882b844c781e32fa35322",
+                "pull_requests": [{"number": 19, "base": {"sha": "1111111111111111111111111111111111111111"}}],
+            }
+        }
+        trx_xml = """<?xml version="1.0" encoding="utf-8"?>
+<TestRun id="12345" name="TestRun" xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010">
+  <ResultSummary outcome="Completed">
+    <Counters total="1" executed="1" passed="1" failed="0" error="0" timeout="0" aborted="0" inconclusive="0" passedButRunAbbreviated="0" notRunnable="0" notExecuted="0" disconnected="0" warning="0" completed="0" inProgress="0" pending="0" />
+  </ResultSummary>
+</TestRun>
+"""
+        bio = io.BytesIO()
+        with zipfile.ZipFile(bio, "w") as zf:
+            zf.writestr("phase-a-tests.trx", trx_xml)
+        trx_zip_bytes = bio.getvalue()
+
+        class MockClient(generate_review_packet.GitHubClient):
+            def __init__(self):
+                super().__init__(token="dummy", repo="Tiflit/DXVK-Companion")
+            def get_pr(self, num): return {"head": {"sha": "0abef8d34a836494cdd882b844c781e32fa35322"}, "base": {"sha": "1111111111111111111111111111111111111111"}}
+            def get_issue(self, num): return {}
+            def get_workflow_run_jobs(self, run_id, attempt=None): return []
+            def compare_commits(self, base_sha, head_sha): return {"files": []}
+            def get_run_artifacts(self, run_id):
+                return [{
+                    "id": 101,
+                    "name": "phase-a-test-results",
+                    "archive_download_url": "https://api.github.com/trx/zip",
+                    "created_at": "2026-01-01T00:00:00Z",
+                }]
+            def download_bytes(self, url, max_bytes=50*1024*1024, timeout=30):
+                return trx_zip_bytes
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            res = generate_review_packet.generate_packet(
+                event=event,
+                client=MockClient(),
+                output_dir=Path(tmpdir),
+                override_pr_number=19,
+            )
+            self.assertEqual(res, 0)
+            packet_text = (Path(tmpdir) / "review_packet.md").read_text(encoding="utf-8")
+            self.assertIn("Status: `UNAVAILABLE`", packet_text)
+            self.assertNotIn("Status: `PASSED`", packet_text)
+
+    def test_reproducer_2_trx_attribution_outside_job_interval(self):
+        # Reproducer 2 from PR #19:
+        # Trigger attempt 2; matching jobs start 2026-01-02T00:00:00Z and complete 2026-01-02T00:10:00Z;
+        # singleton TRX artifact created 2026-01-03T00:00:00Z.
+        # Actual packet previously reported PASSED.
+        # Expected: UNAVAILABLE, because artifact lies outside the attempt interval.
+        event = {
+            "workflow_run": {
+                "id": 12345,
+                "run_attempt": 2,
+                "head_sha": "0abef8d34a836494cdd882b844c781e32fa35322",
+                "pull_requests": [{"number": 19, "base": {"sha": "1111111111111111111111111111111111111111"}}],
+            }
+        }
+        trx_xml = """<?xml version="1.0" encoding="utf-8"?>
+<TestRun id="12345" name="TestRun" xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010">
+  <ResultSummary outcome="Completed">
+    <Counters total="1" executed="1" passed="1" failed="0" error="0" timeout="0" aborted="0" inconclusive="0" passedButRunAbbreviated="0" notRunnable="0" notExecuted="0" disconnected="0" warning="0" completed="0" inProgress="0" pending="0" />
+  </ResultSummary>
+</TestRun>
+"""
+        bio = io.BytesIO()
+        with zipfile.ZipFile(bio, "w") as zf:
+            zf.writestr("phase-a-tests.trx", trx_xml)
+        trx_zip_bytes = bio.getvalue()
+
+        class MockClient(generate_review_packet.GitHubClient):
+            def __init__(self):
+                super().__init__(token="dummy", repo="Tiflit/DXVK-Companion")
+            def get_pr(self, num): return {"head": {"sha": "0abef8d34a836494cdd882b844c781e32fa35322"}, "base": {"sha": "1111111111111111111111111111111111111111"}}
+            def get_issue(self, num): return {}
+            def get_workflow_run_jobs(self, run_id, attempt=None):
+                return [{
+                    "id": 10,
+                    "name": "build-and-test",
+                    "started_at": "2026-01-02T00:00:00Z",
+                    "completed_at": "2026-01-02T00:10:00Z",
+                }]
+            def compare_commits(self, base_sha, head_sha): return {"files": []}
+            def get_run_artifacts(self, run_id):
+                return [{
+                    "id": 101,
+                    "name": "phase-a-test-results",
+                    "archive_download_url": "https://api.github.com/trx/zip",
+                    "created_at": "2026-01-03T00:00:00Z",
+                }]
+            def download_bytes(self, url, max_bytes=50*1024*1024, timeout=30):
+                return trx_zip_bytes
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            res = generate_review_packet.generate_packet(
+                event=event,
+                client=MockClient(),
+                output_dir=Path(tmpdir),
+                override_pr_number=19,
+            )
+            self.assertEqual(res, 0)
+            packet_text = (Path(tmpdir) / "review_packet.md").read_text(encoding="utf-8")
+            self.assertIn("Status: `UNAVAILABLE`", packet_text)
+            self.assertNotIn("Status: `PASSED`", packet_text)
+
+    def test_resolve_trx_artifact_missing_metadata(self):
+        # Candidate artifact missing created_at metadata must be rejected as UNAVAILABLE.
+        artifacts = [{"id": 1, "name": "phase-a-test-results"}]  # Missing created_at
+        ci_jobs = [{"started_at": "2026-10-04T00:00:00Z", "completed_at": "2026-10-04T00:10:00Z"}]
+        art, err = generate_review_packet.resolve_trx_artifact_for_attempt(artifacts, ci_jobs, "1")
+        self.assertIsNone(art)
+        self.assertIn("missing or has unparseable created_at metadata", err)
+
+    def test_resolve_trx_artifact_before_job_start(self):
+        # Candidate artifact created before job started must be rejected as UNAVAILABLE.
+        artifacts = [{"id": 1, "name": "phase-a-test-results", "created_at": "2026-10-03T23:59:00Z"}]
+        ci_jobs = [{"started_at": "2026-10-04T00:00:00Z", "completed_at": "2026-10-04T00:10:00Z"}]
+        art, err = generate_review_packet.resolve_trx_artifact_for_attempt(artifacts, ci_jobs, "1")
+        self.assertIsNone(art)
+        self.assertIn("outside attempt 1 execution interval", err)
+
+    def test_resolve_trx_artifact_after_job_end(self):
+        # Candidate artifact created after job completed must be rejected as UNAVAILABLE.
+        artifacts = [{"id": 1, "name": "phase-a-test-results", "created_at": "2026-10-04T00:11:00Z"}]
+        ci_jobs = [{"started_at": "2026-10-04T00:00:00Z", "completed_at": "2026-10-04T00:10:00Z"}]
+        art, err = generate_review_packet.resolve_trx_artifact_for_attempt(artifacts, ci_jobs, "1")
+        self.assertIsNone(art)
+        self.assertIn("outside attempt 1 execution interval", err)
+
+    def test_resolve_trx_artifact_multiple_ambiguous_within_interval(self):
+        # Multiple candidate artifacts within the same attempt window must be rejected as UNAVAILABLE.
+        artifacts = [
+            {"id": 1, "name": "phase-a-test-results", "created_at": "2026-10-04T00:02:00Z"},
+            {"id": 2, "name": "phase-a-test-results", "created_at": "2026-10-04T00:05:00Z"},
+        ]
+        ci_jobs = [{"started_at": "2026-10-04T00:00:00Z", "completed_at": "2026-10-04T00:10:00Z"}]
+        art, err = generate_review_packet.resolve_trx_artifact_for_attempt(artifacts, ci_jobs, "1")
+        self.assertIsNone(art)
+        self.assertIn("Ambiguous artifact attribution", err)
+        self.assertIn("duplicate 'phase-a-test-results' artifacts found", err)
+
+    def test_resolve_trx_artifact_disambiguates_prior_attempt(self):
+        # When an older artifact from attempt 1 exists alongside attempt 2's artifact,
+        # attempt 2 must correctly select its own artifact and reject the older one.
+        artifacts = [
+            {"id": 1, "name": "phase-a-test-results", "created_at": "2026-10-04T00:05:00Z"},  # Attempt 1
+            {"id": 2, "name": "phase-a-test-results", "created_at": "2026-10-04T01:05:00Z"},  # Attempt 2
+        ]
+        ci_jobs_att2 = [{"started_at": "2026-10-04T01:00:00Z", "completed_at": "2026-10-04T01:10:00Z"}]
+        art, err = generate_review_packet.resolve_trx_artifact_for_attempt(artifacts, ci_jobs_att2, "2")
+        self.assertIsNone(err)
+        self.assertIsNotNone(art)
+        self.assertEqual(art.get("id"), 2)
+
+    def test_resolve_trx_artifact_missing_job_timestamps(self):
+        # Missing job start or completion timestamps must yield UNAVAILABLE.
+        artifacts = [{"id": 1, "name": "phase-a-test-results", "created_at": "2026-10-04T00:05:00Z"}]
+        ci_jobs = [{"name": "build-and-test"}]  # Missing started_at and completed_at
+        art, err = generate_review_packet.resolve_trx_artifact_for_attempt(artifacts, ci_jobs, "1")
+        self.assertIsNone(art)
+        self.assertIn("missing job started_at or completed_at timestamps", err)
+
 
 if __name__ == "__main__":
     unittest.main()
+
+
 
 

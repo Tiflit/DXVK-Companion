@@ -427,6 +427,129 @@ def build_packet_content(
     return "\n".join(lines)
 
 
+def parse_iso8601_utc(ts_str: Optional[str]) -> Optional[datetime.datetime]:
+    """Parses an ISO 8601 timestamp string into a timezone-aware UTC datetime.
+
+    Returns None if the timestamp is missing, empty, or cannot be parsed.
+    """
+    if not ts_str or not isinstance(ts_str, str):
+        return None
+    try:
+        cleaned = ts_str.strip()
+        if cleaned.endswith("Z"):
+            cleaned = cleaned[:-1] + "+00:00"
+        dt = datetime.datetime.fromisoformat(cleaned)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=datetime.timezone.utc)
+        return dt.astimezone(datetime.timezone.utc)
+    except Exception:
+        return None
+
+
+def resolve_trx_artifact_for_attempt(
+    artifacts: List[Dict[str, Any]],
+    ci_jobs: List[Dict[str, Any]],
+    run_attempt: str,
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Centralizes TRX artifact-attempt attribution before downloading/parsing.
+
+    Attribution Rules:
+    1. Only artifacts named 'phase-a-test-results' are candidates. If none exist,
+       returns (None, "No TRX artifact found").
+    2. Missing matching jobs for the attempt -> UNAVAILABLE. Attempt identity cannot
+       be established.
+    3. Missing job start/completion timestamps or invalid interval -> UNAVAILABLE.
+       The attempt execution interval cannot be determined.
+    4. Missing candidate artifact metadata (created_at missing/unparseable) -> UNAVAILABLE.
+    5. Artifact outside the attempt's start/completion interval -> UNAVAILABLE.
+       Validates both lower (started_at) and upper (completed_at) boundaries.
+    6. Ambiguous candidates (multiple artifacts within interval) -> UNAVAILABLE.
+    7. Attribution is NEVER inferred from singleton count or list order.
+
+    Timestamp Evidence Limits:
+    GitHub Actions artifact and job timestamps are server-assigned metadata that correlate
+    an artifact's upload time with the execution window of a specific job run attempt.
+    They establish chronological containment, not cryptographic content attestation or
+    immutable signatures. If API metadata cannot reliably prove attribution within the
+    attempt window, the result is treated as UNAVAILABLE rather than guessing.
+
+    Returns:
+        (selected_artifact, error_reason)
+    """
+    candidate_artifacts = [a for a in artifacts if a.get("name") == "phase-a-test-results"]
+    if not candidate_artifacts:
+        return None, "No TRX artifact found"
+
+    # Rule 2: Missing matching jobs -> UNAVAILABLE
+    if not ci_jobs:
+        return (
+            None,
+            f"Ambiguous artifact attribution: cannot attribute TRX artifact to attempt {run_attempt}; no matching jobs found for attempt",
+        )
+
+    # Rule 3: Missing job timestamps or invalid interval -> UNAVAILABLE
+    job_starts: List[datetime.datetime] = []
+    job_ends: List[datetime.datetime] = []
+    for j in ci_jobs:
+        s = parse_iso8601_utc(j.get("started_at"))
+        if s is not None:
+            job_starts.append(s)
+        c = parse_iso8601_utc(j.get("completed_at"))
+        if c is not None:
+            job_ends.append(c)
+
+    if not job_starts or not job_ends:
+        return (
+            None,
+            f"Ambiguous artifact attribution: cannot establish attempt {run_attempt} execution interval; missing job started_at or completed_at timestamps",
+        )
+
+    interval_start = min(job_starts)
+    interval_end = max(job_ends)
+
+    if interval_start > interval_end:
+        return (
+            None,
+            f"Ambiguous artifact attribution: invalid attempt {run_attempt} execution interval (start precedes end: {interval_start.isoformat()} > {interval_end.isoformat()})",
+        )
+
+    # Rule 4: Candidate artifact metadata check
+    for art in candidate_artifacts:
+        created_raw = art.get("created_at")
+        created_dt = parse_iso8601_utc(created_raw)
+        if created_dt is None:
+            return (
+                None,
+                f"Ambiguous artifact attribution: candidate TRX artifact (id: {art.get('id')}) is missing or has unparseable created_at metadata",
+            )
+
+    # Rule 5: Check artifact timestamps against attempt interval [interval_start, interval_end]
+    # Validate both lower and upper boundaries; never select by singleton count or list order.
+    matching_candidates = [
+        art for art in candidate_artifacts
+        if interval_start <= parse_iso8601_utc(art.get("created_at")) <= interval_end
+    ]
+
+    if not matching_candidates:
+        candidate_created_strs = [str(a.get("created_at")) for a in candidate_artifacts]
+        return (
+            None,
+            f"Artifact outside attempt {run_attempt} execution interval "
+            f"[{interval_start.isoformat()}, {interval_end.isoformat()}]: "
+            f"candidate created_at timestamps: {candidate_created_strs}",
+        )
+
+    # Rule 6: Ambiguous candidates -> UNAVAILABLE
+    if len(matching_candidates) > 1:
+        return (
+            None,
+            f"Ambiguous artifact attribution: {len(matching_candidates)} duplicate 'phase-a-test-results' artifacts found within attempt {run_attempt} interval",
+        )
+
+    # Exactly one candidate matched within the interval
+    return matching_candidates[0], None
+
+
 def generate_packet(
     event: Dict[str, Any],
     client: GitHubClient,
@@ -543,41 +666,14 @@ def generate_packet(
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    trx_artifacts = [a for a in artifacts if a.get("name") == "phase-a-test-results"]
-    selected_trx_artifact = None
+    selected_trx_artifact, trx_unavail_reason = resolve_trx_artifact_for_attempt(
+        artifacts=artifacts,
+        ci_jobs=ci_jobs,
+        run_attempt=str(run_attempt),
+    )
 
-    if not trx_artifacts:
-        trx_totals = {"status": "unavailable", "reason": "No TRX artifact found"}
-    elif len(trx_artifacts) == 1:
-        art = trx_artifacts[0]
-        art_created = art.get("created_at")
-        if str(run_attempt) != "1" and ci_jobs and art_created:
-            job_starts = [j.get("started_at") for j in ci_jobs if j.get("started_at")]
-            if job_starts and min(job_starts) and art_created < min(job_starts):
-                trx_totals = {"status": "unavailable", "reason": f"Ambiguous artifact attribution: artifact created_at ({art_created}) precedes attempt {run_attempt} start ({min(job_starts)})"}
-            else:
-                selected_trx_artifact = art
-        else:
-            selected_trx_artifact = art
-    else:
-        # Multiple artifacts with name 'phase-a-test-results'
-        matching = []
-        if ci_jobs:
-            job_starts = [j.get("started_at") for j in ci_jobs if j.get("started_at")]
-            job_ends = [j.get("completed_at") for j in ci_jobs if j.get("completed_at")]
-            if job_starts and job_ends and min(job_starts):
-                min_start = min(job_starts)
-                for a in trx_artifacts:
-                    c = a.get("created_at")
-                    if c and c >= min_start:
-                        matching.append(a)
-        if len(matching) == 1:
-            selected_trx_artifact = matching[0]
-        else:
-            trx_totals = {
-                "status": "unavailable",
-                "reason": f"Ambiguous artifact attribution: {len(trx_artifacts)} duplicate 'phase-a-test-results' artifacts found; cannot reliably attribute to attempt {run_attempt}",
-            }
+    if not selected_trx_artifact:
+        trx_totals = {"status": "unavailable", "reason": trx_unavail_reason or "No attributable TRX artifact found"}
 
     if selected_trx_artifact:
         art_download_url = selected_trx_artifact.get("archive_download_url", "")

@@ -481,4 +481,43 @@ Claude's verification pass on revised head `358f9154c2db784e4fead4af4767fd184e8c
 - GitHub Actions workflows execute as advisory status checks; platform-level merge blocking requires explicit repository branch protection rulesets configured by administrators.
 - If any material defect remains unresolved after this bounded repair exception, the matter will be escalated explicitly rather than initiating another open-ended revision loop.
 
+## Centralized TRX artifact-attempt attribution and review allocation checkpoint — Issue #11 (2026-10-03)
+
+### Context & coordinator execution check
+
+Following commit `20b0ea81e3fbd5f02e4c39f0720741121ca2930a`, ChatGPT independently executed the 60 offline fixtures (all passed) and conducted two execution checks that reproduced an unresolved F5 defect in `generate_review_packet.py`:
+1. **Reproducer 1**: Trigger attempt 2; `get_workflow_run_jobs` returns `[]`; singleton TRX artifact has an old created_at. Packet previously reported `PASSED`. Expected: `UNAVAILABLE`, because attempt identity cannot be established.
+2. **Reproducer 2**: Trigger attempt 2; matching jobs start `2026-01-02T00:00:00Z` and complete `2026-01-02T00:10:00Z`; singleton TRX artifact created `2026-01-03T00:00:00Z`. Packet previously reported `PASSED`. Expected: `UNAVAILABLE`, because artifact lies outside the attempt interval.
+
+Both reproducers were added to `tests/ai-workflow/test_review_packet.py` and confirmed failing on `20b0ea8` before implementing production fixes.
+
+### Centralized attribution implementation
+
+Attribution logic was removed from ad-hoc branches in `generate_packet` and centralized into `resolve_trx_artifact_for_attempt`:
+- **Missing matching jobs**: If `ci_jobs` is empty, returns `UNAVAILABLE` (`no matching jobs found for attempt`).
+- **Missing/invalid job timestamps**: If jobs lack `started_at` or `completed_at`, returns `UNAVAILABLE` (`cannot establish attempt execution interval`).
+- **Missing artifact metadata**: If candidate artifacts lack `created_at` or have unparseable timestamps, returns `UNAVAILABLE`.
+- **Interval containment**: Candidate artifact `created_at` must fall within `[interval_start, interval_end]`. Validates both lower and upper boundaries. Artifacts outside the interval return `UNAVAILABLE`.
+- **Ambiguous candidates**: If multiple candidate artifacts fall within the attempt window, returns `UNAVAILABLE`.
+- **No singleton or list order inference**: Attribution is never inferred from singleton count or list position. A singleton artifact outside the interval or without matching jobs fails closed as `UNAVAILABLE`.
+- **Prior attempt disambiguation**: When artifacts from prior attempts exist alongside the current attempt's artifact, only the artifact within the current attempt's interval is selected.
+
+### Limits of timestamp evidence
+
+GitHub Actions artifact and job timestamps (`started_at`, `completed_at`, `created_at`) are server-assigned metadata that correlate an artifact's upload time with the execution window of a specific job run attempt. They establish chronological containment within execution windows, not cryptographic signatures or immutable content attestations. If API metadata cannot reliably prove attribution within the attempt window, evidence fails closed as `UNAVAILABLE` rather than guessing.
+
+### Updated review allocation
+
+Per user decision and coordinator execution check:
+- **Gemini**: Primary implementation layer (repository code, unit tests, local verification, focused repairs).
+- **ChatGPT**: Verification, architecture, reproduction analysis, and arbitration layer.
+- **Claude**: Reserved for occasional independent audits and high-risk material decisions (due to quota scarcity).
+- **Human**: Retains final merge authority and policy governance.
+
+### Verification evidence
+
+- **Local test suite**: 68/68 unit tests passing in `tests/ai-workflow/` (including both reproducers and 6 dedicated `resolve_trx_artifact_for_attempt` edge-case tests).
+- **Live acquisition verification**: Executed `generate_review_packet.py` locally against real GitHub Actions runs `37169107191` and `37164136438`. Both runs successfully attributed the TRX artifacts within job execution intervals and extracted all 67 passing test results without leaking credentials or signed URLs.
+
+
 
