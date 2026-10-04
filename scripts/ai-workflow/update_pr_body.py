@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass, field
@@ -294,6 +295,20 @@ class ExtendedGitHubClient(GitHubClient):
 
 
 
+def get_default_github_token() -> Optional[str]:
+    """Retrieves GitHub token from environment variables or local gh CLI auth."""
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if token:
+        return token
+    try:
+        res = subprocess.run(["gh", "auth", "token"], capture_output=True, text=True, timeout=3)
+        if res.returncode == 0 and res.stdout.strip():
+            return res.stdout.strip()
+    except Exception:
+        pass
+    return None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Safely update PR description with review preservation and lost-update checks.")
     parser.add_argument("--pr", type=int, required=True, help="Target Pull Request number.")
@@ -304,7 +319,7 @@ def main() -> int:
     parser.add_argument("--expected-base-hash", type=str, default=None, help="Expected SHA256 hex digest of remote PR body before update.")
     parser.add_argument("--backup-dir", type=Path, default=None, help="Directory to store pre-write local recovery backup file.")
     parser.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY", "Tiflit/DXVK-Companion"), help="Repository owner/repo.")
-    parser.add_argument("--token", default=os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN"), help="GitHub API token.")
+    parser.add_argument("--token", default=get_default_github_token(), help="GitHub API token.")
     args = parser.parse_args()
 
     if not is_valid_repo_name(args.repo):

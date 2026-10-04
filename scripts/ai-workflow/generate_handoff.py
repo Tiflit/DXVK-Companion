@@ -572,12 +572,26 @@ def format_handoff_json(snap: HandoffSnapshot) -> str:
     return json.dumps(data, indent=2)
 
 
+def get_default_github_token() -> Optional[str]:
+    """Retrieves GitHub token from environment variables or local gh CLI auth."""
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if token:
+        return token
+    try:
+        res = subprocess.run(["gh", "auth", "token"], capture_output=True, text=True, timeout=3)
+        if res.returncode == 0 and res.stdout.strip():
+            return res.stdout.strip()
+    except Exception:
+        pass
+    return None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Generate compact, evidence-bound handoff snapshot.")
     parser.add_argument("--pr", type=int, required=True, help="Target Pull Request number.")
     parser.add_argument("--issue", type=int, default=None, help="Optional primary task issue number.")
     parser.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY", "Tiflit/DXVK-Companion"), help="Repository owner/repo.")
-    parser.add_argument("--token", default=os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN"), help="GitHub API token.")
+    parser.add_argument("--token", default=get_default_github_token(), help="GitHub API token.")
     parser.add_argument("--worktree", type=Path, default=None, help="Optional path to local workspace worktree.")
     parser.add_argument("--output", type=Path, default=None, help="Output file path (defaults to stdout).")
     parser.add_argument("--json", action="store_true", help="Output JSON snapshot instead of Markdown.")
