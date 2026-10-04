@@ -337,3 +337,42 @@ Added Review contract v1 to AI-DEVELOPMENT-WORKFLOW.md on the existing documenta
 Historical review comments, follow-up Issues, canonical PR template, immutable/safe review-packet generation, fail-closed scope checks, specification reconciliation, protection and the controlled Pilot #3 remain pending. PR #4 still needs current-base integration evidence before a human merge decision. Application implementation remains frozen; no merge, closure, message to another agent or paid dispatch occurred.
 
 Next implementation handoff should focus on packet identity/security and contract parser alignment, in a separately scoped Issue/PR. Do not mix these workflow changes into PR #9.
+
+## Workflow hardening checkpoint — Issue #11 (2026-10-03)
+
+### Implementation summary
+
+Implemented hardened review packet provenance, blocking scope/hygiene checks, safe structured TRX parsing, and regression fixtures under Issue #11.
+
+- **Offline regression test suite**: 42 automated tests in `tests/ai-workflow/` verifying contract parsing, allowed-path syntax, directory boundary safety, rename checks, PR hygiene headings, TRX counting, zip-slip defense, packet identity, staleness detection, and diff budgeting.
+- **Workflow integration**:
+  - `.github/workflows/ai-workflow-tests.yml`: runs test suite on push and PR.
+  - `.github/workflows/build-and-test.yml`: instruments minimal `build-provenance` artifact (`build-provenance.json`) capturing checked-out SHA (`git rev-parse HEAD`), ref, run ID, and attempt.
+  - `.github/workflows/ai-review-packet.yml`: checks out trusted default-branch scripts, parses event JSON safely via Python, generates verified packet and full diff artifact.
+  - `.github/workflows/ai-scope-check.yml`: blocking check enforcing repository-relative allowed paths, `/**`, trailing slash, and exact standalone `Unconstrained`. Checks old and new paths for renames.
+  - `.github/workflows/ai-pr-hygiene.yml`: blocking check enforcing `Primary Issue`, `Summary`, `Scope`, `Verification`, and `Documentation`.
+  - `.github/ISSUE_TEMPLATE/ai-task.yml` & `.github/pull_request_template.md`: aligned template grammar.
+
+### Open PR inventory and legacy contract migrations
+
+Before switching policy workflows from advisory to blocking, open PRs were inventoried:
+
+1. **PR #4** (`pilot/companion-version-ordering`):
+   - Head: `944abc08c8722bdfc3b13bf7fda8fdd5a8a25b65`
+   - Task contract: Issue #5 (`CompanionVersion.IsOutdatedComparedTo`).
+   - Migration action: Edit PR #4 body to add `## Primary Issue` with `Fixes #5`. Check allowed paths against Issue #5.
+2. **PR #9** (`issue-6-prevent-dx12-vulkan-deployment`):
+   - Head: `c4d0f846b4031b08e9e3444c803abe37cc171890`
+   - Task contract: Issue #6 (`Prevent DXVK deployment for DX12/Vulkan`).
+   - Migration action: Edit PR #9 body to add `## Primary Issue` with `Fixes #6`. All changed files match Issue #6 allowed paths.
+3. **PR #10** (`docs/review-contract-v1`):
+   - Merged to `main` at `e7b6e06`. No action required.
+
+Coordinator can update PR #4 and PR #9 descriptions via GitHub UI to satisfy the new blocking checks without needing code changes or recreation.
+
+### Human intervention metrics for Issue #11
+
+- Human intervention count: 1 (initial handoff prompt and worktree setup).
+- Human elapsed time: ~5 minutes.
+- Model execution: Fully autonomous implementation across fixtures, parsers, CI workflows, and documentation.
+- Residual limitations: Model dispatch remains manual; human retains final merge authority.
