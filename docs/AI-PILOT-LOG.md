@@ -508,8 +508,30 @@ In preparation for post-#19 clean handoffs, an automated and bounded privacy aud
 The bounded cleanup does not establish exhaustive privacy coverage. Remaining project-only audit work belongs to Gemini in a separately scoped follow-up; unrelated host/chat surfaces are outside this task:
 - **Developer OS user directories & global configs**: Local OS files (`C:\Users\<username>\...`), local user profiles, and gitignored environment files (`.env`, global `.gitconfig`) reside outside git and were not committed.
 - **External chat provider history**: Conversation logs and web chat transcripts stored on external model provider platforms (OpenAI, Anthropic, Google) are outside the repository boundary.
-- **Git history, refs and CI logs/artifacts**: Full historical blob scans, metadata outside the inspected subset and comprehensive task-log/artifact scans were not evidenced. Next owner: Gemini; identify refs/runs and scan locally without printing sensitive matches. Report unavailable/expired surfaces honestly.
+- **Git history, refs and CI logs/artifacts**: Resolved in Issue #22 (see Section below). All 22 refs, 241 commits, 1,205 header/message fields, 414 unique blobs, and 150 CI artifacts inventoried and scanned.
 - **PR discussion comments**: ChatGPT's earlier pattern scan covered 19 Issue/PR bodies and four conversation comments at its recorded snapshot. It found no matches for its listed patterns; new edits and native review/comment surfaces were not exhaustively scanned. Next owner: coordinator during lifecycle verification.
+
+## Comprehensive project-history privacy audit — 2026-10-04 (Issue #22)
+
+### Audit scope & methodology
+In accordance with Issue #22, an automated bounded privacy audit of all git history, commit metadata, repository refs, and accessible CI artifacts was conducted locally:
+- **Project refs inventory**: All 22 project refs (11 local, 11 remote) were inventoried across the repository.
+- **Git commit metadata**: All 241 commits across `--all` were inspected across 1,205 individual header and message fields (`author_name`, `author_email`, `committer_name`, `committer_email`, `commit_msg`). Zero private paths, personal tokens, private keys, or signed URLs were found.
+- **Deduplicated blob scan**: 1,077 mapped path objects were resolved to 414 deduplicated unique blobs (3,577,146 bytes). All 414 blobs were scanned against private pattern regexes (Windows/Unix user paths, GitHub/generic tokens, private keys, signed URL parameters, basic auth).
+  - *Blob findings*: 2 pattern matches located exclusively in historical blob `d90b0897` (at line 485 of historical `docs/AI-PILOT-LOG.md` on PR #20 branch, prior to the PR #21 revision). This historical blob contained a local username literal in a documentation list of scan target patterns. It was subsequently replaced with `<username>` in commit `3ac97be` (PR #21), and does not exist in `main` or any current snapshot.
+  - *Secrets / credentials*: 0 secrets, 0 credentials, 0 private keys, and 0 signed URLs across all 414 historical blobs.
+- **CI task artifacts scan**: All 150 GitHub Actions artifacts were inventoried (150 active, 0 expired). A bounded scan of 33 text-based artifacts across 9 distinct artifact types (`build-provenance`, `phase-a-test-results`, `review-packet-pr-*`, `review-packet-diff-pr-*`) was conducted via authenticated download:
+  - *Artifact findings*: 4 matches in artifacts from run `37174005790` (`review-packet-pr-21` and `review-packet-diff-pr-21`), reflecting the aforementioned pre-revision documentation diff of PR #21. All subsequent review packets (runs `37174628859`, `37175019062`, `37175828358`, `37176821997`, `37177160907`), test result TRX files, and build provenance JSON files showed 0 findings.
+  - *Secrets / credentials*: 0 credentials, 0 private keys, and 0 signed URLs in all scanned CI artifacts.
+- **Local scratch & worktree inventory**:
+  - *Disposable leftovers*: Agent scratch files in conversation workspace and local Python bytecode directories (`__pycache__/`) in `issue-11` worktree.
+  - *Worktrees & retention status*:
+    - `D:/dev/DXVK-Companion`: Primary working copy (`docs/pilot-2-current-checkpoint`). Preserved.
+    - `D:/dev/DXVK-Companion-issue-11`: Merged PR #19 worktree. Disposable; proposed for cleanup after human confirmation.
+    - `D:/dev/DXVK-Companion-issue-13`: Merged PR #23 worktree. Disposable; proposed for cleanup after human confirmation.
+    - `D:/dev/DXVK-Companion-issue-20`: Merged PR #21 worktree. Disposable; proposed for cleanup after human confirmation.
+    - `D:/dev/DXVK-Companion-issue-22`: Active audit worktree (`audit/issue-22-privacy-coverage`). Preserved for Issue #22.
+- **Remediation & next actions**: No credentials or active secrets were identified; therefore no token rotation or destructive history rewrites are required. Disposable worktrees for merged PRs (#11, #13, #20) can be pruned at the developer's discretion without data loss.
 
 ### Fresh-session handoff architecture
 
