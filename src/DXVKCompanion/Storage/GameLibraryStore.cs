@@ -25,7 +25,6 @@ namespace DXVKCompanion.Storage
 
         private readonly string _libraryFilePath;
         private readonly string _backupsDirectoryPath;
-        private readonly string _legacyProfilesPath;
 
         public GameLibraryStore(
             string? libraryFilePath = null,
@@ -34,7 +33,7 @@ namespace DXVKCompanion.Storage
         {
             _libraryFilePath = libraryFilePath ?? GameLibraryPaths.GameLibraryFile;
             _backupsDirectoryPath = backupsDirectoryPath ?? GameLibraryPaths.BackupsDir;
-            _legacyProfilesPath = legacyProfilesPath ?? Paths.ProfilesFile;
+            // legacyProfilesPath is retained for caller compatibility, but clean-slate V1 policy does not import legacy profiles.
             Load();
         }
 
@@ -183,89 +182,8 @@ namespace DXVKCompanion.Storage
                 // A current-format file exists but is unreadable. Never silently
                 // fall back to stale legacy data. Preserve it first.
                 TryPreserveBrokenCurrentFile();
-                Log($"GameLibraryStore: current library could not be loaded. Preserved a recovery copy; no legacy import was attempted.");
+                Log($"GameLibraryStore: current library could not be loaded. Preserved a recovery copy.");
                 return;
-            }
-
-            // Only attempt legacy migration when current library file does not exist
-            if (File.Exists(_legacyProfilesPath))
-            {
-                TryMigrateLegacyProfiles();
-            }
-        }
-
-        private void TryMigrateLegacyProfiles()
-        {
-            try
-            {
-                var json = File.ReadAllText(_legacyProfilesPath);
-                var legacyProfiles = JsonSerializer.Deserialize<List<GameProfile>>(json, JsonOptions);
-                if (legacyProfiles == null || legacyProfiles.Count == 0)
-                    return;
-
-                lock (_sync)
-                {
-                    _installations.Clear();
-                    foreach (var legacy in legacyProfiles)
-                    {
-                        if (string.IsNullOrWhiteSpace(legacy.ExePath))
-                            continue;
-
-                        string exeFullPath;
-                        try
-                        {
-                            exeFullPath = Path.GetFullPath(legacy.ExePath);
-                        }
-                        catch
-                        {
-                            continue;
-                        }
-
-                        string? gameDir = Path.GetDirectoryName(exeFullPath);
-                        if (string.IsNullOrWhiteSpace(gameDir))
-                            continue;
-
-                        var normalizedDir = GameInstallation.NormalizeInstallationPath(gameDir);
-                        if (!_installations.TryGetValue(normalizedDir, out var installation))
-                        {
-                            installation = new GameInstallation
-                            {
-                                InstallationPath = normalizedDir,
-                                DisplayName = new DirectoryInfo(normalizedDir).Name,
-                                ManagementPolicy = ManagementPolicy.UseGlobal(),
-                                Configuration = new DxvkConfiguration
-                                {
-                                    FrameLimitEnabled = legacy.FrameLimit > 0,
-                                    FrameLimit = legacy.FrameLimit > 0 ? legacy.FrameLimit : 120,
-                                    HudEnabled = legacy.HudEnabled
-                                }
-                            };
-                            _installations[normalizedDir] = installation;
-                        }
-
-                        string relExe = Path.GetFileName(exeFullPath);
-                        var exeProfile = installation.GetOrAddExecutable(relExe, legacy.ExeName);
-                        exeProfile.LastKnownApi = legacy.Api;
-                        exeProfile.LastKnownArchitecture = legacy.Architecture;
-
-                        if (legacy.DxvkEnabled)
-                        {
-                            installation.RestorationState = RestorationState.Managed;
-                            if (!string.IsNullOrWhiteSpace(legacy.DxvkVersion))
-                            {
-                                installation.ManagedDxvkVersion = legacy.DxvkVersion;
-                            }
-                        }
-                    }
-
-                    WriteAllLocked();
-                }
-
-                Log($"GameLibraryStore: successfully migrated {legacyProfiles.Count} legacy profile(s) from {_legacyProfilesPath}.");
-            }
-            catch (Exception ex)
-            {
-                Log($"GameLibraryStore: legacy migration failed: {ex.GetType().Name} - {ex.Message}");
             }
         }
 

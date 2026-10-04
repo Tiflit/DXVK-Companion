@@ -13,7 +13,52 @@ namespace DXVKCompanion.PhaseA.Tests
     public class LegacyMigrationAndDetectionWiringTests
     {
         [Fact]
-        public void LegacyMigration_WhenGameLibraryMissing_MigratesGamesJsonProfilesCorrectly()
+        public void CleanSlateV1_WhenGameLibraryMissingAndLegacyGamesJsonExists_DoesNotImportAndPreservesLegacyFileByteForByte()
+        {
+            using var testDir = new SyntheticTestDirectory();
+            string libraryPath = Path.Combine(testDir.RootPath, "game-library.json");
+            string backupsPath = Path.Combine(testDir.RootPath, "backups");
+            string legacyPath = Path.Combine(testDir.RootPath, "games.json");
+
+            string skyrimDir = Path.Combine(testDir.RootPath, "Games", "Skyrim");
+            Directory.CreateDirectory(skyrimDir);
+            string skyrimExe = Path.Combine(skyrimDir, "SkyrimSE.exe");
+            File.WriteAllText(skyrimExe, "fake exe");
+
+            var legacyProfiles = new List<GameProfile>
+            {
+                new(skyrimExe)
+                {
+                    Api = GraphicsApi.DX11,
+                    Architecture = "x64",
+                    DxvkEnabled = true,
+                    DxvkVersion = "2.6",
+                    HudEnabled = true,
+                    FrameLimit = 60
+                }
+            };
+
+            var legacyJson = JsonSerializer.Serialize(legacyProfiles, new JsonSerializerOptions { WriteIndented = true });
+            File.WriteAllText(legacyPath, legacyJson);
+            var expectedLegacyBytes = File.ReadAllBytes(legacyPath);
+
+            // Act: load GameLibraryStore with missing game-library.json but existing games.json
+            var store = new GameLibraryStore(libraryPath, backupsPath, legacyPath);
+
+            // Assert: V1 clean-slate policy - no installations, no executable profiles,
+            // no managed files, no pending actions imported, and no startup library file created.
+            Assert.Empty(store.GetAll());
+            Assert.Null(store.FindByInstallationPath(skyrimDir));
+            Assert.Null(store.FindInstallationForExecutable(skyrimExe));
+            Assert.False(File.Exists(libraryPath), "Missing game-library.json must not be created on startup when no data is saved");
+
+            // Legacy games.json must be preserved byte-for-byte (no deletion, overwrite, migration, or conversion)
+            Assert.True(File.Exists(legacyPath), "Legacy games.json must still exist");
+            Assert.Equal(expectedLegacyBytes, File.ReadAllBytes(legacyPath));
+        }
+
+        [Fact]
+        public void CleanSlateV1_WhenGameLibraryMissingAndMultipleLegacyProfilesExist_DoesNotImportAndLeavesStoreEmpty()
         {
             using var testDir = new SyntheticTestDirectory();
             string libraryPath = Path.Combine(testDir.RootPath, "game-library.json");
@@ -52,44 +97,119 @@ namespace DXVKCompanion.PhaseA.Tests
                 }
             };
 
-            File.WriteAllText(legacyPath, JsonSerializer.Serialize(legacyProfiles, new JsonSerializerOptions { WriteIndented = true }));
+            var legacyJson = JsonSerializer.Serialize(legacyProfiles, new JsonSerializerOptions { WriteIndented = true });
+            File.WriteAllText(legacyPath, legacyJson);
+            var expectedLegacyBytes = File.ReadAllBytes(legacyPath);
 
             // Act: load GameLibraryStore with missing game-library.json but existing games.json
             var store = new GameLibraryStore(libraryPath, backupsPath, legacyPath);
 
-            // Assert: library was migrated and saved
-            Assert.True(File.Exists(libraryPath));
+            // Assert: approved Clean-Slate V1 policy - no profiles imported, store is empty
+            Assert.Empty(store.GetAll());
+            Assert.Null(store.FindByInstallationPath(skyrimDir));
+            Assert.Null(store.FindByInstallationPath(oblivionDir));
+            Assert.False(File.Exists(libraryPath), "Missing game-library.json must not be created on startup");
+
+            // Legacy file must remain intact byte-for-byte
             Assert.True(File.Exists(legacyPath), "Legacy games.json must be preserved non-destructively");
-
-            var all = store.GetAll();
-            Assert.Equal(2, all.Count);
-
-            var skyrimInstall = store.FindByInstallationPath(skyrimDir);
-            Assert.NotNull(skyrimInstall);
-            Assert.Equal(RestorationState.Managed, skyrimInstall.RestorationState);
-            Assert.Equal("2.6", skyrimInstall.ManagedDxvkVersion);
-            Assert.True(skyrimInstall.Configuration.FrameLimitEnabled);
-            Assert.Equal(60, skyrimInstall.Configuration.FrameLimit);
-            Assert.True(skyrimInstall.Configuration.HudEnabled);
-
-            var skyrimExeProfile = skyrimInstall.Executables.FirstOrDefault(e => e.RelativePath.Equals("SkyrimSE.exe", StringComparison.OrdinalIgnoreCase));
-            Assert.NotNull(skyrimExeProfile);
-            Assert.Equal(GraphicsApi.DX11, skyrimExeProfile.LastKnownApi);
-            Assert.Equal("x64", skyrimExeProfile.LastKnownArchitecture);
-
-            var oblivionInstall = store.FindByInstallationPath(oblivionDir);
-            Assert.NotNull(oblivionInstall);
-            Assert.Equal(RestorationState.None, oblivionInstall.RestorationState);
-            Assert.False(oblivionInstall.Configuration.FrameLimitEnabled);
-
-            var oblivionExeProfile = oblivionInstall.Executables.FirstOrDefault(e => e.RelativePath.Equals("Oblivion.exe", StringComparison.OrdinalIgnoreCase));
-            Assert.NotNull(oblivionExeProfile);
-            Assert.Equal(GraphicsApi.DX9, oblivionExeProfile.LastKnownApi);
-            Assert.Equal("x32", oblivionExeProfile.LastKnownArchitecture);
+            Assert.Equal(expectedLegacyBytes, File.ReadAllBytes(legacyPath));
         }
 
         [Fact]
-        public void LegacyMigration_WhenGameLibraryAlreadyExists_DoesNotOverwriteWithLegacy()
+        public void CleanSlateV1_CorruptCurrentLibraryWithExistingLegacy_PreservesRecoveryCopy_DoesNotFallbackToLegacyImport()
+        {
+            using var testDir = new SyntheticTestDirectory();
+            string libraryPath = Path.Combine(testDir.RootPath, "game-library.json");
+            string backupsPath = Path.Combine(testDir.RootPath, "backups");
+            string legacyPath = Path.Combine(testDir.RootPath, "games.json");
+
+            string skyrimDir = Path.Combine(testDir.RootPath, "Games", "Skyrim");
+            Directory.CreateDirectory(skyrimDir);
+            string skyrimExe = Path.Combine(skyrimDir, "SkyrimSE.exe");
+            File.WriteAllText(skyrimExe, "fake exe");
+
+            // Corrupt current-format library file
+            string corruptContent = "{ this is invalid json content !!! }";
+            File.WriteAllText(libraryPath, corruptContent);
+
+            var legacyProfiles = new List<GameProfile>
+            {
+                new(skyrimExe)
+                {
+                    Api = GraphicsApi.DX11,
+                    Architecture = "x64",
+                    DxvkEnabled = true,
+                    DxvkVersion = "2.6"
+                }
+            };
+            var legacyJson = JsonSerializer.Serialize(legacyProfiles, new JsonSerializerOptions { WriteIndented = true });
+            File.WriteAllText(legacyPath, legacyJson);
+            var expectedLegacyBytes = File.ReadAllBytes(legacyPath);
+
+            // Act: load GameLibraryStore with corrupt library file and existing legacy games.json
+            var store = new GameLibraryStore(libraryPath, backupsPath, legacyPath);
+
+            // Assert: store is empty; never falls back to legacy import
+            Assert.Empty(store.GetAll());
+            Assert.Null(store.FindByInstallationPath(skyrimDir));
+
+            // Original corrupt file is preserved
+            Assert.True(File.Exists(libraryPath));
+            Assert.Equal(corruptContent, File.ReadAllText(libraryPath));
+
+            // Recovery copy was created
+            var recoveryFiles = Directory.GetFiles(testDir.RootPath, "game-library.json.recovery.*.json");
+            Assert.Single(recoveryFiles);
+            Assert.Equal(corruptContent, File.ReadAllText(recoveryFiles[0]));
+
+            // Legacy games.json must be untouched byte-for-byte
+            Assert.True(File.Exists(legacyPath));
+            Assert.Equal(expectedLegacyBytes, File.ReadAllBytes(legacyPath));
+        }
+
+        [Fact]
+        public void CleanSlateV1_FutureSchemaLibraryWithExistingLegacy_DoesNotFallbackToLegacyImport()
+        {
+            using var testDir = new SyntheticTestDirectory();
+            string libraryPath = Path.Combine(testDir.RootPath, "game-library.json");
+            string backupsPath = Path.Combine(testDir.RootPath, "backups");
+            string legacyPath = Path.Combine(testDir.RootPath, "games.json");
+
+            string futureJson = @"{
+  ""SchemaVersion"": 999,
+  ""Installations"": []
+}";
+            File.WriteAllText(libraryPath, futureJson);
+
+            var legacyProfiles = new List<GameProfile>
+            {
+                new(@"C:\Games\Skyrim\SkyrimSE.exe")
+                {
+                    Api = GraphicsApi.DX11,
+                    Architecture = "x64"
+                }
+            };
+            var legacyJson = JsonSerializer.Serialize(legacyProfiles, new JsonSerializerOptions { WriteIndented = true });
+            File.WriteAllText(legacyPath, legacyJson);
+            var expectedLegacyBytes = File.ReadAllBytes(legacyPath);
+
+            // Act: load GameLibraryStore with future-schema library
+            var store = new GameLibraryStore(libraryPath, backupsPath, legacyPath);
+
+            // Assert: store is empty, future file preserved, legacy not imported
+            Assert.Empty(store.GetAll());
+            Assert.True(File.Exists(libraryPath));
+            Assert.Equal(futureJson, File.ReadAllText(libraryPath));
+            Assert.True(File.Exists(legacyPath));
+            Assert.Equal(expectedLegacyBytes, File.ReadAllBytes(legacyPath));
+
+            // No recovery file created for future schema
+            var recoveryFiles = Directory.GetFiles(testDir.RootPath, "game-library.json.recovery.*");
+            Assert.Empty(recoveryFiles);
+        }
+
+        [Fact]
+        public void CleanSlateV1_WhenGameLibraryAlreadyExists_DoesNotOverwriteOrModifyLegacy()
         {
             using var testDir = new SyntheticTestDirectory();
             string libraryPath = Path.Combine(testDir.RootPath, "game-library.json");
@@ -123,7 +243,9 @@ namespace DXVKCompanion.PhaseA.Tests
                     Architecture = "x64"
                 }
             };
-            File.WriteAllText(legacyPath, JsonSerializer.Serialize(legacyProfiles, new JsonSerializerOptions { WriteIndented = true }));
+            var legacyJson = JsonSerializer.Serialize(legacyProfiles, new JsonSerializerOptions { WriteIndented = true });
+            File.WriteAllText(legacyPath, legacyJson);
+            var expectedLegacyBytes = File.ReadAllBytes(legacyPath);
 
             // Act
             var store = new GameLibraryStore(libraryPath, backupsPath, legacyPath);
@@ -132,6 +254,10 @@ namespace DXVKCompanion.PhaseA.Tests
             var all = store.GetAll();
             Assert.Single(all);
             Assert.Equal("Witcher 3", all.First().DisplayName);
+
+            // Legacy file preserved byte-for-byte
+            Assert.True(File.Exists(legacyPath));
+            Assert.Equal(expectedLegacyBytes, File.ReadAllBytes(legacyPath));
         }
 
         [Fact]

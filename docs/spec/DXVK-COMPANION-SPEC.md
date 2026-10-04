@@ -407,7 +407,7 @@ It should not deploy DXVK for these APIs.
 API classifications are persisted across two stores:
 
 1. **`GameLibraryStore` (`game-library.json`)**: Uses string-name enum serialization via `JsonStringEnumConverter` (`"Unknown"`, `"DX9"`, `"DX10"`, `"DX11"`, `"ModernAPI"`, `"DX12"`, `"Vulkan"`).
-   - **Legacy Compatibility**: The legacy `"ModernAPI"` string identifier in current-format libraries is recognized and deserialized cleanly to `GraphicsApi.ModernAPI`. (Note: Pre-existing `games.json` migration code in `GameLibraryStore` represents implementation/spec drift relative to the approved clean-slate V1 no-import policy, tracked separately for cleanup).
+   - **Legacy Compatibility**: The legacy `"ModernAPI"` string identifier in current-format libraries is recognized and deserialized cleanly to `GraphicsApi.ModernAPI`. In accordance with the approved Clean-Slate V1 policy (Issue #12 / PR #28), `GameLibraryStore` initializes an empty library when `game-library.json` is missing and does not import legacy prototype profiles from `games.json`.
    - **Downgrade Behavior**: Source inspection of revisions prior to PR #9 (e.g. `230c8ae`) confirms they lacked `DX12` and `Vulkan` enum members. Deserializing string enum names not present in the binary's enum definition causes `JsonStringEnumConverter` to throw `JsonException`. In `GameLibraryStore`, this results in `LoadResult.Invalid`, preserving a timestamped recovery copy (`game-library.json.recovery.<timestamp>.json`) on disk (preserving unreadable data rather than automatically restoring it) and leaving in-memory installations empty.
 
 2. **`ProfileStore` (`games.json`)**: Uses integer ordinal serialization (`0`=Unknown, `1`=DX9, `2`=DX10, `3`=DX11, `4`=ModernAPI, `5`=DX12, `6`=Vulkan).
