@@ -508,8 +508,30 @@ In preparation for post-#19 clean handoffs, an automated and bounded privacy aud
 The bounded cleanup does not establish exhaustive privacy coverage. Remaining project-only audit work belongs to Gemini in a separately scoped follow-up; unrelated host/chat surfaces are outside this task:
 - **Developer OS user directories & global configs**: Local OS files (`C:\Users\<username>\...`), local user profiles, and gitignored environment files (`.env`, global `.gitconfig`) reside outside git and were not committed.
 - **External chat provider history**: Conversation logs and web chat transcripts stored on external model provider platforms (OpenAI, Anthropic, Google) are outside the repository boundary.
-- **Git history, refs and CI logs/artifacts**: Full historical blob scans, metadata outside the inspected subset and comprehensive task-log/artifact scans were not evidenced. Next owner: Gemini; identify refs/runs and scan locally without printing sensitive matches. Report unavailable/expired surfaces honestly.
+- **Git history, refs and CI logs/artifacts**: Bounded audit executed under Issue #22 (see section below and [`docs/ai-journal/2026-10-04-issue-22-privacy-evidence-annex.md`](ai-journal/2026-10-04-issue-22-privacy-evidence-annex.md)). 22 refs, 241 commits, 1,205 header/message fields, and 414 unique blobs scanned. 150 CI artifacts inventoried: 33 of the initial 150 artifacts sampled; two later PR #24 packet/diff entries also sampled. Combined documented cohort: 35 sampled, 117 unscanned (41 binaries + 76 historical text entries) remain bounded under GitHub retention. 12 CI workflow run logs (5,141 lines) scanned.
 - **PR discussion comments**: ChatGPT's earlier pattern scan covered 19 Issue/PR bodies and four conversation comments at its recorded snapshot. It found no matches for its listed patterns; new edits and native review/comment surfaces were not exhaustively scanned. Next owner: coordinator during lifecycle verification.
+
+## Bounded project-history and artifact privacy audit — 2026-10-04 (Issue #22)
+
+### Audit scope & methodology
+In accordance with Issue #22, an automated bounded privacy audit of git history, commit metadata, repository refs, task artifacts, and CI logs was conducted locally. Complete technical details, rule definitions, artifact manifests, and per-worktree inspection evidence are recorded in the durable annex [`docs/ai-journal/2026-10-04-issue-22-privacy-evidence-annex.md`](ai-journal/2026-10-04-issue-22-privacy-evidence-annex.md).
+- **Project refs inventory**: All 22 project refs (11 local, 11 remote) inventoried.
+- **Git commit metadata**: All 241 commits across `--all` inspected across 1,205 individual header and message fields (`author_name`, `author_email`, `committer_name`, `committer_email`, `commit_msg`). 0 matches for target patterns within stated coverage.
+- **Deduplicated blob scan**: 1,077 mapped path objects resolved to 414 deduplicated unique blobs (3,577,146 bytes). All 414 blobs scanned against private pattern regexes (Windows/Unix user paths, GitHub tokens, generic secrets, private key headers, signed URLs, basic auth).
+  - *Blob findings*: 2 pattern matches reflecting 1 unique private string occurrence in historical blob `d90b0897` (line 485 of historical `docs/AI-PILOT-LOG.md` on PR #20 branch before PR #21 revision, citing a pattern example). Redacted to `<username>` in commit `3ac97be` (PR #21); does not exist in `main` or current working tree, but persists in historical git object storage.
+  - *Secrets clearance*: 0 matches for personal tokens, generic API keys, private key headers, or signed URLs across all 414 historical blobs within stated coverage.
+- **CI task artifacts inventory & scanned cohort**: All 150 GitHub Actions artifacts inventoried (150 active, 0 expired). Bounded scan of 35 sampled text-based artifacts across 11 named text types in the expanded cohort (`build-provenance`, `phase-a-test-results`, `review-packet-pr-*`, `review-packet-diff-pr-*`):
+  - *Artifact findings*: 4 matches reflecting 1 unique private value occurring once in each of 2 files in run `37174005790` (`review-packet-pr-21` and `review-packet-diff-pr-21`), capturing the pre-revision documentation diff of PR #21. The other 33 sampled entries had no reported matches; later/unscanned artifacts are outside this conclusion.
+  - *Secrets clearance*: 0 matches for credentials, tokens, private keys, or signed URLs across all scanned artifacts within stated coverage.
+  - *Unscanned cohort*: 117 artifacts remain unscanned in the combined documented cohort (41 compiled binaries `DXVK-Companion-win-x64` excluded due to binary executable format; 76 older historical text entries bounded by sampling limits). Retained on GitHub Actions subject to configured retention (not independently inspected); next owner: developer / coordinator.
+- **CI workflow logs scan**: Bounded scan of 12 key GitHub Actions workflow runs (5,141 lines, 685,807 bytes (sum of the annex rows)) across PRs #9, #19, #21, #23, #24, and `main`: 0 matches for target patterns within stated coverage. Older historical logs remain bounded under configured GitHub retention (not independently inspected).
+- **Local worktrees inspection**: Inspected all 5 worktrees on `D:\dev` for active branches, HEAD commits, commit ancestry relative to `origin/main`, unpushed commits, and working tree cleanliness:
+  - `D:/dev/DXVK-Companion`: Primary working copy (`docs/pilot-2-current-checkpoint`). Preserved.
+  - `D:/dev/DXVK-Companion-issue-11`: Merged PR #19 worktree. Merged ancestor of `origin/main`; contains untracked `__pycache__/` in `scripts/` and `tests/`. Candidate for cleanup upon developer confirmation.
+  - `D:/dev/DXVK-Companion-issue-13`: Merged PR #23 worktree. Merged ancestor of `origin/main`; clean working tree. Candidate for cleanup upon developer confirmation.
+  - `D:/dev/DXVK-Companion-issue-20`: Merged PR #21 worktree. Merged ancestor of `origin/main`; clean working tree. Candidate for cleanup upon developer confirmation.
+  - `D:/dev/DXVK-Companion-issue-22`: Active worktree for Issue #22 (`audit/issue-22-privacy-coverage`). Preserved for Issue #22.
+- **Remediation conclusions**: No active secrets, personal tokens, or credentials were found within stated coverage. The historical username persists in git object storage (`d90b0897`) and historical CI artifact archives (`37174005790`); however, no destructive remediation is authorized under this task; the reported pattern results do not establish universal clearance. Merged worktrees are recorded as cleanup candidates requiring developer confirmation; no blanket "without-data-loss" guarantee is asserted.
 
 ### Fresh-session handoff architecture
 
@@ -521,3 +543,6 @@ Following the completion and merge of Issue #11 / PR #19 and Review contract v1 
 
 
 
+
+
+Coordinator qualification: results are Gemini-reported within the listed rules/cohort, not a coordinator rerun of the full scan. Annex totals were reconciled arithmetically across captures. An accidental literal username in revision `af23ee2` was replaced with a placeholder; that historical commit and packet run 37178660271 still retain it. The original audit does not clear these later surfaces. See the annex's coordinator evidence qualification for unrecorded scanner bounds and configured-retention limits.
