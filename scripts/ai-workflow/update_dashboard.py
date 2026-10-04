@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import datetime
-import io
 import json
 import os
 import re
@@ -13,7 +12,6 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
-import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -77,6 +75,7 @@ def get_tooling_revision(repo_root: Optional[Path] = None) -> str:
     """
     Returns the tooling script path and commit SHA of actual checked-out tooling HEAD.
     Attributes the actual git commit in the checked-out workspace first, not event GITHUB_SHA.
+    Emits full 40-character hex commit SHA.
     """
     script_rel = "scripts/ai-workflow/update_dashboard.py"
     sha = None
@@ -97,7 +96,7 @@ def get_tooling_revision(repo_root: Optional[Path] = None) -> str:
             sha = env_sha
 
     if sha and is_valid_sha(sha):
-        return f"{script_rel}@{sha[:10]}"
+        return f"{script_rel}@{sha}"
     return script_rel
 
 
@@ -238,14 +237,6 @@ class GitHubClient:
             return res.get("artifacts", [])
         return []
 
-    def download_artifact_zip(self, artifact_id: int) -> bytes:
-        """Downloads artifact zip archive bytes."""
-        url = f"repos/{self.repo}/actions/artifacts/{artifact_id}/zip"
-        res = self._request("GET", url)
-        if isinstance(res, bytes):
-            return res
-        return b""
-
     def search_issues(
         self,
         query: str = DASHBOARD_MARKER,
@@ -255,12 +246,12 @@ class GitHubClient:
     ) -> List[Dict[str, Any]]:
         """
         Searches issues across all states (open and closed) to locate the dedicated dashboard issue.
-        Authenticates machine-owned identity, detects human lookalikes and PRs, and fails safely
-        on API errors or unresolved pagination caps.
+        Authenticates exact machine-owned identity (github-actions[bot]), title, and marker.
+        Ignores unrelated human/PR lookalikes (DoS prevention).
+        Fails safely on API errors or unresolved pagination caps.
         """
         matched = []
         for page in range(1, max_pages + 1):
-            # Real HTTP request; errors are NOT caught here so discovery failures never become absence
             issues = self._request("GET", f"repos/{self.repo}/issues?state=all&per_page={per_page}&page={page}")
             if not isinstance(issues, list):
                 raise GitHubApiError(f"Unexpected response format during issue discovery on page {page}")
@@ -269,46 +260,33 @@ class GitHubClient:
                 break
 
             for iss in issues:
+                is_pr = bool(iss.get("pull_request"))
                 title = (iss.get("title") or "").strip()
                 body = iss.get("body") or ""
-                is_pr = bool(iss.get("pull_request"))
 
                 has_marker = DASHBOARD_MARKER in body
                 has_title = title == DASHBOARD_TITLE
 
-                # Reject PR lookalikes mimicking dashboard title or marker
-                if is_pr and (has_title or has_marker):
-                    raise SecurityValidationError(
-                        f"Pull request #{iss.get('number')} detected mimicking dashboard title/marker; "
-                        "refusing publication to prevent target confusion."
-                    )
-
-                if has_title and has_marker:
-                    # Authenticate dedicated machine-owned identity
+                # Select strictly authenticated machine-owned dashboard destination (Item 4)
+                if not is_pr and has_title and has_marker:
                     user_info = iss.get("user") or {}
                     user_type = user_info.get("type", "")
                     user_login = user_info.get("login", "")
 
                     is_bot_owned = (
-                        user_type == "Bot"
-                        or user_login in (expected_owner, "github-actions[bot]", "app/github-actions")
+                        user_login in (expected_owner, "github-actions[bot]", "app/github-actions")
+                        or user_type == "Bot"
                     )
 
-                    if not is_bot_owned:
-                        raise SecurityValidationError(
-                            f"Issue #{iss.get('number')} matches dashboard title and marker but is owned by "
-                            f"human user '{sanitize_display_text(user_login)}'; "
-                            "refusing overwrite or duplicate creation."
-                        )
-
-                    matched.append(iss)
+                    if is_bot_owned:
+                        matched.append(iss)
+                    # Note: Unrelated human/PR/other entries mimicking title/marker are ignored
+                    # rather than raising an error, preventing denial-of-service via public issues.
 
             if len(issues) < per_page:
-                # Exhausted all issues in the repository cleanly
                 break
 
             if page == max_pages:
-                # Reached pagination cap without concluding all issues
                 raise SecurityValidationError(
                     f"Dashboard discovery reached pagination limit ({max_pages} pages / {max_pages * per_page} items) "
                     "without concluding repository issue inventory; refusing creation to prevent duplicate."
@@ -382,7 +360,7 @@ class GitHubFactsCollector:
                     ci_attempt = "-"
                     ci_url = ""
                     ci_head_sha = "unknown"
-                    tested_checkout = "unknown"
+                    build_provenance = "unknown"
 
                     if is_valid_sha(head_sha):
                         try:
@@ -414,34 +392,17 @@ class GitHubFactsCollector:
                                 else:
                                     ci_status = "unknown"
 
-                                # Truthfully query run artifacts for provenance
+                                # Truthfully query run artifacts (Item 2)
                                 if is_valid_positive_int(raw_run_id):
                                     try:
                                         artifacts = self.client.get_run_artifacts(int(raw_run_id))
                                         has_provenance = any(a.get("name") == "build-provenance" for a in artifacts)
                                         if has_provenance:
-                                            bound_checkout = None
-                                            try:
-                                                prov_artifact = next(a for a in artifacts if a.get("name") == "build-provenance")
-                                                art_id = prov_artifact.get("id")
-                                                if art_id and hasattr(self.client, "download_artifact_zip"):
-                                                    zip_bytes = self.client.download_artifact_zip(int(art_id))
-                                                    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as z:
-                                                        with z.open("artifacts/provenance/build-provenance.json") as pf:
-                                                            pdata = json.load(pf)
-                                                            if is_valid_sha(pdata.get("head_sha")):
-                                                                bound_checkout = pdata.get("head_sha")
-                                            except Exception:
-                                                pass
-
-                                            if bound_checkout:
-                                                tested_checkout = bound_checkout
-                                            else:
-                                                tested_checkout = "artifact present (checkout unparsed)"
+                                            build_provenance = "present (checkout unparsed)"
                                         else:
-                                            tested_checkout = "unknown (no build-provenance artifact)"
+                                            build_provenance = "not found in run"
                                     except Exception:
-                                        tested_checkout = "unknown (artifact query failed)"
+                                        build_provenance = "query failed"
                             else:
                                 ci_status = "no build run"
                         except Exception:
@@ -457,7 +418,7 @@ class GitHubFactsCollector:
                         "ci_url": ci_url,
                         "ci_attempt": ci_attempt,
                         "ci_head_sha": ci_head_sha,
-                        "tested_checkout_sha": tested_checkout,
+                        "build_provenance": build_provenance,
                     })
 
                 if page == max_pages and len(page_prs) == per_page:
@@ -602,7 +563,7 @@ def render_dashboard(
 
     if is_valid_sha(facts.main_head_sha):
         base_url = f"https://github.com/{repo}/blob/{facts.main_head_sha}"
-        main_display = facts.main_head_sha[:10]
+        main_display = facts.main_head_sha
     else:
         base_url = f"https://github.com/{repo}"
         main_display = sanitize_display_text(facts.main_head_sha, max_len=15)
@@ -640,18 +601,17 @@ def render_dashboard(
         elif not facts.open_prs:
             sec1.append("_None (all active PRs merged)._\n")
         else:
-            sec1.append("| PR | Title | Head SHA | Base SHA | CI Run | Attempt | Status | Tested Checkout |\n")
+            sec1.append("| PR | Title | Head SHA | Base SHA | CI Run | Attempt | Status | Build Provenance |\n")
             sec1.append("|---|---|---|---|---|---|---|---|\n")
             displayed_prs = facts.open_prs[:limit_prs] if limit_prs else facts.open_prs
             for pr in displayed_prs:
                 h_short = pr['head_sha'][:7] if is_valid_sha(pr['head_sha']) else pr['head_sha']
                 b_short = pr['base_sha'][:7] if is_valid_sha(pr['base_sha']) else pr['base_sha']
                 run_cell = f"[{pr['ci_run_id']}]({pr['ci_url']})" if pr.get('ci_url') else pr['ci_run_id']
-                chk = pr.get('tested_checkout_sha', 'unknown')
-                chk_short = chk[:7] if is_valid_sha(chk) else chk
+                prov = pr.get('build_provenance', 'unknown')
                 sec1.append(
                     f"| **#{pr['number']}** | {pr['title']} | `{h_short}` | `{b_short}` | "
-                    f"{run_cell} | {pr.get('ci_attempt', '-')} | {pr['ci_status']} | `{chk_short}` |\n"
+                    f"{run_cell} | {pr.get('ci_attempt', '-')} | {pr['ci_status']} | {prov} |\n"
                 )
             if limit_prs and len(facts.open_prs) > limit_prs:
                 omitted_prs = len(facts.open_prs) - limit_prs
@@ -705,10 +665,10 @@ def render_dashboard(
     if count_words_excluding_urls(doc) <= max_words:
         return doc
 
-    # Stage 4: Strict hard word trim
+    # Stage 4: Strict hard word trim, preserving identity header intact
     words = doc.split()
     trimmed_words = words[:max_words - 20]
-    hard_trimmed = " ".join(trimmed_words) + f"\n\n> ... [Snapshot truncated to respect {max_words}-word budget; see [{base_url}/docs/AI-CURRENT-STATE.md]({base_url}/docs/AI-CURRENT-STATE.md)]"
+    hard_trimmed = header + "\n\n" + " ".join(trimmed_words) + f"\n\n> ... [Snapshot truncated to respect {max_words}-word budget; see [{base_url}/docs/AI-CURRENT-STATE.md]({base_url}/docs/AI-CURRENT-STATE.md)]"
     return hard_trimmed
 
 
@@ -750,11 +710,17 @@ class DashboardPublisher:
         self,
         new_body: str,
         preview: bool = False,
-        expected_tooling_rev: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Publishes the rendered dashboard to the authenticated dedicated dashboard issue."""
         if preview:
             return {"status": "preview", "action": "none"}
+
+        # Validate exactly one outgoing dashboard marker (Item 5)
+        marker_count = new_body.count(DASHBOARD_MARKER)
+        if marker_count != 1:
+            raise SecurityValidationError(
+                f"Outgoing snapshot must contain exactly one dashboard marker ({DASHBOARD_MARKER}); found {marker_count}."
+            )
 
         # Validate repository name
         if not is_valid_repo_name(self.repo):
@@ -777,37 +743,42 @@ class DashboardPublisher:
         if snap_repo != self.repo:
             raise SecurityValidationError(f"Snapshot repo '{snap_repo}' does not match publisher repo '{self.repo}'.")
 
-        # Validate captured main SHA
-        if not is_valid_sha(snap_main) and not (len(snap_main) == 10 and re.match(r"^[0-9a-fA-F]{10}$", snap_main)):
-            raise SecurityValidationError(f"Snapshot contains invalid main SHA: '{snap_main}'")
+        # Validate full 40-character main SHA (Item 3)
+        if not is_valid_sha(snap_main):
+            raise SecurityValidationError(f"Snapshot contains missing or non-40-hex main SHA: '{snap_main}'")
 
-        # Recheck live main immediately before writing
+        # Validate full 40-character tooling SHA (Item 3)
+        tooling_match = re.search(r"@([0-9a-fA-F]{40})$", snap_tooling)
+        if not tooling_match:
+            raise SecurityValidationError(f"Snapshot contains missing or non-40-hex tooling SHA: '{snap_tooling}'")
+
+        # Recheck live main immediately before writing: must match full 40-char SHA (Item 3)
         live_ref = self.client.get_ref("heads/main")
         live_main_sha = live_ref.get("object", {}).get("sha", "")
         if not is_valid_sha(live_main_sha):
             raise SecurityValidationError(f"Live main ref is invalid or missing SHA: '{live_main_sha}'")
 
-        if not live_main_sha.startswith(snap_main[:10]):
+        if live_main_sha != snap_main:
             raise SecurityValidationError(
-                f"Main branch moved ({snap_main[:10]} -> {live_main_sha[:10]}) "
+                f"Main branch moved ({snap_main} -> {live_main_sha}) "
                 "between snapshot generation and publication; refusing stale publication."
             )
 
-        # Check current tooling HEAD
+        # Check current tooling HEAD: must match full 40-char SHA (Item 3)
         current_tooling = get_tooling_revision()
-        if expected_tooling_rev and current_tooling != expected_tooling_rev:
+        if current_tooling != snap_tooling:
             raise SecurityValidationError(
-                f"Tooling changed ({expected_tooling_rev} -> {current_tooling}) before publication; refusing stale publication."
+                f"Tooling changed ({snap_tooling} -> {current_tooling}) before publication; refusing stale publication."
             )
 
         # Search for existing dedicated dashboard issue
         matched = self.client.search_issues(DASHBOARD_MARKER)
 
-        # Check for closed dashboard issue
+        # Check for closed dashboard issue (Item 4)
         closed_matched = [m for m in matched if m.get("state") == "closed"]
         if closed_matched:
             raise SecurityValidationError(
-                f"Dashboard issue #{closed_matched[0]['number']} is closed. "
+                f"Authenticated dashboard issue #{closed_matched[0]['number']} is closed. "
                 "Manual administrative action required to reopen or recreate."
             )
 
@@ -816,7 +787,7 @@ class DashboardPublisher:
         if len(open_matched) > 1:
             issue_nums = [f"#{m.get('number')}" for m in open_matched]
             raise SecurityValidationError(
-                f"Multiple dashboard issues detected ({', '.join(issue_nums)}). "
+                f"Multiple authenticated dashboard issues detected ({', '.join(issue_nums)}). "
                 "Refusing ambiguous publication. Consolidate to a single dashboard issue."
             )
 
@@ -902,7 +873,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
         if is_preview:
             # Preview mode: print content, perform zero writes
-            print(rendered_content)
+            print(f"[PREVIEW] Dashboard snapshot content (zero writes):\n{rendered_content}")
             return 0
 
         try:

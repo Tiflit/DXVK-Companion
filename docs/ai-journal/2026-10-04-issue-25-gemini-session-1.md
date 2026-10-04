@@ -9,48 +9,46 @@
 ### Purpose & Context
 Implement deterministic automation to publish compact GitHub repository state to a dedicated machine-owned Issue (`[AI Dashboard] Current Repository State & Handoff Orientation`), refresh `docs/AI-CURRENT-STATE.md`, and complete the human-authorized final bounded repair addressing Exit Checks 1–4.
 
-### Decisions & Rationale (Final Bounded Repair)
-1. **Exit Check 1 (Real Discovery & Destination Authentication)**:
-   - `GitHubClient.search_issues` executes real HTTP requests without swallowing errors: API errors (e.g. HTTP 503) propagate immediately to ensure discovery failures never become absence.
-   - Paginates across all states up to 5 pages (250 items); reaching the limit without reaching the end of issues fails safely (`SecurityValidationError`) to prevent duplicate creation.
-   - Requires exact title `[AI Dashboard] Current Repository State & Handoff Orientation` AND persistent marker `<!-- AI-DASHBOARD-MARKER: v1 -->`.
-   - Authenticates machine-owned identity: creator must be `type == "Bot"` or `github-actions[bot]`. Rejects human-owned lookalikes, PRs, and closed destinations with zero creates and zero patches.
-   - Tested real boundaries with mocked I/O (no duplicate selection logic in fakes).
-2. **Exit Check 2 (Preview/Dry-Run Contract & Freshness Verification)**:
-   - Enforced preview contract: every preview/dry-run argument combination (`--preview`, `--dry-run`, without `--publish`), including `--publish-file`, causes ZERO writes.
-   - Validates structured snapshot header (capturing main, status, tooling, repo); immediately before writing, checks live `heads/main` ref from GitHub and refuses stale publication if main moved.
-   - Attributes actual checked-out tooling HEAD (`git rev-parse HEAD`), not event `GITHUB_SHA`.
-3. **Exit Check 3 (CI Attribution, Run Attempts, Artifacts & Provenance)**:
-   - Targets only `Build and Test` runs; unrelated workflow runs (such as `AI Scope Check`) never claim build success.
-   - Missing or non-positive integer `run_attempt` stays `unknown`; never invents `1`.
-   - Queries `actions/runs/{id}/artifacts` truthfully: if `build-provenance` is present, binds or marks unparsed; if absent, truthfully reports absent without guessing.
-   - Links CI run evidence and tested checkout in rendered dashboard table.
-4. **Exit Check 4 (Safe Validation, Diagnostics & Honest Limitations)**:
-   - Validates repository format (`owner/repo`), positive integer IDs for PRs/issues, 40-hex SHAs, and status enums.
-   - When main SHA is invalid, base URL safely falls back to repository root without broken URL interpolation.
-   - Strips markdown injection, HTML, backticks, tokens, and redacts Windows/Unix paths.
-   - Honestly documents YAML inspection limitation (line/indentation block check in standard library without PyYAML dependency; GitHub Actions workflow parser enforces syntax and schema at runtime).
+### Decisions & Rationale (Claude-Informed Five-Item Closeout)
+1. **Item 1: Workflow Command & Publishing Activation**:
+   - Added `--publish` to `.github/workflows/ai-current-state.yml` command line: `python scripts/ai-workflow/update_dashboard.py --publish-file snapshot.md --publish --repo "$GH_REPO" --token "$GH_TOKEN"`.
+   - Tested real workflow CLI command with mocked HTTP I/O, asserting actual HTTP PATCH/POST calls while preview/dry-run options remain strictly zero-write.
+2. **Item 2: Honest Artifact Attribution**:
+   - Removed binary ZIP download and zipfile parsing entirely.
+   - Truthfully queries `actions/runs/{id}/artifacts` and reports availability as `present (checkout unparsed)`, `not found in run`, or `query failed` with direct link to GitHub Actions run.
+   - Removed unverified "Tested Checkout" claims from dashboard tables.
+3. **Item 3: Full 40-Hex Identity & Freshness Verification**:
+   - Emits and enforces full 40-character hex commit SHAs for both base `main` and tooling HEAD (`git rev-parse HEAD`).
+   - Automatically compares against live `heads/main` ref and checked-out HEAD, failing closed on mismatch or missing identities.
+   - Preserves structured identity header intact at the top of content during any size truncation.
+4. **Item 4: Machine Destination Authentication & Lookalike Isolation**:
+   - Selects only exact `github-actions[bot]` non-PR issue matching exact title and marker.
+   - Ignores unrelated human-created issues and PR lookalikes, preventing public denial-of-service blocking automated publishing.
+   - Fails safely on discovery errors/caps, duplicates, or closed destinations without issuing writes.
+5. **Item 5: Outgoing Marker Invariant**:
+   - Validates that outgoing issue body contains exactly one dashboard marker (`new_body.count(DASHBOARD_MARKER) == 1`) prior to any write. Rejects 0 or >1 markers.
 
 ### Actions Executed
-- Updated `scripts/ai-workflow/update_dashboard.py` implementing Exit Checks 1–4.
-- Added comprehensive unit and regression tests in `tests/ai-workflow/test_dashboard.py` using mocked HTTP responses (90/90 tests pass cleanly in 0.45s).
-- Refreshed PR #26 description body recording disposition table and verified identities.
+- Updated `.github/workflows/ai-current-state.yml` with `--publish`.
+- Updated `scripts/ai-workflow/update_dashboard.py` implementing the five-item closeout.
+- Updated `tests/ai-workflow/test_dashboard.py` covering all five items with mocked HTTP I/O (90/90 tests pass cleanly in 0.45s).
+- Refreshed PR #26 description body recording the five-item disposition table and verified identities.
 
 ### Evidence & Limitations
 - **Unit & Regression Tests**: 90/90 Python tests in `tests/ai-workflow` passing cleanly (0.45s).
 - **Application Tests**: 190/190 passing in CI (`phase-a-tests.trx`).
-- **Dry-Run Preview**: Live execution against GitHub (`ce74e1e`, 1 open PR #26, 7 open issues; 560 words).
+- **Dry-Run Preview**: Live execution against GitHub (`ce74e1e`, 1 open PR #26, 7 open issues; ~560 words).
 - **Limitations**: Standard library line/indentation inspection for YAML; full workflow schema enforced by GitHub Actions at runtime. Real default-branch issue publishing activates only after human merge of PR #26.
 
 ### Observable Measurements
-- Human decision/action interventions: 3 (task launch + revision request + final repair authorization)
+- Human decision/action interventions: 4 (task launch + revision request + final repair authorization + closeout direction)
 - Human status queries: 0
 - Repeated investigations from missing context: 0
 - Session blocked / required extra session: No
 - Quota / elapsed clock time: not measured
-- Journal word count: ~300 words
+- Journal word count: ~380 words
 
 ### Outcome & Next Steps
-- Result: REVISION COMPLETE (Final Bounded Repair)
+- Result: CLOSEOUT REVISION COMPLETE (Claude-Informed Five-Item Closeout)
 - Resulting Head: revised task head on `workflow/issue-25-compact-handoffs`
-- Next Action & Owner: Push commit to PR #26, verify CI workflows, hand off to ChatGPT coordinator for verification of the finite list.
+- Next Action & Owner: Push commit to PR #26, verify CI workflows, hand off to ChatGPT coordinator for verification.

@@ -100,4 +100,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          python scripts/ai-workflow/update_dashboard.py --publish-file snapshot.md --repo "$GH_REPO" --token "$GH_TOKEN"
+          python scripts/ai-workflow/update_dashboard.py --publish-file snapshot.md --publish --repo "$GH_REPO" --token "$GH_TOKEN"
