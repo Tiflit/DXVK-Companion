@@ -224,14 +224,15 @@ namespace DXVKCompanion.UI
 
                 var effectivePolicy = installation?.ManagementPolicy ?? ManagementPolicy.UseGlobal();
                 bool isAutomated = effectivePolicy.IsAutomated(_settings.GlobalPolicy);
+                bool canAutoDeploy = _dxvk.CanAutomaticallyDeploy(installation);
 
-                if (isAutomated &&
+                if (isAutomated && canAutoDeploy &&
                     dxvkCompatible && !antiCheat && !profile.DxvkEnabled &&
                     string.IsNullOrWhiteSpace(profile.DxvkVersion))
                 {
                     await _dxvk.RequestEnableAsync(profile, process);
                 }
-                else if (isAutomated && dxvkCompatible && externalChange && !antiCheat && profile.DxvkEnabled)
+                else if (isAutomated && canAutoDeploy && dxvkCompatible && externalChange && !antiCheat && profile.DxvkEnabled)
                 {
                     await _dxvk.RequestReapplyAsync(profile, process, updateBaseline: true);
                 }

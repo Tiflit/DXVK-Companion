@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
 using System.Threading.Tasks;
@@ -182,8 +183,15 @@ namespace DXVKCompanion.PhaseA.Tests
 
             Assert.NotNull(reloadedInst);
             Assert.Null(reloadedInst.PendingAction); // Terminally cancelled
-            Assert.NotNull(reloadedInst.LastRefusalReason);
-            Assert.Contains("DX12", reloadedInst.LastRefusalReason);
+            Assert.NotNull(reloadedInst.LastCancelledAction);
+            Assert.Equal(PendingActionType.Update, reloadedInst.LastCancelledAction.Type);
+            Assert.Equal("2.5", reloadedInst.LastCancelledAction.TargetDxvkVersion);
+            Assert.NotNull(reloadedInst.LastCancellationOutcome);
+            Assert.Contains("Cancelled pending Update", reloadedInst.LastCancellationOutcome);
+            Assert.Contains("DX12", reloadedInst.LastCancellationOutcome);
+            Assert.NotNull(reloadedInst.LastCancellationReason);
+            Assert.Contains("DX12", reloadedInst.LastCancellationReason);
+            Assert.Equal(reloadedInst.LastCancellationOutcome, reloadedInst.LastRefusalReason);
 
             // Critical: Unrelated managed state, versions, and backups MUST be preserved intact
             Assert.Equal(RestorationState.Managed, reloadedInst.RestorationState);
@@ -265,13 +273,31 @@ namespace DXVKCompanion.PhaseA.Tests
             // Cancel the action due to DX12
             await manager.ApplyPendingAsync(exePath);
             var instAfterCancel = store.FindByInstallationPath(gameDir.RootPath);
-            Assert.Null(instAfterCancel!.PendingAction);
+            Assert.NotNull(instAfterCancel);
+            Assert.Null(instAfterCancel.PendingAction);
+            Assert.NotNull(instAfterCancel.LastCancelledAction);
+
+            // Crucial R2 check: cancellation MUST suppress automatic deployment
+            Assert.False(manager.CanAutomaticallyDeploy(instAfterCancel));
+            Assert.False(manager.CanAutomaticallyDeploy(exePath));
 
             // Later: Game is reclassified back to supported DX11
             profile.Api = GraphicsApi.DX11;
             profileStore.Save(profile);
             exeRecord.LastKnownApi = GraphicsApi.DX11;
-            store.Save(installation);
+            store.Save(instAfterCancel);
+
+            // Crucial R2 check: Reclassification to DX11 MUST NOT lift automatic deployment suppression
+            Assert.False(manager.CanAutomaticallyDeploy(instAfterCancel));
+            Assert.False(manager.CanAutomaticallyDeploy(exePath));
+
+            // Reload store to simulate process restart: suppression MUST remain durable
+            var reloadedStore = new GameLibraryStore(
+                Path.Combine(storageDir.RootPath, "game-library.json"),
+                Path.Combine(storageDir.RootPath, "backups"));
+            var reloadedInst = reloadedStore.FindByInstallationPath(gameDir.RootPath);
+            Assert.NotNull(reloadedInst);
+            Assert.False(manager.CanAutomaticallyDeploy(reloadedInst));
 
             // Act: Automatic execution attempts (exit and startup) must NOT revive cancelled work
             bool applyResult = await manager.ApplyPendingAsync(exePath);
@@ -309,31 +335,102 @@ namespace DXVKCompanion.PhaseA.Tests
             // Cancel action
             await manager.ApplyPendingAsync(exePath);
             var instCancelled = store.FindByInstallationPath(gameDir.RootPath);
-            Assert.Null(instCancelled!.PendingAction);
-            Assert.NotNull(instCancelled.LastRefusalReason);
+            Assert.NotNull(instCancelled);
+            Assert.Null(instCancelled.PendingAction);
+            Assert.NotNull(instCancelled.LastCancelledAction);
+            Assert.False(manager.CanAutomaticallyDeploy(instCancelled));
 
             // Reclassify to DX11
             profile.Api = GraphicsApi.DX11;
             profileStore.Save(profile);
             exeRecord.LastKnownApi = GraphicsApi.DX11;
-            store.Save(installation);
+            store.Save(instCancelled);
 
-            // Act: Deliberate fresh user request to enable DXVK
-            bool enabled = await manager.EnableDxvkAsync(profile, "2.5");
+            // Act: Deliberate fresh user request to enable DXVK via RequestEnableByPathAsync
+            var actionResult = await manager.RequestEnableByPathAsync(profile);
+            Assert.Equal(DxvkActionResult.Applied, actionResult);
 
-            // Assert: Fresh request succeeds, files deployed, refusal reason cleared
-            Assert.True(enabled);
+            // Assert: Fresh request succeeds, files deployed, cancelled state cleared, auto-deploy re-enabled
             Assert.True(profile.DxvkEnabled);
             Assert.True(File.Exists(Path.Combine(gameDir.RootPath, "d3d11.dll")));
 
             var instAfterFresh = store.FindByInstallationPath(gameDir.RootPath);
             Assert.NotNull(instAfterFresh);
             Assert.Null(instAfterFresh.LastRefusalReason);
+            Assert.Null(instAfterFresh.LastCancelledAction);
+            Assert.Null(instAfterFresh.LastCancellationOutcome);
+            Assert.True(manager.CanAutomaticallyDeploy(instAfterFresh));
             Assert.Equal(RestorationState.Managed, instAfterFresh.RestorationState);
         }
 
         [Fact]
-        public async Task TechnicalFailure_DownloadOrTransactionError_DoesNotCancelPendingAction()
+        public async Task PublicRequestOrchestration_PopulatedTransientQueue_CancelledWithoutErasingUnrelatedOrRestoreIntent()
+        {
+            using var gameDir1 = new SyntheticTestDirectory();
+            using var gameDir2 = new SyntheticTestDirectory();
+            using var storageDir = new SyntheticTestDirectory();
+            using var sourceDir = new SyntheticTestDirectory();
+
+            var (manager, _, store, profileStore, _) = CreateTestEnvironment(storageDir, sourceDir);
+
+            // Game 1: Starts as DX11, public request orchestration queues while running
+            var exe1 = gameDir1.CreateFile("Game1.exe", "synthetic-binary-1");
+            var profile1 = profileStore.GetOrCreate(exe1);
+            profile1.Api = GraphicsApi.DX11;
+            profile1.Architecture = "x64";
+            profileStore.Save(profile1);
+
+            using var currentProcess = Process.GetCurrentProcess();
+            var queueResult1 = await manager.RequestEnableAsync(profile1, currentProcess);
+            Assert.Equal(DxvkActionResult.Queued, queueResult1);
+            Assert.True(manager.HasTransientPendingAction(exe1));
+
+            var inst1 = store.FindByInstallationPath(gameDir1.RootPath);
+            Assert.NotNull(inst1);
+            Assert.NotNull(inst1.PendingAction);
+
+            // Reclassify Game 1 to DX12 (becomes incompatible while queued/running)
+            profile1.Api = GraphicsApi.DX12;
+            profileStore.Save(profile1);
+            inst1.GetOrAddExecutable("Game1.exe", "Game1.exe").LastKnownApi = GraphicsApi.DX12;
+            store.Save(inst1);
+
+            // Game 2: Unrelated game with Restore queued via public RequestDisableAsync while running
+            var exe2 = gameDir2.CreateFile("Game2.exe", "synthetic-binary-2");
+            var profile2 = profileStore.GetOrCreate(exe2);
+            profile2.Api = GraphicsApi.DX11;
+            profile2.Architecture = "x64";
+            profileStore.Save(profile2);
+
+            var queueResult2 = await manager.RequestDisableAsync(profile2, currentProcess);
+            Assert.Equal(DxvkActionResult.Queued, queueResult2);
+            Assert.True(manager.HasTransientPendingAction(exe2));
+
+            var inst2 = store.FindByInstallationPath(gameDir2.RootPath);
+            Assert.NotNull(inst2);
+            Assert.NotNull(inst2.PendingAction);
+            Assert.Equal(PendingActionType.Restore, inst2.PendingAction.Type);
+
+            // Act 1: Trigger exit for Game 1 -> should cancel Game 1's action
+            bool result1 = await manager.ApplyPendingAsync(exe1);
+            Assert.False(result1);
+
+            var reloadedInst1 = store.FindByInstallationPath(gameDir1.RootPath);
+            Assert.NotNull(reloadedInst1);
+            Assert.Null(reloadedInst1.PendingAction); // Cancelled
+            Assert.NotNull(reloadedInst1.LastCancelledAction);
+            Assert.False(manager.HasTransientPendingAction(exe1)); // Removed from transient queue
+
+            // Act 2: Verify Game 2's queued Restore intent in transient and persisted queues is completely untouched
+            Assert.True(manager.HasTransientPendingAction(exe2));
+            var reloadedInst2 = store.FindByInstallationPath(gameDir2.RootPath);
+            Assert.NotNull(reloadedInst2);
+            Assert.NotNull(reloadedInst2.PendingAction);
+            Assert.Equal(PendingActionType.Restore, reloadedInst2.PendingAction.Type);
+        }
+
+        [Fact]
+        public async Task TechnicalFailure_DownloadOrSourceUnavailable_DoesNotCancelPendingAction()
         {
             using var gameDir = new SyntheticTestDirectory();
             using var storageDir = new SyntheticTestDirectory();
@@ -375,6 +472,46 @@ namespace DXVKCompanion.PhaseA.Tests
             Assert.NotNull(instAfter);
             Assert.NotNull(instAfter.PendingAction); // Retained for retry on technical failure
             Assert.Equal(PendingActionType.Install, instAfter.PendingAction.Type);
+            Assert.Null(instAfter.LastCancelledAction);
+        }
+
+        [Fact]
+        public async Task TechnicalFailure_TransactionEngineError_DoesNotCancelPendingAction()
+        {
+            using var gameDir = new SyntheticTestDirectory();
+            using var storageDir = new SyntheticTestDirectory();
+            using var sourceDir = new SyntheticTestDirectory();
+
+            var (manager, _, store, profileStore, _) = CreateTestEnvironment(storageDir, sourceDir);
+
+            var exePath = gameDir.CreateFile("Game.exe", "synthetic-binary");
+            var targetDll = gameDir.CreateFile("d3d11.dll", "original-file");
+
+            var profile = profileStore.GetOrCreate(exePath);
+            profile.Api = GraphicsApi.DX11;
+            profile.Architecture = "x64";
+            profileStore.Save(profile);
+
+            var installation = store.GetOrCreateInstallation(gameDir.RootPath, "LockedFileGame");
+            var exeRecord = installation.GetOrAddExecutable("Game.exe", "Game.exe");
+            exeRecord.LastKnownApi = GraphicsApi.DX11;
+            installation.PendingAction = PendingAction.Install("2.5", "Queued install");
+            store.Save(installation);
+
+            // Lock destination file so that transaction engine copy encounters IOException
+            using (var lockedStream = new FileStream(targetDll, FileMode.Open, FileAccess.Read, FileShare.None))
+            {
+                // Act: ApplyPendingAsync runs while destination file is locked
+                bool result = await manager.ApplyPendingAsync(exePath);
+                Assert.False(result);
+            }
+
+            // Assert: Transaction failure must NOT terminally cancel the pending action!
+            var instAfter = store.FindByInstallationPath(gameDir.RootPath);
+            Assert.NotNull(instAfter);
+            Assert.NotNull(instAfter.PendingAction);
+            Assert.Equal(PendingActionType.Install, instAfter.PendingAction.Type);
+            Assert.Null(instAfter.LastCancelledAction);
         }
 
         [Fact]
