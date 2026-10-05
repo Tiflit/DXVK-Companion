@@ -6,6 +6,7 @@
 >
 > **Selective Reading Rule**: Routine agent sessions must NOT read the entire historical pilot log or journal archive. To conserve context and avoid drift, follow the 4-step startup route in [AGENTS.md](../AGENTS.md).
 
+- **Current Repository Priority**: Validating a reliable, low-overhead multi-agent workflow centered on GitHub ([workflow purpose](AI-DEVELOPMENT-WORKFLOW.md#purpose)); broader application feature work and release testing follow separately under human direction.
 - **Live Repository Status**: Maintained in real time by GitHub Actions in authenticated dashboard [**Issue #27**](https://github.com/Tiflit/DXVK-Companion/issues/27) (`[AI Dashboard] Current Repository State & Handoff Orientation`) for live default-branch SHA, open PRs, and active CI runs.
 - **Active Task & PR Tracking**: Live task assignments and open PR inventories are tracked dynamically in the automated dashboard and via GitHub queries (`gh issue list`, `gh pr list`). This curated document provides stable architecture, role allocation, and governance protocols; it does not maintain a second live inventory by hand.
 
@@ -34,6 +35,8 @@ Major foundational pilot features, bugfixes, and CI harnesses merged into `main`
 
 ## 2. Active Work Governance & Decision Prerequisites
 
+- **Active Priority**: Validating a reliable, low-overhead multi-agent workflow centered on GitHub ([workflow purpose](AI-DEVELOPMENT-WORKFLOW.md#purpose)). Broader application revisions and release testing follow separately under human direction.
+
 Active task assignments, in-flight work, and open PR inventories are derived dynamically from GitHub (see authenticated dashboard [Issue #27](https://github.com/Tiflit/DXVK-Companion/issues/27) and `gh issue list` / `gh pr list`). Static documentation maintains stable governance rules, architecture, and role allocation without duplicating a secondary live task inventory.
 
 ### Decision Governance Rules
@@ -55,9 +58,9 @@ Active task assignments, in-flight work, and open PR inventories are derived dyn
 ### Fresh-Session Operating Instructions
 
 #### For Gemini (Implementer)
-1. Read [AGENTS.md](../AGENTS.md) and the live dashboard issue for compact orientation. Underlying GitHub records are authoritative—verify task-critical facts and live identities directly; this static document provides stable governance, not live task state.
+1. Read [AGENTS.md](../AGENTS.md) and the live dashboard issue for compact orientation. The present repository priority is validating a reliable multi-agent development workflow ([workflow purpose](AI-DEVELOPMENT-WORKFLOW.md#purpose)). Independently verify task-critical remote identities mechanically (e.g. `gh api repos/Tiflit/DXVK-Companion/git/ref/heads/main --jq .object.sha`), distinguishing remote default branch, PR head/base, and local workspace HEAD. Underlying GitHub records are authoritative; this static document provides stable governance, not live task state.
 2. Read the assigned GitHub Issue (`gh issue view <number>`). Note acceptance criteria and `### Allowed paths`.
-3. Verify git status, fetch `origin/main`, and work in an isolated worktree.
+3. Verify git status, fetch `origin/main`, and work in an isolated worktree. Reference durable evidence using portable GitHub URLs (referencing immutable commit SHAs, PRs, or Issue numbers), avoiding personal home paths, raw transcripts, or secrets.
 4. Write failing regression fixtures first when addressing a defect.
 5. Run task-relevant tests:
    - Application changes: `dotnet test tests/DXVKCompanion.PhaseA.Tests/DXVKCompanion.PhaseA.Tests.csproj` (CI-verified).

@@ -36,6 +36,11 @@ Durable information belongs in GitHub:
 
 AI conversations are working sessions and communication channels, not the authoritative project memory.
 
+### Portable Evidence Links and Remote Identity Verification
+
+- **Portable Evidence Links**: Durable source and evidence references must use portable GitHub URLs (referencing inspected immutable commit SHAs, PRs, or Issue numbers where applicable) so they resolve across both local environments and cloud agents. Generic repository-relative paths may appear separately. Never publish personal home paths (e.g., local user directories), raw transcripts, or secrets.
+- **Independent Remote Identity Verification**: Fresh sessions must verify task-critical remote identities mechanically via GitHub connector or API commands (e.g. `gh api repos/Tiflit/DXVK-Companion/git/ref/heads/main --jq .object.sha`) rather than assuming local HEAD or static dashboard agreement. Distinguish remote default branch, PR head/base, and local workspace HEAD.
+
 ## Current model roles
 
 ### Gemini / Antigravity
