@@ -31,7 +31,7 @@ Implemented Issue #42 extending `update_pr_body.py` to support safe, append-only
    - Saves target-qualified recovery backups (`.ai-review-backups/issue_<id>_body_backup_<timestamp>.md` vs `pr_<id>_...`) before write; backup failure aborts PATCH.
    - Performs a second GET pre-write check immediately before PATCH to detect mid-flight concurrent edits.
    - Performs post-write read-back verification; hash mismatch or read failure issues an uncertain-write warning and exits nonzero.
-   - Explicitly documents REST API concurrency limitations (absence of `If-Match` ETags on GitHub body endpoints, residual race window, and outside client bypasses).
+   - Explicitly documents REST API concurrency limitations (client-side CAS limits, residual race window between pre-write GET and PATCH, lack of automatic rollback, and outside client bypasses; superseding initial tentative references to backend conditional-API claims).
 7. **Documentation & Tests**:
    - Updated `docs/AI-DEVELOPMENT-WORKFLOW.md` and `AGENTS.md` to document the helper, invariants, and concurrency limits.
    - Initial implementation added 18 unit/regression tests in `tests/ai-workflow/test_update_pr_body.py` (totaling 44/167 at initial local checkpoint, and 45/168 at initial PR head `9d2d0783a3a518f982c67737ec164e53af859714`).
@@ -58,14 +58,29 @@ Addressed review findings from `chatgpt-20261005-pr43-review1` on PR #43 within 
    - R2: `test_pr_preview_redacts_removed_private_path_from_display_diff`, `test_append_file_rejects_token_shaped_record_id_without_echoing_secret`, `test_backup_confirmation_path_redacts_user_home`, `test_exception_diagnostic_sanitizes_windows_user_path`, `test_exception_diagnostic_sanitizes_posix_user_path`, `test_exception_diagnostic_sanitizes_bearer_token`.
    - R3: `test_issue_noop_fails_closed_when_existing_body_contains_private_path`, `test_issue_noop_write_aborts_when_verification_get_differs`, `test_issue_noop_write_aborts_when_verification_get_fails`, `test_issue_noop_write_aborts_when_record_missing_on_recheck`, `test_issue_noop_write_succeeds_when_verification_get_matches`.
 
+### Review 2 Revision: Addressing Coordinator Findings R2a & R2b
+Addressed revision findings from `chatgpt-20261005-pr43-review2` on PR #43 within Issue #42 scope:
+1. **R2a: Diff Prefix Handling & POSIX Path Redaction**:
+   - Introduced `sanitize_diff_line(diff_line: str) -> str` which strips diff line prefixes (`-`, `+`, ` `), sanitizes the underlying payload, and restores the prefix, preserving diff structure while redacting private paths beginning at column 1.
+   - Updated `POSIX_HOME_PATH_PATTERN` and `_redact_posix` to support `+` and `-` as leading delimiters, ensuring direct string sanitization of removed/added lines preserves the diff indicator.
+   - Added regression unit tests for removed, added, and context POSIX and Windows paths starting at column 1 (`test_sanitize_diff_line_redacts_context_and_removed_lines`, `test_pr_preview_redacts_removed_posix_path_at_column_1_in_diff`, `test_pr_preview_redacts_removed_windows_path_at_column_1_in_diff`).
+2. **R2b: Filename Display Sanitization & Non-Executable Placeholder**:
+   - Introduced `format_safe_filename_diagnostic(path: Union[Path, str]) -> str` replacing sensitive or token-shaped filenames with `<redacted-filename>` in missing-file error messages in both Issue and PR modes.
+   - Updated Issue preview rerun command to detect sensitive filenames or user paths and output a clear non-executable placeholder `<path-to-append-file>` with explicit user instruction instead of echoing sensitive tokens or claiming a redacted path is an executable exact command.
+   - Added CLI regression tests verifying that token-shaped filenames are never echoed in rerun commands (`test_issue_preview_with_token_shaped_filename_does_not_echo_token_in_rerun_command`) or missing-file diagnostics (`test_issue_missing_file_with_token_shaped_filename_does_not_echo_token_in_stderr`, `test_pr_missing_file_with_token_shaped_filename_does_not_echo_token_in_stderr`).
+3. **Commit Identity & Journal Invariant Correction**:
+   - Documented mechanically verified commit SHAs (`409c99755f21dc299a0203ef9d64f56d6e422d54` for Review 1 head) rather than manually reconstructed strings.
+   - Corrected historical journal statement to supersede initial references to backend conditional-API claims in accordance with R4.
+
 ### Observational Metrics & Status
 - **Trial Type**: Tooling and governance implementation for automated safe Issue body updates.
-- **Sources Read**: Issue #42 contract, PR #43 review `chatgpt-20261005-pr43-review1`, `scripts/ai-workflow/update_pr_body.py`, `tests/ai-workflow/test_update_pr_body.py`, `docs/AI-DEVELOPMENT-WORKFLOW.md`, `AGENTS.md`.
-- **Human Interventions**: 1 (task assignment prompt) + 1 (review findings address prompt).
+- **Sources Read**: Issue #42 contract, PR #43 reviews `chatgpt-20261005-pr43-review1` & `chatgpt-20261005-pr43-review2`, `scripts/ai-workflow/update_pr_body.py`, `tests/ai-workflow/test_update_pr_body.py`, `docs/AI-DEVELOPMENT-WORKFLOW.md`, `AGENTS.md`.
+- **Human Interventions**: 1 (task assignment prompt) + 2 (review findings address prompts).
 - **Test Suite Results**:
   - Initial local checkpoint: 44/44 passed (`test_update_pr_body.py`), 167/167 passed (suite).
-  - Initial PR head (`9d2d078`): 45/45 passed (`test_update_pr_body.py`), 168/168 passed (suite).
-  - Review 1 revision:
-    - `python -B -m unittest tests/ai-workflow/test_update_pr_body.py -v`: 57/57 passed (0 failed).
-    - `python -B -m unittest discover -s tests/ai-workflow -v`: 180/180 passed (0 failed).
+  - Initial PR head (`9d2d0783a3a518f982c67737ec164e53af859714`): 45/45 passed (`test_update_pr_body.py`), 168/168 passed (suite).
+  - Review 1 revision (`409c99755f21dc299a0203ef9d64f56d6e422d54`): 57/57 passed (`test_update_pr_body.py`), 180/180 passed (suite).
+  - Review 2 revision:
+    - `python -B -m unittest tests/ai-workflow/test_update_pr_body.py -v`: 63/63 passed (0 failed).
+    - `python -B -m unittest discover -s tests/ai-workflow -v`: 186/186 passed (0 failed).
 - **Scope Compliance**: Strictly confined to allowed paths (`scripts/ai-workflow/update_pr_body.py`, `tests/ai-workflow/test_update_pr_body.py`, `AGENTS.md`, `docs/AI-DEVELOPMENT-WORKFLOW.md`, `docs/ai-journal/`). No changes to application code, dependencies, or GitHub workflows.

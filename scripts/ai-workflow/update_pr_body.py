@@ -63,7 +63,7 @@ WINDOWS_HOME_PATH_PATTERN = re.compile(
     re.IGNORECASE,
 )
 POSIX_HOME_PATH_PATTERN = re.compile(
-    r"(?:^|[\s\"'`(<])/(?:home|Users)/[^\s\"'`|<>]+",
+    r"(?:^|[\s\"'`(<+\-])/(?:home|Users)/[^\s\"'`|<>]+",
     re.IGNORECASE,
 )
 CREDENTIAL_TOKEN_PATTERN = re.compile(
@@ -133,7 +133,7 @@ def sanitize_privacy_text(text: Optional[str]) -> str:
         raw = m.group(0)
         leading = ""
         for ch in raw:
-            if ch in " \t\"'`(<":
+            if ch in " \t\"'`(<+-":
                 leading += ch
             else:
                 break
@@ -143,6 +143,46 @@ def sanitize_privacy_text(text: Optional[str]) -> str:
     clean = CREDENTIAL_TOKEN_PATTERN.sub("[REDACTED_TOKEN]", clean)
     clean = re.sub(r"\?[\w=&-]+", "?[REDACTED_QUERY]", clean)
     return clean
+
+
+def is_privacy_sensitive_text(text: Optional[str]) -> bool:
+    """Returns True if text contains Windows personal paths, POSIX personal paths, or credentials/tokens."""
+    if not text:
+        return False
+    return (
+        bool(WINDOWS_HOME_PATH_PATTERN.search(text))
+        or bool(POSIX_HOME_PATH_PATTERN.search(text))
+        or bool(CREDENTIAL_TOKEN_PATTERN.search(text))
+    )
+
+
+def format_safe_filename_diagnostic(path: Union[Path, str]) -> str:
+    """
+    Returns a safe representation of a filename for diagnostic messages.
+    If the path or filename contains sensitive user paths or tokens,
+    it returns '<redacted-filename>' without echoing sensitive content.
+    """
+    p_str = str(path)
+    name = Path(path).name if hasattr(path, "name") or isinstance(path, (str, Path)) else str(path)
+    if is_privacy_sensitive_text(p_str) or is_privacy_sensitive_text(name):
+        return "<redacted-filename>"
+    return name
+
+
+def sanitize_diff_line(diff_line: str) -> str:
+    """
+    Sanitizes a unified-diff line while preserving diff structural prefixes.
+    For diff change lines ('-', '+') and context lines (' '), strips the leading
+    indicator, sanitizes the line payload, and restores the indicator.
+    Header lines ('---', '+++', '@@') are preserved as-is.
+    """
+    if diff_line.startswith(("---", "+++", "@@")):
+        return diff_line
+    if diff_line.startswith(("-", "+", " ")):
+        prefix = diff_line[0]
+        payload = diff_line[1:]
+        return prefix + sanitize_privacy_text(payload)
+    return sanitize_privacy_text(diff_line)
 
 
 def sanitize_diagnostic(msg: Any) -> str:
@@ -536,7 +576,8 @@ def main() -> int:
             return 1
 
         if not args.append_file.is_file():
-            print(f"ERROR: Append file not found: '{args.append_file.name}'", file=sys.stderr)
+            safe_name = format_safe_filename_diagnostic(args.append_file)
+            print(f"ERROR: Append file not found: '{safe_name}'", file=sys.stderr)
             return 1
 
         try:
@@ -689,9 +730,15 @@ def main() -> int:
                 n=3,
             )
             for diff_line in diff:
-                sys.stdout.write(sanitize_privacy_text(diff_line))
+                sys.stdout.write(sanitize_diff_line(diff_line))
             print("--- END DIFF PREVIEW ---")
-            print(f"\nTo commit this change, re-run with: python scripts/ai-workflow/update_pr_body.py --issue {args.issue} --append-file {args.append_file.name} --expected-base-hash {current_hash} --write")
+            if is_privacy_sensitive_text(str(args.append_file)) or is_privacy_sensitive_text(args.append_file.name):
+                print(
+                    f"\nTo commit this change, supply your local file and re-run with: "
+                    f"python scripts/ai-workflow/update_pr_body.py --issue {args.issue} --append-file <path-to-append-file> --expected-base-hash {current_hash} --write"
+                )
+            else:
+                print(f"\nTo commit this change, re-run with: python scripts/ai-workflow/update_pr_body.py --issue {args.issue} --append-file {args.append_file.name} --expected-base-hash {current_hash} --write")
             return 0
 
         # Write Mode
@@ -767,7 +814,8 @@ def main() -> int:
 
     if args.body_file:
         if not args.body_file.is_file():
-            print(f"ERROR: Body file not found: '{args.body_file.name}'", file=sys.stderr)
+            safe_name = format_safe_filename_diagnostic(args.body_file)
+            print(f"ERROR: Body file not found: '{safe_name}'", file=sys.stderr)
             return 1
         try:
             proposed_body = args.body_file.read_text(encoding="utf-8-sig")
@@ -846,7 +894,7 @@ def main() -> int:
             n=3,
         )
         for diff_line in diff:
-            sys.stdout.write(sanitize_privacy_text(diff_line))
+            sys.stdout.write(sanitize_diff_line(diff_line))
         print("--- END DIFF PREVIEW ---")
         print("\nTo commit this change, re-run with explicit --write flag.")
         return 0

@@ -1257,6 +1257,127 @@ class TestUpdatePrBody(unittest.TestCase):
         finally:
             f_path.unlink()
 
+    @patch("urllib.request.urlopen")
+    def test_pr_preview_redacts_removed_posix_path_at_column_1_in_diff(self, mock_urlopen):
+        remote_leaking_body = (
+            "/home/alice_secret/private_repo_details.txt\n"
+            "## Summary\nOld summary\n\n## Scope\nscripts/\n\n## Verification\nDone\n\n## Documentation\nDone\n"
+        )
+        proposed_clean_body = (
+            "Clean replacement line\n"
+            "## Summary\nOld summary\n\n## Scope\nscripts/\n\n## Verification\nDone\n\n## Documentation\nDone\n"
+        )
+        mock_urlopen.return_value = MockHttpResponse({
+            "number": 33,
+            "body": remote_leaking_body,
+        })
+        test_args = ["update_pr_body.py", "--pr", "33", "--body", proposed_clean_body]
+        with patch.object(sys, "argv", test_args):
+            with patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+                exit_code = update_pr_body.main()
+                self.assertEqual(exit_code, 0)
+                out = mock_out.getvalue()
+                self.assertIn("-[REDACTED_PATH]", out)
+                self.assertNotIn("alice_secret", out)
+                self.assertNotIn("/home/alice_secret", out)
+
+    def test_sanitize_diff_line_redacts_context_and_removed_lines(self):
+        from update_pr_body import sanitize_diff_line
+
+        # Removed POSIX line at column 1
+        self.assertEqual(sanitize_diff_line("-/home/victim/secret.txt\n"), "-[REDACTED_PATH]\n")
+        # Context POSIX line at column 1
+        self.assertEqual(sanitize_diff_line(" /home/victim/secret.txt\n"), " [REDACTED_PATH]\n")
+        # Added POSIX line at column 1
+        self.assertEqual(sanitize_diff_line("+/home/victim/secret.txt\n"), "+[REDACTED_PATH]\n")
+
+        # Removed Windows line at column 1
+        self.assertEqual(sanitize_diff_line("-C:\\Users\\victim\\secret.txt\n"), "-[REDACTED_PATH]\n")
+        # Context Windows line at column 1
+        self.assertEqual(sanitize_diff_line(" C:\\Users\\victim\\secret.txt\n"), " [REDACTED_PATH]\n")
+
+        # Unified diff structural headers preserved
+        self.assertEqual(sanitize_diff_line("--- PR-33-current\n"), "--- PR-33-current\n")
+        self.assertEqual(sanitize_diff_line("+++ PR-33-proposed\n"), "+++ PR-33-proposed\n")
+        self.assertEqual(sanitize_diff_line("@@ -1,3 +1,3 @@\n"), "@@ -1,3 +1,3 @@\n")
+
+    @patch("urllib.request.urlopen")
+    def test_pr_preview_redacts_removed_windows_path_at_column_1_in_diff(self, mock_urlopen):
+        remote_leaking_body = (
+            "C:\\Users\\alice_secret\\private_repo_details.txt\n"
+            "## Summary\nOld summary\n\n## Scope\nscripts/\n\n## Verification\nDone\n\n## Documentation\nDone\n"
+        )
+        proposed_clean_body = (
+            "Clean replacement line\n"
+            "## Summary\nOld summary\n\n## Scope\nscripts/\n\n## Verification\nDone\n\n## Documentation\nDone\n"
+        )
+        mock_urlopen.return_value = MockHttpResponse({
+            "number": 33,
+            "body": remote_leaking_body,
+        })
+        test_args = ["update_pr_body.py", "--pr", "33", "--body", proposed_clean_body]
+        with patch.object(sys, "argv", test_args):
+            with patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+                exit_code = update_pr_body.main()
+                self.assertEqual(exit_code, 0)
+                out = mock_out.getvalue()
+                self.assertIn("-[REDACTED_PATH]", out)
+                self.assertNotIn("alice_secret", out)
+                self.assertNotIn("C:\\Users\\alice_secret", out)
+
+    @patch("urllib.request.urlopen")
+    def test_issue_preview_with_token_shaped_filename_does_not_echo_token_in_rerun_command(self, mock_urlopen):
+        mock_urlopen.return_value = MockHttpResponse({
+            "number": 42,
+            "body": self.sample_issue_body,
+        })
+        token_filename = "ghp_0123456789abcdef0123456789abcdef.md"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            token_path = Path(tmpdir) / token_filename
+            token_path.write_text(self.sample_append_block, encoding="utf-8")
+
+            test_args = ["update_pr_body.py", "--issue", "42", "--append-file", str(token_path)]
+            with patch.object(sys, "argv", test_args):
+                with patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+                    exit_code = update_pr_body.main()
+                    self.assertEqual(exit_code, 0)
+                    out = mock_out.getvalue()
+                    self.assertIn("<path-to-append-file>", out)
+                    self.assertNotIn("ghp_0123456789abcdef0123456789abcdef", out)
+
+    def test_issue_missing_file_with_token_shaped_filename_does_not_echo_token_in_stderr(self):
+        token_filename = "ghp_9876543210fedcba9876543210fedcba.md"
+        missing_path = Path(tempfile.gettempdir()) / token_filename
+        if missing_path.exists():
+            missing_path.unlink()
+
+        test_args = ["update_pr_body.py", "--issue", "42", "--append-file", str(missing_path)]
+        with patch.object(sys, "argv", test_args):
+            with patch("sys.stderr", new_callable=io.StringIO) as mock_err:
+                exit_code = update_pr_body.main()
+                self.assertEqual(exit_code, 1)
+                err = mock_err.getvalue()
+                self.assertIn("Append file not found", err)
+                self.assertNotIn("ghp_9876543210fedcba9876543210fedcba", err)
+                self.assertIn("<redacted-filename>", err)
+
+    def test_pr_missing_file_with_token_shaped_filename_does_not_echo_token_in_stderr(self):
+        token_filename = "ghp_9876543210fedcba9876543210fedcba.md"
+        missing_path = Path(tempfile.gettempdir()) / token_filename
+        if missing_path.exists():
+            missing_path.unlink()
+
+        test_args = ["update_pr_body.py", "--pr", "33", "--body-file", str(missing_path)]
+        with patch.object(sys, "argv", test_args):
+            with patch("sys.stderr", new_callable=io.StringIO) as mock_err:
+                exit_code = update_pr_body.main()
+                self.assertEqual(exit_code, 1)
+                err = mock_err.getvalue()
+                self.assertIn("Body file not found", err)
+                self.assertNotIn("ghp_9876543210fedcba9876543210fedcba", err)
+                self.assertIn("<redacted-filename>", err)
+
 
 if __name__ == "__main__":
     unittest.main()
+
