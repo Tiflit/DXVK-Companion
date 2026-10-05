@@ -795,5 +795,245 @@ class TestDashboardGenerator(unittest.TestCase):
         self.assertIn("actions/checkout@v7", content)
 
 
+    # =========================================================================
+    # Issue #38: Curated Section Extraction & Link Normalization Tests
+    # =========================================================================
+
+    def test_extract_curated_content_from_real_orientation_document(self):
+        """Issue #38: Reads real docs/AI-CURRENT-STATE.md, verifying Section 2 & 5 extraction,
+        Section 6 exclusion, and relative link normalization to absolute GitHub URLs.
+        """
+        doc_path = REPO_ROOT / "docs" / "AI-CURRENT-STATE.md"
+        self.assertTrue(doc_path.exists(), "docs/AI-CURRENT-STATE.md must exist in repository")
+        real_text = doc_path.read_text(encoding="utf-8")
+
+        base_url = f"https://github.com/{self.repo}/blob/{self.main_sha}"
+        extracted = update_dashboard.extract_curated_content(real_text, base_url=base_url)
+
+        # 1. Section 2 is extracted (actual heading in real document)
+        self.assertIn("## 2. Active Work Governance & Decision Prerequisites", extracted)
+        self.assertIn("Decision Governance Block", extracted)
+
+        # 2. Section 5 is extracted
+        self.assertIn("## 5. Architectural & Governance Decisions", extracted)
+        self.assertIn("Issue #14", extracted)
+        self.assertIn("Issue #15", extracted)
+        self.assertIn("Issue #16", extracted)
+
+        # 3. Section 6 is NOT leaked
+        self.assertNotIn("## 6. Live Dashboard Discovery", extracted)
+        self.assertNotIn("Stale / Offline Fallback Protocol", extracted)
+
+        # 4. Other sections (1, 3, 4) are NOT extracted
+        self.assertNotIn("## 1. Foundational Milestones", extracted)
+        self.assertNotIn("## 3. Model Role Allocation", extracted)
+        self.assertNotIn("## 4. Observational Measurement", extracted)
+
+        # 5. Relative links are normalized to absolute GitHub URLs
+        self.assertNotIn("../docs/spec/", extracted)
+        self.assertIn(f"{base_url}/docs/spec/DXVK-COMPANION-SPEC.md", extracted)
+        self.assertIn(f"{base_url}/docs/spec/DXVK-Companion-PhaseA5-Safety-and-Identity-Design-FINAL.md", extracted)
+
+        # Absolute issue and PR links remain intact
+        self.assertIn("https://github.com/Tiflit/DXVK-Companion/issues/14", extracted)
+        self.assertIn("https://github.com/Tiflit/DXVK-Companion/pull/35", extracted)
+
+    def test_extract_curated_content_supports_both_heading_variants(self):
+        """Issue #38: Verifies extract_curated_content supports both 'Active Work Queue & Ownership'
+        and 'Active Work Governance & Decision Prerequisites', stopping cleanly before Section 3 and Section 6.
+        """
+        # Variant A: Active Work Queue & Ownership with Unresolved Decisions
+        text_a = (
+            "## 1. Intro\nSome intro\n\n"
+            "## 2. Active Work Queue & Ownership\nQueue items here.\n\n"
+            "---\n\n"
+            "## 3. Roles\nRole text.\n\n"
+            "## 5. Unresolved Architectural & Governance Decisions\nPending items.\n\n"
+            "---\n\n"
+            "## 6. Live Dashboard Discovery\nDiscovery text."
+        )
+        extracted_a = update_dashboard.extract_curated_content(text_a)
+        self.assertIn("## 2. Active Work Queue & Ownership", extracted_a)
+        self.assertIn("Queue items here.", extracted_a)
+        self.assertIn("## 5. Unresolved Architectural & Governance Decisions", extracted_a)
+        self.assertIn("Pending items.", extracted_a)
+        self.assertNotIn("## 1.", extracted_a)
+        self.assertNotIn("## 3.", extracted_a)
+        self.assertNotIn("## 6.", extracted_a)
+
+        # Variant B: Active Work Governance & Decision Prerequisites with Architectural & Governance Decisions
+        text_b = (
+            "## 1. Intro\nSome intro\n\n"
+            "## 2. Active Work Governance & Decision Prerequisites\nGovernance items.\n\n"
+            "---\n\n"
+            "## 3. Roles\nRole text.\n\n"
+            "## 5. Architectural & Governance Decisions\nPreserved decisions.\n\n"
+            "---\n\n"
+            "## 6. Live Dashboard Discovery\nDiscovery text."
+        )
+        extracted_b = update_dashboard.extract_curated_content(text_b)
+        self.assertIn("## 2. Active Work Governance & Decision Prerequisites", extracted_b)
+        self.assertIn("Governance items.", extracted_b)
+        self.assertIn("## 5. Architectural & Governance Decisions", extracted_b)
+        self.assertIn("Preserved decisions.", extracted_b)
+        self.assertNotIn("## 1.", extracted_b)
+        self.assertNotIn("## 3.", extracted_b)
+        self.assertNotIn("## 6.", extracted_b)
+
+    def test_normalize_curated_links_unit(self):
+        """Issue #38: Unit test verifying relative link conversion, parent traversal,
+        anchor preservation, and non-alteration of absolute URLs/mailtos/in-page anchors.
+        """
+        base_url = f"https://github.com/{self.repo}/blob/{self.main_sha}"
+        sample = (
+            "See [AGENTS.md](../AGENTS.md) and [`spec`](../docs/spec/SPEC.md).\n"
+            "Refer to [pilot log](AI-PILOT-LOG.md) and [spec with anchor](../docs/spec/SPEC.md#safety).\n"
+            "Do not modify [Issue #14](https://github.com/Tiflit/DXVK-Companion/issues/14).\n"
+            "Do not modify [Anchor](#section-5) or [Email](mailto:dev@example.com)."
+        )
+        normalized = update_dashboard.normalize_curated_links(sample, base_url=base_url)
+
+        self.assertIn(f"[AGENTS.md]({base_url}/AGENTS.md)", normalized)
+        self.assertIn(f"[`spec`]({base_url}/docs/spec/SPEC.md)", normalized)
+        self.assertIn(f"[pilot log]({base_url}/docs/AI-PILOT-LOG.md)", normalized)
+        self.assertIn(f"[spec with anchor]({base_url}/docs/spec/SPEC.md#safety)", normalized)
+        self.assertIn("[Issue #14](https://github.com/Tiflit/DXVK-Companion/issues/14)", normalized)
+        self.assertIn("[Anchor](#section-5)", normalized)
+        self.assertIn("[Email](mailto:dev@example.com)", normalized)
+
+    def test_render_dashboard_with_real_orientation_document(self):
+        """Issue #38: Validates render_dashboard with real orientation doc includes
+        the completeness distinction note, extracted Section 2 & 5, and normalized links.
+        """
+        doc_path = REPO_ROOT / "docs" / "AI-CURRENT-STATE.md"
+        real_text = doc_path.read_text(encoding="utf-8")
+        facts = update_dashboard.RepositoryFacts(main_head_sha=self.main_sha)
+
+        rendered = update_dashboard.render_dashboard(facts, real_text, repo=self.repo)
+
+        # 1. Header contains the completeness distinction note
+        self.assertIn(
+            "Status reflects machine-acquired fact completeness; curated guidance is policy prose from docs/AI-CURRENT-STATE.md (not automatically validated)",
+            rendered,
+        )
+
+        # 2. Curated section includes Section 2 and Section 5 from real document
+        self.assertIn("## 2. Active Work Governance & Decision Prerequisites", rendered)
+        self.assertIn("## 5. Architectural & Governance Decisions", rendered)
+
+        # 3. Section 6 is NOT leaked
+        self.assertNotIn("## 6. Live Dashboard Discovery", rendered)
+
+        # 4. Links in curated section are normalized to absolute GitHub URLs
+        base_url = f"https://github.com/{self.repo}/blob/{self.main_sha}"
+        self.assertIn(f"{base_url}/docs/spec/DXVK-COMPANION-SPEC.md", rendered)
+
+    def test_missing_section_2_emits_warning_preserves_section_5_and_excludes_history(self):
+        """R1: When Section 2 is missing/renamed, emit warning with absolute doc link,
+        preserve Section 5, exclude Section 1/6, and keep machine fact status COMPLETE.
+        """
+        doc_path = REPO_ROOT / "docs" / "AI-CURRENT-STATE.md"
+        real_text = doc_path.read_text(encoding="utf-8")
+        # Mutate Section 2 heading to an unrecognized variant
+        mutated_text = real_text.replace(
+            "## 2. Active Work Governance & Decision Prerequisites",
+            "## 2. Work Governance & Decision Prerequisites",
+        )
+        base_url = f"https://github.com/{self.repo}/blob/{self.main_sha}"
+        extracted = update_dashboard.extract_curated_content(mutated_text, base_url=base_url)
+
+        # 1. Section 2 diagnostic warning is emitted with absolute source doc link
+        self.assertIn("Warning", extracted)
+        self.assertIn("Active work governance section could not be extracted", extracted)
+        self.assertIn(f"[docs/AI-CURRENT-STATE.md]({base_url}/docs/AI-CURRENT-STATE.md)", extracted)
+
+        # 2. Section 5 is preserved
+        self.assertIn("## 5. Architectural & Governance Decisions", extracted)
+        self.assertIn("Issue #14", extracted)
+
+        # 3. Section 1 and Section 6 are NOT leaked
+        self.assertNotIn("## 1. Foundational Milestones", extracted)
+        self.assertNotIn("## 6. Live Dashboard Discovery", extracted)
+
+        # 4. Rendered output verification
+        facts = update_dashboard.RepositoryFacts(main_head_sha=self.main_sha)
+        rendered = update_dashboard.render_dashboard(facts, mutated_text, repo=self.repo)
+        self.assertIn("Status: `COMPLETE`", rendered)
+        self.assertIn("Active work governance section could not be extracted", rendered)
+        self.assertIn("## 5. Architectural & Governance Decisions", rendered)
+        self.assertNotIn("## 1. Foundational Milestones", rendered)
+        self.assertNotIn("## 6. Live Dashboard Discovery", rendered)
+
+    def test_missing_section_5_emits_warning_preserves_section_2_and_excludes_history(self):
+        """R1: When Section 5 is missing/renamed, emit warning with absolute doc link,
+        preserve Section 2, exclude Section 1/6, and keep machine fact status COMPLETE.
+        """
+        doc_path = REPO_ROOT / "docs" / "AI-CURRENT-STATE.md"
+        real_text = doc_path.read_text(encoding="utf-8")
+        # Mutate Section 5 heading to an unrecognized variant
+        mutated_text = real_text.replace(
+            "## 5. Architectural & Governance Decisions",
+            "## 5. Approved Policies",
+        )
+        base_url = f"https://github.com/{self.repo}/blob/{self.main_sha}"
+        extracted = update_dashboard.extract_curated_content(mutated_text, base_url=base_url)
+
+        # 1. Section 2 is preserved
+        self.assertIn("## 2. Active Work Governance & Decision Prerequisites", extracted)
+
+        # 2. Section 5 diagnostic warning is emitted with absolute source doc link
+        self.assertIn("Warning", extracted)
+        self.assertIn("Architectural and governance decisions section could not be extracted", extracted)
+        self.assertIn(f"[docs/AI-CURRENT-STATE.md]({base_url}/docs/AI-CURRENT-STATE.md)", extracted)
+
+        # 3. Section 1 and Section 6 are NOT leaked
+        self.assertNotIn("## 1. Foundational Milestones", extracted)
+        self.assertNotIn("## 6. Live Dashboard Discovery", extracted)
+
+        # 4. Rendered output verification
+        facts = update_dashboard.RepositoryFacts(main_head_sha=self.main_sha)
+        rendered = update_dashboard.render_dashboard(facts, mutated_text, repo=self.repo)
+        self.assertIn("Status: `COMPLETE`", rendered)
+        self.assertIn("## 2. Active Work Governance & Decision Prerequisites", rendered)
+        self.assertIn("Architectural and governance decisions section could not be extracted", rendered)
+        self.assertNotIn("## 1. Foundational Milestones", rendered)
+        self.assertNotIn("## 6. Live Dashboard Discovery", rendered)
+
+    def test_both_sections_missing_emits_both_warnings_and_never_falls_back_to_whole_document(self):
+        """R1: When both Section 2 and Section 5 are missing/renamed, emit both warnings,
+        never fall back to copying the whole document, and exclude Section 1/6.
+        """
+        doc_path = REPO_ROOT / "docs" / "AI-CURRENT-STATE.md"
+        real_text = doc_path.read_text(encoding="utf-8")
+        mutated_text = real_text.replace(
+            "## 2. Active Work Governance & Decision Prerequisites",
+            "## 2. Work Governance",
+        ).replace(
+            "## 5. Architectural & Governance Decisions",
+            "## 5. Approved Policies",
+        )
+        base_url = f"https://github.com/{self.repo}/blob/{self.main_sha}"
+        extracted = update_dashboard.extract_curated_content(mutated_text, base_url=base_url)
+
+        # 1. Both warnings emitted
+        self.assertIn("Active work governance section could not be extracted", extracted)
+        self.assertIn("Architectural and governance decisions section could not be extracted", extracted)
+        self.assertIn(f"[docs/AI-CURRENT-STATE.md]({base_url}/docs/AI-CURRENT-STATE.md)", extracted)
+
+        # 2. Never falls back to whole document
+        self.assertNotIn("## 1. Foundational Milestones", extracted)
+        self.assertNotIn("## 6. Live Dashboard Discovery", extracted)
+        self.assertNotIn("Historical through 2026-10-04", extracted)
+
+        # 3. Rendered output verification
+        facts = update_dashboard.RepositoryFacts(main_head_sha=self.main_sha)
+        rendered = update_dashboard.render_dashboard(facts, mutated_text, repo=self.repo)
+        self.assertIn("Status: `COMPLETE`", rendered)
+        self.assertIn("Active work governance section could not be extracted", rendered)
+        self.assertIn("Architectural and governance decisions section could not be extracted", rendered)
+        self.assertNotIn("## 1. Foundational Milestones", rendered)
+        self.assertNotIn("## 6. Live Dashboard Discovery", rendered)
+
+
 if __name__ == "__main__":
     unittest.main()

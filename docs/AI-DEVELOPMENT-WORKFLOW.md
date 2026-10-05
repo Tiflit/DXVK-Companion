@@ -504,7 +504,7 @@ When an issue involves an unresolved architectural or policy decision (e.g. Issu
 - **Preflight Rules**:
   - Investigation, risk exploration, and draft decision briefs are permitted while approval is `PENDING`.
   - Implementation of architectural or policy changes is strictly blocked until explicit human approval is recorded in the Issue.
-  - Do not decide Issue #14 or #16 in unrelated or preparatory workflow tasks.
+  - Do not decide architectural or safety policies in unrelated or preparatory workflow tasks.
 - **Approval Disambiguation**:
   - **Agent Recommendations != Approval**: A recommendation from ChatGPT, Gemini, or Claude is an advisory proposal, never authorization.
   - **Editable Status != Approval**: An agent writing `APPROVED_BY_HUMAN` or `DECIDED` does not constitute approval proof. The source must link to an authentic human comment or issue decision, or cite a coordinator transcription of explicit human instruction (with an explicit notice that the transcription is not mechanically authenticated).

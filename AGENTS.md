@@ -54,7 +54,7 @@ When a task involves an unresolved policy or architectural choice, the assigned 
   - Editable status text (e.g. `APPROVED_BY_HUMAN` or `DECIDED`) written by an agent is NOT proof of human approval.
   - CI success, passing tests, and unrelated PR merges are NOT approval.
   - Source of explicit human approval must be either: (1) a direct link to a human-authored GitHub comment or issue decision; or (2) a clearly attributed coordinator transcription citing the human developer's explicit instruction verbatim, explicitly noting that the transcription is not mechanically authenticated.
-  - Do not decide Issue #14 or #16 in preparatory or unrelated workflow tasks.
+  - Do not decide architectural or safety policies in preparatory or unrelated workflow tasks.
 
 ## Tests and Evidence
 
