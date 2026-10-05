@@ -6,6 +6,7 @@ import argparse
 import datetime
 import json
 import os
+import posixpath
 import re
 import subprocess
 import sys
@@ -526,27 +527,88 @@ class GitHubFactsCollector:
         return facts
 
 
-def extract_curated_content(curated_text: str) -> str:
+def normalize_curated_links(content: str, base_url: str, doc_dir: str = "docs") -> str:
+    """
+    Normalizes relative markdown links in curated content so they resolve to absolute
+    GitHub URLs within the Issue context, while preserving absolute URLs, mailto, and anchors.
+    """
+    if not content or not base_url:
+        return content
+
+    def replace_link(match: re.Match) -> str:
+        prefix = match.group(1) or ""
+        text = match.group(2)
+        target = match.group(3).strip()
+        title_part = match.group(4) or ""
+
+        clean_target = target.lstrip("<").rstrip(">")
+
+        # Preserve absolute URLs, mailto, and in-page anchors
+        if (
+            re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", clean_target)
+            or clean_target.startswith("#")
+            or clean_target.startswith("mailto:")
+        ):
+            return match.group(0)
+
+        path_part, sep, anchor = clean_target.partition("#")
+        clean_path = path_part.strip()
+
+        if not clean_path:
+            return match.group(0)
+
+        if clean_path.startswith("/"):
+            normalized = clean_path.lstrip("/")
+        else:
+            combined = posixpath.join(doc_dir, clean_path)
+            normalized = posixpath.normpath(combined)
+
+        normalized = normalized.lstrip("./")
+        while normalized.startswith("../"):
+            normalized = normalized[3:]
+
+        full_url = f"{base_url.rstrip('/')}/{normalized}"
+        if sep and anchor:
+            full_url = f"{full_url}#{anchor}"
+
+        return f"{prefix}[{text}]({full_url}{title_part})"
+
+    pattern = r"(!?)\[([^\]]+)\]\(([^)\s]+)(\s+\"[^\"]*\")?\)"
+    return re.sub(pattern, replace_link, content)
+
+
+def extract_curated_content(curated_text: str, base_url: Optional[str] = None) -> str:
     """Extracts curated work queue and governance sections from docs/AI-CURRENT-STATE.md."""
     if not curated_text:
         return ""
 
     extracted = []
 
-    # Extract Work Queue section
-    queue_match = re.search(r"(## 2\. Active Work Queue & Ownership[\s\S]*?)(?=\n## 3\.|\Z)", curated_text)
+    # Extract Work Queue section (supporting both naming variants)
+    queue_match = re.search(
+        r"(## 2\.\s+Active Work[^\n]*[\s\S]*?)(?=\n---\s*\n\s*## 3\.|\n## 3\.|\Z)",
+        curated_text,
+    )
     if queue_match:
         extracted.append(queue_match.group(1).strip())
 
-    # Extract Unresolved Decisions section
-    decisions_match = re.search(r"(## 5\. Unresolved Architectural & Governance Decisions[\s\S]*?)(?=\Z)", curated_text)
+    # Extract Decisions section (delimit before Section 6 or subsequent section)
+    decisions_match = re.search(
+        r"(## 5\.\s+[^\n]*?Decisions[^\n]*[\s\S]*?)(?=\n---\s*\n\s*## 6\.|\n## 6\.|\n## [0-9]+\.|\Z)",
+        curated_text,
+    )
     if decisions_match:
         extracted.append(decisions_match.group(1).strip())
 
     if not extracted:
-        return curated_text.strip()
+        res = curated_text.strip()
+    else:
+        res = "\n\n".join(extracted)
 
-    return "\n\n".join(extracted)
+    if base_url:
+        res = normalize_curated_links(res, base_url)
+
+    return res
 
 
 def render_dashboard(
@@ -577,6 +639,7 @@ def render_dashboard(
         f"{DASHBOARD_MARKER}\n\n"
         f"> **Automated Snapshot** | Generated: {capture_time} | Main: `{main_display}` | Status: {status_badge}\n"
         f"> Tooling: `{tooling_rev}` | Repo: `{repo}` | Queries: `{', '.join(facts.queries_executed)}`\n"
+        f"> Note: Status reflects machine-acquired fact completeness; curated guidance is policy prose from docs/AI-CURRENT-STATE.md (not automatically validated).\n"
     )
 
     startup_route = (
@@ -639,7 +702,7 @@ def render_dashboard(
                 f"> [Curated work queue and governance details omitted to respect snapshot word budget; view full orientation in docs/AI-CURRENT-STATE.md]({base_url}/docs/AI-CURRENT-STATE.md)\n"
             )
         else:
-            sec2 = "\n## 2. Curated Work Queue & Governance\n\n" + extract_curated_content(curated_text) + "\n"
+            sec2 = "\n## 2. Curated Work Queue & Governance\n\n" + extract_curated_content(curated_text, base_url=base_url) + "\n"
 
         return header + "".join(sec1) + sec2 + startup_route
 

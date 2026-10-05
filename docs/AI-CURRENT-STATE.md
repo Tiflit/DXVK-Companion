@@ -2,7 +2,7 @@
 
 > **Two-Layer Handoff System**:
 > 1. **Live Automated Dashboard (Machine-Published)**: Real-time facts (current main SHA, open PRs, CI identities, tested checkouts) are automatically maintained in the dedicated GitHub Issue: `[AI Dashboard] Current Repository State & Handoff Orientation` (find via `gh issue list --search "[AI Dashboard]"`).
-> 2. **Curated Repository Orientation (This Document)**: Curated work queue, role allocation, architectural decisions, and handoff protocols. It is updated during authorized documentation tasks or via `scripts/ai-workflow/update_dashboard.py`.
+> 2. **Curated Repository Orientation (This Document)**: Curated work queue, role allocation, architectural decisions, and handoff protocols. The automated dashboard generator reads and republishes this guidance; agents update it directly through authorized documentation tasks.
 >
 > **Selective Reading Rule**: Routine agent sessions must NOT read the entire historical pilot log or journal archive. To conserve context and avoid drift, follow the 4-step startup route in [AGENTS.md](../AGENTS.md).
 
@@ -89,20 +89,26 @@ Active task assignments, in-flight work, and open PR inventories are derived dyn
 - **Unmeasured attributes**: Provider token/quota consumption and elapsed human clock time are recorded as `"not measured"` unless directly available from observable tooling.
 - **Review cadence**: After three completed task handoffs, the coordinator reviews available journal entries to identify recurring friction points.
 
+### Verification Limitations & Release Readiness
+- **Cleared Backlog != Release Readiness**: Successful task backlog clearance and headless test passes establish bounded component safety and workflow continuity, but do not constitute broader release readiness.
+- **Verification Environment Limitations**: Headless CI environments verify headless logic, simulated mocks, and automated workflows; runtime behaviors such as Windows GUI notification delivery (e.g. PR #37 balloon/toast notifications) and live graphics driver interactions remain unverified without dedicated manual or desktop integration testing.
+
 ---
 
-## 5. Unresolved Architectural & Governance Decisions
+## 5. Architectural & Governance Decisions
 
-1. **Issue #14 (Shared-Directory Multi-Executable Policy)**: Architectural decision regarding whether DXVK installation should be scoped per-executable or across entire shared installation directories. Agent recommendation (Option A: installation-wide refusal) is pending human decision; policy implementation is blocked until human approval is recorded.
-2. **Issue #15 (API Reassessment before Queued Execution)**: Verify API status and enforce mixed-module precedence immediately prior to executing queued actions.
-3. **Issue #16 (Lifecycle for Incompatible Pending Actions)**: Architectural policy choice on terminal cancellation vs parked actions when actions are blocked by modern API classification.
-4. **Issue #32 (Clean-Slate V1 Legacy-Import Removal)**: Tracked implementation task following Issue #18 to remove legacy profile import logic per approved clean-slate V1 specification.
-5. **Repository Protection Rulesets**: GitHub Actions workflows (`ai-scope-check`, `ai-pr-hygiene`, `build-and-test`) currently run as status checks. Enabling mandatory branch protection rulesets remains a human administrative choice.
+### Unresolved Decisions
+- **None currently pending**: All Phase A architectural and safety policy choices have been approved and implemented. Policy implementation for future tasks remains blocked until explicit human approval is authenticated in the respective GitHub Issue.
 
-> **Preserved Approved Decisions**:
-> - **Normative Specification Authority (Issue #12)**: Canonical specification is [`docs/spec/DXVK-COMPANION-SPEC.md`](../docs/spec/DXVK-COMPANION-SPEC.md), with [`docs/spec/DXVK-Companion-PhaseA5-Safety-and-Identity-Design-FINAL.md`](../docs/spec/DXVK-Companion-PhaseA5-Safety-and-Identity-Design-FINAL.md) as normative safety supplement.
-> - **Clean-Slate V1 Policy**: No legacy configuration import; modern clean-slate setup.
-> - **Deployment Guards**: Refuse DXVK deployment for DX12 and Vulkan executables, while preserving restore operations.
+### Preserved Approved Decisions
+- **Issue #14 (Shared-Directory Multi-Executable Policy)**: Approved installation-wide compatibility refusal across shared directories, with Restore and RestoreAll operations preserved ([Issue #14](https://github.com/Tiflit/DXVK-Companion/issues/14), [PR #35](https://github.com/Tiflit/DXVK-Companion/pull/35)).
+- **Issue #15 (API Reassessment before Queued Execution)**: Implemented pre-execution API reassessment, conservative conflict handling, and executable-path identity alignment ([Issue #15](https://github.com/Tiflit/DXVK-Companion/issues/15), [PR #36](https://github.com/Tiflit/DXVK-Companion/pull/36)).
+- **Issue #16 (Lifecycle for Incompatible Pending Actions)**: Implemented terminal cancellation for compatibility-refused pending actions, durable cancellation context, and automatic non-revival until fresh deliberate user intent ([Issue #16](https://github.com/Tiflit/DXVK-Companion/issues/16), [PR #37](https://github.com/Tiflit/DXVK-Companion/pull/37)).
+- **Issue #32 (Clean-Slate V1 Legacy-Import Removal)**: Tracked implementation task following Issue #18 to remove legacy profile import logic per approved clean-slate V1 specification ([Issue #32](https://github.com/Tiflit/DXVK-Companion/issues/32)).
+- **Normative Specification Authority (Issue #12)**: Canonical specification is [`docs/spec/DXVK-COMPANION-SPEC.md`](../docs/spec/DXVK-COMPANION-SPEC.md), with [`docs/spec/DXVK-Companion-PhaseA5-Safety-and-Identity-Design-FINAL.md`](../docs/spec/DXVK-Companion-PhaseA5-Safety-and-Identity-Design-FINAL.md) as normative safety supplement.
+- **Clean-Slate V1 Policy**: No legacy configuration import; modern clean-slate setup.
+- **Deployment Guards**: Refuse DXVK deployment for DX12 and Vulkan executables, while preserving restore operations.
+- **Repository Protection Rulesets**: GitHub Actions workflows (`ai-scope-check`, `ai-pr-hygiene`, `build-and-test`) currently run as status checks. Enabling mandatory branch protection rulesets remains a human administrative choice.
 
 
 ---
