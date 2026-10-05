@@ -21,6 +21,7 @@ namespace DXVKCompanion.Models
         public List<ExecutableProfile> Executables { get; set; } = new();
         public List<ManagedFileRecord> ManagedFiles { get; set; } = new();
         public PendingAction? PendingAction { get; set; }
+        public string? LastRefusalReason { get; set; }
         public DateTime CreatedUtc { get; set; } = DateTime.UtcNow;
         public DateTime? LastSeenUtc { get; set; }
 

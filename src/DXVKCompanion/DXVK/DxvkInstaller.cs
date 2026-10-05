@@ -44,6 +44,7 @@ namespace DXVKCompanion.DXVK
         }
 
         public string DxvkSourceDir => _dxvkSourceDir;
+        public string? LastRefusalReason { get; private set; }
 
         private static string SanitizeVersion(string version)
         {
@@ -127,6 +128,18 @@ namespace DXVKCompanion.DXVK
                 if (existingInstallation != null && existingInstallation.ConflictFlags != InstallationConflictFlags.None)
                 {
                     Logger.Log($"DxvkInstaller: refusing to deploy DXVK to {profile.ExeName}; installation has conflict flags: {existingInstallation.ConflictFlags}.");
+                    return false;
+                }
+
+                if (!DxvkCompatibility.IsInstallationSupported(existingInstallation, profile.Api, profile.ExeName, out var refusalReason))
+                {
+                    LastRefusalReason = refusalReason;
+                    if (existingInstallation != null)
+                    {
+                        existingInstallation.LastRefusalReason = refusalReason;
+                        _gameLibraryStore.Save(existingInstallation);
+                    }
+                    Logger.Log($"DxvkInstaller: refusing deployment to {profile.ExeName}: {refusalReason}");
                     return false;
                 }
 
@@ -328,8 +341,11 @@ namespace DXVKCompanion.DXVK
                     installation.ManagedDxvkArchitecture = arch;
                     installation.RestorationState = RestorationState.Managed;
                     installation.ConflictFlags = InstallationConflictFlags.None;
+                    installation.LastRefusalReason = null;
                     installation.LastSeenUtc = DateTime.UtcNow;
                     _gameLibraryStore.Save(installation);
+
+                    LastRefusalReason = null;
 
                     Logger.Log($"DxvkInstaller: successfully deployed DXVK {release.Version} ({arch}) to {profile.ExeName} via safe transaction {result.TransactionId}.");
                     return true;
@@ -376,6 +392,15 @@ namespace DXVKCompanion.DXVK
                 if (installation.ConflictFlags != InstallationConflictFlags.None)
                 {
                     Logger.Log($"DxvkInstaller: refusing reapply on {installation.DisplayName}; installation has conflict flags: {installation.ConflictFlags}.");
+                    return false;
+                }
+
+                if (!DxvkCompatibility.IsInstallationSupported(installation, profile.Api, profile.ExeName, out var refusalReason))
+                {
+                    LastRefusalReason = refusalReason;
+                    installation.LastRefusalReason = refusalReason;
+                    _gameLibraryStore.Save(installation);
+                    Logger.Log($"DxvkInstaller: refusing reapply on {installation.DisplayName}: {refusalReason}");
                     return false;
                 }
 
@@ -644,9 +669,12 @@ namespace DXVKCompanion.DXVK
 
                     installation.RestorationState = RestorationState.Managed;
                     installation.ConflictFlags = InstallationConflictFlags.None;
+                    installation.LastRefusalReason = null;
                     installation.PendingAction = null;
                     installation.LastSeenUtc = DateTime.UtcNow;
                     _gameLibraryStore.Save(installation);
+
+                    LastRefusalReason = null;
 
                     Logger.Log($"DxvkInstaller: successfully reapplied DXVK {version} to {profile.ExeName} via safe transaction {result.TransactionId}.");
                     return true;
@@ -702,6 +730,15 @@ namespace DXVKCompanion.DXVK
                     return false;
                 }
 
+                if (!DxvkCompatibility.IsInstallationSupported(installation, profile.Api, profile.ExeName, out var refusalReason))
+                {
+                    LastRefusalReason = refusalReason;
+                    installation.LastRefusalReason = refusalReason;
+                    _gameLibraryStore.Save(installation);
+                    Logger.Log($"DxvkInstaller: refusing to adopt existing DXVK for {profile.ExeName}: {refusalReason}");
+                    return false;
+                }
+
                 string arch = string.Equals(profile.Architecture, "x32", StringComparison.OrdinalIgnoreCase) ? "x32" : "x64";
 
                 foreach (var dllName in assessment.DetectedDlls)
@@ -727,6 +764,7 @@ namespace DXVKCompanion.DXVK
                 installation.ManagedDxvkArchitecture = arch;
                 installation.RestorationState = RestorationState.Managed;
                 installation.ConflictFlags = InstallationConflictFlags.None;
+                installation.LastRefusalReason = null;
                 installation.LastSeenUtc = DateTime.UtcNow;
 
                 var executable = installation.GetOrAddExecutable(Path.GetFileName(profile.ExePath), profile.ExeName);
@@ -734,6 +772,8 @@ namespace DXVKCompanion.DXVK
                 executable.LastKnownArchitecture = arch;
 
                 _gameLibraryStore.Save(installation);
+
+                LastRefusalReason = null;
 
                 profile.DxvkEnabled = true;
                 profile.DxvkVersion = assessment.MatchedVersion;
