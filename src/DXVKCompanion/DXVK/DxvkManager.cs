@@ -55,14 +55,98 @@ namespace DXVKCompanion.DXVK
                 ?? (!string.IsNullOrWhiteSpace(gameDir) ? _gameLibraryStore.FindByInstallationPath(gameDir) : null);
         }
 
+        /// <summary>
+        /// Reassesses the effective API and architecture of an executable and its installation
+        /// using the latest recorded evidence in both ProfileStore and GameLibraryStore.
+        /// When evidence contains both translatable (DX9/10/11) and unsupported (DX12/Vulkan) records,
+        /// unsupported evidence conservatively takes precedence to prevent catastrophic DXVK deployment into native modern engines.
+        /// </summary>
+        private void ReassessEffectiveApi(GameInstallation? installation, GameProfile profile)
+        {
+            if (installation == null) return;
+
+            string relExe = Path.GetRelativePath(installation.InstallationPath, profile.ExePath);
+            var recordedExe = installation.FindExecutable(relExe)
+                ?? installation.Executables.FirstOrDefault(e =>
+                    string.Equals(e.DisplayName, profile.ExeName, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(Path.GetFileName(e.RelativePath), profile.ExeName, StringComparison.OrdinalIgnoreCase));
+
+            bool profileChanged = false;
+            bool installationChanged = false;
+
+            if (recordedExe != null)
+            {
+                // Synchronize architecture if unknown
+                if (string.Equals(profile.Architecture, "Unknown", StringComparison.OrdinalIgnoreCase) &&
+                    !string.IsNullOrWhiteSpace(recordedExe.LastKnownArchitecture) &&
+                    !string.Equals(recordedExe.LastKnownArchitecture, "Unknown", StringComparison.OrdinalIgnoreCase))
+                {
+                    profile.Architecture = recordedExe.LastKnownArchitecture;
+                    profileChanged = true;
+                }
+
+                // Synchronize API from latest recorded evidence
+                if (recordedExe.LastKnownApi != GraphicsApi.Unknown)
+                {
+                    if (profile.Api != recordedExe.LastKnownApi)
+                    {
+                        profile.Api = recordedExe.LastKnownApi;
+                        profileChanged = true;
+                    }
+                }
+                else if (profile.Api != GraphicsApi.Unknown)
+                {
+                    if (recordedExe.LastKnownApi != profile.Api)
+                    {
+                        recordedExe.LastKnownApi = profile.Api;
+                        installationChanged = true;
+                    }
+                }
+            }
+
+            if (installation.Executables != null)
+            {
+                var allProfiles = _profiles.GetAll().ToList();
+                foreach (var exe in installation.Executables)
+                {
+                    if (exe == recordedExe) continue;
+                    string siblingPath = Path.Combine(installation.InstallationPath, exe.RelativePath);
+                    var siblingProfile = allProfiles.FirstOrDefault(p =>
+                        string.Equals(p.ExePath, siblingPath, StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(p.ExeName, exe.DisplayName, StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(p.ExeName, Path.GetFileName(exe.RelativePath), StringComparison.OrdinalIgnoreCase));
+
+                    if (siblingProfile != null)
+                    {
+                        if (exe.LastKnownApi == GraphicsApi.Unknown && siblingProfile.Api != GraphicsApi.Unknown)
+                        {
+                            exe.LastKnownApi = siblingProfile.Api;
+                            installationChanged = true;
+                        }
+                    }
+                }
+            }
+
+            if (profileChanged)
+            {
+                _profiles.Save(profile);
+            }
+            if (installationChanged)
+            {
+                _gameLibraryStore.Save(installation);
+            }
+        }
+
         public Task<ReleaseInfo?> GetLatestReleaseAsync() => _github.FetchLatestReleaseAsync();
 
         public bool UpdateAvailable(GameProfile profile, ReleaseInfo latest)
         {
+            var installation = ResolveInstallation(profile.ExePath);
+            ReassessEffectiveApi(installation, profile);
+
             if (!DxvkCompatibility.IsDxvkSupported(profile.Api))
                 return false;
 
-            var installation = ResolveInstallation(profile.ExePath);
             if (!DxvkCompatibility.IsInstallationSupported(installation, profile.Api, profile.ExeName, out _))
                 return false;
 
@@ -121,9 +205,11 @@ namespace DXVKCompanion.DXVK
         private async Task<DxvkActionResult> QueueOrApplyAsync(GameProfile profile, bool isRunning, PendingAction action)
         {
             LastRefusalReason = null;
+            var installation = ResolveInstallation(profile.ExePath);
+            ReassessEffectiveApi(installation, profile);
+
             if (action == PendingAction.Enable)
             {
-                var installation = ResolveInstallation(profile.ExePath);
                 if (!DxvkCompatibility.IsInstallationSupported(installation, profile.Api, profile.ExeName, out var refusalReason))
                 {
                     LastRefusalReason = refusalReason;
@@ -142,8 +228,18 @@ namespace DXVKCompanion.DXVK
                 string gameDir = Path.GetDirectoryName(profile.ExePath) ?? string.Empty;
                 if (!string.IsNullOrWhiteSpace(gameDir))
                 {
-                    var installation = ResolveInstallation(profile.ExePath)
-                        ?? _gameLibraryStore.GetOrCreateInstallation(gameDir, Path.GetFileNameWithoutExtension(profile.ExePath));
+                    installation ??= _gameLibraryStore.GetOrCreateInstallation(gameDir, Path.GetFileNameWithoutExtension(profile.ExePath));
+                    string relPath = Path.GetRelativePath(installation.InstallationPath, profile.ExePath);
+                    var recordedExe = installation.GetOrAddExecutable(relPath, profile.ExeName);
+                    if (recordedExe.LastKnownApi == GraphicsApi.Unknown && profile.Api != GraphicsApi.Unknown)
+                    {
+                        recordedExe.LastKnownApi = profile.Api;
+                    }
+                    if (string.Equals(recordedExe.LastKnownArchitecture, "Unknown", StringComparison.OrdinalIgnoreCase) &&
+                        !string.Equals(profile.Architecture, "Unknown", StringComparison.OrdinalIgnoreCase))
+                    {
+                        recordedExe.LastKnownArchitecture = profile.Architecture;
+                    }
                     installation.PendingAction = action == PendingAction.Enable
                         ? Models.PendingAction.Install(profile.DxvkVersion ?? "latest", "Queued while game running")
                         : Models.PendingAction.Restore("Queued while game running");
@@ -191,6 +287,7 @@ namespace DXVKCompanion.DXVK
         {
             LastRefusalReason = null;
             var installation = ResolveInstallation(profile.ExePath);
+            ReassessEffectiveApi(installation, profile);
             if (!DxvkCompatibility.IsInstallationSupported(installation, profile.Api, profile.ExeName, out var refusalReason))
             {
                 LastRefusalReason = refusalReason;
@@ -209,6 +306,17 @@ namespace DXVKCompanion.DXVK
                 if (!string.IsNullOrWhiteSpace(gameDir))
                 {
                     var targetInst = installation ?? _gameLibraryStore.GetOrCreateInstallation(gameDir, Path.GetFileNameWithoutExtension(profile.ExePath));
+                    string relPath = Path.GetRelativePath(targetInst.InstallationPath, profile.ExePath);
+                    var recordedExe = targetInst.GetOrAddExecutable(relPath, profile.ExeName);
+                    if (recordedExe.LastKnownApi == GraphicsApi.Unknown && profile.Api != GraphicsApi.Unknown)
+                    {
+                        recordedExe.LastKnownApi = profile.Api;
+                    }
+                    if (string.Equals(recordedExe.LastKnownArchitecture, "Unknown", StringComparison.OrdinalIgnoreCase) &&
+                        !string.Equals(profile.Architecture, "Unknown", StringComparison.OrdinalIgnoreCase))
+                    {
+                        recordedExe.LastKnownArchitecture = profile.Architecture;
+                    }
                     targetInst.PendingAction = Models.PendingAction.Reapply(targetInst.ManagedDxvkVersion ?? "latest", "Queued reapply while game running");
                     _gameLibraryStore.Save(targetInst);
                 }
@@ -239,13 +347,19 @@ namespace DXVKCompanion.DXVK
             return results;
         }
 
-        public async Task<bool> ApplyPendingAsync(string exePath)
+        public async Task<bool> ApplyPendingAsync(string exePath, DetectionSnapshot? snapshot = null)
         {
             LastRefusalReason = null;
+            if (snapshot != null)
+            {
+                _gameLibraryStore.RecordDetectionSnapshot(snapshot);
+            }
+
             _pending.TryRemove(exePath, out var transientAction);
 
             var installation = ResolveInstallation(exePath);
             var profile = _profiles.GetOrCreate(exePath);
+            ReassessEffectiveApi(installation, profile);
 
             if (installation?.PendingAction != null && installation.PendingAction.IsPending)
             {
@@ -318,7 +432,18 @@ namespace DXVKCompanion.DXVK
                 if (anyRunning)
                     continue;
 
-                string? primaryExeRel = installation.Executables.FirstOrDefault()?.RelativePath;
+                string? primaryExeRel = null;
+                if (installation.Executables.Count > 0)
+                {
+                    var allProfiles = _profiles.GetAll().ToList();
+                    var matchingExe = installation.Executables.FirstOrDefault(e =>
+                    {
+                        string p = Path.Combine(installation.InstallationPath, e.RelativePath);
+                        var prof = allProfiles.FirstOrDefault(pr => string.Equals(pr.ExePath, p, StringComparison.OrdinalIgnoreCase));
+                        return prof != null && (prof.DxvkEnabled || prof.Api != GraphicsApi.Unknown);
+                    }) ?? installation.Executables.FirstOrDefault();
+                    primaryExeRel = matchingExe?.RelativePath;
+                }
                 if (string.IsNullOrEmpty(primaryExeRel) && Directory.Exists(installation.InstallationPath))
                 {
                     var firstExe = Directory.EnumerateFiles(installation.InstallationPath, "*.exe").FirstOrDefault();
@@ -330,6 +455,7 @@ namespace DXVKCompanion.DXVK
 
                 string primaryExePath = Path.Combine(installation.InstallationPath, primaryExeRel);
                 var profile = _profiles.GetOrCreate(primaryExePath);
+                ReassessEffectiveApi(installation, profile);
 
                 if (installation.PendingAction.Type != PendingActionType.Restore && !DxvkCompatibility.IsInstallationSupported(installation, profile.Api, profile.ExeName, out var refusalReason))
                 {
@@ -371,6 +497,7 @@ namespace DXVKCompanion.DXVK
         {
             LastRefusalReason = null;
             var installation = ResolveInstallation(profile.ExePath);
+            ReassessEffectiveApi(installation, profile);
             if (!DxvkCompatibility.IsInstallationSupported(installation, profile.Api, profile.ExeName, out var refusalReason))
             {
                 LastRefusalReason = refusalReason;
@@ -436,6 +563,7 @@ namespace DXVKCompanion.DXVK
         {
             LastRefusalReason = null;
             var installation = ResolveInstallation(profile.ExePath);
+            ReassessEffectiveApi(installation, profile);
             if (!DxvkCompatibility.IsInstallationSupported(installation, profile.Api, profile.ExeName, out var refusalReason))
             {
                 LastRefusalReason = refusalReason;
@@ -474,6 +602,7 @@ namespace DXVKCompanion.DXVK
         {
             LastRefusalReason = null;
             var installation = ResolveInstallation(profile.ExePath);
+            ReassessEffectiveApi(installation, profile);
             if (!DxvkCompatibility.IsInstallationSupported(installation, profile.Api, profile.ExeName, out var refusalReason))
             {
                 LastRefusalReason = refusalReason;

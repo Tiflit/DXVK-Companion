@@ -8,6 +8,26 @@ using DXVKCompanion.Utils;
 
 namespace DXVKCompanion.Monitoring
 {
+    /// <summary>
+    /// Classifies the graphics API used by an executable process using runtime loaded modules
+    /// and static PE import headers.
+    /// <para>
+    /// <b>Mixed-Module Precedence Policy:</b> When both modern native APIs (DX12, Vulkan) and
+    /// translatable APIs (D3D11, D3D10, D3D9) are detected within the same module set,
+    /// modern unsupported APIs unconditionally take precedence as <see cref="ApiClassificationResult.PrimaryApi"/>.
+    /// </para>
+    /// <para>
+    /// <b>False-Negative Trade-off:</b> This conservative precedence intentionally accepts potential
+    /// false negatives (e.g., hybrid engines or launchers that might have run on Direct3D 11) in order
+    /// to avoid catastrophic false positives (deploying DXVK DLLs into native DX12 or Vulkan engines,
+    /// causing crashes, anti-cheat bans, or rendering corruption).
+    /// </para>
+    /// <para>
+    /// <b>Detection Limitations:</b> Classification reflects observed modules at the time of detection;
+    /// late-loading modules or dynamic runtime API selection by the game executable cannot be detected
+    /// without continuous module polling or late injection hooks, which are out of scope.
+    /// </para>
+    /// </summary>
     public class ApiClassifier
     {
         private readonly ModuleScanner _scanner;
@@ -19,6 +39,11 @@ namespace DXVKCompanion.Monitoring
             _parser = parser ?? throw new ArgumentNullException(nameof(parser));
         }
 
+        /// <summary>
+        /// Performs detailed API classification of a running process, inspecting runtime loaded graphics
+        /// modules followed by static PE import inspection if runtime modules are inconclusive.
+        /// Evaluates mixed modules according to unsupported API precedence (DX12 -> Vulkan -> DX11 -> DX10 -> DX9).
+        /// </summary>
         public ApiClassificationResult ClassifyDetailed(Process process, string? exePath = null)
         {
             ArgumentNullException.ThrowIfNull(process);
