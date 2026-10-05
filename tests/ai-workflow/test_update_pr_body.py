@@ -1326,6 +1326,57 @@ class TestUpdatePrBody(unittest.TestCase):
                 self.assertNotIn("C:\\Users\\alice_secret", out)
 
     @patch("urllib.request.urlopen")
+    def test_pr_preview_redacts_removed_header_looking_line_with_posix_path_in_diff(self, mock_urlopen):
+        remote_leaking_body = (
+            "-- /home/alice_secret/private_repo_details.txt\n"
+            "## Summary\nOld summary\n\n## Scope\nscripts/\n\n## Verification\nDone\n\n## Documentation\nDone\n"
+        )
+        proposed_clean_body = (
+            "Clean replacement line\n"
+            "## Summary\nOld summary\n\n## Scope\nscripts/\n\n## Verification\nDone\n\n## Documentation\nDone\n"
+        )
+        mock_urlopen.return_value = MockHttpResponse({
+            "number": 33,
+            "body": remote_leaking_body,
+        })
+        test_args = ["update_pr_body.py", "--pr", "33", "--body", proposed_clean_body]
+        with patch.object(sys, "argv", test_args):
+            with patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+                exit_code = update_pr_body.main()
+                self.assertEqual(exit_code, 0)
+                out = mock_out.getvalue()
+                self.assertIn("--- [REDACTED_PATH]", out)
+                self.assertNotIn("alice_secret", out)
+                self.assertNotIn("/home/alice_secret", out)
+                self.assertIn("--- PR-33-current", out)
+                self.assertIn("+++ PR-33-proposed", out)
+
+    @patch("urllib.request.urlopen")
+    def test_pr_preview_redacts_removed_header_looking_line_with_token_in_diff(self, mock_urlopen):
+        remote_leaking_body = (
+            "-- ghp_0123456789abcdef0123456789abcdef\n"
+            "## Summary\nOld summary\n\n## Scope\nscripts/\n\n## Verification\nDone\n\n## Documentation\nDone\n"
+        )
+        proposed_clean_body = (
+            "Clean replacement line\n"
+            "## Summary\nOld summary\n\n## Scope\nscripts/\n\n## Verification\nDone\n\n## Documentation\nDone\n"
+        )
+        mock_urlopen.return_value = MockHttpResponse({
+            "number": 33,
+            "body": remote_leaking_body,
+        })
+        test_args = ["update_pr_body.py", "--pr", "33", "--body", proposed_clean_body]
+        with patch.object(sys, "argv", test_args):
+            with patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+                exit_code = update_pr_body.main()
+                self.assertEqual(exit_code, 0)
+                out = mock_out.getvalue()
+                self.assertIn("--- [REDACTED_TOKEN]", out)
+                self.assertNotIn("ghp_0123456789abcdef0123456789abcdef", out)
+                self.assertIn("--- PR-33-current", out)
+                self.assertIn("+++ PR-33-proposed", out)
+
+    @patch("urllib.request.urlopen")
     def test_issue_preview_with_token_shaped_filename_does_not_echo_token_in_rerun_command(self, mock_urlopen):
         mock_urlopen.return_value = MockHttpResponse({
             "number": 42,

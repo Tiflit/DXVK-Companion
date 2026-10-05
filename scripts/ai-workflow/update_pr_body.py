@@ -174,10 +174,8 @@ def sanitize_diff_line(diff_line: str) -> str:
     Sanitizes a unified-diff line while preserving diff structural prefixes.
     For diff change lines ('-', '+') and context lines (' '), strips the leading
     indicator, sanitizes the line payload, and restores the indicator.
-    Header lines ('---', '+++', '@@') are preserved as-is.
+    All other lines (including hunk headers and standalone text) are sanitized directly.
     """
-    if diff_line.startswith(("---", "+++", "@@")):
-        return diff_line
     if diff_line.startswith(("-", "+", " ")):
         prefix = diff_line[0]
         payload = diff_line[1:]

@@ -72,15 +72,26 @@ Addressed revision findings from `chatgpt-20261005-pr43-review2` on PR #43 withi
    - Documented mechanically verified commit SHAs (`409c99755f21dc299a0203ef9d64f56d6e422d54` for Review 1 head) rather than manually reconstructed strings.
    - Corrected historical journal statement to supersede initial references to backend conditional-API claims in accordance with R4.
 
+### Review 3 Revision: Addressing Coordinator Finding R2a Header-Looking Diff Bypass
+Addressed the single remaining revision finding from `chatgpt-20261005-pr43-review3` on PR #43 within Issue #42 scope:
+1. **R2a: Header-Looking Diff Bypass Repair**:
+   - In `sanitize_diff_line(diff_line: str) -> str`, eliminated the early return on lines starting with `---`, `+++`, or `@@`.
+   - All diff lines starting with `-`, `+`, or ` ` strip their leading single-character diff indicator, sanitize the line payload via `sanitize_privacy_text`, and restore the indicator. This redacts removed content lines that began with `--` followed by private paths or sensitive tokens (which `difflib.unified_diff` rendered starting with `---`), replacing them with `--- [REDACTED_PATH]` or `--- [REDACTED_TOKEN]`.
+   - Structural diff headers with fixed safe names (`--- PR-33-current`, `+++ PR-33-proposed`, chunk headers `@@ ... @@`) contain no user paths or tokens and remain unaltered, ensuring arbitrary payload lines are never classified as trusted diff metadata by prefix alone.
+2. **New Regression Tests (2 tests added, totaling 65 in file / 188 in suite)**:
+   - `test_pr_preview_redacts_removed_header_looking_line_with_posix_path_in_diff`: Verified failure before repair (`AssertionError: '--- [REDACTED_PATH]' not found`) and passing resolution after repair.
+   - `test_pr_preview_redacts_removed_header_looking_line_with_token_in_diff`: Verified failure before repair (`AssertionError: '--- [REDACTED_TOKEN]' not found`) and passing resolution after repair.
+
 ### Observational Metrics & Status
 - **Trial Type**: Tooling and governance implementation for automated safe Issue body updates.
-- **Sources Read**: Issue #42 contract, PR #43 reviews `chatgpt-20261005-pr43-review1` & `chatgpt-20261005-pr43-review2`, `scripts/ai-workflow/update_pr_body.py`, `tests/ai-workflow/test_update_pr_body.py`, `docs/AI-DEVELOPMENT-WORKFLOW.md`, `AGENTS.md`.
-- **Human Interventions**: 1 (task assignment prompt) + 2 (review findings address prompts).
+- **Sources Read**: Issue #42 contract, PR #43 reviews `chatgpt-20261005-pr43-review1`, `chatgpt-20261005-pr43-review2`, & `chatgpt-20261005-pr43-review3`, `scripts/ai-workflow/update_pr_body.py`, `tests/ai-workflow/test_update_pr_body.py`, `docs/AI-DEVELOPMENT-WORKFLOW.md`, `AGENTS.md`.
+- **Human Interventions**: 1 (task assignment prompt) + 3 (review findings address prompts).
 - **Test Suite Results**:
   - Initial local checkpoint: 44/44 passed (`test_update_pr_body.py`), 167/167 passed (suite).
   - Initial PR head (`9d2d0783a3a518f982c67737ec164e53af859714`): 45/45 passed (`test_update_pr_body.py`), 168/168 passed (suite).
   - Review 1 revision (`409c99755f21dc299a0203ef9d64f56d6e422d54`): 57/57 passed (`test_update_pr_body.py`), 180/180 passed (suite).
-  - Review 2 revision:
-    - `python -B -m unittest tests/ai-workflow/test_update_pr_body.py -v`: 63/63 passed (0 failed).
-    - `python -B -m unittest discover -s tests/ai-workflow -v`: 186/186 passed (0 failed).
+  - Review 2 revision (`cb9c1e1a5f17971e73710e7a8637ce9498de38f1`): 63/63 passed (`test_update_pr_body.py`), 186/186 passed (suite).
+  - Review 3 revision:
+    - `python -B -m unittest tests/ai-workflow/test_update_pr_body.py -v`: 65/65 passed (0 failed).
+    - `python -B -m unittest discover -s tests/ai-workflow`: 188/188 passed (0 failed).
 - **Scope Compliance**: Strictly confined to allowed paths (`scripts/ai-workflow/update_pr_body.py`, `tests/ai-workflow/test_update_pr_body.py`, `AGENTS.md`, `docs/AI-DEVELOPMENT-WORKFLOW.md`, `docs/ai-journal/`). No changes to application code, dependencies, or GitHub workflows.
