@@ -47,6 +47,14 @@ namespace DXVKCompanion.DXVK
             _config = new DxvkConfigManager();
         }
 
+        private GameInstallation? ResolveInstallation(string exePath)
+        {
+            if (string.IsNullOrWhiteSpace(exePath)) return null;
+            string gameDir = Path.GetDirectoryName(exePath) ?? string.Empty;
+            return _gameLibraryStore.FindInstallationForExecutable(exePath)
+                ?? (!string.IsNullOrWhiteSpace(gameDir) ? _gameLibraryStore.FindByInstallationPath(gameDir) : null);
+        }
+
         public Task<ReleaseInfo?> GetLatestReleaseAsync() => _github.FetchLatestReleaseAsync();
 
         public bool UpdateAvailable(GameProfile profile, ReleaseInfo latest)
@@ -54,8 +62,7 @@ namespace DXVKCompanion.DXVK
             if (!DxvkCompatibility.IsDxvkSupported(profile.Api))
                 return false;
 
-            string gameDir = Path.GetDirectoryName(profile.ExePath) ?? string.Empty;
-            var installation = !string.IsNullOrWhiteSpace(gameDir) ? _gameLibraryStore.FindByInstallationPath(gameDir) : null;
+            var installation = ResolveInstallation(profile.ExePath);
             if (!DxvkCompatibility.IsInstallationSupported(installation, profile.Api, profile.ExeName, out _))
                 return false;
 
@@ -113,10 +120,10 @@ namespace DXVKCompanion.DXVK
 
         private async Task<DxvkActionResult> QueueOrApplyAsync(GameProfile profile, bool isRunning, PendingAction action)
         {
+            LastRefusalReason = null;
             if (action == PendingAction.Enable)
             {
-                string gameDir = Path.GetDirectoryName(profile.ExePath) ?? string.Empty;
-                var installation = !string.IsNullOrWhiteSpace(gameDir) ? _gameLibraryStore.FindByInstallationPath(gameDir) : null;
+                var installation = ResolveInstallation(profile.ExePath);
                 if (!DxvkCompatibility.IsInstallationSupported(installation, profile.Api, profile.ExeName, out var refusalReason))
                 {
                     LastRefusalReason = refusalReason;
@@ -135,7 +142,8 @@ namespace DXVKCompanion.DXVK
                 string gameDir = Path.GetDirectoryName(profile.ExePath) ?? string.Empty;
                 if (!string.IsNullOrWhiteSpace(gameDir))
                 {
-                    var installation = _gameLibraryStore.GetOrCreateInstallation(gameDir, Path.GetFileNameWithoutExtension(profile.ExePath));
+                    var installation = ResolveInstallation(profile.ExePath)
+                        ?? _gameLibraryStore.GetOrCreateInstallation(gameDir, Path.GetFileNameWithoutExtension(profile.ExePath));
                     installation.PendingAction = action == PendingAction.Enable
                         ? Models.PendingAction.Install(profile.DxvkVersion ?? "latest", "Queued while game running")
                         : Models.PendingAction.Restore("Queued while game running");
@@ -181,8 +189,8 @@ namespace DXVKCompanion.DXVK
 
         private async Task<DxvkActionResult> QueueOrApplyReapplyAsync(GameProfile profile, bool isRunning, bool updateBaseline)
         {
-            string gameDir = Path.GetDirectoryName(profile.ExePath) ?? string.Empty;
-            var installation = !string.IsNullOrWhiteSpace(gameDir) ? _gameLibraryStore.FindByInstallationPath(gameDir) : null;
+            LastRefusalReason = null;
+            var installation = ResolveInstallation(profile.ExePath);
             if (!DxvkCompatibility.IsInstallationSupported(installation, profile.Api, profile.ExeName, out var refusalReason))
             {
                 LastRefusalReason = refusalReason;
@@ -197,6 +205,7 @@ namespace DXVKCompanion.DXVK
 
             if (isRunning)
             {
+                string gameDir = Path.GetDirectoryName(profile.ExePath) ?? string.Empty;
                 if (!string.IsNullOrWhiteSpace(gameDir))
                 {
                     var targetInst = installation ?? _gameLibraryStore.GetOrCreateInstallation(gameDir, Path.GetFileNameWithoutExtension(profile.ExePath));
@@ -232,10 +241,10 @@ namespace DXVKCompanion.DXVK
 
         public async Task<bool> ApplyPendingAsync(string exePath)
         {
+            LastRefusalReason = null;
             _pending.TryRemove(exePath, out var transientAction);
 
-            string gameDir = Path.GetDirectoryName(exePath) ?? string.Empty;
-            var installation = !string.IsNullOrWhiteSpace(gameDir) ? _gameLibraryStore.FindByInstallationPath(gameDir) : null;
+            var installation = ResolveInstallation(exePath);
             var profile = _profiles.GetOrCreate(exePath);
 
             if (installation?.PendingAction != null && installation.PendingAction.IsPending)
@@ -360,8 +369,8 @@ namespace DXVKCompanion.DXVK
 
         public async Task<bool> EnableDxvkAsync(GameProfile profile, string? targetVersion = null)
         {
-            string gameDir = Path.GetDirectoryName(profile.ExePath) ?? string.Empty;
-            var installation = !string.IsNullOrWhiteSpace(gameDir) ? _gameLibraryStore.FindByInstallationPath(gameDir) : null;
+            LastRefusalReason = null;
+            var installation = ResolveInstallation(profile.ExePath);
             if (!DxvkCompatibility.IsInstallationSupported(installation, profile.Api, profile.ExeName, out var refusalReason))
             {
                 LastRefusalReason = refusalReason;
@@ -425,8 +434,8 @@ namespace DXVKCompanion.DXVK
 
         public async Task<bool> AdoptExistingAsync(GameProfile profile)
         {
-            string gameDir = Path.GetDirectoryName(profile.ExePath) ?? string.Empty;
-            var installation = !string.IsNullOrWhiteSpace(gameDir) ? _gameLibraryStore.FindByInstallationPath(gameDir) : null;
+            LastRefusalReason = null;
+            var installation = ResolveInstallation(profile.ExePath);
             if (!DxvkCompatibility.IsInstallationSupported(installation, profile.Api, profile.ExeName, out var refusalReason))
             {
                 LastRefusalReason = refusalReason;
@@ -439,6 +448,7 @@ namespace DXVKCompanion.DXVK
                 return false;
             }
 
+            string gameDir = Path.GetDirectoryName(profile.ExePath) ?? string.Empty;
             var detector = new ExistingDxvkDetector(_installer.DxvkSourceDir);
             var assessment = detector.AssessDirectory(gameDir, profile.Architecture);
             if (!assessment.CanBeAdopted)
@@ -462,8 +472,8 @@ namespace DXVKCompanion.DXVK
 
         public async Task<bool> ReapplyAsync(GameProfile profile, bool updateBaseline = true)
         {
-            string gameDir = Path.GetDirectoryName(profile.ExePath) ?? string.Empty;
-            var installation = !string.IsNullOrWhiteSpace(gameDir) ? _gameLibraryStore.FindByInstallationPath(gameDir) : null;
+            LastRefusalReason = null;
+            var installation = ResolveInstallation(profile.ExePath);
             if (!DxvkCompatibility.IsInstallationSupported(installation, profile.Api, profile.ExeName, out var refusalReason))
             {
                 LastRefusalReason = refusalReason;
@@ -504,8 +514,7 @@ namespace DXVKCompanion.DXVK
 
             foreach (var profile in allProfiles)
             {
-                string gameDir = Path.GetDirectoryName(profile.ExePath) ?? string.Empty;
-                var installation = !string.IsNullOrWhiteSpace(gameDir) ? _gameLibraryStore.FindByInstallationPath(gameDir) : null;
+                var installation = ResolveInstallation(profile.ExePath);
 
                 bool isManaged = profile.DxvkEnabled || (installation != null && installation.RestorationState == RestorationState.Managed);
                 if (!isManaged)

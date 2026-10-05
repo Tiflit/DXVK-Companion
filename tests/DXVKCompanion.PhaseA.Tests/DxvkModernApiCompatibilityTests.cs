@@ -413,7 +413,8 @@ namespace DXVKCompanion.PhaseATests
             profileStore.Save(profile);
 
             var installation = store.GetOrCreateInstallation(gameDir.RootPath, "Game");
-            installation.GetOrAddExecutable("Game.exe", "Game");
+            var exeRecord = installation.GetOrAddExecutable("Game.exe", "Game");
+            exeRecord.LastKnownApi = GraphicsApi.DX12;
             installation.PendingAction = PendingAction.Install("2.5", "Queued offline");
             store.Save(installation);
 
@@ -438,6 +439,7 @@ namespace DXVKCompanion.PhaseATests
             // 2. Pending Reapply subcase (F2): Establish a real managed DX11 install before reclassification
             profile.Api = GraphicsApi.DX11;
             profileStore.Save(profile);
+            exeRecord.LastKnownApi = GraphicsApi.DX11;
             installation.PendingAction = null;
             store.Save(installation);
 
@@ -455,6 +457,7 @@ namespace DXVKCompanion.PhaseATests
             // Reclassify to Vulkan and queue Pending Reapply
             profile.Api = GraphicsApi.Vulkan;
             profileStore.Save(profile);
+            exeRecord.LastKnownApi = GraphicsApi.Vulkan;
             managedInst.PendingAction = PendingAction.Reapply("2.5", "Queued reapply");
             store.Save(managedInst);
 
@@ -478,6 +481,8 @@ namespace DXVKCompanion.PhaseATests
             // 3. Positive control: supported DX11 API allows pending reapply to execute cleanly
             profile.Api = GraphicsApi.DX11;
             profileStore.Save(profile);
+            exeRecord.LastKnownApi = GraphicsApi.DX11;
+            store.Save(installation);
 
             int executedPositive = await manager.ProcessAllPendingActionsAsync();
             Assert.Equal(1, executedPositive);

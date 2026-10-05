@@ -34,9 +34,8 @@ namespace DXVKCompanion.UI
             StartPosition = FormStartPosition.CenterParent;
 
             string gameDir = Path.GetDirectoryName(_profile.ExePath) ?? string.Empty;
-            var installation = !string.IsNullOrWhiteSpace(gameDir)
-                ? _gameLibraryStore.FindByInstallationPath(gameDir)
-                : null;
+            var installation = _gameLibraryStore.FindInstallationForExecutable(_profile.ExePath)
+                ?? (!string.IsNullOrWhiteSpace(gameDir) ? _gameLibraryStore.FindByInstallationPath(gameDir) : null);
             if (installation == null && !string.IsNullOrWhiteSpace(gameDir))
             {
                 installation = _gameLibraryStore.GetOrCreateInstallation(gameDir, _profile.ExeName);
@@ -125,7 +124,27 @@ namespace DXVKCompanion.UI
                 Font = new Font(FontFamily.GenericSansSerif, 9, FontStyle.Bold)
             };
             Controls.Add(statusLabel);
-            top += 35;
+            top += 25;
+
+            if (installation != null && !string.IsNullOrEmpty(installation.LastRefusalReason))
+            {
+                var refusalLabel = new Label
+                {
+                    Text = $"Deployment Refused: {installation.LastRefusalReason}",
+                    AutoSize = true,
+                    Top = top,
+                    Left = 20,
+                    ForeColor = Color.DarkOrange,
+                    Font = new Font(FontFamily.GenericSansSerif, 8, FontStyle.Regular),
+                    MaximumSize = new Size(500, 0)
+                };
+                Controls.Add(refusalLabel);
+                top += refusalLabel.PreferredHeight + 10;
+            }
+            else
+            {
+                top += 10;
+            }
 
             // Existing DXVK assessment & actions
             var assessment = _dxvk.AssessExistingDxvk(_profile);
@@ -160,6 +179,11 @@ namespace DXVKCompanion.UI
                     {
                         MessageBox.Show("DXVK adopted successfully.", "Adoption", MessageBoxButtons.OK, MessageBoxIcon.Information);
                         Close();
+                    }
+                    else
+                    {
+                        string reason = _dxvk.LastRefusalReason ?? "Adoption failed.";
+                        MessageBox.Show($"DXVK adoption was refused or failed:\n\n{reason}", "Adoption Refused", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     }
                 };
                 adoptPanel.Controls.Add(adoptLabel);
@@ -198,6 +222,11 @@ namespace DXVKCompanion.UI
                     {
                         MessageBox.Show("DXVK reapplied successfully and baseline updated.", "Reapply", MessageBoxButtons.OK, MessageBoxIcon.Information);
                         Close();
+                    }
+                    else
+                    {
+                        string reason = _dxvk.LastRefusalReason ?? "Reapply operation failed.";
+                        MessageBox.Show($"DXVK reapply was refused or failed:\n\n{reason}", "Reapply Refused", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     }
                 };
                 reapplyPanel.Controls.Add(reapplyLabel);

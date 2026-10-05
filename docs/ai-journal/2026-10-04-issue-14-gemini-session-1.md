@@ -42,3 +42,29 @@ Initiated session from freshly fetched `origin/main` following PR #34 merge. Pro
 ### Outcome & Next Steps
 - Result: Issue #14 implementation complete; all 230 application tests and 130 workflow tests passing.
 - Next Action & Owner: Commit changes, push branch, open PR referencing Issue #14, and emit generated handoff snapshot for ChatGPT verification.
+
+---
+
+### Revision 1: Addressing ChatGPT Review Findings R1–R3 on PR #35
+- **Timestamp**: 2026-10-05 00:35:00 UTC
+- **Review Findings Addressed**:
+  1. **R1 (Name-matching bypass removed)**:
+     - In `DxvkCompatibility.cs`, removed `isTarget` name-matching exemption. All recorded executables in `installation.Executables` are unconditionally checked against `IsDxvkSupported`.
+     - Added bypass fixtures: `SharedDirectory_SameNamedRecordedExecutable_WithUnsupportedRecordedApi_RefusesDeployment_InstallationWide` and `SharedDirectory_CollidingBasenameSibling_RefusesDeployment_InstallationWide`.
+  2. **R2 (Surface refusal reasons in UI & prevent stale reasons)**:
+     - In `ManageGamesWindow.cs`: rendered refusal reasons in list view status, updated action dialogs (`RunOnSelected`, `RunAdoptSelected`, `RunUpdateAllEnabled`) and status label.
+     - In `GameDetailsWindow.cs`: added warning label for refused deployments, surfaced refusal reasons on failed adopt/reapply operations.
+     - In `TrayApp.cs`: added balloon tip for refused pending operations upon game exit; wired `IsInstallationSupported` into game detection notification balloon tips.
+     - Reset `LastRefusalReason = null;` at the start of all operations in `DxvkManager.cs` and `DxvkInstaller.cs` to eliminate stale reasons.
+     - Added fixture `SharedDirectory_Installation_RecordsRefusalReason_AndClearsOnSuccess`.
+  3. **R3 (Nested executable path lookup & non-splitting)**:
+     - In `DxvkInstaller.cs` (`ApplyToGameAsync`, `ReapplyAsync`, `AdoptExisting`) and `DxvkManager.cs` (`ResolveInstallation`), lookup containing installation via `FindInstallationForExecutable(exePath) ?? FindByInstallationPath(gameDir)`.
+     - Nested executables (e.g. `Root/Bin/Game.exe`) correctly resolve to `Root`, preventing accidental installation splitting and ensuring sibling blockers in `Root` are enforced.
+     - Added fixtures: `SharedDirectory_NestedExecutable_FindsContainingInstallation_AndRefusesDeployment_WhenSiblingIncompatible` and `SharedDirectory_NestedExecutable_InSeparateInstallation_DoesNotBlock_PositiveControl`.
+  4. **Running requests, persisted guards, and direct installer entry points**:
+     - Added fixtures for running requests (`SharedDirectory_RunningProcess_WithIncompatibleSibling_RefusesImmediately_WithoutQueueingPendingAction`), persisted pending actions (`SharedDirectory_PersistedPendingAction_RefusedOnProcessAllPendingActions_AndApplyPendingAsync`), and direct installer methods (`SharedDirectory_DirectInstallerEntryPoints_RefuseDeployment_WhenSiblingIncompatible`).
+- **Executed Verification**:
+  - Application tests: 238/238 passed (8 new regression/bypass tests added, 0 failures).
+  - Workflow tests: 130/130 passed.
+- **Outcome**:
+  - PR #35 revised; preserved review history marker `chatgpt-20261005-pr35-review1`; ready for ChatGPT verification and user merge decision.

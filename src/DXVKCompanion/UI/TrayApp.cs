@@ -82,6 +82,14 @@ namespace DXVKCompanion.UI
                             $"Operation completed safely after game exit for {Path.GetFileName(exePath)}.", ToolTipIcon.Info);
                     }, null);
                 }
+                else if (!string.IsNullOrEmpty(_dxvk.LastRefusalReason))
+                {
+                    _syncContext.Post(_ =>
+                    {
+                        _trayIcon.ShowBalloonTip(5000, "DXVK Operation Refused",
+                            $"Pending operation for {Path.GetFileName(exePath)} was refused:\n{_dxvk.LastRefusalReason}", ToolTipIcon.Warning);
+                    }, null);
+                }
             };
 
             // Startup tasks: inspect all installations and process pending actions
@@ -197,13 +205,12 @@ namespace DXVKCompanion.UI
 
                 string localVersion = string.IsNullOrWhiteSpace(profile.DxvkVersion) ? "None" : profile.DxvkVersion;
 
-                bool dxvkCompatible = DxvkCompatibility.IsDxvkSupported(profile.Api);
+                var installation = _gameLibraryStore.FindInstallationForExecutable(exePath)
+                    ?? (!string.IsNullOrWhiteSpace(gameDir) ? _gameLibraryStore.FindByInstallationPath(gameDir) : null);
+
+                bool dxvkCompatible = DxvkCompatibility.IsInstallationSupported(installation, profile.Api, profile.ExeName, out var refusalReason);
 
                 bool updateAvailable = latest != null && profile.DxvkEnabled && _dxvk.UpdateAvailable(profile, latest);
-
-                var installation = !string.IsNullOrWhiteSpace(gameDir)
-                    ? _gameLibraryStore.FindByInstallationPath(gameDir)
-                    : null;
 
                 bool externalChange = false;
                 if (installation != null)
@@ -220,14 +227,14 @@ namespace DXVKCompanion.UI
                 {
                     await _dxvk.RequestEnableAsync(profile, process);
                 }
-                else if (isAutomated && externalChange && !antiCheat && profile.DxvkEnabled)
+                else if (isAutomated && dxvkCompatible && externalChange && !antiCheat && profile.DxvkEnabled)
                 {
                     await _dxvk.RequestReapplyAsync(profile, process, updateBaseline: true);
                 }
 
                 _profiles.Save(profile);
 
-                string message = BuildNotificationMessage(process, profile, antiCheat, latest, localVersion, dxvkCompatible, updateAvailable, externalChange);
+                string message = BuildNotificationMessage(process, profile, antiCheat, latest, localVersion, dxvkCompatible, refusalReason, updateAvailable, externalChange);
 
                 _syncContext.Post(_ =>
                 {
@@ -244,7 +251,7 @@ namespace DXVKCompanion.UI
 
         private string BuildNotificationMessage(
             Process process, GameProfile profile, bool antiCheat, ReleaseInfo? latest,
-            string localVersion, bool dxvkCompatible, bool updateAvailable, bool externalChange)
+            string localVersion, bool dxvkCompatible, string? refusalReason, bool updateAvailable, bool externalChange)
         {
             var msg = $"{process.ProcessName} is running.\n" +
                       $"API: {profile.Api} ({profile.Architecture})\n" +
@@ -260,7 +267,10 @@ namespace DXVKCompanion.UI
             }
             else if (!dxvkCompatible)
             {
-                msg += "DXVK is not compatible with this game's API.\n";
+                if (!string.IsNullOrEmpty(refusalReason))
+                    msg += $"DXVK deployment is not supported: {refusalReason}\n";
+                else
+                    msg += "DXVK is not compatible with this game's API.\n";
             }
             else
             {

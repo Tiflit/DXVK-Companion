@@ -278,7 +278,8 @@ public sealed class PhaseDExternalChangesAndPendingActionTests
         profileStore.Save(profile);
 
         var installation = store.GetOrCreateInstallation(gameDir.RootPath, "Game");
-        installation.GetOrAddExecutable("Game.exe", "Game");
+        var exe = installation.GetOrAddExecutable("Game.exe", "Game");
+        exe.LastKnownApi = GraphicsApi.DX11;
         installation.PendingAction = PendingAction.Install("2.5", "Queued while game running");
         store.Save(installation);
 

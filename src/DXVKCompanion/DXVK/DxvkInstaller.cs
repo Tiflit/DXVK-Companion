@@ -114,6 +114,7 @@ namespace DXVKCompanion.DXVK
 
         public async Task<bool> ApplyToGameAsync(GameProfile profile, ReleaseInfo release)
         {
+            LastRefusalReason = null;
             string? stagingDir = null;
             try
             {
@@ -124,7 +125,8 @@ namespace DXVKCompanion.DXVK
                     return false;
                 }
 
-                var existingInstallation = _gameLibraryStore.FindByInstallationPath(gameDir);
+                var existingInstallation = _gameLibraryStore.FindInstallationForExecutable(profile.ExePath)
+                    ?? _gameLibraryStore.FindByInstallationPath(gameDir);
                 if (existingInstallation != null && existingInstallation.ConflictFlags != InstallationConflictFlags.None)
                 {
                     Logger.Log($"DxvkInstaller: refusing to deploy DXVK to {profile.ExeName}; installation has conflict flags: {existingInstallation.ConflictFlags}.");
@@ -171,8 +173,10 @@ namespace DXVKCompanion.DXVK
                     }
                 }
 
-                var installation = _gameLibraryStore.GetOrCreateInstallation(gameDir, Path.GetFileNameWithoutExtension(profile.ExePath));
-                var executable = installation.GetOrAddExecutable(Path.GetFileName(profile.ExePath), profile.ExeName);
+                var installation = existingInstallation
+                    ?? _gameLibraryStore.GetOrCreateInstallation(gameDir, Path.GetFileNameWithoutExtension(profile.ExePath));
+                string relExe = Path.GetRelativePath(installation.InstallationPath, profile.ExePath);
+                var executable = installation.GetOrAddExecutable(relExe, profile.ExeName);
                 executable.LastKnownApi = profile.Api;
                 executable.LastKnownArchitecture = arch;
 
@@ -372,6 +376,7 @@ namespace DXVKCompanion.DXVK
 
         public async Task<bool> ReapplyAsync(GameProfile profile, bool updateBaseline = false)
         {
+            LastRefusalReason = null;
             string? stagingDir = null;
             try
             {
@@ -382,7 +387,8 @@ namespace DXVKCompanion.DXVK
                     return false;
                 }
 
-                var installation = _gameLibraryStore.FindByInstallationPath(gameDir);
+                var installation = _gameLibraryStore.FindInstallationForExecutable(profile.ExePath)
+                    ?? _gameLibraryStore.FindByInstallationPath(gameDir);
                 if (installation == null || string.IsNullOrEmpty(installation.ManagedDxvkVersion))
                 {
                     Logger.Log($"DxvkInstaller: installation not managed by Companion for {profile.ExeName}.");
@@ -701,6 +707,7 @@ namespace DXVKCompanion.DXVK
 
         public bool AdoptExisting(GameProfile profile, ExistingDxvkAssessment assessment)
         {
+            LastRefusalReason = null;
             try
             {
                 if (!DxvkCompatibility.IsDxvkSupported(profile.Api))
@@ -722,7 +729,8 @@ namespace DXVKCompanion.DXVK
                     return false;
                 }
 
-                var installation = _gameLibraryStore.GetOrCreateInstallation(gameDir, Path.GetFileNameWithoutExtension(profile.ExePath));
+                var installation = _gameLibraryStore.FindInstallationForExecutable(profile.ExePath)
+                    ?? _gameLibraryStore.GetOrCreateInstallation(gameDir, Path.GetFileNameWithoutExtension(profile.ExePath));
 
                 if (installation.ConflictFlags != InstallationConflictFlags.None)
                 {
@@ -767,7 +775,8 @@ namespace DXVKCompanion.DXVK
                 installation.LastRefusalReason = null;
                 installation.LastSeenUtc = DateTime.UtcNow;
 
-                var executable = installation.GetOrAddExecutable(Path.GetFileName(profile.ExePath), profile.ExeName);
+                string relExe = Path.GetRelativePath(installation.InstallationPath, profile.ExePath);
+                var executable = installation.GetOrAddExecutable(relExe, profile.ExeName);
                 executable.LastKnownApi = profile.Api;
                 executable.LastKnownArchitecture = arch;
 

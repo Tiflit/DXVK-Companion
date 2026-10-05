@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
@@ -498,6 +500,357 @@ namespace DXVKCompanion.PhaseA.Tests
             // Assert: Original file was restored on disk
             Assert.True(File.Exists(deployedD3D11));
             Assert.Equal(originalD3D11Content, File.ReadAllText(deployedD3D11));
+        }
+
+        [Fact]
+        public async Task SharedDirectory_SameNamedRecordedExecutable_WithUnsupportedRecordedApi_RefusesDeployment_InstallationWide()
+        {
+            using var gameDir = new SyntheticTestDirectory();
+            using var storageDir = new SyntheticTestDirectory();
+            using var sourceDir = new SyntheticTestDirectory();
+
+            var (manager, installer, store, profileStore, _) = CreateTestEnvironment(storageDir, sourceDir);
+
+            var exePath = gameDir.CreateFile("Game.exe", "binary");
+
+            var installation = store.GetOrCreateInstallation(gameDir.RootPath, "SameNamedGame");
+            var recordedExe = installation.GetOrAddExecutable("Game.exe", "Game.exe");
+            recordedExe.LastKnownApi = GraphicsApi.DX12;
+            recordedExe.LastKnownArchitecture = "x64";
+            store.Save(installation);
+
+            var profile = profileStore.GetOrCreate(exePath);
+            profile.Api = GraphicsApi.DX11;
+            profile.Architecture = "x64";
+            profileStore.Save(profile);
+
+            // Act 1: Manager request
+            var result = await manager.RequestEnableByPathAsync(profile);
+
+            // Assert: Refused installation-wide
+            Assert.Equal(DxvkActionResult.Failed, result);
+            Assert.NotNull(manager.LastRefusalReason);
+            Assert.Contains("Game.exe", manager.LastRefusalReason);
+            Assert.Contains("DX12", manager.LastRefusalReason);
+
+            var refreshedInst = store.FindByInstallationPath(gameDir.RootPath);
+            Assert.NotNull(refreshedInst?.LastRefusalReason);
+            Assert.Contains("Game.exe", refreshedInst.LastRefusalReason);
+
+            // Assert: No DLLs written
+            Assert.False(File.Exists(Path.Combine(gameDir.RootPath, "d3d11.dll")));
+            Assert.False(File.Exists(Path.Combine(gameDir.RootPath, "dxgi.dll")));
+
+            // Act 2: Direct installer ApplyToGameAsync
+            var release = new ReleaseInfo { Version = "2.5", DownloadUrl = "" };
+            bool installerResult = await installer.ApplyToGameAsync(profile, release);
+            Assert.False(installerResult);
+            Assert.NotNull(installer.LastRefusalReason);
+            Assert.Contains("Game.exe", installer.LastRefusalReason);
+        }
+
+        [Fact]
+        public async Task SharedDirectory_CollidingBasenameSibling_RefusesDeployment_InstallationWide()
+        {
+            using var gameDir = new SyntheticTestDirectory();
+            using var storageDir = new SyntheticTestDirectory();
+            using var sourceDir = new SyntheticTestDirectory();
+
+            var (manager, _, store, profileStore, _) = CreateTestEnvironment(storageDir, sourceDir);
+
+            var rootExePath = gameDir.CreateFile("Game.exe", "binary");
+            var subExePath = gameDir.CreateFile(Path.Combine("Sub", "Game.exe"), "binary");
+
+            var installation = store.GetOrCreateInstallation(gameDir.RootPath, "CollidingBasenameGame");
+            var eSub = installation.GetOrAddExecutable(Path.Combine("Sub", "Game.exe"), "Game.exe");
+            eSub.LastKnownApi = GraphicsApi.DX12;
+            var eRoot = installation.GetOrAddExecutable("Game.exe", "Game.exe");
+            eRoot.LastKnownApi = GraphicsApi.DX11;
+            store.Save(installation);
+
+            var profileRoot = profileStore.GetOrCreate(rootExePath);
+            profileRoot.Api = GraphicsApi.DX11;
+            profileStore.Save(profileRoot);
+
+            var result = await manager.RequestEnableByPathAsync(profileRoot);
+            Assert.Equal(DxvkActionResult.Failed, result);
+
+            var refreshedInst = store.FindByInstallationPath(gameDir.RootPath);
+            Assert.NotNull(refreshedInst?.LastRefusalReason);
+            Assert.Contains("Game.exe", refreshedInst.LastRefusalReason);
+            Assert.False(File.Exists(Path.Combine(gameDir.RootPath, "d3d11.dll")));
+        }
+
+        [Fact]
+        public async Task SharedDirectory_NestedExecutable_FindsContainingInstallation_AndRefusesDeployment_WhenSiblingIncompatible()
+        {
+            using var gameDir = new SyntheticTestDirectory();
+            using var storageDir = new SyntheticTestDirectory();
+            using var sourceDir = new SyntheticTestDirectory();
+
+            var (manager, installer, store, profileStore, _) = CreateTestEnvironment(storageDir, sourceDir);
+
+            // Root has DX12 executable
+            var rootExePath = gameDir.CreateFile("Game_DX12.exe", "binary");
+            // Nested folder Bin has DX11 executable
+            var nestedExePath = gameDir.CreateFile(Path.Combine("Bin", "Game_DX11.exe"), "binary");
+
+            var installation = store.GetOrCreateInstallation(gameDir.RootPath, "NestedRootGame");
+            var e12 = installation.GetOrAddExecutable("Game_DX12.exe", "Game_DX12.exe");
+            e12.LastKnownApi = GraphicsApi.DX12;
+            store.Save(installation);
+
+            var profileNested = profileStore.GetOrCreate(nestedExePath);
+            profileNested.Api = GraphicsApi.DX11;
+            profileNested.Architecture = "x64";
+            profileStore.Save(profileNested);
+
+            // Act 1: via Manager
+            var result = await manager.RequestEnableByPathAsync(profileNested);
+
+            // Assert: Refused
+            Assert.Equal(DxvkActionResult.Failed, result);
+            Assert.NotNull(manager.LastRefusalReason);
+            Assert.Contains("Game_DX12.exe", manager.LastRefusalReason);
+
+            // Assert: Zero files written anywhere
+            Assert.False(File.Exists(Path.Combine(gameDir.RootPath, "d3d11.dll")));
+            Assert.False(File.Exists(Path.Combine(gameDir.RootPath, "Bin", "d3d11.dll")));
+
+            // Assert: Did NOT split into a separate installation for "Bin"
+            var binInst = store.FindByInstallationPath(Path.Combine(gameDir.RootPath, "Bin"));
+            Assert.Null(binInst);
+
+            // Act 2: Direct installer ApplyToGameAsync
+            var release = new ReleaseInfo { Version = "2.5", DownloadUrl = "" };
+            bool installerResult = await installer.ApplyToGameAsync(profileNested, release);
+            Assert.False(installerResult);
+            Assert.NotNull(installer.LastRefusalReason);
+            Assert.Contains("Game_DX12.exe", installer.LastRefusalReason);
+            Assert.Null(store.FindByInstallationPath(Path.Combine(gameDir.RootPath, "Bin")));
+        }
+
+        [Fact]
+        public async Task SharedDirectory_NestedExecutable_InSeparateInstallation_DoesNotBlock_PositiveControl()
+        {
+            using var gameDirA = new SyntheticTestDirectory();
+            using var gameDirB = new SyntheticTestDirectory();
+            using var storageDir = new SyntheticTestDirectory();
+            using var sourceDir = new SyntheticTestDirectory();
+
+            var (manager, _, store, profileStore, _) = CreateTestEnvironment(storageDir, sourceDir);
+
+            // Installation A has DX12 executable
+            gameDirA.CreateFile("GameA_DX12.exe", "binary");
+            var instA = store.GetOrCreateInstallation(gameDirA.RootPath, "GameA");
+            var eA = instA.GetOrAddExecutable("GameA_DX12.exe", "GameA_DX12.exe");
+            eA.LastKnownApi = GraphicsApi.DX12;
+            store.Save(instA);
+
+            // Installation B has nested executable Bin/GameB_DX11.exe and root DX11 executable
+            var nestedExeB = gameDirB.CreateFile(Path.Combine("Bin", "GameB_DX11.exe"), "binary");
+            gameDirB.CreateFile("Launcher_DX11.exe", "binary");
+            var instB = store.GetOrCreateInstallation(gameDirB.RootPath, "GameB");
+            var eB1 = instB.GetOrAddExecutable("Launcher_DX11.exe", "Launcher_DX11.exe");
+            eB1.LastKnownApi = GraphicsApi.DX11;
+            var eB2 = instB.GetOrAddExecutable(Path.Combine("Bin", "GameB_DX11.exe"), "GameB_DX11.exe");
+            eB2.LastKnownApi = GraphicsApi.DX11;
+            store.Save(instB);
+
+            var profileB = profileStore.GetOrCreate(nestedExeB);
+            profileB.Api = GraphicsApi.DX11;
+            profileB.Architecture = "x64";
+            profileB.DxvkVersion = "2.5";
+            profileStore.Save(profileB);
+
+            // Act
+            var result = await manager.RequestEnableByPathAsync(profileB);
+
+            // Assert: Deployed successfully to gameDirB
+            Assert.Equal(DxvkActionResult.Applied, result);
+            Assert.True(File.Exists(Path.Combine(gameDirB.RootPath, "Bin", "d3d11.dll")));
+            Assert.False(File.Exists(Path.Combine(gameDirA.RootPath, "d3d11.dll")));
+        }
+
+        [Fact]
+        public async Task SharedDirectory_RunningProcess_WithIncompatibleSibling_RefusesImmediately_WithoutQueueingPendingAction()
+        {
+            using var gameDir = new SyntheticTestDirectory();
+            using var storageDir = new SyntheticTestDirectory();
+            using var sourceDir = new SyntheticTestDirectory();
+
+            var (manager, _, store, profileStore, _) = CreateTestEnvironment(storageDir, sourceDir);
+
+            var exe11Path = gameDir.CreateFile("Game_DX11.exe", "binary");
+            gameDir.CreateFile("Game_DX12.exe", "binary");
+
+            var installation = store.GetOrCreateInstallation(gameDir.RootPath, "RunningMixedGame");
+            var e11 = installation.GetOrAddExecutable("Game_DX11.exe", "Game_DX11.exe");
+            e11.LastKnownApi = GraphicsApi.DX11;
+            var e12 = installation.GetOrAddExecutable("Game_DX12.exe", "Game_DX12.exe");
+            e12.LastKnownApi = GraphicsApi.DX12;
+            store.Save(installation);
+
+            var profile11 = profileStore.GetOrCreate(exe11Path);
+            profile11.Api = GraphicsApi.DX11;
+            profile11.Architecture = "x64";
+            profileStore.Save(profile11);
+
+            // Act: Request enable with a running process (using current process as live process handle)
+            var currentProcess = Process.GetCurrentProcess();
+            var enableResult = await manager.RequestEnableAsync(profile11, currentProcess);
+
+            // Assert: Refused immediately (Failed, NOT Queued)
+            Assert.Equal(DxvkActionResult.Failed, enableResult);
+            Assert.NotNull(manager.LastRefusalReason);
+            Assert.Contains("Game_DX12.exe", manager.LastRefusalReason);
+
+            var refreshedInst = store.FindByInstallationPath(gameDir.RootPath);
+            Assert.NotNull(refreshedInst);
+            Assert.Null(refreshedInst.PendingAction); // Crucial: must NOT queue!
+            Assert.NotNull(refreshedInst.LastRefusalReason);
+
+            // Also test RequestReapplyAsync with running process
+            var reapplyResult = await manager.RequestReapplyAsync(profile11, currentProcess, updateBaseline: true);
+            Assert.Equal(DxvkActionResult.Failed, reapplyResult);
+            refreshedInst = store.FindByInstallationPath(gameDir.RootPath);
+            Assert.Null(refreshedInst?.PendingAction);
+        }
+
+        [Fact]
+        public async Task SharedDirectory_PersistedPendingAction_RefusedOnProcessAllPendingActions_AndApplyPendingAsync()
+        {
+            using var gameDir = new SyntheticTestDirectory();
+            using var storageDir = new SyntheticTestDirectory();
+            using var sourceDir = new SyntheticTestDirectory();
+
+            var (manager, _, store, profileStore, _) = CreateTestEnvironment(storageDir, sourceDir);
+
+            var exe11Path = gameDir.CreateFile("Game_DX11.exe", "binary");
+            gameDir.CreateFile("Game_DX12.exe", "binary");
+
+            var installation = store.GetOrCreateInstallation(gameDir.RootPath, "PersistedPendingGame");
+            var e11 = installation.GetOrAddExecutable("Game_DX11.exe", "Game_DX11.exe");
+            e11.LastKnownApi = GraphicsApi.DX11;
+            var e12 = installation.GetOrAddExecutable("Game_DX12.exe", "Game_DX12.exe");
+            e12.LastKnownApi = GraphicsApi.DX12;
+            installation.PendingAction = PendingAction.Install("2.5", "previously persisted");
+            store.Save(installation);
+
+            var profile11 = profileStore.GetOrCreate(exe11Path);
+            profile11.Api = GraphicsApi.DX11;
+            profileStore.Save(profile11);
+
+            // Act 1: ApplyPendingAsync
+            bool applied = await manager.ApplyPendingAsync(exe11Path);
+
+            // Assert: Refused and did not write files
+            Assert.False(applied);
+            Assert.NotNull(manager.LastRefusalReason);
+            Assert.Contains("Game_DX12.exe", manager.LastRefusalReason);
+            Assert.False(File.Exists(Path.Combine(gameDir.RootPath, "d3d11.dll")));
+
+            // Act 2: ProcessAllPendingActionsAsync
+            int count = await manager.ProcessAllPendingActionsAsync();
+            Assert.Equal(0, count);
+            Assert.False(File.Exists(Path.Combine(gameDir.RootPath, "d3d11.dll")));
+        }
+
+        [Fact]
+        public async Task SharedDirectory_DirectInstallerEntryPoints_RefuseDeployment_WhenSiblingIncompatible()
+        {
+            using var gameDir = new SyntheticTestDirectory();
+            using var storageDir = new SyntheticTestDirectory();
+            using var sourceDir = new SyntheticTestDirectory();
+
+            var (_, installer, store, profileStore, _) = CreateTestEnvironment(storageDir, sourceDir);
+
+            var exe11Path = gameDir.CreateFile("Game_DX11.exe", "binary");
+            gameDir.CreateFile("Game_DX12.exe", "binary");
+
+            var installation = store.GetOrCreateInstallation(gameDir.RootPath, "DirectInstallerGame");
+            installation.ManagedDxvkVersion = "2.5";
+            installation.RestorationState = RestorationState.Managed;
+            var e11 = installation.GetOrAddExecutable("Game_DX11.exe", "Game_DX11.exe");
+            e11.LastKnownApi = GraphicsApi.DX11;
+            var e12 = installation.GetOrAddExecutable("Game_DX12.exe", "Game_DX12.exe");
+            e12.LastKnownApi = GraphicsApi.DX12;
+            store.Save(installation);
+
+            var profile11 = profileStore.GetOrCreate(exe11Path);
+            profile11.Api = GraphicsApi.DX11;
+            profile11.Architecture = "x64";
+            profileStore.Save(profile11);
+
+            var release = new ReleaseInfo { Version = "2.5", DownloadUrl = "" };
+
+            // 1. Direct ApplyToGameAsync
+            bool applyOk = await installer.ApplyToGameAsync(profile11, release);
+            Assert.False(applyOk);
+            Assert.NotNull(installer.LastRefusalReason);
+            Assert.Contains("Game_DX12.exe", installer.LastRefusalReason);
+
+            // 2. Direct ReapplyAsync
+            bool reapplyOk = await installer.ReapplyAsync(profile11, updateBaseline: true);
+            Assert.False(reapplyOk);
+            Assert.NotNull(installer.LastRefusalReason);
+            Assert.Contains("Game_DX12.exe", installer.LastRefusalReason);
+
+            // 3. Direct AdoptExisting
+            var assessment = new ExistingDxvkAssessment
+            {
+                Status = ExistingDxvkStatus.OfficialRelease,
+                MatchedVersion = "2.5",
+                DetectedDlls = new List<string> { "d3d11.dll" }
+            };
+            gameDir.CreateFile("d3d11.dll", "fake-dxvk");
+            bool adoptOk = installer.AdoptExisting(profile11, assessment);
+            Assert.False(adoptOk);
+            Assert.NotNull(installer.LastRefusalReason);
+            Assert.Contains("Game_DX12.exe", installer.LastRefusalReason);
+        }
+
+        [Fact]
+        public async Task SharedDirectory_Installation_RecordsRefusalReason_AndClearsOnSuccess()
+        {
+            using var gameDir = new SyntheticTestDirectory();
+            using var storageDir = new SyntheticTestDirectory();
+            using var sourceDir = new SyntheticTestDirectory();
+
+            var (manager, _, store, profileStore, _) = CreateTestEnvironment(storageDir, sourceDir);
+
+            var exePath = gameDir.CreateFile("Game.exe", "binary");
+
+            var installation = store.GetOrCreateInstallation(gameDir.RootPath, "RefusalLifecycleGame");
+            var e = installation.GetOrAddExecutable("Game.exe", "Game.exe");
+            e.LastKnownApi = GraphicsApi.DX12; // Incompatible initially
+            store.Save(installation);
+
+            var profile = profileStore.GetOrCreate(exePath);
+            profile.Api = GraphicsApi.DX11;
+            profile.Architecture = "x64";
+            profile.DxvkVersion = "2.5";
+            profileStore.Save(profile);
+
+            // Initial attempt: fails due to DX12 recorded executable
+            var failResult = await manager.RequestEnableByPathAsync(profile);
+            Assert.Equal(DxvkActionResult.Failed, failResult);
+
+            var instAfterFail = store.FindByInstallationPath(gameDir.RootPath);
+            Assert.NotNull(instAfterFail?.LastRefusalReason);
+            Assert.NotNull(manager.LastRefusalReason);
+
+            // Update recorded executable to DX11 (now compatible)
+            e.LastKnownApi = GraphicsApi.DX11;
+            store.Save(installation);
+
+            // Second attempt: succeeds and clears refusal reason
+            var successResult = await manager.RequestEnableByPathAsync(profile);
+            Assert.Equal(DxvkActionResult.Applied, successResult);
+
+            var instAfterSuccess = store.FindByInstallationPath(gameDir.RootPath);
+            Assert.Null(instAfterSuccess?.LastRefusalReason);
+            Assert.Null(manager.LastRefusalReason);
         }
     }
 }

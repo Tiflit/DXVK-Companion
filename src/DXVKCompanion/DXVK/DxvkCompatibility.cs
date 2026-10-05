@@ -49,22 +49,6 @@ namespace DXVKCompanion.DXVK
             {
                 foreach (var exe in installation.Executables)
                 {
-                    bool isTarget = false;
-                    if (!string.IsNullOrWhiteSpace(targetExeName))
-                    {
-                        if (string.Equals(exe.RelativePath, targetExeName, StringComparison.OrdinalIgnoreCase) ||
-                            string.Equals(exe.DisplayName, targetExeName, StringComparison.OrdinalIgnoreCase) ||
-                            string.Equals(Path.GetFileName(exe.RelativePath), targetExeName, StringComparison.OrdinalIgnoreCase))
-                        {
-                            isTarget = true;
-                        }
-                    }
-
-                    if (isTarget && targetApi.HasValue)
-                    {
-                        continue;
-                    }
-
                     if (!IsDxvkSupported(exe.LastKnownApi))
                     {
                         string exeName = !string.IsNullOrWhiteSpace(exe.DisplayName) ? exe.DisplayName : exe.RelativePath;
