@@ -578,32 +578,53 @@ def normalize_curated_links(content: str, base_url: str, doc_dir: str = "docs") 
 
 
 def extract_curated_content(curated_text: str, base_url: Optional[str] = None) -> str:
-    """Extracts curated work queue and governance sections from docs/AI-CURRENT-STATE.md."""
-    if not curated_text:
-        return ""
+    """
+    Extracts curated work queue and governance sections from docs/AI-CURRENT-STATE.md.
+    Detects each required section independently. For missing/unrecognized sections,
+    emits explicit diagnostic warnings and an absolute source-document link,
+    preserving recognized sections and never falling back to the full document.
+    """
+    doc_link = (
+        f"[docs/AI-CURRENT-STATE.md]({base_url.rstrip('/')}/docs/AI-CURRENT-STATE.md)"
+        if base_url
+        else "`docs/AI-CURRENT-STATE.md`"
+    )
+
+    if not curated_text or not curated_text.strip():
+        return (
+            f"> **Warning**: Curated orientation content is empty; "
+            f"view full repository orientation in {doc_link}."
+        )
 
     extracted = []
 
-    # Extract Work Queue section (supporting both naming variants)
+    # 1. Extract Work Queue section (supporting both naming variants)
     queue_match = re.search(
         r"(## 2\.\s+Active Work[^\n]*[\s\S]*?)(?=\n---\s*\n\s*## 3\.|\n## 3\.|\Z)",
         curated_text,
     )
     if queue_match:
         extracted.append(queue_match.group(1).strip())
+    else:
+        extracted.append(
+            f"> **Warning**: Active work governance section could not be extracted from curated orientation; "
+            f"view full active work queue and governance rules in {doc_link}."
+        )
 
-    # Extract Decisions section (delimit before Section 6 or subsequent section)
+    # 2. Extract Decisions section (delimit before Section 6 or subsequent numbered section)
     decisions_match = re.search(
         r"(## 5\.\s+[^\n]*?Decisions[^\n]*[\s\S]*?)(?=\n---\s*\n\s*## 6\.|\n## 6\.|\n## [0-9]+\.|\Z)",
         curated_text,
     )
     if decisions_match:
         extracted.append(decisions_match.group(1).strip())
-
-    if not extracted:
-        res = curated_text.strip()
     else:
-        res = "\n\n".join(extracted)
+        extracted.append(
+            f"> **Warning**: Architectural and governance decisions section could not be extracted from curated orientation; "
+            f"view decisions and policy status in {doc_link}."
+        )
+
+    res = "\n\n".join(extracted)
 
     if base_url:
         res = normalize_curated_links(res, base_url)

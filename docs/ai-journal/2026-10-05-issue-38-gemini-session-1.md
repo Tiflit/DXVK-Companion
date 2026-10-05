@@ -32,10 +32,28 @@ Implemented bounded workflow cleanup and dashboard extraction repairs per Issue 
 - Provider token/quota consumption: not measured
 - Elapsed human clock time: not measured
 
+### Focused Revision 1 (Addressing chatgpt-20261005-pr39-review1)
+- **Timestamp**: 2026-10-05 15:52:00 UTC
+- **Review Finding R1 (Curated Section Warning & Fallback Prevention)**:
+  - Updated `extract_curated_content` in `scripts/ai-workflow/update_dashboard.py` to independently detect Section 2 and Section 5.
+  - If either section is unrecognized or missing, emits an explicit diagnostic warning block with an absolute source-document link (`[docs/AI-CURRENT-STATE.md]({base_url}/docs/AI-CURRENT-STATE.md)`), while preserving any recognized section.
+  - Removed whole-document fallback (`res = curated_text.strip()`), ensuring Section 1 historical milestones and Section 6 operations are never leaked into the dashboard.
+  - Preserved distinction between machine fact acquisition completeness (`COMPLETE`) and curated extraction completeness.
+- **Empirical Demonstration of Pre-Repair Failure**:
+  - Added 3 failure-detection tests in `tests/ai-workflow/test_dashboard.py`:
+    - `test_missing_section_2_emits_warning_preserves_section_5_and_excludes_history`: Failed pre-repair with `AssertionError: 'Warning' not found` due to silent omission.
+    - `test_missing_section_5_emits_warning_preserves_section_2_and_excludes_history`: Failed pre-repair with `AssertionError: 'Warning' not found` due to silent omission.
+    - `test_both_sections_missing_emits_both_warnings_and_never_falls_back_to_whole_document`: Failed pre-repair due to whole-document fallback returning Section 1 and Section 6.
+  - All 3 tests pass post-repair. Total suite: 137 tests passing.
+- **Editorial Corrections**:
+  - `docs/AI-CURRENT-STATE.md` §4: Linked PR #37 recorded limitations (conservative manual Reapply marker retention; uncertified GUI detection / concurrency edge cases).
+  - `docs/AI-CURRENT-STATE.md` §5: Narrowed blanket Phase A completion to specifically tracked decisions (#12, #14, #15, #16, #18); marked #32 as implemented via PR #34.
+  - PR #39 body: Formatted via body file using `update_pr_body.py` to eliminate stray escaping characters while preserving review records verbatim.
+
 ### Verification
-- Python workflow test suite: 134 passed, 0 failed (`python -m unittest discover -s tests/ai-workflow -v`).
-- Dashboard dry-run preview: Verified generated markdown against actual `docs/AI-CURRENT-STATE.md` with absolute link resolution and clean Section 2 & 5 extraction.
+- Python workflow test suite: 137 passed, 0 failed (`python -m unittest discover -s tests/ai-workflow -v`).
+- Dashboard dry-run preview: Verified clean output with all editorial corrections.
 - Worktree and scope check: Modified files strictly within Issue #38 Allowed paths.
 
 ### Next Ownership & Action
-Open PR linking Issue #38, format body with `update_pr_body.py`, generate compact handoff snapshot with `generate_handoff.py`, and hand off to ChatGPT for verification. Leave PR unmerged for human decision.
+Return focused revision handoff snapshot to ChatGPT for coordinator verification; keep PR #39 unmerged for human decision.

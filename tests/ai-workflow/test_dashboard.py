@@ -928,6 +928,112 @@ class TestDashboardGenerator(unittest.TestCase):
         base_url = f"https://github.com/{self.repo}/blob/{self.main_sha}"
         self.assertIn(f"{base_url}/docs/spec/DXVK-COMPANION-SPEC.md", rendered)
 
+    def test_missing_section_2_emits_warning_preserves_section_5_and_excludes_history(self):
+        """R1: When Section 2 is missing/renamed, emit warning with absolute doc link,
+        preserve Section 5, exclude Section 1/6, and keep machine fact status COMPLETE.
+        """
+        doc_path = REPO_ROOT / "docs" / "AI-CURRENT-STATE.md"
+        real_text = doc_path.read_text(encoding="utf-8")
+        # Mutate Section 2 heading to an unrecognized variant
+        mutated_text = real_text.replace(
+            "## 2. Active Work Governance & Decision Prerequisites",
+            "## 2. Work Governance & Decision Prerequisites",
+        )
+        base_url = f"https://github.com/{self.repo}/blob/{self.main_sha}"
+        extracted = update_dashboard.extract_curated_content(mutated_text, base_url=base_url)
+
+        # 1. Section 2 diagnostic warning is emitted with absolute source doc link
+        self.assertIn("Warning", extracted)
+        self.assertIn("Active work governance section could not be extracted", extracted)
+        self.assertIn(f"[docs/AI-CURRENT-STATE.md]({base_url}/docs/AI-CURRENT-STATE.md)", extracted)
+
+        # 2. Section 5 is preserved
+        self.assertIn("## 5. Architectural & Governance Decisions", extracted)
+        self.assertIn("Issue #14", extracted)
+
+        # 3. Section 1 and Section 6 are NOT leaked
+        self.assertNotIn("## 1. Foundational Milestones", extracted)
+        self.assertNotIn("## 6. Live Dashboard Discovery", extracted)
+
+        # 4. Rendered output verification
+        facts = update_dashboard.RepositoryFacts(main_head_sha=self.main_sha)
+        rendered = update_dashboard.render_dashboard(facts, mutated_text, repo=self.repo)
+        self.assertIn("Status: `COMPLETE`", rendered)
+        self.assertIn("Active work governance section could not be extracted", rendered)
+        self.assertIn("## 5. Architectural & Governance Decisions", rendered)
+        self.assertNotIn("## 1. Foundational Milestones", rendered)
+        self.assertNotIn("## 6. Live Dashboard Discovery", rendered)
+
+    def test_missing_section_5_emits_warning_preserves_section_2_and_excludes_history(self):
+        """R1: When Section 5 is missing/renamed, emit warning with absolute doc link,
+        preserve Section 2, exclude Section 1/6, and keep machine fact status COMPLETE.
+        """
+        doc_path = REPO_ROOT / "docs" / "AI-CURRENT-STATE.md"
+        real_text = doc_path.read_text(encoding="utf-8")
+        # Mutate Section 5 heading to an unrecognized variant
+        mutated_text = real_text.replace(
+            "## 5. Architectural & Governance Decisions",
+            "## 5. Approved Policies",
+        )
+        base_url = f"https://github.com/{self.repo}/blob/{self.main_sha}"
+        extracted = update_dashboard.extract_curated_content(mutated_text, base_url=base_url)
+
+        # 1. Section 2 is preserved
+        self.assertIn("## 2. Active Work Governance & Decision Prerequisites", extracted)
+
+        # 2. Section 5 diagnostic warning is emitted with absolute source doc link
+        self.assertIn("Warning", extracted)
+        self.assertIn("Architectural and governance decisions section could not be extracted", extracted)
+        self.assertIn(f"[docs/AI-CURRENT-STATE.md]({base_url}/docs/AI-CURRENT-STATE.md)", extracted)
+
+        # 3. Section 1 and Section 6 are NOT leaked
+        self.assertNotIn("## 1. Foundational Milestones", extracted)
+        self.assertNotIn("## 6. Live Dashboard Discovery", extracted)
+
+        # 4. Rendered output verification
+        facts = update_dashboard.RepositoryFacts(main_head_sha=self.main_sha)
+        rendered = update_dashboard.render_dashboard(facts, mutated_text, repo=self.repo)
+        self.assertIn("Status: `COMPLETE`", rendered)
+        self.assertIn("## 2. Active Work Governance & Decision Prerequisites", rendered)
+        self.assertIn("Architectural and governance decisions section could not be extracted", rendered)
+        self.assertNotIn("## 1. Foundational Milestones", rendered)
+        self.assertNotIn("## 6. Live Dashboard Discovery", rendered)
+
+    def test_both_sections_missing_emits_both_warnings_and_never_falls_back_to_whole_document(self):
+        """R1: When both Section 2 and Section 5 are missing/renamed, emit both warnings,
+        never fall back to copying the whole document, and exclude Section 1/6.
+        """
+        doc_path = REPO_ROOT / "docs" / "AI-CURRENT-STATE.md"
+        real_text = doc_path.read_text(encoding="utf-8")
+        mutated_text = real_text.replace(
+            "## 2. Active Work Governance & Decision Prerequisites",
+            "## 2. Work Governance",
+        ).replace(
+            "## 5. Architectural & Governance Decisions",
+            "## 5. Approved Policies",
+        )
+        base_url = f"https://github.com/{self.repo}/blob/{self.main_sha}"
+        extracted = update_dashboard.extract_curated_content(mutated_text, base_url=base_url)
+
+        # 1. Both warnings emitted
+        self.assertIn("Active work governance section could not be extracted", extracted)
+        self.assertIn("Architectural and governance decisions section could not be extracted", extracted)
+        self.assertIn(f"[docs/AI-CURRENT-STATE.md]({base_url}/docs/AI-CURRENT-STATE.md)", extracted)
+
+        # 2. Never falls back to whole document
+        self.assertNotIn("## 1. Foundational Milestones", extracted)
+        self.assertNotIn("## 6. Live Dashboard Discovery", extracted)
+        self.assertNotIn("Historical through 2026-10-04", extracted)
+
+        # 3. Rendered output verification
+        facts = update_dashboard.RepositoryFacts(main_head_sha=self.main_sha)
+        rendered = update_dashboard.render_dashboard(facts, mutated_text, repo=self.repo)
+        self.assertIn("Status: `COMPLETE`", rendered)
+        self.assertIn("Active work governance section could not be extracted", rendered)
+        self.assertIn("Architectural and governance decisions section could not be extracted", rendered)
+        self.assertNotIn("## 1. Foundational Milestones", rendered)
+        self.assertNotIn("## 6. Live Dashboard Discovery", rendered)
+
 
 if __name__ == "__main__":
     unittest.main()

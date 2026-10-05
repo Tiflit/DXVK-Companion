@@ -92,19 +92,20 @@ Active task assignments, in-flight work, and open PR inventories are derived dyn
 ### Verification Limitations & Release Readiness
 - **Cleared Backlog != Release Readiness**: Successful task backlog clearance and headless test passes establish bounded component safety and workflow continuity, but do not constitute broader release readiness.
 - **Verification Environment Limitations**: Headless CI environments verify headless logic, simulated mocks, and automated workflows; runtime behaviors such as Windows GUI notification delivery (e.g. PR #37 balloon/toast notifications) and live graphics driver interactions remain unverified without dedicated manual or desktop integration testing.
+- **Recorded Feature Limitations ([PR #37](https://github.com/Tiflit/DXVK-Companion/pull/37))**: Under Issue #16's lifecycle policy, conservative suppression retains the cancellation marker on process-based and direct Reapply paths unless cleared by an explicit user request; end-to-end GUI detection and crash/concurrency edge cases remain uncertified by headless test suites.
 
 ---
 
 ## 5. Architectural & Governance Decisions
 
 ### Unresolved Decisions
-- **None currently pending**: All Phase A architectural and safety policy choices have been approved and implemented. Policy implementation for future tasks remains blocked until explicit human approval is authenticated in the respective GitHub Issue.
+- **None currently pending**: All specifically tracked Phase A architectural and safety policy decisions (#12, #14, #15, #16, #18) are resolved and implemented. Policy implementation for future tasks remains blocked until explicit human approval is authenticated in the respective GitHub Issue.
 
 ### Preserved Approved Decisions
 - **Issue #14 (Shared-Directory Multi-Executable Policy)**: Approved installation-wide compatibility refusal across shared directories, with Restore and RestoreAll operations preserved ([Issue #14](https://github.com/Tiflit/DXVK-Companion/issues/14), [PR #35](https://github.com/Tiflit/DXVK-Companion/pull/35)).
 - **Issue #15 (API Reassessment before Queued Execution)**: Implemented pre-execution API reassessment, conservative conflict handling, and executable-path identity alignment ([Issue #15](https://github.com/Tiflit/DXVK-Companion/issues/15), [PR #36](https://github.com/Tiflit/DXVK-Companion/pull/36)).
 - **Issue #16 (Lifecycle for Incompatible Pending Actions)**: Implemented terminal cancellation for compatibility-refused pending actions, durable cancellation context, and automatic non-revival until fresh deliberate user intent ([Issue #16](https://github.com/Tiflit/DXVK-Companion/issues/16), [PR #37](https://github.com/Tiflit/DXVK-Companion/pull/37)).
-- **Issue #32 (Clean-Slate V1 Legacy-Import Removal)**: Tracked implementation task following Issue #18 to remove legacy profile import logic per approved clean-slate V1 specification ([Issue #32](https://github.com/Tiflit/DXVK-Companion/issues/32)).
+- **Issue #32 (Clean-Slate V1 Legacy-Import Removal)**: Implemented clean-slate V1 legacy profile import removal following Issue #18 ([Issue #32](https://github.com/Tiflit/DXVK-Companion/issues/32), [PR #34](https://github.com/Tiflit/DXVK-Companion/pull/34)).
 - **Normative Specification Authority (Issue #12)**: Canonical specification is [`docs/spec/DXVK-COMPANION-SPEC.md`](../docs/spec/DXVK-COMPANION-SPEC.md), with [`docs/spec/DXVK-Companion-PhaseA5-Safety-and-Identity-Design-FINAL.md`](../docs/spec/DXVK-Companion-PhaseA5-Safety-and-Identity-Design-FINAL.md) as normative safety supplement.
 - **Clean-Slate V1 Policy**: No legacy configuration import; modern clean-slate setup.
 - **Deployment Guards**: Refuse DXVK deployment for DX12 and Vulkan executables, while preserving restore operations.
