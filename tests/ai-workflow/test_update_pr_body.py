@@ -846,6 +846,417 @@ class TestUpdatePrBody(unittest.TestCase):
         finally:
             f_path.unlink()
 
+    # =========================================================================
+    # 8. Review 1 Follow-ups (R1, R2, R3 Repairs)
+    # =========================================================================
+
+    def test_append_input_rejects_unmarked_prefix_or_suffix(self):
+        # Prefix
+        with self.assertRaises(SecurityValidationError) as cm:
+            parse_and_validate_append_input("Unmarked prefix\n" + self.sample_append_block)
+        self.assertIn("surrounding unmarked text is forbidden", str(cm.exception).lower())
+
+        # Suffix
+        with self.assertRaises(SecurityValidationError) as cm:
+            parse_and_validate_append_input(self.sample_append_block + "\nUnmarked suffix")
+        self.assertIn("surrounding unmarked text is forbidden", str(cm.exception).lower())
+
+    @patch("urllib.request.urlopen")
+    def test_issue_check_idempotency_fails_closed_on_malformed_remote_history(self, mock_urlopen):
+        malformed_body = self.sample_issue_body + "\n<!-- AI-REVIEW-RECORD: unclosed -->\nSome text without end marker"
+        mock_urlopen.return_value = MockHttpResponse({
+            "number": 42,
+            "body": malformed_body,
+        })
+        with tempfile.NamedTemporaryFile("w", delete=False) as f:
+            f.write(self.sample_append_block)
+            f_path = Path(f.name)
+        try:
+            test_args = ["update_pr_body.py", "--issue", "42", "--append-file", str(f_path)]
+            with patch.object(sys, "argv", test_args):
+                with patch("sys.stderr", new_callable=io.StringIO) as mock_err:
+                    exit_code = update_pr_body.main()
+                    self.assertEqual(exit_code, 1)
+                    self.assertIn("malformed record markers", mock_err.getvalue().lower())
+
+            for call in mock_urlopen.call_args_list:
+                req = call[0][0]
+                method = req.get_method() if hasattr(req, "get_method") else "GET"
+                self.assertNotEqual(method, "PATCH")
+        finally:
+            f_path.unlink()
+
+    @patch("urllib.request.urlopen")
+    def test_issue_check_idempotency_fails_closed_on_duplicate_existing_ids_with_changed_append(self, mock_urlopen):
+        duplicate_record = (
+            "<!-- AI-ASSIGNMENT-RECORD: fixture -->\n"
+            "Assignment 1\n"
+            "<!-- AI-ASSIGNMENT-RECORD-END -->\n\n"
+            "<!-- AI-ASSIGNMENT-RECORD: fixture -->\n"
+            "Assignment 1\n"
+            "<!-- AI-ASSIGNMENT-RECORD-END -->"
+        )
+        remote_body = f"{self.sample_issue_body}\n\n{duplicate_record}"
+        changed_append = (
+            "<!-- AI-ASSIGNMENT-RECORD: fixture -->\n"
+            "Changed Assignment!\n"
+            "<!-- AI-ASSIGNMENT-RECORD-END -->"
+        )
+        mock_urlopen.return_value = MockHttpResponse({
+            "number": 42,
+            "body": remote_body,
+        })
+        with tempfile.TemporaryDirectory() as tmp_backup_dir:
+            with tempfile.NamedTemporaryFile("w", delete=False) as f:
+                f.write(changed_append)
+                f_path = Path(f.name)
+            try:
+                test_args = [
+                    "update_pr_body.py",
+                    "--issue", "42",
+                    "--append-file", str(f_path),
+                    "--expected-base-hash", compute_body_sha256(remote_body),
+                    "--backup-dir", tmp_backup_dir,
+                    "--write",
+                    "--token", "tok",
+                ]
+                with patch.object(sys, "argv", test_args):
+                    with patch("sys.stderr", new_callable=io.StringIO) as mock_err:
+                        exit_code = update_pr_body.main()
+                        self.assertEqual(exit_code, 1)
+                        self.assertIn("malformed record markers", mock_err.getvalue().lower())
+
+                for call in mock_urlopen.call_args_list:
+                    req = call[0][0]
+                    method = req.get_method() if hasattr(req, "get_method") else "GET"
+                    self.assertNotEqual(method, "PATCH")
+            finally:
+                f_path.unlink()
+
+    @patch("urllib.request.urlopen")
+    def test_pr_preview_redacts_removed_private_path_in_diff(self, mock_urlopen):
+        remote_leaking_body = (
+            "## Summary\nOld summary with C:\\Users\\alice_secret\\passwords.txt\n\n"
+            "## Scope\nscripts/\n\n## Verification\nDone\n\n## Documentation\nDone\n"
+        )
+        proposed_clean_body = (
+            "## Summary\nClean summary without any private path.\n\n"
+            "## Scope\nscripts/\n\n## Verification\nDone\n\n## Documentation\nDone\n"
+        )
+        mock_urlopen.return_value = MockHttpResponse({
+            "number": 33,
+            "body": remote_leaking_body,
+        })
+        test_args = ["update_pr_body.py", "--pr", "33", "--body", proposed_clean_body]
+        with patch.object(sys, "argv", test_args):
+            with patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+                exit_code = update_pr_body.main()
+                self.assertEqual(exit_code, 0)
+                out = mock_out.getvalue()
+                self.assertIn("[REDACTED_PATH]", out)
+                self.assertNotIn("alice_secret", out)
+                self.assertNotIn("C:\\Users\\alice_secret", out)
+
+    @patch("urllib.request.urlopen")
+    def test_issue_append_with_token_shaped_id_fails_closed_without_echoing_token(self, mock_urlopen):
+        mock_urlopen.return_value = MockHttpResponse({
+            "number": 42,
+            "body": self.sample_issue_body,
+        })
+        token_id = "ghp_0123456789abcdef0123456789abcdef"
+        token_append = (
+            f"<!-- AI-POST-MERGE-RECORD: {token_id} -->\n"
+            "Post merge content\n"
+            "<!-- AI-POST-MERGE-RECORD-END -->"
+        )
+        with tempfile.NamedTemporaryFile("w", delete=False) as f:
+            f.write(token_append)
+            f_path = Path(f.name)
+        try:
+            test_args = ["update_pr_body.py", "--issue", "42", "--append-file", str(f_path)]
+            with patch.object(sys, "argv", test_args):
+                with patch("sys.stderr", new_callable=io.StringIO) as mock_err:
+                    exit_code = update_pr_body.main()
+                    self.assertEqual(exit_code, 1)
+                    err = mock_err.getvalue()
+                    self.assertIn("GitHub credential or bearer token", err)
+                    self.assertNotIn(token_id, err)
+        finally:
+            f_path.unlink()
+
+    @patch("urllib.request.urlopen")
+    def test_safe_backup_display_redacts_personal_home_path(self, mock_urlopen):
+        remote_body = self.sample_issue_body
+        expected_hash = compute_body_sha256(remote_body)
+        expected_final = prepare_issue_candidate(remote_body, self.sample_append_block)
+
+        call_count = 0
+        def fake_urlopen(req, *args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            method = req.get_method() if hasattr(req, "get_method") else "GET"
+            if method == "PATCH":
+                return MockHttpResponse({"number": 42, "body": expected_final})
+            if call_count <= 2:
+                return MockHttpResponse({"number": 42, "body": remote_body})
+            return MockHttpResponse({"number": 42, "body": expected_final})
+
+        mock_urlopen.side_effect = fake_urlopen
+
+        with tempfile.NamedTemporaryFile("w", delete=False) as f:
+            f.write(self.sample_append_block)
+            f_path = Path(f.name)
+        try:
+            personal_backup_dir = Path("C:/Users/alice_private/custom_backups")
+            with patch.object(update_pr_body, "create_prewrite_backup") as mock_backup:
+                mock_backup.return_value = personal_backup_dir / "issue_42_backup.md"
+                test_args = [
+                    "update_pr_body.py",
+                    "--issue", "42",
+                    "--append-file", str(f_path),
+                    "--expected-base-hash", expected_hash,
+                    "--write",
+                    "--token", "tok",
+                ]
+                with patch.object(sys, "argv", test_args):
+                    with patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+                        exit_code = update_pr_body.main()
+                        self.assertEqual(exit_code, 0)
+                        out = mock_out.getvalue()
+                        self.assertIn("Pre-write local recovery backup saved to:", out)
+                        self.assertIn("[REDACTED_PATH]", out)
+                        self.assertNotIn("alice_private", out)
+        finally:
+            f_path.unlink()
+
+    def test_exception_diagnostics_sanitize_personal_paths_and_tokens(self):
+        exc_with_win_slash = OSError("Cannot access C:/Users/secret_user/keys.pem")
+        clean_win = update_pr_body.sanitize_diagnostic(str(exc_with_win_slash))
+        self.assertIn("[REDACTED_PATH]", clean_win)
+        self.assertNotIn("secret_user", clean_win)
+
+        exc_with_posix = OSError("Cannot read /home/secret_user/test.txt")
+        clean_posix = update_pr_body.sanitize_diagnostic(str(exc_with_posix))
+        self.assertIn("[REDACTED_PATH]", clean_posix)
+        self.assertNotIn("secret_user", clean_posix)
+
+        exc_with_token = ValueError("Failed with token ghp_9876543210fedcba9876543210")
+        clean_token = update_pr_body.sanitize_diagnostic(str(exc_with_token))
+        self.assertIn("[REDACTED_TOKEN]", clean_token)
+        self.assertNotIn("ghp_9876543210", clean_token)
+
+    @patch("urllib.request.urlopen")
+    def test_issue_noop_fails_closed_if_remote_body_contains_privacy_violation(self, mock_urlopen):
+        remote_with_block_and_leak = (
+            f"{self.sample_issue_body}\n"
+            f"Here is /home/secret_user/passwords.txt\n\n"
+            f"{self.sample_append_block}"
+        )
+        current_hash = compute_body_sha256(remote_with_block_and_leak)
+        mock_urlopen.return_value = MockHttpResponse({
+            "number": 42,
+            "body": remote_with_block_and_leak,
+        })
+        with tempfile.NamedTemporaryFile("w", delete=False) as f:
+            f.write(self.sample_append_block)
+            f_path = Path(f.name)
+        try:
+            test_args = [
+                "update_pr_body.py",
+                "--issue", "42",
+                "--append-file", str(f_path),
+                "--expected-base-hash", current_hash,
+                "--write",
+                "--token", "tok",
+            ]
+            with patch.object(sys, "argv", test_args):
+                with patch("sys.stderr", new_callable=io.StringIO) as mock_err:
+                    exit_code = update_pr_body.main()
+                    self.assertEqual(exit_code, 1)
+                    err = mock_err.getvalue()
+                    self.assertIn("POSIX personal-home path", err)
+                    self.assertNotIn("secret_user", err)
+
+            for call in mock_urlopen.call_args_list:
+                req = call[0][0]
+                method = req.get_method() if hasattr(req, "get_method") else "GET"
+                self.assertNotEqual(method, "PATCH")
+        finally:
+            f_path.unlink()
+
+    @patch("urllib.request.urlopen")
+    def test_issue_noop_write_aborts_if_remote_body_modified_during_verification(self, mock_urlopen):
+        remote_with_block = f"{self.sample_issue_body}\n\n{self.sample_append_block}"
+        concurrent_changed_body = f"{remote_with_block}\n<!-- concurrent comment -->"
+        current_hash = compute_body_sha256(remote_with_block)
+
+        call_count = 0
+        def fake_urlopen(req, *args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return MockHttpResponse({"number": 42, "body": remote_with_block})
+            elif call_count == 2:
+                # Verification GET discovers concurrent modification!
+                return MockHttpResponse({"number": 42, "body": concurrent_changed_body})
+            return MockHttpResponse({})
+
+        mock_urlopen.side_effect = fake_urlopen
+
+        with tempfile.NamedTemporaryFile("w", delete=False) as f:
+            f.write(self.sample_append_block)
+            f_path = Path(f.name)
+        try:
+            test_args = [
+                "update_pr_body.py",
+                "--issue", "42",
+                "--append-file", str(f_path),
+                "--expected-base-hash", current_hash,
+                "--write",
+                "--token", "tok",
+            ]
+            with patch.object(sys, "argv", test_args):
+                with patch("sys.stderr", new_callable=io.StringIO) as mock_err:
+                    exit_code = update_pr_body.main()
+                    self.assertEqual(exit_code, 1)
+                    err = mock_err.getvalue()
+                    self.assertIn("concurrent modification detected during no-op verification", err.lower())
+
+            for call in mock_urlopen.call_args_list:
+                req = call[0][0]
+                method = req.get_method() if hasattr(req, "get_method") else "GET"
+                self.assertNotEqual(method, "PATCH")
+        finally:
+            f_path.unlink()
+
+    @patch("urllib.request.urlopen")
+    def test_issue_noop_write_aborts_if_record_disappears_during_verification(self, mock_urlopen):
+        remote_with_block = f"{self.sample_issue_body}\n\n{self.sample_append_block}"
+        current_hash = compute_body_sha256(remote_with_block)
+
+        call_count = 0
+        def fake_urlopen(req, *args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return MockHttpResponse({"number": 42, "body": remote_with_block})
+            elif call_count == 2:
+                # Verification GET returns body where the record was removed
+                return MockHttpResponse({"number": 42, "body": self.sample_issue_body})
+            return MockHttpResponse({})
+
+        mock_urlopen.side_effect = fake_urlopen
+
+        with tempfile.NamedTemporaryFile("w", delete=False) as f:
+            f.write(self.sample_append_block)
+            f_path = Path(f.name)
+        try:
+            test_args = [
+                "update_pr_body.py",
+                "--issue", "42",
+                "--append-file", str(f_path),
+                "--expected-base-hash", current_hash,
+                "--write",
+                "--token", "tok",
+            ]
+            with patch.object(sys, "argv", test_args):
+                with patch("sys.stderr", new_callable=io.StringIO) as mock_err:
+                    exit_code = update_pr_body.main()
+                    self.assertEqual(exit_code, 1)
+                    err = mock_err.getvalue()
+                    self.assertIn("concurrent modification detected during no-op verification", err.lower())
+
+            for call in mock_urlopen.call_args_list:
+                req = call[0][0]
+                method = req.get_method() if hasattr(req, "get_method") else "GET"
+                self.assertNotEqual(method, "PATCH")
+        finally:
+            f_path.unlink()
+
+    @patch("urllib.request.urlopen")
+    def test_issue_noop_write_aborts_if_verification_get_fails(self, mock_urlopen):
+        remote_with_block = f"{self.sample_issue_body}\n\n{self.sample_append_block}"
+        current_hash = compute_body_sha256(remote_with_block)
+
+        call_count = 0
+        def fake_urlopen(req, *args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return MockHttpResponse({"number": 42, "body": remote_with_block})
+            elif call_count == 2:
+                # Verification GET throws network error
+                raise OSError("Connection reset by peer")
+            return MockHttpResponse({})
+
+        mock_urlopen.side_effect = fake_urlopen
+
+        with tempfile.NamedTemporaryFile("w", delete=False) as f:
+            f.write(self.sample_append_block)
+            f_path = Path(f.name)
+        try:
+            test_args = [
+                "update_pr_body.py",
+                "--issue", "42",
+                "--append-file", str(f_path),
+                "--expected-base-hash", current_hash,
+                "--write",
+                "--token", "tok",
+            ]
+            with patch.object(sys, "argv", test_args):
+                with patch("sys.stderr", new_callable=io.StringIO) as mock_err:
+                    exit_code = update_pr_body.main()
+                    self.assertEqual(exit_code, 1)
+                    err = mock_err.getvalue()
+                    self.assertIn("failed to verify idempotent no-op state", err.lower())
+
+            for call in mock_urlopen.call_args_list:
+                req = call[0][0]
+                method = req.get_method() if hasattr(req, "get_method") else "GET"
+                self.assertNotEqual(method, "PATCH")
+        finally:
+            f_path.unlink()
+
+    @patch("urllib.request.urlopen")
+    def test_issue_noop_write_success_when_verified(self, mock_urlopen):
+        remote_with_block = f"{self.sample_issue_body}\n\n{self.sample_append_block}"
+        current_hash = compute_body_sha256(remote_with_block)
+
+        call_count = 0
+        def fake_urlopen(req, *args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            return MockHttpResponse({"number": 42, "body": remote_with_block})
+
+        mock_urlopen.side_effect = fake_urlopen
+
+        with tempfile.NamedTemporaryFile("w", delete=False) as f:
+            f.write(self.sample_append_block)
+            f_path = Path(f.name)
+        try:
+            test_args = [
+                "update_pr_body.py",
+                "--issue", "42",
+                "--append-file", str(f_path),
+                "--expected-base-hash", current_hash,
+                "--write",
+                "--token", "tok",
+            ]
+            with patch.object(sys, "argv", test_args):
+                with patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+                    exit_code = update_pr_body.main()
+                    self.assertEqual(exit_code, 0)
+                    out = mock_out.getvalue()
+                    self.assertIn("idempotent no-op verified; zero writes committed", out.lower())
+
+            self.assertEqual(call_count, 2)
+            for call in mock_urlopen.call_args_list:
+                req = call[0][0]
+                method = req.get_method() if hasattr(req, "get_method") else "GET"
+                self.assertNotEqual(method, "PATCH")
+        finally:
+            f_path.unlink()
+
 
 if __name__ == "__main__":
     unittest.main()

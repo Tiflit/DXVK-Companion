@@ -571,16 +571,20 @@ python scripts/ai-workflow/update_pr_body.py --issue 42 --append-file post_merge
 
 #### Idempotent No-Op Handling
 - If an activity record with the identical record ID and exact matching content is already present in the target Issue body, `--write` performs zero PATCH requests and exits cleanly with code 0 (`idempotent no-op verified; zero writes committed`).
+- In `--write` mode, no-op reporting requires a verification re-read of the live remote state: if the remote body changed, the record disappeared, or the verification read fails, the tool exits nonzero without PATCH.
+- Privacy scanning is enforced on the remote target body during no-op checks; retrying against a body bearing privacy violations fails closed.
 - Reusing an existing record ID with conflicting content is rejected as an error.
 
 #### Fail-Closed Privacy Scanning
-- Both Issue and PR updates scan the entire proposed candidate body before generating unified diff previews or committing PATCH writes.
+- Both Issue and PR updates scan the proposed candidate body before generating unified diff previews or committing PATCH writes.
 - Detects and rejects:
-  - Windows personal-home paths (e.g. `C:\Users\<user>\...` or `C:/Users/<user>/...`)
+  - Windows personal-home paths (e.g. `C:\Users\<user>\...` or `C:/Users/<user>/...` or `\Users\<user>\...`)
   - POSIX personal-home paths (e.g. `/home/<user>/...` or `/Users/<user>/...`)
   - Secret credentials and tokens (e.g. `ghp_...`, `github_pat_...`, or Bearer authorization headers)
 - Allows generic development and repository paths (e.g. `D:\dev\...`).
-- **Diagnostic Safety**: Error reporting outputs only the matched privacy category and 1-based line number; sensitive paths, usernames, or tokens are never echoed to stdout, stderr, or diffs.
+- **Scanner Scope and Limitations**: The privacy scanner is a fail-closed guard checking bounded regular expressions for common personal-home paths and token formats; it is not a comprehensive secret scanner or DLP engine. Bounded false positives can occur if text matches path or token formats (e.g. instructional examples containing synthetic `/home/user` paths). Remediate the input text directly; no publication auto-redaction or bypass flag is provided.
+- **Diagnostic & Diff Display Safety**: Error reporting outputs only the matched privacy category and 1-based line number without echoing matched sensitive text, private input paths, or raw exceptions. Displayed diff previews safely redact matched personal paths and tokens from removed or context lines, ensuring stdout never echoes private text without altering stored history.
+- **Safe Backup Confirmation**: Backup confirmation messages display repository-relative paths or redacted paths, ensuring local user home directories are not leaked to stdout.
 
 #### Concurrency Protection & Recovery
 - **Enforced Expected Base Hash**: Issue writes require `--expected-base-hash <sha256>`. The write is aborted if the current remote body hash does not match.
@@ -592,10 +596,10 @@ python scripts/ai-workflow/update_pr_body.py --issue 42 --append-file post_merge
 - **Post-Write Read-Back Verification**: After PATCH execution, a post-write GET re-reads the remote body and verifies that its SHA-256 hash matches the expected target candidate hash. If a discrepancy is detected or the read fails, the tool issues an explicit warning (`A write may already have occurred on GitHub, but completion is unverified`) and exits with a nonzero status code.
 
 #### Explicit Concurrency Limits
-- **GitHub REST API Limitation**: GitHub's REST API lacks conditional HTTP `If-Match` / ETag support on Issue and Pull Request body PATCH endpoints.
-- **Residual Race Window**: Client-side double-GET checks and read-backs catch stale baselines, human edits during preview, and conflicting concurrent runs. However, a residual millisecond window remains between the final pre-write GET check and the PATCH call where atomic compare-and-swap (CAS) is impossible over the REST API.
+- **Client-Side Checks vs Backend Locking**: Client-side GET checks and expected-base-hash verification detect stale baselines and conflicting edits observed before the PATCH request. However, client-side checks and read-back do not establish an atomic compare-and-swap (CAS). Another writer or client can modify the remote body between the final pre-write GET and the PATCH request. Read-back verification detects a discrepancy after the fact, but cannot prevent or recover overwritten content that raced during that window. No claims are made regarding race duration or undocumented backend conditional-write behavior.
 - **Outside Client Bypasses**: The helper cannot protect against direct edits performed by outside clients, human web UI edits, or tools that bypass `update_pr_body.py`.
-- **Recovery Workflow**: If an update fails due to a concurrent modification or post-write verification discrepancy, inspect the local backup in `.ai-review-backups/`, re-fetch the live Issue body, re-verify the base hash, and re-run the append operation.
+- **Uncertain-Write and No Automatic Rollback**: If a write discrepancy or post-write read failure occurs, the helper does not attempt automatic rollback, repeated PATCH writes, or success assertions, as an unverified write may already have taken effect on GitHub. Users and agents must inspect the target-qualified local backup in `.ai-review-backups/`, re-read the live remote state, and coordinate remediation.
+- **Reduced-Capability Handoff for Connector-Only Agents**: If an agent operates in a connector-only environment without direct terminal/CLI execution access, it must NOT fall back to manual or unsafe whole-body overwrites of Issue bodies. Instead, it must follow a reduced-capability stop/handoff route: stop, record a concise handoff checkpoint with the proposed append block in the PR review packet or session log, and hand off to a CLI-capable agent or coordinator to execute the verified update.
 
 
 ### 4. Session Continuity and Checkpoint Guidelines

@@ -22,7 +22,6 @@ try:
         GitHubClient,
         is_valid_positive_int,
         is_valid_repo_name,
-        sanitize_diagnostic,
         sanitize_display_text,
     )
 except ImportError:
@@ -31,7 +30,6 @@ except ImportError:
         GitHubClient,
         is_valid_positive_int,
         is_valid_repo_name,
-        sanitize_diagnostic,
         sanitize_display_text,
     )
 
@@ -118,6 +116,50 @@ def scan_for_privacy_violations(text: str) -> List[Tuple[int, str]]:
             violations.append((line_num, "GitHub credential or bearer token"))
 
     return violations
+
+
+def sanitize_privacy_text(text: Optional[str]) -> str:
+    """
+    Sanitizes diagnostic messages, diff lines, and paths to prevent leaking
+    Windows personal-home paths (both / and \\), POSIX home paths, and credentials/tokens.
+    Replaces matched substrings with redaction placeholders.
+    """
+    if not text:
+        return ""
+    clean = str(text)
+    clean = WINDOWS_HOME_PATH_PATTERN.sub("[REDACTED_PATH]", clean)
+
+    def _redact_posix(m):
+        raw = m.group(0)
+        leading = ""
+        for ch in raw:
+            if ch in " \t\"'`(<":
+                leading += ch
+            else:
+                break
+        return leading + "[REDACTED_PATH]"
+
+    clean = POSIX_HOME_PATH_PATTERN.sub(_redact_posix, clean)
+    clean = CREDENTIAL_TOKEN_PATTERN.sub("[REDACTED_TOKEN]", clean)
+    clean = re.sub(r"\?[\w=&-]+", "?[REDACTED_QUERY]", clean)
+    return clean
+
+
+def sanitize_diagnostic(msg: Any) -> str:
+    """Sanitizes diagnostic and error messages to prevent leaking paths, tokens, or raw queries."""
+    if msg is None:
+        return ""
+    return sanitize_privacy_text(str(msg)).strip()
+
+
+def format_safe_backup_display(backup_path: Path) -> str:
+    """Formats backup confirmation path safely without leaking personal home directories."""
+    try:
+        rel_path = backup_path.relative_to(Path.cwd())
+        display_str = str(rel_path)
+    except ValueError:
+        display_str = str(backup_path)
+    return sanitize_privacy_text(display_str)
 
 
 @dataclass
@@ -216,13 +258,27 @@ def parse_and_validate_review_records(body: str) -> Dict[str, ReviewRecord]:
 def parse_and_validate_append_input(append_text: str) -> ReviewRecord:
     """
     Parses and strictly validates that the append input contains exactly one bounded activity record.
+    Requires the input to consist solely of the single bounded block plus optional surrounding whitespace.
     """
+    if not append_text or not append_text.strip():
+        raise SecurityValidationError("Append input is empty; exactly one bounded activity-record block is required.")
+
     records = parse_and_validate_review_records(append_text)
     if len(records) == 0:
         raise SecurityValidationError("Append input must contain exactly one bounded attributed activity-record block.")
     if len(records) > 1:
         raise SecurityValidationError(f"Append input contains multiple activity-record blocks ({len(records)}); exactly one is permitted.")
-    return next(iter(records.values()))
+    record = next(iter(records.values()))
+
+    # Ensure no unmarked prefix or suffix payload exists outside the bounded block
+    prefix = append_text[:record.start_pos]
+    suffix = append_text[record.end_pos:]
+    if prefix.strip() or suffix.strip():
+        raise SecurityValidationError(
+            "Append input must consist solely of the single bounded activity-record block (surrounding unmarked text is forbidden)."
+        )
+
+    return record
 
 
 def prepare_issue_candidate(remote_body: Optional[str], append_text: str) -> str:
@@ -240,14 +296,13 @@ def check_issue_idempotency(remote_body: Optional[str], append_record: ReviewRec
     """
     Checks remote body for existing record with the same ID.
     Returns (is_duplicate_identical, is_conflicting).
+    Fails closed if existing remote body contains malformed or duplicate record markers.
     """
     if not remote_body:
         return False, False
 
-    try:
-        remote_records = parse_and_validate_review_records(remote_body)
-    except SecurityValidationError:
-        remote_records = {}
+    # Fail closed on malformed existing records (do NOT catch SecurityValidationError)
+    remote_records = parse_and_validate_review_records(remote_body)
 
     if append_record.record_id in remote_records:
         existing = remote_records[append_record.record_id]
@@ -255,9 +310,6 @@ def check_issue_idempotency(remote_body: Optional[str], append_record: ReviewRec
             return True, False
         else:
             return False, True
-
-    if append_record.full_block.strip() in remote_body:
-        return True, False
 
     return False, False
 
@@ -493,11 +545,18 @@ def main() -> int:
             print(f"ERROR: Could not read append file: {sanitize_diagnostic(str(e))}", file=sys.stderr)
             return 1
 
+        # Early privacy scan on append_text before parsing, conflict checking, or echoing
+        append_violations = scan_for_privacy_violations(append_text)
+        if append_violations:
+            for line_num, category in append_violations:
+                print(f"ERROR: Privacy violation detected in append input on line {line_num}: {category}.", file=sys.stderr)
+            return 1
+
         # Validate that append input contains exactly one bounded activity-record block
         try:
             append_record = parse_and_validate_append_input(append_text)
         except SecurityValidationError as e:
-            print(f"ERROR: Append validation error: {e}", file=sys.stderr)
+            print(f"ERROR: Append validation error: {sanitize_diagnostic(str(e))}", file=sys.stderr)
             return 1
 
         # Fetch current remote Issue body
@@ -535,25 +594,76 @@ def main() -> int:
                 )
                 return 1
 
-        # Check for idempotent no-op or conflicting record reuse
-        is_noop, is_conflict = check_issue_idempotency(remote_body, append_record)
+        # Check for idempotent no-op or conflicting record reuse (fails closed on malformed remote history)
+        try:
+            is_noop, is_conflict = check_issue_idempotency(remote_body, append_record)
+        except SecurityValidationError as e:
+            print(f"ERROR: Remote Issue #{args.issue} contains malformed record markers: {sanitize_diagnostic(str(e))}", file=sys.stderr)
+            return 1
+
         if is_conflict:
-            print(f"ERROR: Conflicting record ID reuse: '{append_record.record_id}' already exists in Issue #{args.issue} with different content.", file=sys.stderr)
+            sanitized_id = sanitize_privacy_text(append_record.record_id)
+            print(f"ERROR: Conflicting record ID reuse: '{sanitized_id}' already exists in Issue #{args.issue} with different content.", file=sys.stderr)
             return 1
 
         if is_noop:
+            # Privacy check applies to the target body even on retries!
+            target_violations = scan_for_privacy_violations(remote_body)
+            if target_violations:
+                for line_num, category in target_violations:
+                    print(f"ERROR: Privacy violation detected on line {line_num}: {category}.", file=sys.stderr)
+                return 1
+
             if not args.write:
                 print(f"[PREVIEW] Issue #{args.issue} body update is an idempotent NO-OP:")
                 print(f"- Current Remote Body Hash: `{current_hash}`")
-                print(f"- Record '{append_record.record_id}' is already present in remote body with identical content.")
+                print(f"- Record '{sanitize_privacy_text(append_record.record_id)}' is already present in remote body with identical content.")
                 print("- Zero writes required.")
                 return 0
             else:
-                print(f"SUCCESS: Record '{append_record.record_id}' is already present in Issue #{args.issue} with identical content. Idempotent no-op verified; zero writes committed.")
+                # In write mode, must perform a verification re-read of remote state before reporting success!
+                try:
+                    verify_data = client.get_issue(args.issue)
+                    verify_body = verify_data.get("body", "") or ""
+                    verify_hash = compute_body_sha256(verify_body)
+                    if verify_hash != current_hash:
+                        print(
+                            f"ERROR: Concurrent modification detected during no-op verification! Remote Issue body changed since initial check. Aborting.",
+                            file=sys.stderr,
+                        )
+                        return 1
+                    # Verify record is still present and valid
+                    verify_records = parse_and_validate_review_records(verify_body)
+                    if (
+                        append_record.record_id not in verify_records
+                        or verify_records[append_record.record_id].full_block.strip() != append_record.full_block.strip()
+                    ):
+                        print(
+                            f"ERROR: Idempotent no-op verification failed: record '{sanitize_privacy_text(append_record.record_id)}' disappeared or changed during verification read. Aborting.",
+                            file=sys.stderr,
+                        )
+                        return 1
+                    # Check privacy on verify_body as well
+                    v_violations = scan_for_privacy_violations(verify_body)
+                    if v_violations:
+                        for line_num, category in v_violations:
+                            print(f"ERROR: Privacy violation detected on line {line_num}: {category}.", file=sys.stderr)
+                        return 1
+                except SecurityValidationError as e:
+                    print(f"ERROR: Remote Issue #{args.issue} became malformed during verification read: {sanitize_diagnostic(str(e))}", file=sys.stderr)
+                    return 1
+                except Exception as e:
+                    print(
+                        f"ERROR: Failed to verify idempotent no-op state: could not re-fetch Issue #{args.issue} ({sanitize_diagnostic(str(e))}). Completion is unverified.",
+                        file=sys.stderr,
+                    )
+                    return 1
+
+                print(f"SUCCESS: Record '{sanitize_privacy_text(append_record.record_id)}' is already present in Issue #{args.issue} with identical content. Idempotent no-op verified; zero writes committed.")
                 return 0
 
-        # Construct candidate whole body
-        final_body = prepare_issue_candidate(remote_body, append_text)
+        # Construct candidate whole body using validated single record block
+        final_body = prepare_issue_candidate(remote_body, append_record.full_block)
         final_hash = compute_body_sha256(final_body)
 
         # Validate candidate body for privacy leaks (fail closed before output or PATCH)
@@ -568,7 +678,7 @@ def main() -> int:
             print(f"[PREVIEW] Issue #{args.issue} body update (zero writes committed):")
             print(f"- Current Remote Body Hash: `{current_hash}`")
             print(f"- Proposed Target Body Hash: `{final_hash}`")
-            print(f"- Appended Activity Record: `{append_record.record_id}` ({append_record.family})")
+            print(f"- Appended Activity Record: `{sanitize_privacy_text(append_record.record_id)}` ({append_record.family})")
             print("")
             print("--- DIFF PREVIEW ---")
             diff = difflib.unified_diff(
@@ -578,7 +688,8 @@ def main() -> int:
                 tofile=f"Issue-{args.issue}-proposed",
                 n=3,
             )
-            sys.stdout.writelines(diff)
+            for diff_line in diff:
+                sys.stdout.write(sanitize_privacy_text(diff_line))
             print("--- END DIFF PREVIEW ---")
             print(f"\nTo commit this change, re-run with: python scripts/ai-workflow/update_pr_body.py --issue {args.issue} --append-file {args.append_file.name} --expected-base-hash {current_hash} --write")
             return 0
@@ -591,7 +702,8 @@ def main() -> int:
         # Local recovery backup
         try:
             backup_path = create_prewrite_backup("issue", args.issue, remote_body, args.backup_dir)
-            print(f"Pre-write local recovery backup saved to: {backup_path}")
+            safe_backup_display = format_safe_backup_display(backup_path)
+            print(f"Pre-write local recovery backup saved to: {safe_backup_display}")
         except Exception as e:
             print(f"ERROR saving recovery backup: {sanitize_diagnostic(str(e))}", file=sys.stderr)
             return 1
@@ -668,6 +780,13 @@ def main() -> int:
         print("ERROR: Either --body-file or --body must be specified in PR mode.", file=sys.stderr)
         return 1
 
+    # Early privacy validation on proposed body
+    proposed_violations = scan_for_privacy_violations(proposed_body)
+    if proposed_violations:
+        for line_num, category in proposed_violations:
+            print(f"ERROR: Privacy violation detected on line {line_num}: {category}.", file=sys.stderr)
+        return 1
+
     # Fetch current remote PR body
     try:
         remote_pr_data = client.get_pr(args.pr)
@@ -697,7 +816,7 @@ def main() -> int:
             adopt_unmarked=args.adopt_unmarked,
         )
     except SecurityValidationError as e:
-        print(f"ERROR: Review preservation error: {e}", file=sys.stderr)
+        print(f"ERROR: Review preservation error: {sanitize_diagnostic(str(e))}", file=sys.stderr)
         return 1
 
     final_hash = compute_body_sha256(final_body)
@@ -726,7 +845,8 @@ def main() -> int:
             tofile=f"PR-{args.pr}-proposed",
             n=3,
         )
-        sys.stdout.writelines(diff)
+        for diff_line in diff:
+            sys.stdout.write(sanitize_privacy_text(diff_line))
         print("--- END DIFF PREVIEW ---")
         print("\nTo commit this change, re-run with explicit --write flag.")
         return 0
@@ -739,7 +859,8 @@ def main() -> int:
     # Local recovery backup
     try:
         backup_path = create_prewrite_backup("pr", args.pr, remote_body, args.backup_dir)
-        print(f"Pre-write local recovery backup saved to: {backup_path}")
+        safe_backup_display = format_safe_backup_display(backup_path)
+        print(f"Pre-write local recovery backup saved to: {safe_backup_display}")
     except Exception as e:
         print(f"ERROR saving recovery backup: {sanitize_diagnostic(str(e))}", file=sys.stderr)
         return 1
