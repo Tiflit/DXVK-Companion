@@ -69,6 +69,18 @@ namespace DXVKCompanion.UI
 
             _menu = new TrayMenu(_trayIcon, profiles, dxvk, settings, _gameLibraryStore);
 
+            _dxvk.OnPendingActionCancelled += (installation, action, reason) =>
+            {
+                string name = !string.IsNullOrEmpty(installation.DisplayName)
+                    ? installation.DisplayName
+                    : Path.GetFileName(installation.InstallationPath);
+                _syncContext.Post(_ =>
+                {
+                    _trayIcon.ShowBalloonTip(5000, "DXVK Operation Cancelled",
+                        $"Pending {action.Type} for {name} was cancelled as incompatible:\n{reason}", ToolTipIcon.Warning);
+                }, null);
+            };
+
             _monitor.OnGameDetected += HandleGameDetected;
             _monitor.OnGameExited += async exePath =>
             {
@@ -81,19 +93,6 @@ namespace DXVKCompanion.UI
                         _trayIcon.ShowBalloonTip(4000, "DXVK Companion",
                             $"Operation completed safely after game exit for {Path.GetFileName(exePath)}.", ToolTipIcon.Info);
                     }, null);
-                }
-                else
-                {
-                    string? refusalReason = _dxvk.LastRefusalReason;
-                    if (!string.IsNullOrEmpty(refusalReason))
-                    {
-                        string exeName = Path.GetFileName(exePath);
-                        _syncContext.Post(_ =>
-                        {
-                            _trayIcon.ShowBalloonTip(5000, "DXVK Operation Refused",
-                                $"Pending operation for {exeName} was refused:\n{refusalReason}", ToolTipIcon.Warning);
-                        }, null);
-                    }
                 }
             };
 

@@ -418,23 +418,24 @@ namespace DXVKCompanion.PhaseATests
             installation.PendingAction = PendingAction.Install("2.5", "Queued offline");
             store.Save(installation);
 
-            // ApplyPendingAsync must return false and NOT clear pending action
+            // 1. Direct apply subcase: ApplyPendingAsync must return false and cancel incompatible pending action
             bool directApplyOk = await manager.ApplyPendingAsync(exePath);
             Assert.False(directApplyOk);
             Assert.False(File.Exists(Path.Combine(gameDir.RootPath, "d3d11.dll")));
 
             var instAfterDirect = store.FindByInstallationPath(gameDir.RootPath);
-            Assert.NotNull(instAfterDirect?.PendingAction);
-            Assert.True(instAfterDirect!.PendingAction!.IsPending);
+            Assert.NotNull(instAfterDirect);
+            Assert.Null(instAfterDirect.PendingAction);
+            Assert.NotNull(instAfterDirect.LastRefusalReason);
 
-            // ProcessAllPendingActionsAsync must return 0 and not execute
+            // ProcessAllPendingActionsAsync sees no pending action and returns 0
             int processed = await manager.ProcessAllPendingActionsAsync();
             Assert.Equal(0, processed);
             Assert.False(File.Exists(Path.Combine(gameDir.RootPath, "d3d11.dll")));
 
             var instAfterBatch = store.FindByInstallationPath(gameDir.RootPath);
-            Assert.NotNull(instAfterBatch?.PendingAction);
-            Assert.True(instAfterBatch!.PendingAction!.IsPending);
+            Assert.NotNull(instAfterBatch);
+            Assert.Null(instAfterBatch.PendingAction);
 
             // 2. Pending Reapply subcase (F2): Establish a real managed DX11 install before reclassification
             profile.Api = GraphicsApi.DX11;
@@ -461,28 +462,24 @@ namespace DXVKCompanion.PhaseATests
             managedInst.PendingAction = PendingAction.Reapply("2.5", "Queued reapply");
             store.Save(managedInst);
 
-            // Both direct apply and batch processing must refuse reapply for Vulkan and preserve the pending action
+            // Direct apply must refuse reapply for Vulkan and cancel the pending action
             bool reapplyPendingOk = await manager.ApplyPendingAsync(exePath);
             Assert.False(reapplyPendingOk);
 
             var instAfterDirectReapply = store.FindByInstallationPath(gameDir.RootPath);
-            Assert.NotNull(instAfterDirectReapply?.PendingAction);
-            Assert.True(instAfterDirectReapply!.PendingAction!.IsPending);
-            Assert.Equal(PendingActionType.Reapply, instAfterDirectReapply.PendingAction.Type);
+            Assert.NotNull(instAfterDirectReapply);
+            Assert.Null(instAfterDirectReapply.PendingAction);
+            Assert.NotNull(instAfterDirectReapply.LastRefusalReason);
 
             int processedVk = await manager.ProcessAllPendingActionsAsync();
             Assert.Equal(0, processedVk);
 
-            var instAfterBatchReapply = store.FindByInstallationPath(gameDir.RootPath);
-            Assert.NotNull(instAfterBatchReapply?.PendingAction);
-            Assert.True(instAfterBatchReapply!.PendingAction!.IsPending);
-            Assert.Equal(PendingActionType.Reapply, instAfterBatchReapply.PendingAction.Type);
-
-            // 3. Positive control: supported DX11 API allows pending reapply to execute cleanly
+            // 3. Positive control: supported DX11 API allows fresh reapply to execute cleanly
             profile.Api = GraphicsApi.DX11;
             profileStore.Save(profile);
             exeRecord.LastKnownApi = GraphicsApi.DX11;
-            store.Save(installation);
+            managedInst.PendingAction = PendingAction.Reapply("2.5", "Fresh deliberate reapply");
+            store.Save(managedInst);
 
             int executedPositive = await manager.ProcessAllPendingActionsAsync();
             Assert.Equal(1, executedPositive);

@@ -21,7 +21,7 @@ namespace DXVKCompanion.DXVK
 
     public class DxvkManager
     {
-        private enum PendingAction { Enable, Disable }
+        private enum PendingAction { None = 0, Enable = 1, Disable = 2 }
 
         private readonly DxvkInstaller _installer;
         private readonly DxvkRollback _rollback;
@@ -31,6 +31,7 @@ namespace DXVKCompanion.DXVK
         private readonly DxvkConfigManager _config;
         private readonly ConcurrentDictionary<string, PendingAction> _pending = new(StringComparer.OrdinalIgnoreCase);
         public string? LastRefusalReason { get; private set; }
+        public event Action<GameInstallation, Models.PendingAction, string>? OnPendingActionCancelled;
 
         public DxvkManager(
             DxvkInstaller installer,
@@ -366,7 +367,7 @@ namespace DXVKCompanion.DXVK
                 _gameLibraryStore.RecordDetectionSnapshot(snapshot);
             }
 
-            _pending.TryRemove(exePath, out var transientAction);
+            bool hasTransient = _pending.TryRemove(exePath, out var transientAction);
 
             var installation = ResolveInstallation(exePath);
             var profile = _profiles.GetOrCreate(exePath);
@@ -377,10 +378,7 @@ namespace DXVKCompanion.DXVK
                 var pendingType = installation.PendingAction.Type;
                 if (pendingType != PendingActionType.Restore && !DxvkCompatibility.IsInstallationSupported(installation, profile.Api, profile.ExeName, out var refusalReason))
                 {
-                    LastRefusalReason = refusalReason;
-                    installation.LastRefusalReason = refusalReason;
-                    _gameLibraryStore.Save(installation);
-                    Logger.Log($"DxvkManager: refusing pending action {pendingType} for {profile.ExeName}: {refusalReason}");
+                    CancelIncompatiblePendingAction(installation, profile, refusalReason);
                     return false;
                 }
 
@@ -410,15 +408,54 @@ namespace DXVKCompanion.DXVK
                 return success;
             }
 
-            switch (transientAction)
+            if (hasTransient)
             {
-                case PendingAction.Enable:
-                    return await EnableDxvkAsync(profile);
-                case PendingAction.Disable:
-                    return await DisableDxvkAsync(profile);
-                default:
-                    return false;
+                switch (transientAction)
+                {
+                    case PendingAction.Enable:
+                        return await EnableDxvkAsync(profile);
+                    case PendingAction.Disable:
+                        return await DisableDxvkAsync(profile);
+                }
             }
+
+            return false;
+        }
+
+        private void CancelIncompatiblePendingAction(GameInstallation installation, GameProfile profile, string? refusalReason)
+        {
+            if (installation.PendingAction == null || !installation.PendingAction.IsPending)
+                return;
+
+            var cancelledAction = installation.PendingAction;
+            string effectiveReason = refusalReason ?? "DXVK is not supported for this installation.";
+
+            // 1. Clear persisted pending action and record durable refusal reason
+            installation.PendingAction = null;
+            installation.LastRefusalReason = effectiveReason;
+            LastRefusalReason = effectiveReason;
+
+            // 2. Clear transient queued intent for all executables in this installation
+            if (installation.Executables != null)
+            {
+                foreach (var exe in installation.Executables)
+                {
+                    string fullExePath = Path.Combine(installation.InstallationPath, exe.RelativePath);
+                    _pending.TryRemove(fullExePath, out _);
+                }
+            }
+            if (!string.IsNullOrEmpty(profile.ExePath))
+            {
+                _pending.TryRemove(profile.ExePath, out _);
+            }
+
+            // 3. Persist the outcome before treating cancellation as completed
+            _gameLibraryStore.Save(installation);
+
+            Logger.Log($"DxvkManager: cancelled incompatible pending action {cancelledAction.Type} for {profile.ExeName}: {refusalReason}");
+
+            // 4. Raise notification event for the cancellation transition
+            OnPendingActionCancelled?.Invoke(installation, cancelledAction, refusalReason);
         }
 
         public async Task<int> ProcessAllPendingActionsAsync()
@@ -470,10 +507,7 @@ namespace DXVKCompanion.DXVK
 
                 if (installation.PendingAction.Type != PendingActionType.Restore && !DxvkCompatibility.IsInstallationSupported(installation, profile.Api, profile.ExeName, out var refusalReason))
                 {
-                    LastRefusalReason = refusalReason;
-                    installation.LastRefusalReason = refusalReason;
-                    _gameLibraryStore.Save(installation);
-                    Logger.Log($"DxvkManager: skipping pending action {installation.PendingAction.Type} for {profile.ExeName}: {refusalReason}");
+                    CancelIncompatiblePendingAction(installation, profile, refusalReason);
                     continue;
                 }
 

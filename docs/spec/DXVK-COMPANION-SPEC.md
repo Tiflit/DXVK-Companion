@@ -236,10 +236,10 @@ To prevent unintended DLL loading into modern-API binaries, DXVK Companion enfor
 Actions may be queued while a target game process is running or persisted across restarts in `game-library.json` (e.g. `Install`, `Update`, `Reapply`). Because game processes or siblings may dynamically load modules, receive subsequent classifications, or experience profile updates between the time an action is queued and the time it executes, Companion mandates pre-execution API reassessment:
 
 1. **Re-evaluation Timing**: Immediately prior to executing any queued or pending action (`ApplyPendingAsync` or startup batch `ProcessAllPendingActionsAsync`), Companion reassesses the effective API and architecture of the target executable and its containing installation against the latest available evidence recorded in `GameLibraryStore` and `ProfileStore`.
-2. **Unsupported Classification Refusal**: If reassessment identifies that the target executable has been reclassified to an unsupported API (`DX12`, `Vulkan`, `Unknown`, or outside the allowlist), execution is refused. The refusal reason is recorded on `GameInstallation.LastRefusalReason` and `DxvkManager.LastRefusalReason`, logged, and no game files or baselines are deployed, replaced, or touched. The existing pending action remains pending after refusal.
+2. **Unsupported Classification Refusal & Terminal Cancellation**: If reassessment identifies that the target executable has been reclassified to an unsupported API (`DX12`, `Vulkan`, `Unknown`, or outside the allowlist), execution is refused and the pending deployment action is terminally cancelled (`PendingAction = null`). The durable refusal reason is recorded on `GameInstallation.LastRefusalReason` and `DxvkManager.LastRefusalReason`, logged, and no game files or baselines are deployed, replaced, or touched. Corresponding transient queued intent is cleared. A single user notification is attempted upon the cancellation transition. Cancelled actions are not parked, retried, or automatically resumed.
 3. **Supported Positive Controls**: When reassessment confirms the executable is on a supported API (`DX11`, `DX10`, `DX9`), the queued operation proceeds normally: files are deployed, baselines tracked, restoration state updated to `Managed`, and pending action cleared.
 4. **Installation-Wide Consistency**: Under the approved installation-wide policy (§5.2.1), if any recorded sibling executable within the same installation has been reclassified to an unsupported API, the queued action is refused installation-wide.
-5. **Persisted Reload & Startup**: Upon application startup, when `ProcessAllPendingActionsAsync` reloads pending actions from `game-library.json`, it consults the reloaded evidence in `game-library.json` before attempting execution. Reclassified or incompatible installations are skipped without file deployment, with refusal reasons recorded.
+5. **Persisted Reload & Startup**: Upon application startup, when `ProcessAllPendingActionsAsync` reloads pending actions from `game-library.json`, it consults the reloaded evidence in `game-library.json` before attempting execution. Reclassified or incompatible pending deployment actions are terminally cancelled with refusal reasons recorded and notifications attempted once, without deleting unrelated installation, ownership, or baseline data. Subsequent startups or process exits do not retry cancelled work.
 6. **Restore Availability Invariant**: Queued `Restore` actions remain available and execute to restore original baselines and remove DXVK files, regardless of whether the target or sibling executables have been reclassified to DX12 or Vulkan.
 
 ## 5.3 Installation vs executable state
@@ -894,6 +894,19 @@ Prompt if authorization is required
 ```
 
 Two competing plans for the same file must never execute against stale assumptions.
+
+## 20.1 Lifecycle for Incompatible Pending Actions (Option A: Terminal Cancellation)
+
+When a queued or persisted pending deployment action (`Install`, `Update`, `Reapply`) is blocked due to compatibility refusal (target executable or any recorded sibling reclassified to `DX12`, `Vulkan`, `Unknown`, or outside the allowlist):
+
+1. **Terminal Cancellation**: The pending deployment action transitions to terminally cancelled (`PendingAction = null`). Persisted records in `game-library.json` and transient in-memory queues (`_pending`) are cleared immediately.
+2. **Durable Reason & Outcome**: The refusal reason identifying the blocking executable and API is recorded on `GameInstallation.LastRefusalReason` and persisted to disk. It remains visible in the application UI (`GameDetailsWindow`, `ManageGamesWindow`).
+3. **Preservation of Unrelated State**: Cancellation never deletes or alters unrelated installation identity, ownership, baselines, managed files, or backup archives.
+4. **Single Notification Attempt**: Companion attempts exactly one user notification (balloon tip) upon the cancellation transition (both on process exit and startup reload). Subsequent process exits, restarts, and reloads do not repeat notifications.
+5. **Non-Revival & Fresh Intent**: Subsequent reclassification back to a supported API (`DX11`, `DX10`, `DX9`) never automatically revives cancelled work. A fresh, deliberate user request is required and proceeds through standard compatibility guards.
+6. **Technical Failure Separation**: Terminal cancellation applies exclusively to compatibility refusals. Technical failures (e.g. network download failures or transaction engine errors) remain pending for subsequent retry.
+7. **Restore Availability Invariant**: Queued `Restore` actions are never blocked or cancelled as incompatible; baseline restoration always executes regardless of target or sibling graphics APIs.
+8. **Delivery & Crash Limitations**: Balloon tip notifications depend on the Windows shell tray message loop. If the application crashes or exits before the shell renders the notification, the balloon tip may not be displayed; however, the durable outcome is safely stored in `game-library.json` and visible upon subsequent inspection in the UI.
 
 ---
 
