@@ -123,8 +123,7 @@ namespace DXVKCompanion.PhaseA.Tests
 
             var refreshedInst = store.FindByInstallationPath(gameDir.RootPath);
             Assert.NotNull(refreshedInst);
-            Assert.NotNull(refreshedInst.PendingAction);
-            Assert.True(refreshedInst.PendingAction.IsPending);
+            Assert.Null(refreshedInst.PendingAction);
             Assert.NotNull(refreshedInst.LastRefusalReason);
             Assert.Contains("DX12", refreshedInst.LastRefusalReason);
             Assert.Equal(RestorationState.None, refreshedInst.RestorationState);
@@ -227,8 +226,7 @@ namespace DXVKCompanion.PhaseA.Tests
 
             var refreshedInst = store.FindByInstallationPath(gameDir.RootPath);
             Assert.NotNull(refreshedInst);
-            Assert.NotNull(refreshedInst.PendingAction);
-            Assert.True(refreshedInst.PendingAction.IsPending);
+            Assert.Null(refreshedInst.PendingAction);
             Assert.NotNull(refreshedInst.LastRefusalReason);
             Assert.Contains("Sibling", refreshedInst.LastRefusalReason);
             Assert.Contains("Vulkan", refreshedInst.LastRefusalReason);
@@ -277,8 +275,8 @@ namespace DXVKCompanion.PhaseA.Tests
                 Assert.False(File.Exists(Path.Combine(gameDir.RootPath, "d3d11.dll")));
 
                 var instAfter = store2.FindByInstallationPath(gameDir.RootPath);
-                Assert.NotNull(instAfter?.PendingAction);
-                Assert.True(instAfter!.PendingAction!.IsPending);
+                Assert.NotNull(instAfter);
+                Assert.Null(instAfter.PendingAction);
                 Assert.NotNull(instAfter.LastRefusalReason);
                 Assert.Contains("DX12", instAfter.LastRefusalReason);
             }
@@ -455,8 +453,7 @@ namespace DXVKCompanion.PhaseA.Tests
 
             var refreshedInst = store.FindByInstallationPath(gameDir.RootPath);
             Assert.NotNull(refreshedInst);
-            Assert.NotNull(refreshedInst.PendingAction);
-            Assert.True(refreshedInst.PendingAction.IsPending);
+            Assert.Null(refreshedInst.PendingAction);
             Assert.Contains("DX12", refreshedInst.LastRefusalReason);
         }
 
@@ -582,8 +579,7 @@ namespace DXVKCompanion.PhaseA.Tests
             var instAfter = store.FindByInstallationPath(gameDir.RootPath);
             Assert.NotNull(instAfter);
             Assert.Equal(GraphicsApi.Unknown, instAfter.FindExecutable("Game.exe")!.LastKnownApi);
-            Assert.NotNull(instAfter.PendingAction);
-            Assert.True(instAfter.PendingAction.IsPending);
+            Assert.Null(instAfter.PendingAction);
             Assert.NotNull(instAfter.LastRefusalReason);
             Assert.Contains("Unknown", instAfter.LastRefusalReason);
         }
@@ -647,8 +643,7 @@ namespace DXVKCompanion.PhaseA.Tests
             var instAfter = store.FindByInstallationPath(gameDir.RootPath);
             Assert.NotNull(instAfter);
             Assert.Equal(GraphicsApi.Unknown, instAfter.FindExecutable("Sibling.exe")!.LastKnownApi);
-            Assert.NotNull(instAfter.PendingAction);
-            Assert.True(instAfter.PendingAction.IsPending);
+            Assert.Null(instAfter.PendingAction);
             Assert.NotNull(instAfter.LastRefusalReason);
             Assert.Contains("Sibling.exe", instAfter.LastRefusalReason);
             Assert.Contains("Unknown", instAfter.LastRefusalReason);
@@ -688,8 +683,7 @@ namespace DXVKCompanion.PhaseA.Tests
 
             var instAfter = store.FindByInstallationPath(gameDir.RootPath);
             Assert.NotNull(instAfter);
-            Assert.NotNull(instAfter.PendingAction);
-            Assert.True(instAfter.PendingAction.IsPending);
+            Assert.Null(instAfter.PendingAction);
             Assert.NotNull(instAfter.LastRefusalReason);
             Assert.Contains("DX12", instAfter.LastRefusalReason);
         }
@@ -728,8 +722,7 @@ namespace DXVKCompanion.PhaseA.Tests
 
             var instAfter = store.FindByInstallationPath(gameDir.RootPath);
             Assert.NotNull(instAfter);
-            Assert.NotNull(instAfter.PendingAction);
-            Assert.True(instAfter.PendingAction.IsPending);
+            Assert.Null(instAfter.PendingAction);
             Assert.NotNull(instAfter.LastRefusalReason);
             Assert.Contains("Vulkan", instAfter.LastRefusalReason);
         }

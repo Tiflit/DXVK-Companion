@@ -69,6 +69,18 @@ namespace DXVKCompanion.UI
 
             _menu = new TrayMenu(_trayIcon, profiles, dxvk, settings, _gameLibraryStore);
 
+            _dxvk.OnPendingActionCancelled += (installation, action, reason) =>
+            {
+                string name = !string.IsNullOrEmpty(installation.DisplayName)
+                    ? installation.DisplayName
+                    : Path.GetFileName(installation.InstallationPath);
+                _syncContext.Post(_ =>
+                {
+                    _trayIcon.ShowBalloonTip(5000, "DXVK Operation Cancelled",
+                        $"Pending {action.Type} for {name} was cancelled as incompatible:\n{reason}", ToolTipIcon.Warning);
+                }, null);
+            };
+
             _monitor.OnGameDetected += HandleGameDetected;
             _monitor.OnGameExited += async exePath =>
             {
@@ -81,19 +93,6 @@ namespace DXVKCompanion.UI
                         _trayIcon.ShowBalloonTip(4000, "DXVK Companion",
                             $"Operation completed safely after game exit for {Path.GetFileName(exePath)}.", ToolTipIcon.Info);
                     }, null);
-                }
-                else
-                {
-                    string? refusalReason = _dxvk.LastRefusalReason;
-                    if (!string.IsNullOrEmpty(refusalReason))
-                    {
-                        string exeName = Path.GetFileName(exePath);
-                        _syncContext.Post(_ =>
-                        {
-                            _trayIcon.ShowBalloonTip(5000, "DXVK Operation Refused",
-                                $"Pending operation for {exeName} was refused:\n{refusalReason}", ToolTipIcon.Warning);
-                        }, null);
-                    }
                 }
             };
 
@@ -225,14 +224,15 @@ namespace DXVKCompanion.UI
 
                 var effectivePolicy = installation?.ManagementPolicy ?? ManagementPolicy.UseGlobal();
                 bool isAutomated = effectivePolicy.IsAutomated(_settings.GlobalPolicy);
+                bool canAutoDeploy = _dxvk.CanAutomaticallyDeploy(installation);
 
-                if (isAutomated &&
+                if (isAutomated && canAutoDeploy &&
                     dxvkCompatible && !antiCheat && !profile.DxvkEnabled &&
                     string.IsNullOrWhiteSpace(profile.DxvkVersion))
                 {
                     await _dxvk.RequestEnableAsync(profile, process);
                 }
-                else if (isAutomated && dxvkCompatible && externalChange && !antiCheat && profile.DxvkEnabled)
+                else if (isAutomated && canAutoDeploy && dxvkCompatible && externalChange && !antiCheat && profile.DxvkEnabled)
                 {
                     await _dxvk.RequestReapplyAsync(profile, process, updateBaseline: true);
                 }
