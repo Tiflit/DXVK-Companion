@@ -38,3 +38,12 @@ Executed assigned task Issue #15 within strictly bounded scope paths (`src/DXVKC
 
 ### Outcome & Next Steps
 Implementation and specification complete. Stage allowed scope files, commit, push branch, open PR referencing Issue #15, verify CI checks, and generate handoff for ChatGPT verification.
+
+### Revision 1 (2026-10-05) — Addressing Review chatgpt-20261005-pr36-review1
+- **Findings Addressed**:
+  - R1: Prevented promotion/overwriting of recorded `Unknown` API with older caller profile API in `ReassessEffectiveApi` and queueing helpers. Replaced basename/display-name matching with strict relative path `FindExecutable(relExe)` and exact sibling path matching.
+  - R2: Preserved conservative refusal on conflicting classifications without established freshness (unsupported `profile.Api` is not erased by supported library record).
+- **Reproduction & Regression Tests**: Added 5 new tests in `QueuedActionApiReassessmentTests.cs` covering target Unknown non-promotion, sibling Unknown non-promotion, DX12 vs DX11 conflict retention, Vulkan vs DX11 conflict retention, and path identity collision avoidance. Suite expanded to 13 tests (254 total .NET tests passing).
+- **Specification Alignment**: Adjusted §5.2.2 to clarify existing pending action remains pending (avoiding premature lifecycle terminology ahead of Issue #16); clarified §7.5 store precedence and conservative conflict retention.
+- **Verification**: 254/254 .NET tests pass, 130/130 workflow tests pass.
+

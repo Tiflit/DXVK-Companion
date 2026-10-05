@@ -524,5 +524,255 @@ namespace DXVKCompanion.PhaseA.Tests
             var classifier9_10 = new ApiClassifier(scanner9_10, parser);
             Assert.Equal(GraphicsApi.DX10, classifier9_10.ClassifyDetailed(proc).PrimaryApi);
         }
+
+        [Fact]
+        public async Task QueuedAction_TargetReclassifiedToUnknown_RefusesDeployment_DoesNotPromoteUnknownToSupported()
+        {
+            using var gameDir = new SyntheticTestDirectory();
+            using var storageDir = new SyntheticTestDirectory();
+            using var sourceDir = new SyntheticTestDirectory();
+
+            var (manager, _, store, profileStore, _) = CreateTestEnvironment(storageDir, sourceDir);
+
+            var exePath = gameDir.CreateFile("Game.exe", "synthetic-binary");
+
+            // Profile initially DX11
+            var profile = profileStore.GetOrCreate(exePath);
+            profile.Api = GraphicsApi.DX11;
+            profile.Architecture = "x64";
+            profileStore.Save(profile);
+
+            var installation = store.GetOrCreateInstallation(gameDir.RootPath, "UnknownReclassifiedGame");
+            var exeRecord = installation.GetOrAddExecutable("Game.exe", "Game.exe");
+            exeRecord.LastKnownApi = GraphicsApi.DX11;
+            exeRecord.LastKnownArchitecture = "x64";
+            installation.PendingAction = PendingAction.Install("2.5", "Queued while running");
+            store.Save(installation);
+
+            // Reclassify evidence to Unknown via DetectionSnapshot
+            var snapshot = new DetectionSnapshot
+            {
+                ProcessName = "Game",
+                ExecutablePath = exePath,
+                InstallationRoot = gameDir.RootPath,
+                ExecutableRelativePath = "Game.exe",
+                Classification = new ApiClassificationResult
+                {
+                    PrimaryApi = GraphicsApi.Unknown,
+                    ObservedApis = Array.Empty<GraphicsApi>(),
+                    Confidence = ApiDetectionConfidence.Unknown,
+                    Architecture = "x64"
+                },
+                TimestampUtc = DateTime.UtcNow
+            };
+            store.RecordDetectionSnapshot(snapshot);
+
+            // Verify store actually recorded Unknown
+            var instBeforeApply = store.FindByInstallationPath(gameDir.RootPath);
+            Assert.Equal(GraphicsApi.Unknown, instBeforeApply!.FindExecutable("Game.exe")!.LastKnownApi);
+
+            // Act: Attempt to apply pending action upon exit
+            bool result = await manager.ApplyPendingAsync(exePath);
+
+            // Assert: Refused, evidence must NOT be promoted to DX11, files untouched
+            Assert.False(result);
+            Assert.False(File.Exists(Path.Combine(gameDir.RootPath, "d3d11.dll")));
+            Assert.False(File.Exists(Path.Combine(gameDir.RootPath, "dxgi.dll")));
+
+            var instAfter = store.FindByInstallationPath(gameDir.RootPath);
+            Assert.NotNull(instAfter);
+            Assert.Equal(GraphicsApi.Unknown, instAfter.FindExecutable("Game.exe")!.LastKnownApi);
+            Assert.NotNull(instAfter.PendingAction);
+            Assert.True(instAfter.PendingAction.IsPending);
+            Assert.NotNull(instAfter.LastRefusalReason);
+            Assert.Contains("Unknown", instAfter.LastRefusalReason);
+        }
+
+        [Fact]
+        public async Task QueuedAction_SiblingReclassifiedToUnknown_RefusesDeployment_InstallationWide()
+        {
+            using var gameDir = new SyntheticTestDirectory();
+            using var storageDir = new SyntheticTestDirectory();
+            using var sourceDir = new SyntheticTestDirectory();
+
+            var (manager, _, store, profileStore, _) = CreateTestEnvironment(storageDir, sourceDir);
+
+            var targetPath = gameDir.CreateFile("Target_DX11.exe", "binary");
+            var siblingPath = gameDir.CreateFile("Sibling.exe", "binary");
+
+            var targetProfile = profileStore.GetOrCreate(targetPath);
+            targetProfile.Api = GraphicsApi.DX11;
+            targetProfile.Architecture = "x64";
+            profileStore.Save(targetProfile);
+
+            var siblingProfile = profileStore.GetOrCreate(siblingPath);
+            siblingProfile.Api = GraphicsApi.DX11;
+            siblingProfile.Architecture = "x64";
+            profileStore.Save(siblingProfile);
+
+            var installation = store.GetOrCreateInstallation(gameDir.RootPath, "SiblingUnknownGame");
+            var targetRecord = installation.GetOrAddExecutable("Target_DX11.exe", "Target_DX11.exe");
+            targetRecord.LastKnownApi = GraphicsApi.DX11;
+
+            var siblingRecord = installation.GetOrAddExecutable("Sibling.exe", "Sibling.exe");
+            siblingRecord.LastKnownApi = GraphicsApi.DX11;
+
+            installation.PendingAction = PendingAction.Install("2.5", "Queued for target");
+            store.Save(installation);
+
+            // Reclassify sibling to Unknown via snapshot
+            var siblingSnapshot = new DetectionSnapshot
+            {
+                ProcessName = "Sibling",
+                ExecutablePath = siblingPath,
+                InstallationRoot = gameDir.RootPath,
+                ExecutableRelativePath = "Sibling.exe",
+                Classification = new ApiClassificationResult
+                {
+                    PrimaryApi = GraphicsApi.Unknown,
+                    ObservedApis = Array.Empty<GraphicsApi>(),
+                    Confidence = ApiDetectionConfidence.Unknown
+                },
+                TimestampUtc = DateTime.UtcNow
+            };
+            store.RecordDetectionSnapshot(siblingSnapshot);
+
+            // Act: Apply pending action on the supported target
+            bool result = await manager.ApplyPendingAsync(targetPath);
+
+            // Assert: Refused installation-wide; sibling must NOT be promoted to DX11
+            Assert.False(result);
+            Assert.False(File.Exists(Path.Combine(gameDir.RootPath, "d3d11.dll")));
+
+            var instAfter = store.FindByInstallationPath(gameDir.RootPath);
+            Assert.NotNull(instAfter);
+            Assert.Equal(GraphicsApi.Unknown, instAfter.FindExecutable("Sibling.exe")!.LastKnownApi);
+            Assert.NotNull(instAfter.PendingAction);
+            Assert.True(instAfter.PendingAction.IsPending);
+            Assert.NotNull(instAfter.LastRefusalReason);
+            Assert.Contains("Sibling.exe", instAfter.LastRefusalReason);
+            Assert.Contains("Unknown", instAfter.LastRefusalReason);
+        }
+
+        [Fact]
+        public async Task QueuedAction_ConflictingKnownValues_DX12Profile_VersusDX11Record_RetainsRefusal()
+        {
+            using var gameDir = new SyntheticTestDirectory();
+            using var storageDir = new SyntheticTestDirectory();
+            using var sourceDir = new SyntheticTestDirectory();
+
+            var (manager, _, store, profileStore, _) = CreateTestEnvironment(storageDir, sourceDir);
+
+            var exePath = gameDir.CreateFile("Game.exe", "synthetic-binary");
+
+            // Profile has unsupported evidence (DX12)
+            var profile = profileStore.GetOrCreate(exePath);
+            profile.Api = GraphicsApi.DX12;
+            profile.Architecture = "x64";
+            profileStore.Save(profile);
+
+            // Library has supported record (DX11) without established freshness
+            var installation = store.GetOrCreateInstallation(gameDir.RootPath, "ConflictGame");
+            var exeRecord = installation.GetOrAddExecutable("Game.exe", "Game.exe");
+            exeRecord.LastKnownApi = GraphicsApi.DX11;
+            exeRecord.LastKnownArchitecture = "x64";
+            installation.PendingAction = PendingAction.Install("2.5", "Queued action");
+            store.Save(installation);
+
+            // Act: Apply pending action
+            bool result = await manager.ApplyPendingAsync(exePath);
+
+            // Assert: Conservative refusal invariant: supported record must NOT erase unsupported profile evidence
+            Assert.False(result);
+            Assert.False(File.Exists(Path.Combine(gameDir.RootPath, "d3d11.dll")));
+
+            var instAfter = store.FindByInstallationPath(gameDir.RootPath);
+            Assert.NotNull(instAfter);
+            Assert.NotNull(instAfter.PendingAction);
+            Assert.True(instAfter.PendingAction.IsPending);
+            Assert.NotNull(instAfter.LastRefusalReason);
+            Assert.Contains("DX12", instAfter.LastRefusalReason);
+        }
+
+        [Fact]
+        public async Task QueuedAction_ConflictingKnownValues_VulkanProfile_VersusDX11Record_RetainsRefusal()
+        {
+            using var gameDir = new SyntheticTestDirectory();
+            using var storageDir = new SyntheticTestDirectory();
+            using var sourceDir = new SyntheticTestDirectory();
+
+            var (manager, _, store, profileStore, _) = CreateTestEnvironment(storageDir, sourceDir);
+
+            var exePath = gameDir.CreateFile("Game.exe", "synthetic-binary");
+
+            // Profile has unsupported evidence (Vulkan)
+            var profile = profileStore.GetOrCreate(exePath);
+            profile.Api = GraphicsApi.Vulkan;
+            profile.Architecture = "x64";
+            profileStore.Save(profile);
+
+            // Library has supported record (DX11)
+            var installation = store.GetOrCreateInstallation(gameDir.RootPath, "VulkanConflictGame");
+            var exeRecord = installation.GetOrAddExecutable("Game.exe", "Game.exe");
+            exeRecord.LastKnownApi = GraphicsApi.DX11;
+            exeRecord.LastKnownArchitecture = "x64";
+            installation.PendingAction = PendingAction.Install("2.5", "Queued action");
+            store.Save(installation);
+
+            // Act: Apply pending action
+            bool result = await manager.ApplyPendingAsync(exePath);
+
+            // Assert: Refused, zero files deployed, refusal reason records Vulkan
+            Assert.False(result);
+            Assert.False(File.Exists(Path.Combine(gameDir.RootPath, "d3d11.dll")));
+
+            var instAfter = store.FindByInstallationPath(gameDir.RootPath);
+            Assert.NotNull(instAfter);
+            Assert.NotNull(instAfter.PendingAction);
+            Assert.True(instAfter.PendingAction.IsPending);
+            Assert.NotNull(instAfter.LastRefusalReason);
+            Assert.Contains("Vulkan", instAfter.LastRefusalReason);
+        }
+
+        [Fact]
+        public async Task QueuedAction_PathIdentity_SameNameDifferentDirectory_DoesNotLeakEvidenceOrPromoteUnknown()
+        {
+            using var gameDir = new SyntheticTestDirectory();
+            using var storageDir = new SyntheticTestDirectory();
+            using var sourceDir = new SyntheticTestDirectory();
+
+            var (manager, _, store, profileStore, _) = CreateTestEnvironment(storageDir, sourceDir);
+
+            // Nested executable inside subfolder
+            var binDir = Path.Combine(gameDir.RootPath, "Bin");
+            Directory.CreateDirectory(binDir);
+            var nestedExe = Path.Combine(binDir, "Game.exe");
+            File.WriteAllText(nestedExe, "binary");
+
+            // Unrelated profile with same basename "Game.exe" in different directory has DX11
+            var otherProfile = profileStore.GetOrCreate(@"C:\OtherGame\Game.exe");
+            otherProfile.Api = GraphicsApi.DX11;
+            profileStore.Save(otherProfile);
+
+            // The actual nested executable has Unknown in GameLibraryStore
+            var installation = store.GetOrCreateInstallation(gameDir.RootPath, "NestedGame");
+            var exeRecord = installation.GetOrAddExecutable("Bin/Game.exe", "Game.exe");
+            exeRecord.LastKnownApi = GraphicsApi.Unknown;
+            installation.PendingAction = PendingAction.Install("2.5", "Queued nested");
+            store.Save(installation);
+
+            // Act: Apply pending action for the nested executable
+            bool result = await manager.ApplyPendingAsync(nestedExe);
+
+            // Assert: Must NOT match unrelated C:\OtherGame\Game.exe by basename to promote Unknown to DX11
+            Assert.False(result);
+            Assert.False(File.Exists(Path.Combine(binDir, "d3d11.dll")));
+
+            var instAfter = store.FindByInstallationPath(gameDir.RootPath);
+            Assert.NotNull(instAfter);
+            Assert.Equal(GraphicsApi.Unknown, instAfter.FindExecutable("Bin/Game.exe")!.LastKnownApi);
+            Assert.NotNull(instAfter.LastRefusalReason);
+            Assert.Contains("Unknown", instAfter.LastRefusalReason);
+        }
     }
 }
