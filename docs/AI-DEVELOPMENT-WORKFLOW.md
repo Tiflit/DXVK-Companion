@@ -532,31 +532,75 @@ python scripts/ai-workflow/generate_handoff.py --pr 33 --json
 - **Evidence Provenance & Reduced Capability Boundary**: Pulls triggering workflow run, attempt, tested checkout SHA, and TRX totals from build provenance artifacts. Requires full 40-hex SHAs and exact PR merge ref (`refs/pull/{pr_number}/merge`). If commit relationships are unverified or artifacts unavailable, checkout is marked `UNAVAILABLE / UNPROVEN`.
 - **Fact Separation & Intentional Capability Reduction**: Acquired facts (revisions, test totals, CI statuses) are strictly separated from model conclusions and pending decision prerequisites. The tool intentionally does not infer review approval or merge readiness from prose keywords, prefixes, or green CI; attributed review records are displayed factually and approval/merge decisions are left to coordinator verification and human authority.
 
-### 3. Review Preservation and PR-Body Update Helper (`update_pr_body.py`)
+### 3. Safe Body Preservation and Activity Update Helper (`update_pr_body.py`)
 
-An opt-in update helper preventing accidental review history loss, detecting concurrent PR modifications, and protecting marked records:
+A dual-mode update helper preventing accidental history loss, preserving unmarked prose and assignments, detecting concurrent modifications, and enforcing privacy safety before publishing changes to GitHub PR or Issue bodies:
 
 ```bash
-# Preview update for PR <PR_NUMBER> (default: dry run, zero writes)
+# PR Mode: Preview updated PR body with review preservation (default: zero writes)
 python scripts/ai-workflow/update_pr_body.py --pr 33 --body-file new_pr_body.md
 
-# Preview with adoption of existing unmarked reviewer headings
+# PR Mode: Preview with adoption of existing unmarked reviewer headings
 python scripts/ai-workflow/update_pr_body.py --pr 33 --body-file new_pr_body.md --adopt-unmarked
 
-# Execute update with explicit opt-in write
+# PR Mode: Execute update with explicit opt-in write
 python scripts/ai-workflow/update_pr_body.py --pr 33 --body-file new_pr_body.md --write
+
+# Issue Mode: Preview append-only activity update (default: zero writes)
+python scripts/ai-workflow/update_pr_body.py --issue 42 --append-file post_merge_record.md
+
+# Issue Mode: Execute update with verified base hash and opt-in write
+python scripts/ai-workflow/update_pr_body.py --issue 42 --append-file post_merge_record.md --expected-base-hash <64_HEX_SHA256> --write
 ```
 
-- **Protected Review Markers**: Preserves blocks bounded by:
-  ```markdown
-  <!-- AI-REVIEW-RECORD: <record_id> -->
-  <review content>
-  <!-- AI-REVIEW-RECORD-END -->
-  ```
-- **Integrity Validation**: Rejects malformed tags (unclosed, orphan end, nested, invalid IDs, duplicate IDs). Rejects accidental modification or deletion of historical review records.
-- **Previewed Adoption Route**: `--adopt-unmarked` detects candidate legacy review headings (e.g. `## ChatGPT coordinator verification`, `## Claude audit`) and wraps them in review markers, without silently classifying arbitrary headings.
-- **Lost-Update Guard**: Checks expected base hash, saves a local recovery backup file before write, re-reads the live body immediately before issuing `PATCH`, and verifies the post-write body.
-- **Residual Race Disclosure**: Discloses the residual write race window between final check and write inherent in GitHub's REST API, which lacks conditional `If-Match` ETags on pull request body updates. This helper provides best-effort detection and deterministic local backup, not an atomic distributed lock.
+#### Dual-Target Routing and Constraints
+- **Mutually Exclusive Targets**: Exactly one of `--pr <id>` or `--issue <id>` (positive integer) must be specified.
+- **Pull Request Guard**: `--issue` validates that the target is a genuine Issue; if GitHub's API reports `"pull_request"`, the operation is aborted.
+- **Input Mode Mutex**:
+  - **Issue Mode**: Strictly append-only. Requires `--append-file` containing exactly one bounded activity-record block. Replacement inputs (`--body`, `--body-file`, `--adopt-unmarked`) are rejected.
+  - **PR Mode**: Rejects `--append-file`. Requires `--body` or `--body-file`.
+
+#### Whole-Body Preservation & Marker Families
+- **Unmarked Prose Invariant**: Issue mode preserves the acquired remote body byte-for-byte, including unmarked headings, assignment blocks, contract sections, checkpoints, and trailing whitespace/line endings. The new record block is appended with double newline separation (`\n\n`).
+- **Supported Marker Families**: Activity records in both Issue and PR updates must use symmetric opening and closing tags from supported marker families:
+  - `<!-- AI-REVIEW-RECORD: <record_id> --> ... <!-- AI-REVIEW-RECORD-END -->`
+  - `<!-- AI-POST-MERGE-RECORD: <record_id> --> ... <!-- AI-POST-MERGE-RECORD-END -->`
+  - `<!-- AI-ASSIGNMENT-RECORD: <record_id> --> ... <!-- AI-ASSIGNMENT-RECORD-END -->`
+- **Record Identifier Format**: Identifiers must follow `^[a-zA-Z0-9._-]+$`.
+- **Integrity Validation**: Rejects malformed tags (unclosed markers, orphan end tags, mismatched family tags, nested markers, duplicate IDs). In PR mode, preserves historical remote records and prevents accidental modification or deletion.
+
+#### Idempotent No-Op Handling
+- If an activity record with the identical record ID and exact matching content is already present in the target Issue body, `--write` performs zero PATCH requests and exits cleanly with code 0 (`idempotent no-op verified; zero writes committed`).
+- In `--write` mode, no-op reporting requires a verification re-read of the live remote state: if the remote body changed, the record disappeared, or the verification read fails, the tool exits nonzero without PATCH.
+- Privacy scanning is enforced on the remote target body during no-op checks; retrying against a body bearing privacy violations fails closed.
+- Reusing an existing record ID with conflicting content is rejected as an error.
+
+#### Fail-Closed Privacy Scanning
+- Both Issue and PR updates scan the proposed candidate body before generating unified diff previews or committing PATCH writes.
+- Detects and rejects:
+  - Windows personal-home paths (e.g. `C:\Users\<user>\...` or `C:/Users/<user>/...` or `\Users\<user>\...`)
+  - POSIX personal-home paths (e.g. `/home/<user>/...` or `/Users/<user>/...`)
+  - Secret credentials and tokens (e.g. `ghp_...`, `github_pat_...`, or Bearer authorization headers)
+- Allows generic development and repository paths (e.g. `D:\dev\...`).
+- **Scanner Scope and Limitations**: The privacy scanner is a fail-closed guard checking bounded regular expressions for common personal-home paths and token formats; it is not a comprehensive secret scanner or DLP engine. Bounded false positives can occur if text matches path or token formats (e.g. instructional examples containing synthetic `/home/user` paths). Remediate the input text directly; no publication auto-redaction or bypass flag is provided.
+- **Diagnostic & Diff Display Safety**: Error reporting outputs only the matched privacy category and 1-based line number without echoing matched sensitive text, private input paths, or raw exceptions. Displayed diff previews safely redact matched personal paths and tokens from removed or context lines, ensuring stdout never echoes private text without altering stored history.
+- **Safe Backup Confirmation**: Backup confirmation messages display repository-relative paths or redacted paths, ensuring local user home directories are not leaked to stdout.
+
+#### Concurrency Protection & Recovery
+- **Enforced Expected Base Hash**: Issue writes require `--expected-base-hash <sha256>`. The write is aborted if the current remote body hash does not match.
+- **Target-Qualified Local Recovery Backups**: Before issuing a PATCH request, the acquired remote body is saved to a timestamped backup file:
+  - Issues: `.ai-review-backups/issue_<id>_body_backup_<timestamp>.md`
+  - PRs: `.ai-review-backups/pr_<id>_body_backup_<timestamp>.md`
+  If saving the local backup fails, the write operation is aborted immediately.
+- **Pre-Write Verification Check**: Immediately prior to issuing the PATCH call, a second GET request verifies that the remote body has not been modified since initial acquisition.
+- **Post-Write Read-Back Verification**: After PATCH execution, a post-write GET re-reads the remote body and verifies that its SHA-256 hash matches the expected target candidate hash. If a discrepancy is detected or the read fails, the tool issues an explicit warning (`A write may already have occurred on GitHub, but completion is unverified`) and exits with a nonzero status code.
+
+#### Explicit Concurrency Limits
+- **Client-Side Checks vs Backend Locking**: Client-side GET checks and expected-base-hash verification detect stale baselines and conflicting edits observed before the PATCH request. However, client-side checks and read-back do not establish an atomic compare-and-swap (CAS). Another writer or client can modify the remote body between the final pre-write GET and the PATCH request. Read-back verification detects a discrepancy after the fact, but cannot prevent or recover overwritten content that raced during that window. No claims are made regarding race duration or undocumented backend conditional-write behavior.
+- **Outside Client Bypasses**: The helper cannot protect against direct edits performed by outside clients, human web UI edits, or tools that bypass `update_pr_body.py`.
+- **Uncertain-Write and No Automatic Rollback**: If a write discrepancy or post-write read failure occurs, the helper does not attempt automatic rollback, repeated PATCH writes, or success assertions, as an unverified write may already have taken effect on GitHub. Users and agents must inspect the target-qualified local backup in `.ai-review-backups/`, re-read the live remote state, and coordinate remediation.
+- **Reduced-Capability Handoff for Connector-Only Agents**: If an agent operates in a connector-only environment without direct terminal/CLI execution access, it must NOT fall back to manual or unsafe whole-body overwrites of Issue bodies. Instead, it must follow a reduced-capability stop/handoff route: stop, record a concise handoff checkpoint with the proposed append block in the PR review packet or session log, and hand off to a CLI-capable agent or coordinator to execute the verified update.
+
 
 ### 4. Session Continuity and Checkpoint Guidelines
 
