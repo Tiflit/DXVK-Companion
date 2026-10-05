@@ -231,6 +231,17 @@ To prevent unintended DLL loading into modern-API binaries, DXVK Companion enfor
 6. **Observation Boundary & Limits**: This policy applies to all *recorded* executables within Companion's domain model. Undiscovered or unrecorded sibling executables remain outside observation coverage until detected. This policy represents a conservative safeguard rather than a universal guarantee against all Windows DLL loading conflicts.
 7. **Installation-Root-Relative Managed Paths**: All managed files (`ManagedFileRecord.RelativePath`) and safety transaction operations are tracked relative to the installation root directory (`InstallationPath`). In layouts where executables reside in nested subdirectories (e.g. `Bin/Game.exe`), deployed wrapper files and configs are tracked with root-relative paths (e.g. `Bin/d3d11.dll`) and isolated in backups (`<installationId>/Bin/d3d11.dll`), ensuring root and sibling files remain strictly isolated and unaffected during deployment, reapply, adoption, or rollback.
 
+### 5.2.2 API Reassessment Before Queued Execution
+
+Actions may be queued while a target game process is running or persisted across restarts in `game-library.json` (e.g. `Install`, `Update`, `Reapply`). Because game processes or siblings may dynamically load modules, receive subsequent classifications, or experience profile updates between the time an action is queued and the time it executes, Companion mandates pre-execution API reassessment:
+
+1. **Re-evaluation Timing**: Immediately prior to executing any queued or pending action (`ApplyPendingAsync` or startup batch `ProcessAllPendingActionsAsync`), Companion reassesses the effective API and architecture of the target executable and its containing installation against the latest available evidence recorded in `GameLibraryStore` and `ProfileStore`.
+2. **Unsupported Classification Refusal**: If reassessment identifies that the target executable has been reclassified to an unsupported API (`DX12`, `Vulkan`, `Unknown`, or outside the allowlist), execution is refused. The refusal reason is recorded on `GameInstallation.LastRefusalReason` and `DxvkManager.LastRefusalReason`, logged, and no game files or baselines are deployed, replaced, or touched. The existing pending action remains pending after refusal.
+3. **Supported Positive Controls**: When reassessment confirms the executable is on a supported API (`DX11`, `DX10`, `DX9`), the queued operation proceeds normally: files are deployed, baselines tracked, restoration state updated to `Managed`, and pending action cleared.
+4. **Installation-Wide Consistency**: Under the approved installation-wide policy (§5.2.1), if any recorded sibling executable within the same installation has been reclassified to an unsupported API, the queued action is refused installation-wide.
+5. **Persisted Reload & Startup**: Upon application startup, when `ProcessAllPendingActionsAsync` reloads pending actions from `game-library.json`, it consults the reloaded evidence in `game-library.json` before attempting execution. Reclassified or incompatible installations are skipped without file deployment, with refusal reasons recorded.
+6. **Restore Availability Invariant**: Queued `Restore` actions remain available and execute to restore original baselines and remove DXVK files, regardless of whether the target or sibling executables have been reclassified to DX12 or Vulkan.
+
 ## 5.3 Installation vs executable state
 
 The installation contains shared file-management state.
@@ -398,6 +409,26 @@ DX11 -> DX12
 ```
 
 should be inferred only when the observations justify it.
+
+## 7.5 Mixed-Module Precedence Policy & Trade-offs
+
+A process may legitimately load or statically import modules for multiple graphics APIs simultaneously (e.g., loading both `d3d11.dll` and `d3d12.dll`, or importing Vulkan alongside DirectX wrappers). When evaluating mixed graphics modules, Companion enforces strict unsupported-API precedence:
+
+1. **Precedence Hierarchy**: Observed graphics APIs are ranked in order of deployment incompatibility:
+   ```text
+   DX12 > Vulkan > DX11 > DX10 > DX9
+   ```
+   Regardless of the enumeration order of loaded runtime modules or static PE import entries, any observed modern native API (`DX12` or `Vulkan`) unconditionally claims `PrimaryApi` status over translatable APIs (`DX11`, `DX10`, `DX9`).
+2. **Conservative False-Negative Trade-off**: This design deliberately accepts the cost of potential false negatives (e.g., hybrid engines, launchers, or multi-backend games that might have successfully run on Direct3D 11) in order to prevent catastrophic false positives. Deploying DXVK wrapper DLLs into a process executing a native DX12 or Vulkan engine risks immediate crashes, rendering corruption, or anti-cheat tampering bans.
+3. **Evidence Precedence Between Stores**: When synchronizing state between `ProfileStore` (`games.json`) and `GameLibraryStore` (`game-library.json`), recorded evidence from runtime inspection and PE parsing in `GameLibraryStore` takes precedence. When conflicting classifications exist between stores without established freshness (e.g., an unsupported `DX12`/`Vulkan` profile versus a supported `DX11` library record), Companion conservatively retains refusal and does not overwrite or erase unsupported target evidence. Conversely, an unhydrated or recorded `Unknown` classification in `GameLibraryStore` is never promoted or overwritten with an older supported profile during pre-execution reassessment. Supported classifications synchronize to the latest recorded evidence.
+
+## 7.6 Detection Observation Boundaries & Limitations
+
+Companion's API classification operates within clear observational boundaries:
+
+1. **Snapshot-Based Observation**: Detection reflects the modules loaded and visible during the initial qualification window following process creation, supplemented by static PE import parsing.
+2. **Dynamic / Late-Loading Module Limitation**: Games or anti-cheat wrappers that dynamically load graphics modules late during execution (e.g. via delayed `LoadLibrary` calls during level loads or engine switches) cannot be detected without continuous runtime monitoring or late injection hooks.
+3. **Scope Boundary**: Continuous background module polling, late injection hooks, and active runtime interception are explicitly out of scope. The classification and pre-execution reassessment provide high-confidence safeguards against known and recorded configurations, not universal coverage of late runtime dynamic engine shifts.
 
 ---
 
