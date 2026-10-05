@@ -455,7 +455,7 @@ namespace DXVKCompanion.DXVK
             Logger.Log($"DxvkManager: cancelled incompatible pending action {cancelledAction.Type} for {profile.ExeName}: {refusalReason}");
 
             // 4. Raise notification event for the cancellation transition
-            OnPendingActionCancelled?.Invoke(installation, cancelledAction, refusalReason);
+            OnPendingActionCancelled?.Invoke(installation, cancelledAction, refusalReason ?? string.Empty);
         }
 
         public async Task<int> ProcessAllPendingActionsAsync()
