@@ -217,6 +217,20 @@ Benchmark.exe
 
 This supports installations in which different executables use different APIs.
 
+### 5.2.1 Shared-Directory API Compatibility & Deployment Policy
+
+In game installations where multiple executables reside in the same directory or installation root, local wrapper DLLs (e.g. `dxgi.dll`, `d3d11.dll`, `d3d9.dll`) placed in the application directory may affect sibling executables under standard Windows DLL search order.
+
+To prevent unintended DLL loading into modern-API binaries, DXVK Companion enforces a conservative, installation-wide deployment compatibility boundary:
+
+1. **Supported API Allowlist**: DXVK deployment is supported exclusively for Direct3D 9 (`DX9`), Direct3D 10 (`DX10`), and Direct3D 11 (`DX11`).
+2. **Installation-Wide Refusal**: If the target executable or *any* recorded executable within the `GameInstallation` has a `LastKnownApi` outside the supported allowlist (including `DX12`, `Vulkan`, `ModernAPI`, `Unknown`, or an undefined enum value), DXVK deployment (`Install`, `Enable`, `Update`, `Reapply`, `AdoptExisting`, and deployment queueing/execution) is refused across the entire installation. A caller cannot bypass this boundary by selecting a supported sibling executable or invoking lower-level deployment entry points.
+3. **User-Visible Refusal Reason**: Refusal generates a user-visible reason identifying the blocking recorded executable and its API, persisted on the installation (`GameInstallation.LastRefusalReason`) and surfaced to callers.
+4. **Pre-Execution Guard**: Refusal occurs strictly prior to managed game-file writes, baseline/backup modifications, or ownership/adoption changes. Refused requests do not create a pending deployment intent.
+5. **Restore Availability Invariant**: `Restore` and `RestoreAll` remain available regardless of sibling API classifications. Companion will never refuse restoration to original baselines due to incompatible siblings. Existing deployments are not automatically restored merely upon discovering or reclassifying an incompatible sibling.
+6. **Observation Boundary & Limits**: This policy applies to all *recorded* executables within Companion's domain model. Undiscovered or unrecorded sibling executables remain outside observation coverage until detected. This policy represents a conservative safeguard rather than a universal guarantee against all Windows DLL loading conflicts.
+7. **Installation-Root-Relative Managed Paths**: All managed files (`ManagedFileRecord.RelativePath`) and safety transaction operations are tracked relative to the installation root directory (`InstallationPath`). In layouts where executables reside in nested subdirectories (e.g. `Bin/Game.exe`), deployed wrapper files and configs are tracked with root-relative paths (e.g. `Bin/d3d11.dll`) and isolated in backups (`<installationId>/Bin/d3d11.dll`), ensuring root and sibling files remain strictly isolated and unaffected during deployment, reapply, adoption, or rollback.
+
 ## 5.3 Installation vs executable state
 
 The installation contains shared file-management state.

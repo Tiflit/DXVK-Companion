@@ -67,7 +67,8 @@ namespace DXVKCompanion.PhaseA.Tests
             profileStore.Save(profile);
 
             var installation = libraryStore.GetOrCreateInstallation(gameDir.RootPath, "Game");
-            installation.GetOrAddExecutable("Game.exe", "Game");
+            var exe = installation.GetOrAddExecutable("Game.exe", "Game");
+            exe.LastKnownApi = GraphicsApi.DX11;
             installation.PendingAction = PendingAction.Install("2.6", "Queued while game running");
             libraryStore.Save(installation);
 

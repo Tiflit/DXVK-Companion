@@ -163,9 +163,8 @@ namespace DXVKCompanion.UI
             foreach (var profile in _profiles.GetAll().OrderBy(p => p.ExeName))
             {
                 string gameDir = Path.GetDirectoryName(profile.ExePath) ?? string.Empty;
-                var installation = !string.IsNullOrWhiteSpace(gameDir)
-                    ? _gameLibraryStore.FindByInstallationPath(gameDir)
-                    : null;
+                var installation = _gameLibraryStore.FindInstallationForExecutable(profile.ExePath)
+                    ?? (!string.IsNullOrWhiteSpace(gameDir) ? _gameLibraryStore.FindByInstallationPath(gameDir) : null);
 
                 string filter = _filterCombo?.SelectedItem?.ToString() ?? "Active Games";
                 bool isHidden = installation?.IsHidden ?? false;
@@ -189,6 +188,10 @@ namespace DXVKCompanion.UI
                     if (installation.ConflictFlags != InstallationConflictFlags.None)
                     {
                         statusText = $"Conflict: {installation.ConflictFlags}";
+                    }
+                    else if (!string.IsNullOrEmpty(installation.LastRefusalReason))
+                    {
+                        statusText = $"Refused: {installation.LastRefusalReason}";
                     }
                     else if (installation.RestorationState == RestorationState.AttentionRequired)
                     {
@@ -223,7 +226,8 @@ namespace DXVKCompanion.UI
                 item.SubItems.Add(profile.ExePath);
 
                 if (statusText.StartsWith("Attention", StringComparison.OrdinalIgnoreCase) ||
-                    statusText.StartsWith("Conflict", StringComparison.OrdinalIgnoreCase))
+                    statusText.StartsWith("Conflict", StringComparison.OrdinalIgnoreCase) ||
+                    statusText.StartsWith("Refused", StringComparison.OrdinalIgnoreCase))
                 {
                     item.ForeColor = Color.DarkOrange;
                 }
@@ -276,6 +280,7 @@ namespace DXVKCompanion.UI
             _statusLabel.Text = $"{verb}...";
 
             int applied = 0, queued = 0, failed = 0;
+            var refusalReasons = new List<string>();
 
             foreach (var profile in selected)
             {
@@ -284,12 +289,30 @@ namespace DXVKCompanion.UI
                 {
                     case DxvkActionResult.Applied: applied++; break;
                     case DxvkActionResult.Queued: queued++; break;
-                    case DxvkActionResult.Failed: failed++; break;
+                    case DxvkActionResult.Failed:
+                        failed++;
+                        if (!string.IsNullOrEmpty(_dxvk.LastRefusalReason))
+                        {
+                            refusalReasons.Add($"{profile.ExeName}: {_dxvk.LastRefusalReason}");
+                        }
+                        break;
                 }
             }
 
             RefreshList();
-            _statusLabel.Text = $"{verb} complete — {applied} applied, {queued} queued (running), {failed} failed.";
+            if (refusalReasons.Count > 0)
+            {
+                _statusLabel.Text = $"{verb} — {failed} failed: {string.Join("; ", refusalReasons)}";
+                MessageBox.Show(
+                    $"{verb} was refused for one or more games:\n\n" + string.Join("\n\n", refusalReasons),
+                    "DXVK Compatibility Refusal",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+            }
+            else
+            {
+                _statusLabel.Text = $"{verb} complete — {applied} applied, {queued} queued (running), {failed} failed.";
+            }
         }
 
         private async Task RunAdoptSelected()
@@ -302,17 +325,33 @@ namespace DXVKCompanion.UI
             }
 
             int adopted = 0, failed = 0;
+            var refusalReasons = new List<string>();
 
             foreach (var profile in selected)
             {
                 bool ok = await _dxvk.AdoptExistingAsync(profile);
                 if (ok) adopted++;
-                else failed++;
+                else
+                {
+                    failed++;
+                    if (!string.IsNullOrEmpty(_dxvk.LastRefusalReason))
+                    {
+                        refusalReasons.Add($"{profile.ExeName}: {_dxvk.LastRefusalReason}");
+                    }
+                }
             }
 
             RefreshList();
 
-            if (adopted > 0)
+            if (refusalReasons.Count > 0)
+            {
+                MessageBox.Show(
+                    $"Adoption refused for one or more games:\n\n" + string.Join("\n\n", refusalReasons),
+                    "DXVK Adoption Refused",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+            }
+            else if (adopted > 0)
             {
                 MessageBox.Show($"Successfully adopted existing official DXVK release for {adopted} game(s).",
                     "DXVK Adoption", MessageBoxButtons.OK, MessageBoxIcon.Information);
@@ -341,7 +380,14 @@ namespace DXVKCompanion.UI
             int queued = results.Values.Count(r => r == DxvkActionResult.Queued);
             int failed = results.Values.Count(r => r == DxvkActionResult.Failed);
 
-            _statusLabel.Text = $"Update all complete — {applied} applied, {queued} queued (running), {failed} failed.";
+            if (failed > 0 && !string.IsNullOrEmpty(_dxvk.LastRefusalReason))
+            {
+                _statusLabel.Text = $"Update all complete — {applied} applied, {queued} queued (running), {failed} failed ({_dxvk.LastRefusalReason}).";
+            }
+            else
+            {
+                _statusLabel.Text = $"Update all complete — {applied} applied, {queued} queued (running), {failed} failed.";
+            }
         }
 
         private async Task RunRestoreAll()

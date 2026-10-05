@@ -40,7 +40,8 @@ namespace DXVKCompanion.DXVK
                     if (string.IsNullOrWhiteSpace(gameDir) || !Directory.Exists(gameDir))
                         return false;
 
-                    var installation = _gameLibraryStore.FindByInstallationPath(gameDir);
+                    var installation = _gameLibraryStore.FindInstallationForExecutable(profile.ExePath)
+                        ?? _gameLibraryStore.FindByInstallationPath(gameDir);
 
                     if (installation != null && installation.ConflictFlags != InstallationConflictFlags.None)
                     {
@@ -60,7 +61,7 @@ namespace DXVKCompanion.DXVK
                                 continue;
                             }
 
-                            var targetPath = Path.Combine(gameDir, mf.RelativePath);
+                            var targetPath = Path.Combine(installation.InstallationPath, mf.RelativePath);
                             SafetyFileIdentity? expectedTargetIdentity = null;
                             if (File.Exists(targetPath))
                             {
@@ -87,7 +88,7 @@ namespace DXVKCompanion.DXVK
                         {
                             var request = new MultiFileTransactionRequest
                             {
-                                InstallationRoot = gameDir,
+                                InstallationRoot = installation.InstallationPath,
                                 Operation = TransactionOperation.Restore,
                                 Files = filesToRestore
                             };
