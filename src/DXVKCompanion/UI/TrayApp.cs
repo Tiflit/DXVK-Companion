@@ -82,13 +82,18 @@ namespace DXVKCompanion.UI
                             $"Operation completed safely after game exit for {Path.GetFileName(exePath)}.", ToolTipIcon.Info);
                     }, null);
                 }
-                else if (!string.IsNullOrEmpty(_dxvk.LastRefusalReason))
+                else
                 {
-                    _syncContext.Post(_ =>
+                    string? refusalReason = _dxvk.LastRefusalReason;
+                    if (!string.IsNullOrEmpty(refusalReason))
                     {
-                        _trayIcon.ShowBalloonTip(5000, "DXVK Operation Refused",
-                            $"Pending operation for {Path.GetFileName(exePath)} was refused:\n{_dxvk.LastRefusalReason}", ToolTipIcon.Warning);
-                    }, null);
+                        string exeName = Path.GetFileName(exePath);
+                        _syncContext.Post(_ =>
+                        {
+                            _trayIcon.ShowBalloonTip(5000, "DXVK Operation Refused",
+                                $"Pending operation for {exeName} was refused:\n{refusalReason}", ToolTipIcon.Warning);
+                        }, null);
+                    }
                 }
             };
 

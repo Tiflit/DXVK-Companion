@@ -852,5 +852,196 @@ namespace DXVKCompanion.PhaseA.Tests
             Assert.Null(instAfterSuccess?.LastRefusalReason);
             Assert.Null(manager.LastRefusalReason);
         }
+
+        [Fact]
+        public async Task SharedDirectory_NestedExecutable_DeploymentAndRestore_PreservesRootFiles_RestoresNestedBaseline()
+        {
+            using var gameDir = new SyntheticTestDirectory();
+            using var storageDir = new SyntheticTestDirectory();
+            using var sourceDir = new SyntheticTestDirectory();
+
+            var (manager, _, store, profileStore, _) = CreateTestEnvironment(storageDir, sourceDir);
+
+            // 1. Root unrelated sentinels
+            string rootD3D11Content = "root-unrelated-native-d3d11";
+            string rootConfContent = "root-unrelated-dxvk-conf";
+            var rootD3D11 = gameDir.CreateFile("d3d11.dll", rootD3D11Content);
+            var rootConf = gameDir.CreateFile("dxvk.conf", rootConfContent);
+
+            // 2. Nested target directory (Bin)
+            string nestedNativeD3D11Content = "nested-native-baseline-d3d11";
+            var nestedExePath = gameDir.CreateFile(Path.Combine("Bin", "Game_DX11.exe"), "binary");
+            var nestedD3D11 = gameDir.CreateFile(Path.Combine("Bin", "d3d11.dll"), nestedNativeD3D11Content);
+
+            var installation = store.GetOrCreateInstallation(gameDir.RootPath, "NestedGame");
+            var exe = installation.GetOrAddExecutable(Path.Combine("Bin", "Game_DX11.exe"), "Game_DX11.exe");
+            exe.LastKnownApi = GraphicsApi.DX11;
+            exe.LastKnownArchitecture = "x64";
+            store.Save(installation);
+
+            var profile = profileStore.GetOrCreate(nestedExePath);
+            profile.Api = GraphicsApi.DX11;
+            profile.Architecture = "x64";
+            profile.DxvkVersion = "2.5";
+            profile.HudEnabled = true;
+            profileStore.Save(profile);
+
+            // Act 1: Deploy DXVK to nested executable
+            var deployResult = await manager.RequestEnableByPathAsync(profile);
+            Assert.Equal(DxvkActionResult.Applied, deployResult);
+
+            // Assert: Nested files updated to DXVK
+            Assert.True(File.Exists(nestedD3D11));
+            Assert.Equal("dxvk-d3d11", File.ReadAllText(nestedD3D11));
+            string nestedDxgi = Path.Combine(gameDir.RootPath, "Bin", "dxgi.dll");
+            Assert.True(File.Exists(nestedDxgi));
+            Assert.Equal("dxvk-dxgi", File.ReadAllText(nestedDxgi));
+            string nestedConf = Path.Combine(gameDir.RootPath, "Bin", "dxvk.conf");
+            Assert.True(File.Exists(nestedConf));
+
+            // Assert: Root unrelated sentinels completely untouched
+            Assert.Equal(rootD3D11Content, File.ReadAllText(rootD3D11));
+            Assert.Equal(rootConfContent, File.ReadAllText(rootConf));
+
+            // Assert: Root-relative managed file keys on installation
+            var refreshedInst = store.FindByInstallationPath(gameDir.RootPath);
+            Assert.NotNull(refreshedInst);
+            Assert.Contains(refreshedInst.ManagedFiles, f => f.RelativePath == Path.Combine("Bin", "d3d11.dll"));
+            Assert.Contains(refreshedInst.ManagedFiles, f => f.RelativePath == Path.Combine("Bin", "dxgi.dll"));
+            Assert.Contains(refreshedInst.ManagedFiles, f => f.RelativePath == Path.Combine("Bin", "dxvk.conf"));
+
+            // Act 2: Disable / Restore DXVK from nested profile
+            var restoreResult = await manager.RequestDisableByPathAsync(profile);
+            Assert.Equal(DxvkActionResult.Applied, restoreResult);
+
+            // Assert: Nested baseline restored byte-identical
+            Assert.True(File.Exists(nestedD3D11));
+            Assert.Equal(nestedNativeD3D11Content, File.ReadAllText(nestedD3D11));
+
+            // Assert: Originally absent nested files removed
+            Assert.False(File.Exists(nestedDxgi));
+            Assert.False(File.Exists(nestedConf));
+
+            // Assert: Root unrelated sentinels STILL completely untouched
+            Assert.True(File.Exists(rootD3D11));
+            Assert.Equal(rootD3D11Content, File.ReadAllText(rootD3D11));
+            Assert.True(File.Exists(rootConf));
+            Assert.Equal(rootConfContent, File.ReadAllText(rootConf));
+        }
+
+        [Fact]
+        public async Task SharedDirectory_NestedExecutable_ReapplyAndRestoreAll_PreservesRootFiles_RestoresNestedBaseline()
+        {
+            using var gameDir = new SyntheticTestDirectory();
+            using var storageDir = new SyntheticTestDirectory();
+            using var sourceDir = new SyntheticTestDirectory();
+
+            var (manager, _, store, profileStore, _) = CreateTestEnvironment(storageDir, sourceDir);
+
+            // 1. Root unrelated sentinels
+            string rootD3D11Content = "root-unrelated-native-d3d11";
+            string rootConfContent = "root-unrelated-dxvk-conf";
+            var rootD3D11 = gameDir.CreateFile("d3d11.dll", rootD3D11Content);
+            var rootConf = gameDir.CreateFile("dxvk.conf", rootConfContent);
+
+            // 2. Nested target directory (Bin)
+            string nestedNativeD3D11Content = "nested-native-baseline-d3d11";
+            var nestedExePath = gameDir.CreateFile(Path.Combine("Bin", "Game_DX11.exe"), "binary");
+            var nestedD3D11 = gameDir.CreateFile(Path.Combine("Bin", "d3d11.dll"), nestedNativeD3D11Content);
+
+            var installation = store.GetOrCreateInstallation(gameDir.RootPath, "NestedReapplyGame");
+            var exe = installation.GetOrAddExecutable(Path.Combine("Bin", "Game_DX11.exe"), "Game_DX11.exe");
+            exe.LastKnownApi = GraphicsApi.DX11;
+            exe.LastKnownArchitecture = "x64";
+            store.Save(installation);
+
+            var profile = profileStore.GetOrCreate(nestedExePath);
+            profile.Api = GraphicsApi.DX11;
+            profile.Architecture = "x64";
+            profile.DxvkVersion = "2.5";
+            profileStore.Save(profile);
+
+            // Act 1: Initial deployment
+            var deployResult = await manager.RequestEnableByPathAsync(profile);
+            Assert.Equal(DxvkActionResult.Applied, deployResult);
+
+            // Act 2: Reapply DXVK to nested executable
+            var reapplyResult = await manager.RequestReapplyByPathAsync(profile, updateBaseline: true);
+            Assert.Equal(DxvkActionResult.Applied, reapplyResult);
+
+            // Assert: Root sentinels untouched
+            Assert.Equal(rootD3D11Content, File.ReadAllText(rootD3D11));
+            Assert.Equal(rootConfContent, File.ReadAllText(rootConf));
+
+            // Act 3: RestoreAll
+            var summary = await manager.RestoreAllAsync();
+            Assert.Equal(1, summary.TotalManaged);
+            Assert.Equal(1, summary.Restored);
+
+            // Assert: Nested baseline restored byte-identical
+            Assert.True(File.Exists(nestedD3D11));
+            Assert.Equal(nestedNativeD3D11Content, File.ReadAllText(nestedD3D11));
+            string nestedDxgi = Path.Combine(gameDir.RootPath, "Bin", "dxgi.dll");
+            Assert.False(File.Exists(nestedDxgi));
+
+            // Assert: Root sentinels preserved
+            Assert.Equal(rootD3D11Content, File.ReadAllText(rootD3D11));
+            Assert.Equal(rootConfContent, File.ReadAllText(rootConf));
+        }
+
+        [Fact]
+        public async Task SharedDirectory_NestedExecutable_AdoptExisting_AndRestore_PreservesRootFiles()
+        {
+            using var gameDir = new SyntheticTestDirectory();
+            using var storageDir = new SyntheticTestDirectory();
+            using var sourceDir = new SyntheticTestDirectory();
+
+            var (manager, _, store, profileStore, _) = CreateTestEnvironment(storageDir, sourceDir);
+
+            // 1. Root unrelated sentinels
+            string rootD3D11Content = "root-unrelated-native-d3d11";
+            var rootD3D11 = gameDir.CreateFile("d3d11.dll", rootD3D11Content);
+
+            // 2. Nested target directory (Bin)
+            var nestedExePath = gameDir.CreateFile(Path.Combine("Bin", "Game_DX11.exe"), "binary");
+            var nestedD3D11 = gameDir.CreateFile(Path.Combine("Bin", "d3d11.dll"), "dxvk-d3d11");
+            var nestedDxgi = gameDir.CreateFile(Path.Combine("Bin", "dxgi.dll"), "dxvk-dxgi");
+
+            var installation = store.GetOrCreateInstallation(gameDir.RootPath, "NestedAdoptGame");
+            var exe = installation.GetOrAddExecutable(Path.Combine("Bin", "Game_DX11.exe"), "Game_DX11.exe");
+            exe.LastKnownApi = GraphicsApi.DX11;
+            exe.LastKnownArchitecture = "x64";
+            store.Save(installation);
+
+            var profile = profileStore.GetOrCreate(nestedExePath);
+            profile.Api = GraphicsApi.DX11;
+            profile.Architecture = "x64";
+            profileStore.Save(profile);
+
+            // Act 1: Adopt existing in nested folder
+            bool adoptOk = await manager.AdoptExistingAsync(profile);
+            Assert.True(adoptOk);
+
+            // Assert: ManagedFiles keys are root-relative
+            var refreshedInst = store.FindByInstallationPath(gameDir.RootPath);
+            Assert.NotNull(refreshedInst);
+            Assert.Contains(refreshedInst.ManagedFiles, f => f.RelativePath == Path.Combine("Bin", "d3d11.dll"));
+            Assert.Contains(refreshedInst.ManagedFiles, f => f.RelativePath == Path.Combine("Bin", "dxgi.dll"));
+
+            // Assert: Root sentinel untouched
+            Assert.Equal(rootD3D11Content, File.ReadAllText(rootD3D11));
+
+            // Act 2: Restore
+            var restoreResult = await manager.RequestDisableByPathAsync(profile);
+            Assert.Equal(DxvkActionResult.Applied, restoreResult);
+
+            // Assert: Nested DLLs removed (since they were originally adopted as Missing original state)
+            Assert.False(File.Exists(nestedD3D11));
+            Assert.False(File.Exists(nestedDxgi));
+
+            // Assert: Root sentinel still untouched
+            Assert.True(File.Exists(rootD3D11));
+            Assert.Equal(rootD3D11Content, File.ReadAllText(rootD3D11));
+        }
     }
 }

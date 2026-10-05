@@ -68,3 +68,29 @@ Initiated session from freshly fetched `origin/main` following PR #34 merge. Pro
   - Workflow tests: 130/130 passed.
 - **Outcome**:
   - PR #35 revised; preserved review history marker `chatgpt-20261005-pr35-review1`; ready for ChatGPT verification and user merge decision.
+
+## Session 2026-10-04 (Gemini Session 1 — Revision 2: Authorized R4 Safety Closeout)
+
+- **Context & Authorization**:
+  - Addressed ChatGPT Review 2 findings (R4) under explicit human-approved governance block on Issue #14.
+  - Authorized scope addition: `src/DXVKCompanion/DXVK/DxvkRollback.cs`.
+- **R4 Repair & Invariants Established**:
+  1. **Root-relative path consistency**:
+     - `DxvkInstaller.cs` (`ApplyToGameAsync`, `ReapplyAsync`, `AdoptExisting`) now tracks managed file keys as installation-root-relative paths (e.g. `Bin\d3d11.dll`) via `ResolveInstallationRelativeFilePath`.
+     - Transaction request `InstallationRoot` is explicitly set to `installation.InstallationPath`.
+     - Backup relative paths use `Path.Combine(installation.Id, relFilePath)` (e.g. `<instId>\Bin\d3d11.dll`), ensuring root files (e.g. `<instId>\d3d11.dll`) and nested files have distinct, isolated backups.
+     - `ResolveSafeNewBackupRelativePath` preserves directory components in fallback/collision-safe relative paths.
+  2. **Rollback lookup & target resolution**:
+     - `DxvkRollback.cs` looks up containing installations via `FindInstallationForExecutable(profile.ExePath) ?? FindByInstallationPath(gameDir)`.
+     - Resolves target paths via `Path.Combine(installation.InstallationPath, mf.RelativePath)` and sets `InstallationRoot = installation.InstallationPath`.
+  3. **Local refusal capture in TrayApp**:
+     - `TrayApp.cs` captures `string? refusalReason = _dxvk.LastRefusalReason;` and `string exeName = Path.GetFileName(exePath);` locally before dispatching to `_syncContext.Post(...)`.
+  4. **Synthetic failing reproducer fixtures**:
+     - Added `SharedDirectory_NestedExecutable_DeploymentAndRestore_PreservesRootFiles_RestoresNestedBaseline`, `SharedDirectory_NestedExecutable_ReapplyAndRestoreAll_PreservesRootFiles_RestoresNestedBaseline`, and `SharedDirectory_NestedExecutable_AdoptExisting_AndRestore_PreservesRootFiles` in `tests/DXVKCompanion.PhaseA.Tests/SharedDirectoryCompatibilityTests.cs`.
+     - Validates that unrelated root files remain completely untouched with distinct sentinel bytes, nested baselines are restored byte-for-byte, and absent files are cleanly removed upon restore.
+- **Verification**:
+  - Application tests: 241/241 passed (3 new nested deployment/restore fixtures added, 0 failures).
+  - Workflow tests: 130/130 passed.
+- **Outcome**:
+  - Ready for PR #35 revision push, preserving review markers `chatgpt-20261005-pr35-review1` and `chatgpt-20261005-pr35-review2`.
+
