@@ -11,7 +11,7 @@ namespace DXVKCompanion.UI
     {
         private readonly SettingsChangeCoordinator _coordinator;
         private readonly Label _statusLabel;
-        private bool _isUpdatingUI;
+        private readonly UiReentrancyGuard _reentrancyGuard = new();
 
         public SettingsWindow(SettingsStore settings)
             : this(new SettingsChangeCoordinator(settings))
@@ -65,46 +65,36 @@ namespace DXVKCompanion.UI
 
             rbManual.CheckedChanged += (_, _) =>
             {
-                if (_isUpdatingUI) return;
+                if (_reentrancyGuard.IsExecuting) return;
                 if (!rbManual.Checked) return;
 
-                var result = _coordinator.ChangePolicy(GlobalManagementPolicy.Manual);
-                DisplayResult(result);
-                if (result.ShouldRevertUI)
+                _reentrancyGuard.TryExecute(() =>
                 {
-                    _isUpdatingUI = true;
-                    try
+                    var result = _coordinator.ChangePolicy(GlobalManagementPolicy.Manual);
+                    DisplayResult(result);
+                    if (result.ShouldRevertUI)
                     {
                         rbManual.Checked = result.ActivePolicy == GlobalManagementPolicy.Manual;
                         rbAutomated.Checked = result.ActivePolicy == GlobalManagementPolicy.Automated;
                     }
-                    finally
-                    {
-                        _isUpdatingUI = false;
-                    }
-                }
+                });
             };
 
             rbAutomated.CheckedChanged += (_, _) =>
             {
-                if (_isUpdatingUI) return;
+                if (_reentrancyGuard.IsExecuting) return;
                 if (!rbAutomated.Checked) return;
 
-                var result = _coordinator.ChangePolicy(GlobalManagementPolicy.Automated);
-                DisplayResult(result);
-                if (result.ShouldRevertUI)
+                _reentrancyGuard.TryExecute(() =>
                 {
-                    _isUpdatingUI = true;
-                    try
+                    var result = _coordinator.ChangePolicy(GlobalManagementPolicy.Automated);
+                    DisplayResult(result);
+                    if (result.ShouldRevertUI)
                     {
                         rbManual.Checked = result.ActivePolicy == GlobalManagementPolicy.Manual;
                         rbAutomated.Checked = result.ActivePolicy == GlobalManagementPolicy.Automated;
                     }
-                    finally
-                    {
-                        _isUpdatingUI = false;
-                    }
-                }
+                });
             };
 
             policyGroup.Controls.Add(rbManual);
@@ -121,22 +111,17 @@ namespace DXVKCompanion.UI
             };
             startupCheckbox.CheckedChanged += (_, _) =>
             {
-                if (_isUpdatingUI) return;
+                if (_reentrancyGuard.IsExecuting) return;
 
-                var result = _coordinator.ChangeLaunchOnStartup(startupCheckbox.Checked);
-                DisplayResult(result);
-                if (result.ShouldRevertUI)
+                _reentrancyGuard.TryExecute(() =>
                 {
-                    _isUpdatingUI = true;
-                    try
+                    var result = _coordinator.ChangeLaunchOnStartup(startupCheckbox.Checked);
+                    DisplayResult(result);
+                    if (result.ShouldRevertUI)
                     {
                         startupCheckbox.Checked = result.ActiveLaunchOnStartup;
                     }
-                    finally
-                    {
-                        _isUpdatingUI = false;
-                    }
-                }
+                });
             };
             Controls.Add(startupCheckbox);
 

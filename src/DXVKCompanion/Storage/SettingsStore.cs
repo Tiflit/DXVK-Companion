@@ -29,6 +29,12 @@ namespace DXVKCompanion.Storage
         public Action? SimulatedCommitFailure { get; set; }
 
         [JsonIgnore]
+        public Action<string>? CustomTempWriter { get; set; }
+
+        [JsonIgnore]
+        public Action<string, string>? CustomCommitReplace { get; set; }
+
+        [JsonIgnore]
         public string SettingsFilePath =>
             CustomSettingsPath ?? Path.Combine(Paths.Root, "settings.json");
 
@@ -80,22 +86,36 @@ namespace DXVKCompanion.Storage
             {
                 SimulatedTempWriteFailure?.Invoke();
 
-                var json = JsonSerializer.Serialize(this, new JsonSerializerOptions
+                if (CustomTempWriter != null)
                 {
-                    WriteIndented = true
-                });
-
-                File.WriteAllText(tempPath, json);
-
-                SimulatedCommitFailure?.Invoke();
-
-                if (File.Exists(targetPath))
-                {
-                    File.Move(tempPath, targetPath, overwrite: true);
+                    CustomTempWriter(tempPath);
                 }
                 else
                 {
-                    File.Move(tempPath, targetPath);
+                    var json = JsonSerializer.Serialize(this, new JsonSerializerOptions
+                    {
+                        WriteIndented = true
+                    });
+
+                    File.WriteAllText(tempPath, json);
+                }
+
+                SimulatedCommitFailure?.Invoke();
+
+                if (CustomCommitReplace != null)
+                {
+                    CustomCommitReplace(tempPath, targetPath);
+                }
+                else
+                {
+                    if (File.Exists(targetPath))
+                    {
+                        File.Move(tempPath, targetPath, overwrite: true);
+                    }
+                    else
+                    {
+                        File.Move(tempPath, targetPath);
+                    }
                 }
 
                 return true;
@@ -132,7 +152,9 @@ namespace DXVKCompanion.Storage
                 LaunchOnStartup = this.LaunchOnStartup,
                 CustomSettingsPath = this.CustomSettingsPath,
                 SimulatedTempWriteFailure = this.SimulatedTempWriteFailure,
-                SimulatedCommitFailure = this.SimulatedCommitFailure
+                SimulatedCommitFailure = this.SimulatedCommitFailure,
+                CustomTempWriter = this.CustomTempWriter,
+                CustomCommitReplace = this.CustomCommitReplace
             };
         }
     }

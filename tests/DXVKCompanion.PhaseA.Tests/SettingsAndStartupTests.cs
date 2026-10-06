@@ -18,7 +18,12 @@ namespace DXVKCompanion.PhaseA.Tests
 
         public FakeStartupRegistryKey CurrentKey { get; } = new();
 
-        public List<string> Operations { get; } = new();
+        public List<string> Operations { get; }
+
+        public FakeStartupRegistry(List<string>? sharedTrace = null)
+        {
+            Operations = sharedTrace ?? new List<string>();
+        }
 
         public IStartupRegistryKey? OpenRunKey(bool writable)
         {
@@ -112,7 +117,7 @@ namespace DXVKCompanion.PhaseA.Tests
         }
 
         [Fact]
-        public void SettingsStore_Save_FailureDuringTempWrite_PreservesOldTargetFileAndBytes()
+        public void SettingsStore_Save_FailureDuringPartialTempWrite_PreservesOldTargetFileAndBytes_AndCleansTemp()
         {
             using var testDir = new SyntheticTestDirectory();
             string path = testDir.GetPath("settings.json");
@@ -126,7 +131,13 @@ namespace DXVKCompanion.PhaseA.Tests
 
             var store = SettingsStore.Load(path);
             store.GlobalPolicy = GlobalManagementPolicy.Automated;
-            store.SimulatedTempWriteFailure = () => throw new IOException("Disk write fault during temp output.");
+
+            // Deterministic fault injection: writes partial output to temp file then throws
+            store.CustomTempWriter = (tempPath) =>
+            {
+                File.WriteAllText(tempPath, "{\"Incomplete\": true, \"Truncated\":");
+                throw new IOException("Simulated disk error after partial temp write.");
+            };
 
             bool saveSuccess = store.Save(out var error);
 
@@ -134,18 +145,18 @@ namespace DXVKCompanion.PhaseA.Tests
             Assert.NotNull(error);
             Assert.Contains("IOException", error);
 
-            // Verify original file is untouched with identical bytes
+            // Verify original target file is untouched with identical bytes
             Assert.True(File.Exists(path));
             byte[] currentBytes = File.ReadAllBytes(path);
             Assert.Equal(originalBytes, currentBytes);
 
-            // Verify no stray .tmp files left in directory
+            // Verify operation-owned temporary file was cleaned up
             var tmpFiles = Directory.GetFiles(testDir.RootPath, "*.tmp*");
             Assert.Empty(tmpFiles);
         }
 
         [Fact]
-        public void SettingsStore_Save_FailureDuringCommitReplace_PreservesOldTargetFileAndBytes()
+        public void SettingsStore_Save_FailureDuringCommitReplace_PreservesOldTargetFileAndBytes_AndCleansTemp()
         {
             using var testDir = new SyntheticTestDirectory();
             string path = testDir.GetPath("settings.json");
@@ -159,7 +170,13 @@ namespace DXVKCompanion.PhaseA.Tests
 
             var store = SettingsStore.Load(path);
             store.GlobalPolicy = GlobalManagementPolicy.Automated;
-            store.SimulatedCommitFailure = () => throw new IOException("File replace commit fault.");
+
+            // Deterministic fault injection: temp write completes, but final commit replace fails
+            store.CustomCommitReplace = (tempPath, targetPath) =>
+            {
+                Assert.True(File.Exists(tempPath));
+                throw new IOException("Simulated commit replace fault.");
+            };
 
             bool saveSuccess = store.Save(out var error);
 
@@ -183,7 +200,11 @@ namespace DXVKCompanion.PhaseA.Tests
 
             var store = new SettingsStore { CustomSettingsPath = path };
             store.GlobalPolicy = GlobalManagementPolicy.Automated;
-            store.SimulatedTempWriteFailure = () => throw new IOException("Disk write fault.");
+            store.CustomTempWriter = (tempPath) =>
+            {
+                File.WriteAllText(tempPath, "{\"Corrupt\": true");
+                throw new IOException("Simulated write fault.");
+            };
 
             bool saveSuccess = store.Save(out var error);
 
@@ -219,13 +240,23 @@ namespace DXVKCompanion.PhaseA.Tests
             var fakeRegistry = new FakeStartupRegistry { KeyExists = false };
             var manager = new StartupManager(fakeRegistry, @"C:\TestApp\DXVK-Companion.exe");
 
-            // Enabling with missing Run key is a reported failure
             bool enableSuccess = manager.EnableStartup(out var enableError);
             Assert.False(enableSuccess);
             Assert.NotNull(enableError);
             Assert.Contains("not found", enableError);
 
-            // Disabling with missing Run key is an idempotent success
+            bool disableSuccess = manager.DisableStartup(out var disableError);
+            Assert.True(disableSuccess);
+            Assert.Null(disableError);
+        }
+
+        [Fact]
+        public void StartupManager_MissingValueOnDisable_SucceedsIdempotently()
+        {
+            var fakeRegistry = new FakeStartupRegistry { KeyExists = true };
+            var manager = new StartupManager(fakeRegistry, @"C:\TestApp\DXVK-Companion.exe");
+
+            Assert.False(fakeRegistry.CurrentKey.Values.ContainsKey("DXVK Companion"));
             bool disableSuccess = manager.DisableStartup(out var disableError);
             Assert.True(disableSuccess);
             Assert.Null(disableError);
@@ -241,6 +272,33 @@ namespace DXVKCompanion.PhaseA.Tests
             Assert.False(enableSuccess);
             Assert.NotNull(enableError);
             Assert.Contains("UnauthorizedAccessException", enableError);
+
+            bool disableSuccess = manager.DisableStartup(out var disableError);
+            Assert.False(disableSuccess);
+            Assert.NotNull(disableError);
+            Assert.Contains("UnauthorizedAccessException", disableError);
+        }
+
+        [Fact]
+        public void StartupManager_SetValueFailure_ReportedAsFailure()
+        {
+            var fakeRegistry = new FakeStartupRegistry();
+            fakeRegistry.CurrentKey.ThrowOnSetValue = true;
+            var manager = new StartupManager(fakeRegistry, @"C:\TestApp\DXVK-Companion.exe");
+
+            bool enableSuccess = manager.EnableStartup(out var enableError);
+            Assert.False(enableSuccess);
+            Assert.NotNull(enableError);
+            Assert.Contains("UnauthorizedAccessException", enableError);
+        }
+
+        [Fact]
+        public void StartupManager_DeleteValueFailure_ReportedAsFailure()
+        {
+            var fakeRegistry = new FakeStartupRegistry();
+            fakeRegistry.CurrentKey.Values["DXVK Companion"] = "\"C:\\TestApp\\DXVK-Companion.exe\"";
+            fakeRegistry.CurrentKey.ThrowOnDeleteValue = true;
+            var manager = new StartupManager(fakeRegistry, @"C:\TestApp\DXVK-Companion.exe");
 
             bool disableSuccess = manager.DisableStartup(out var disableError);
             Assert.False(disableSuccess);
@@ -283,8 +341,7 @@ namespace DXVKCompanion.PhaseA.Tests
             var store = new SettingsStore { CustomSettingsPath = path, GlobalPolicy = GlobalManagementPolicy.Manual };
             Assert.True(store.Save(out _));
 
-            // Inject commit failure
-            store.SimulatedCommitFailure = () => throw new IOException("Commit replace failed.");
+            store.CustomCommitReplace = (_, _) => throw new IOException("Commit replace failed.");
 
             var fakeRegistry = new FakeStartupRegistry();
             var startup = new StartupManager(fakeRegistry);
@@ -297,17 +354,15 @@ namespace DXVKCompanion.PhaseA.Tests
             Assert.True(result.ShouldRevertUI);
             Assert.Equal(GlobalManagementPolicy.Manual, result.ActivePolicy);
 
-            // Shared in-memory store remains untouched; automated consumer does not see uncommitted policy
             Assert.Equal(GlobalManagementPolicy.Manual, coordinator.ActivePolicy);
             Assert.Equal(GlobalManagementPolicy.Manual, store.GlobalPolicy);
 
-            // Disk retains old bytes
             var loaded = SettingsStore.Load(path);
             Assert.Equal(GlobalManagementPolicy.Manual, loaded.GlobalPolicy);
         }
 
         [Fact]
-        public void SettingsCoordinator_StartupEnable_RegistryFailure_RetainsPriorStateAndDoesNotSave()
+        public void SettingsCoordinator_StartupEnable_RegistrySetValueFailure_RetainsPriorStateAndDoesNotSave()
         {
             using var testDir = new SyntheticTestDirectory();
             string path = testDir.GetPath("settings.json");
@@ -315,7 +370,8 @@ namespace DXVKCompanion.PhaseA.Tests
             var store = new SettingsStore { CustomSettingsPath = path, LaunchOnStartup = false };
             Assert.True(store.Save(out _));
 
-            var fakeRegistry = new FakeStartupRegistry { KeyExists = false };
+            var fakeRegistry = new FakeStartupRegistry();
+            fakeRegistry.CurrentKey.ThrowOnSetValue = true;
             var startup = new StartupManager(fakeRegistry);
             var coordinator = new SettingsChangeCoordinator(store, startup);
 
@@ -327,7 +383,6 @@ namespace DXVKCompanion.PhaseA.Tests
             Assert.True(result.ShouldRevertUI);
             Assert.False(result.ActiveLaunchOnStartup);
 
-            // In-memory state and disk remain unchanged
             Assert.False(coordinator.ActiveLaunchOnStartup);
             Assert.False(store.LaunchOnStartup);
 
@@ -336,7 +391,7 @@ namespace DXVKCompanion.PhaseA.Tests
         }
 
         [Fact]
-        public void SettingsCoordinator_StartupDisable_RegistryFailure_RetainsPriorStateAndDoesNotSave()
+        public void SettingsCoordinator_StartupDisable_RegistryDeleteValueFailure_RetainsPriorStateAndDoesNotSave()
         {
             using var testDir = new SyntheticTestDirectory();
             string path = testDir.GetPath("settings.json");
@@ -344,7 +399,9 @@ namespace DXVKCompanion.PhaseA.Tests
             var store = new SettingsStore { CustomSettingsPath = path, LaunchOnStartup = true };
             Assert.True(store.Save(out _));
 
-            var fakeRegistry = new FakeStartupRegistry { ThrowOnOpen = true };
+            var fakeRegistry = new FakeStartupRegistry();
+            fakeRegistry.CurrentKey.Values["DXVK Companion"] = "\"C:\\TestApp\\DXVK-Companion.exe\"";
+            fakeRegistry.CurrentKey.ThrowOnDeleteValue = true;
             var startup = new StartupManager(fakeRegistry);
             var coordinator = new SettingsChangeCoordinator(store, startup);
 
@@ -372,28 +429,25 @@ namespace DXVKCompanion.PhaseA.Tests
             var store = new SettingsStore { CustomSettingsPath = path, LaunchOnStartup = false };
             Assert.True(store.Save(out _));
 
-            // Registry succeeds, but file save fails
             var fakeRegistry = new FakeStartupRegistry();
             var startup = new StartupManager(fakeRegistry, @"C:\TestApp\DXVK-Companion.exe");
-            store.SimulatedCommitFailure = () => throw new IOException("Commit replace failed.");
+            store.CustomCommitReplace = (_, _) => throw new IOException("Commit replace failed.");
 
             var coordinator = new SettingsChangeCoordinator(store, startup);
 
             var result = coordinator.ChangeLaunchOnStartup(true);
 
-            // Registry was updated
             Assert.True(fakeRegistry.CurrentKey.Values.ContainsKey("DXVK Companion"));
 
-            // Status is Warning, UI should NOT revert because registry is active
             Assert.Equal(SettingsOperationStatus.Warning, result.Status);
             Assert.False(result.ShouldRevertUI);
             Assert.NotNull(result.Message);
             Assert.Contains("Windows startup was updated, but saving your preference failed", result.Message);
 
-            // Applied state retained in memory
             Assert.True(result.ActiveLaunchOnStartup);
             Assert.True(coordinator.ActiveLaunchOnStartup);
             Assert.True(store.LaunchOnStartup);
+            Assert.True(coordinator.HasUnresolvedStartupSave);
         }
 
         [Fact]
@@ -407,31 +461,121 @@ namespace DXVKCompanion.PhaseA.Tests
 
             var fakeRegistry = new FakeStartupRegistry();
             var startup = new StartupManager(fakeRegistry, @"C:\TestApp\DXVK-Companion.exe");
-            // Populate initial registry value
             fakeRegistry.CurrentKey.Values["DXVK Companion"] = "\"C:\\TestApp\\DXVK-Companion.exe\"";
 
-            store.SimulatedCommitFailure = () => throw new IOException("Commit replace failed.");
+            store.CustomCommitReplace = (_, _) => throw new IOException("Commit replace failed.");
             var coordinator = new SettingsChangeCoordinator(store, startup);
 
             var result = coordinator.ChangeLaunchOnStartup(false);
 
-            // Registry value was removed
             Assert.False(fakeRegistry.CurrentKey.Values.ContainsKey("DXVK Companion"));
 
-            // Warning issued, UI not reverted
             Assert.Equal(SettingsOperationStatus.Warning, result.Status);
             Assert.False(result.ShouldRevertUI);
             Assert.NotNull(result.Message);
             Assert.Contains("Windows startup was updated, but saving your preference failed", result.Message);
 
-            // Applied state is false in memory
             Assert.False(result.ActiveLaunchOnStartup);
             Assert.False(coordinator.ActiveLaunchOnStartup);
             Assert.False(store.LaunchOnStartup);
+            Assert.True(coordinator.HasUnresolvedStartupSave);
         }
 
         [Fact]
-        public void SettingsCoordinator_RepeatedAttempts_OperatesOnAppliedStateAndSubsequentPolicySavePersists()
+        public void SettingsCoordinator_SameStateRequest_AfterSaveFailure_RetainsWarningUntilPersistenceSucceeds()
+        {
+            using var testDir = new SyntheticTestDirectory();
+            string path = testDir.GetPath("settings.json");
+
+            var store = new SettingsStore { CustomSettingsPath = path, LaunchOnStartup = false };
+            Assert.True(store.Save(out _));
+
+            var fakeRegistry = new FakeStartupRegistry();
+            var startup = new StartupManager(fakeRegistry, @"C:\TestApp\DXVK-Companion.exe");
+
+            // Registry succeeds, but save fails
+            store.CustomCommitReplace = (_, _) => throw new IOException("Commit replace failed.");
+            var coordinator = new SettingsChangeCoordinator(store, startup);
+
+            var r1 = coordinator.ChangeLaunchOnStartup(true);
+            Assert.Equal(SettingsOperationStatus.Warning, r1.Status);
+            Assert.True(coordinator.HasUnresolvedStartupSave);
+
+            // Repeat request with same state while save still failing
+            var r2 = coordinator.ChangeLaunchOnStartup(true);
+            Assert.Equal(SettingsOperationStatus.Warning, r2.Status);
+            Assert.NotNull(r2.Message);
+            Assert.True(coordinator.HasUnresolvedStartupSave);
+
+            // Now fault is resolved; repeat same-state request retries persistence and succeeds
+            store.CustomCommitReplace = null;
+            var r3 = coordinator.ChangeLaunchOnStartup(true);
+            Assert.Equal(SettingsOperationStatus.Success, r3.Status);
+            Assert.Null(r3.Message);
+            Assert.False(coordinator.HasUnresolvedStartupSave);
+
+            var loaded = SettingsStore.Load(path);
+            Assert.True(loaded.LaunchOnStartup);
+        }
+
+        [Fact]
+        public void SettingsCoordinator_SameStateRequest_AfterDisableSaveFailure_RetainsWarningUntilPersistenceSucceeds()
+        {
+            using var testDir = new SyntheticTestDirectory();
+            string path = testDir.GetPath("settings.json");
+
+            var store = new SettingsStore { CustomSettingsPath = path, LaunchOnStartup = true };
+            Assert.True(store.Save(out _));
+
+            var fakeRegistry = new FakeStartupRegistry();
+            var startup = new StartupManager(fakeRegistry, @"C:\TestApp\DXVK-Companion.exe");
+            fakeRegistry.CurrentKey.Values["DXVK Companion"] = "\"C:\\TestApp\\DXVK-Companion.exe\"";
+
+            store.CustomCommitReplace = (_, _) => throw new IOException("Commit replace failed.");
+            var coordinator = new SettingsChangeCoordinator(store, startup);
+
+            var r1 = coordinator.ChangeLaunchOnStartup(false);
+            Assert.Equal(SettingsOperationStatus.Warning, r1.Status);
+
+            // Same state repeat attempt retains warning
+            var r2 = coordinator.ChangeLaunchOnStartup(false);
+            Assert.Equal(SettingsOperationStatus.Warning, r2.Status);
+
+            // Resolve fault and retry same state
+            store.CustomCommitReplace = null;
+            var r3 = coordinator.ChangeLaunchOnStartup(false);
+            Assert.Equal(SettingsOperationStatus.Success, r3.Status);
+            Assert.False(coordinator.HasUnresolvedStartupSave);
+
+            var loaded = SettingsStore.Load(path);
+            Assert.False(loaded.LaunchOnStartup);
+        }
+
+        [Fact]
+        public void SettingsCoordinator_AlreadyPersistedNoOp_ReturnsSuccessDirectly()
+        {
+            using var testDir = new SyntheticTestDirectory();
+            string path = testDir.GetPath("settings.json");
+
+            var store = new SettingsStore { CustomSettingsPath = path, GlobalPolicy = GlobalManagementPolicy.Manual, LaunchOnStartup = false };
+            Assert.True(store.Save(out _));
+
+            var fakeRegistry = new FakeStartupRegistry();
+            var startup = new StartupManager(fakeRegistry);
+            var coordinator = new SettingsChangeCoordinator(store, startup);
+
+            // Ordinary no-op policy request returns success without write faults
+            store.CustomTempWriter = (_) => throw new InvalidOperationException("Should not write on clean no-op.");
+            var r1 = coordinator.ChangePolicy(GlobalManagementPolicy.Manual);
+            Assert.Equal(SettingsOperationStatus.Success, r1.Status);
+
+            // Ordinary no-op startup request returns success without write faults
+            var r2 = coordinator.ChangeLaunchOnStartup(false);
+            Assert.Equal(SettingsOperationStatus.Success, r2.Status);
+        }
+
+        [Fact]
+        public void SettingsCoordinator_UnrelatedPolicySave_ClearsUnresolvedStartupSaveWarning()
         {
             using var testDir = new SyntheticTestDirectory();
             string path = testDir.GetPath("settings.json");
@@ -443,101 +587,88 @@ namespace DXVKCompanion.PhaseA.Tests
             var startup = new StartupManager(fakeRegistry, @"C:\TestApp\DXVK-Companion.exe");
             var coordinator = new SettingsChangeCoordinator(store, startup);
 
-            // Attempt 1: Enable startup with save failure
-            store.SimulatedTempWriteFailure = () => throw new IOException("Temp write failure");
+            // Enable startup with save failure
+            store.CustomCommitReplace = (_, _) => throw new IOException("Initial save fault.");
             var r1 = coordinator.ChangeLaunchOnStartup(true);
             Assert.Equal(SettingsOperationStatus.Warning, r1.Status);
-            Assert.True(coordinator.ActiveLaunchOnStartup);
+            Assert.True(coordinator.HasUnresolvedStartupSave);
 
-            // Unrelated policy change with save now working
-            store.SimulatedTempWriteFailure = null;
+            // Clear fault; unrelated policy change succeeds
+            store.CustomCommitReplace = null;
             var r2 = coordinator.ChangePolicy(GlobalManagementPolicy.Automated);
             Assert.Equal(SettingsOperationStatus.Success, r2.Status);
+            Assert.False(coordinator.HasUnresolvedStartupSave);
 
-            // Both automated policy AND startup state are now persisted to disk
+            // Verify both policy and startup were persisted
             var loaded = SettingsStore.Load(path);
             Assert.Equal(GlobalManagementPolicy.Automated, loaded.GlobalPolicy);
             Assert.True(loaded.LaunchOnStartup);
-
-            // Attempt 2: Disable startup with clean save
-            var r3 = coordinator.ChangeLaunchOnStartup(false);
-            Assert.Equal(SettingsOperationStatus.Success, r3.Status);
-            Assert.False(coordinator.ActiveLaunchOnStartup);
-
-            var loadedFinal = SettingsStore.Load(path);
-            Assert.False(loadedFinal.LaunchOnStartup);
         }
 
         [Fact]
-        public void SettingsCoordinator_StartupToggle_CallOrdering_RegistryPrecedesSave()
+        public void SettingsCoordinator_StartupToggle_CallOrdering_SharedTraceProvesRegistryPrecedesSave()
         {
             using var testDir = new SyntheticTestDirectory();
             string path = testDir.GetPath("settings.json");
 
-            var store = new SettingsStore { CustomSettingsPath = path };
-            var fakeRegistry = new FakeStartupRegistry();
-            var startup = new StartupManager(fakeRegistry, @"C:\TestApp\DXVK-Companion.exe");
+            var sharedTrace = new List<string>();
 
-            var callOrder = new List<string>();
-            fakeRegistry.Operations.Clear();
-
-            store.SimulatedTempWriteFailure = () =>
+            var store = new SettingsStore { CustomSettingsPath = path, LaunchOnStartup = false };
+            store.CustomTempWriter = (tempPath) =>
             {
-                callOrder.Add("Store.TempWrite");
+                sharedTrace.Add("Save:TempWriter");
+                File.WriteAllText(tempPath, "{}");
+            };
+            store.CustomCommitReplace = (tempPath, targetPath) =>
+            {
+                sharedTrace.Add("Save:CommitReplace");
+                File.Move(tempPath, targetPath, overwrite: true);
             };
 
+            var fakeRegistry = new FakeStartupRegistry(sharedTrace);
+            var startup = new StartupManager(fakeRegistry, @"C:\TestApp\DXVK-Companion.exe");
             var coordinator = new SettingsChangeCoordinator(store, startup);
+
             var result = coordinator.ChangeLaunchOnStartup(true);
 
-            // Assert registry SetValue was invoked before Store.TempWrite
-            int registrySetIndex = fakeRegistry.Operations.FindIndex(op => op.StartsWith("SetValue"));
-            Assert.True(registrySetIndex >= 0);
-            Assert.Contains("Store.TempWrite", callOrder);
+            Assert.Equal(SettingsOperationStatus.Success, result.Status);
+
+            // Verify ordered call sequence: OpenRunKey -> SetValue -> Save:TempWriter -> Save:CommitReplace -> DisposeKey
+            int openIndex = sharedTrace.IndexOf("OpenRunKey(writable=True)");
+            int setValueIndex = sharedTrace.FindIndex(s => s.StartsWith("SetValue"));
+            int tempWriterIndex = sharedTrace.IndexOf("Save:TempWriter");
+            int commitIndex = sharedTrace.IndexOf("Save:CommitReplace");
+
+            Assert.True(openIndex >= 0, "OpenRunKey was not called.");
+            Assert.True(setValueIndex > openIndex, "SetValue must follow OpenRunKey.");
+            Assert.True(tempWriterIndex > setValueIndex, "Save:TempWriter must follow SetValue.");
+            Assert.True(commitIndex > tempWriterIndex, "Save:CommitReplace must follow Save:TempWriter.");
         }
 
         [Fact]
-        public void SettingsCoordinator_RestorationAndEventReentry_GuardsAgainstRecursion()
+        public void UiReentrancyGuard_SuppressesRecursiveExecution()
         {
-            using var testDir = new SyntheticTestDirectory();
-            string path = testDir.GetPath("settings.json");
+            var guard = new UiReentrancyGuard();
+            int outerExecutions = 0;
+            int innerExecutions = 0;
+            bool innerAttemptResult = true;
 
-            var store = new SettingsStore { CustomSettingsPath = path, GlobalPolicy = GlobalManagementPolicy.Manual };
-            store.SimulatedCommitFailure = () => throw new IOException("Commit failed.");
-
-            var fakeRegistry = new FakeStartupRegistry();
-            var startup = new StartupManager(fakeRegistry);
-            var coordinator = new SettingsChangeCoordinator(store, startup);
-
-            int invocationCount = 0;
-            bool isUpdatingUI = false;
-
-            // Simulate UI event handler pattern
-            void HandlePolicyChange(GlobalManagementPolicy requested)
+            guard.TryExecute(() =>
             {
-                if (isUpdatingUI) return;
-                invocationCount++;
+                outerExecutions++;
+                Assert.True(guard.IsExecuting);
 
-                var res = coordinator.ChangePolicy(requested);
-                if (res.ShouldRevertUI)
+                // Nested execution should be suppressed
+                innerAttemptResult = guard.TryExecute(() =>
                 {
-                    isUpdatingUI = true;
-                    try
-                    {
-                        // Simulates checked changed firing when reverting
-                        HandlePolicyChange(res.ActivePolicy);
-                    }
-                    finally
-                    {
-                        isUpdatingUI = false;
-                    }
-                }
-            }
+                    innerExecutions++;
+                });
+            });
 
-            HandlePolicyChange(GlobalManagementPolicy.Automated);
-
-            // Must have executed exactly once because isUpdatingUI suppressed recursion
-            Assert.Equal(1, invocationCount);
-            Assert.Equal(GlobalManagementPolicy.Manual, coordinator.ActivePolicy);
+            Assert.False(guard.IsExecuting);
+            Assert.Equal(1, outerExecutions);
+            Assert.Equal(0, innerExecutions);
+            Assert.False(innerAttemptResult);
         }
     }
 }

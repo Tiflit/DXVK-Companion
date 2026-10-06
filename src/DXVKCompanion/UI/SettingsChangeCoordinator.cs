@@ -20,10 +20,31 @@ namespace DXVKCompanion.UI
         bool ShouldRevertUI = false
     );
 
+    public class UiReentrancyGuard
+    {
+        public bool IsExecuting { get; private set; }
+
+        public bool TryExecute(Action action)
+        {
+            if (IsExecuting) return false;
+            IsExecuting = true;
+            try
+            {
+                action();
+                return true;
+            }
+            finally
+            {
+                IsExecuting = false;
+            }
+        }
+    }
+
     public class SettingsChangeCoordinator
     {
         private readonly SettingsStore _settings;
         private readonly StartupManager _startup;
+        private string? _unresolvedStartupSaveWarning;
 
         public SettingsChangeCoordinator(SettingsStore settings, StartupManager? startup = null)
         {
@@ -33,11 +54,40 @@ namespace DXVKCompanion.UI
 
         public GlobalManagementPolicy ActivePolicy => _settings.GlobalPolicy;
         public bool ActiveLaunchOnStartup => _settings.LaunchOnStartup;
+        public bool HasUnresolvedStartupSave => _unresolvedStartupSaveWarning != null;
 
         public SettingsOperationResult ChangePolicy(GlobalManagementPolicy proposedPolicy)
         {
             if (proposedPolicy == _settings.GlobalPolicy)
             {
+                // If there is an unresolved startup save warning, same-policy request must not falsely erase it.
+                if (_unresolvedStartupSaveWarning != null)
+                {
+                    if (_settings.Save(out var retryError))
+                    {
+                        _unresolvedStartupSaveWarning = null;
+                        return new SettingsOperationResult(
+                            SettingsOperationStatus.Success,
+                            null,
+                            _settings.GlobalPolicy,
+                            _settings.LaunchOnStartup,
+                            ShouldRevertUI: false);
+                    }
+                    else
+                    {
+                        _unresolvedStartupSaveWarning = !string.IsNullOrWhiteSpace(retryError)
+                            ? $"Windows startup was updated, but saving your preference failed: {retryError}"
+                            : _unresolvedStartupSaveWarning;
+
+                        return new SettingsOperationResult(
+                            SettingsOperationStatus.Warning,
+                            _unresolvedStartupSaveWarning,
+                            _settings.GlobalPolicy,
+                            _settings.LaunchOnStartup,
+                            ShouldRevertUI: false);
+                    }
+                }
+
                 return new SettingsOperationResult(
                     SettingsOperationStatus.Success,
                     null,
@@ -49,13 +99,15 @@ namespace DXVKCompanion.UI
             var priorPolicy = _settings.GlobalPolicy;
 
             // Persist the proposed policy before committing shared in-memory policy and UI selection.
-            // On failure, retain previously active policy; the automated consumer must not observe an uncommitted policy.
             var clone = _settings.Clone();
             clone.GlobalPolicy = proposedPolicy;
 
             if (clone.Save(out var saveError))
             {
                 _settings.GlobalPolicy = proposedPolicy;
+                // Unrelated successful policy save persists current in-memory settings, clearing any startup save warning
+                _unresolvedStartupSaveWarning = null;
+
                 return new SettingsOperationResult(
                     SettingsOperationStatus.Success,
                     null,
@@ -82,6 +134,34 @@ namespace DXVKCompanion.UI
         {
             if (requestedLaunchOnStartup == _settings.LaunchOnStartup)
             {
+                // If a prior startup save failed and left a warning, same-state request must not falsely erase it
+                if (_unresolvedStartupSaveWarning != null)
+                {
+                    if (_settings.Save(out var retryError))
+                    {
+                        _unresolvedStartupSaveWarning = null;
+                        return new SettingsOperationResult(
+                            SettingsOperationStatus.Success,
+                            null,
+                            _settings.GlobalPolicy,
+                            _settings.LaunchOnStartup,
+                            ShouldRevertUI: false);
+                    }
+                    else
+                    {
+                        _unresolvedStartupSaveWarning = !string.IsNullOrWhiteSpace(retryError)
+                            ? $"Windows startup was updated, but saving your preference failed: {retryError}"
+                            : _unresolvedStartupSaveWarning;
+
+                        return new SettingsOperationResult(
+                            SettingsOperationStatus.Warning,
+                            _unresolvedStartupSaveWarning,
+                            _settings.GlobalPolicy,
+                            _settings.LaunchOnStartup,
+                            ShouldRevertUI: false);
+                    }
+                }
+
                 return new SettingsOperationResult(
                     SettingsOperationStatus.Success,
                     null,
@@ -107,8 +187,6 @@ namespace DXVKCompanion.UI
 
             if (!registrySuccess)
             {
-                // Registry operation failed: retain previous preference/UI state, do not save requested preference,
-                // and explain that the change was not confirmed.
                 string message = !string.IsNullOrWhiteSpace(registryError)
                     ? $"Windows startup change was not confirmed: {registryError}"
                     : "Windows startup change was not confirmed.";
@@ -126,6 +204,7 @@ namespace DXVKCompanion.UI
 
             if (_settings.Save(out var saveError))
             {
+                _unresolvedStartupSaveWarning = null;
                 return new SettingsOperationResult(
                     SettingsOperationStatus.Success,
                     null,
@@ -135,15 +214,13 @@ namespace DXVKCompanion.UI
             }
             else
             {
-                // If save fails, retain applied startup state in memory/UI and explicitly warn
-                // that Windows startup changed but saving its preference failed.
-                string warningMessage = !string.IsNullOrWhiteSpace(saveError)
+                _unresolvedStartupSaveWarning = !string.IsNullOrWhiteSpace(saveError)
                     ? $"Windows startup was updated, but saving your preference failed: {saveError}"
                     : "Windows startup was updated, but saving your preference failed.";
 
                 return new SettingsOperationResult(
                     SettingsOperationStatus.Warning,
-                    warningMessage,
+                    _unresolvedStartupSaveWarning,
                     _settings.GlobalPolicy,
                     requestedLaunchOnStartup,
                     ShouldRevertUI: false);
