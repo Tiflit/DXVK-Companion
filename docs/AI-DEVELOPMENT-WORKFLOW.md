@@ -4,7 +4,15 @@
 
 DXVK-Companion is being used to develop and validate a practical multi-agent software-development workflow built around GitHub.
 
-The workflow is intentionally conservative. AI systems may implement, review, and reason about changes, but the repository remains the durable source of truth and a human retains final merge authority during the experimental phase.
+## Workflow Kernel and Deployment Register
+
+The project has adopted the normative **Multi-Agent Workflow Kernel (v0.4)** ([`docs/AI-WORKFLOW-KERNEL.md`](AI-WORKFLOW-KERNEL.md)) with posture declared in the **Deployment Enforcement Register** ([`docs/AI-ENFORCEMENT-REGISTER.md`](AI-ENFORCEMENT-REGISTER.md)) per human approval in [Issue #63](https://github.com/Tiflit/DXVK-Companion/issues/63).
+
+- **Kernel Authority & Guarantees**: The kernel establishes normative guarantees (K1 Authorization & Scope, K2 Sensitive Information, K3 Truthful Evidence, K4 History Preservation, K5 Untrusted Content, K6 Stop/Revocation/Resume, K7 No Self-Granted Authority).
+- **Deployment Posture**: The DXVK-Companion deployment operates under the **Manual Starter Preset** (cooperative baseline; unattended automation disabled; human-mediated consequential execution; shared-credential gap declared). All proposed adversarial probes are **NOT RUN**.
+- **Precedence Rule**: Configuration and project rules remain subject to the adopted kernel; project rules may add stricter restrictions (e.g. human final merge authority, local test authorization gate, guarded append-only issue updates) but cannot remove kernel guarantees. Incompatible requirements block dependent actions until an authorized human resolution is recorded.
+- **Load Policy**: Fresh sessions load the compact protected kernel (~800 words target); register lookups and detailed operating guidance (this document) are loaded on demand.
+- **Preserved Project Procedures**: Adoption preserves existing role assignments (Gemini implementation, ChatGPT coordination/verification, Claude audit, Human merge authority), task grammar, allowed paths restrictions, privacy/history helpers, CI/handoff procedure, bounded observations, and local test authorization gates. This task does not separately relax the pre-merge snapshot-refresh procedure or adopt automatic integration.
 
 ## Durable-memory rule
 
@@ -25,6 +33,8 @@ Therefore:
 
 Durable information belongs in GitHub:
 
+- normative workflow kernel -> [`docs/AI-WORKFLOW-KERNEL.md`](AI-WORKFLOW-KERNEL.md);
+- deployment enforcement register -> [`docs/AI-ENFORCEMENT-REGISTER.md`](AI-ENFORCEMENT-REGISTER.md);
 - starting point for fresh sessions -> [`AGENTS.md`](../AGENTS.md);
 - task requirements and acceptance criteria -> GitHub Issue;
 - implementation and verification -> Pull Request and commits;
