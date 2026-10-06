@@ -1,3 +1,4 @@
+using System;
 using System.Drawing;
 using System.Windows.Forms;
 using DXVKCompanion.Models;
@@ -8,17 +9,27 @@ namespace DXVKCompanion.UI
 {
     public class SettingsWindow : Form
     {
-        private readonly SettingsStore _settings;
-        private readonly StartupManager _startup;
+        private readonly SettingsChangeCoordinator _coordinator;
+        private readonly Label _statusLabel;
+        private readonly UiReentrancyGuard _reentrancyGuard = new();
 
         public SettingsWindow(SettingsStore settings)
+            : this(new SettingsChangeCoordinator(settings))
         {
-            _settings = settings;
-            _startup = new StartupManager();
+        }
+
+        public SettingsWindow(SettingsStore settings, StartupManager startup)
+            : this(new SettingsChangeCoordinator(settings, startup))
+        {
+        }
+
+        public SettingsWindow(SettingsChangeCoordinator coordinator)
+        {
+            _coordinator = coordinator ?? throw new ArgumentNullException(nameof(coordinator));
 
             Text = "DXVK Companion — Settings";
             Width = 460;
-            Height = 280;
+            Height = 300;
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false;
             StartPosition = FormStartPosition.CenterScreen;
@@ -35,7 +46,7 @@ namespace DXVKCompanion.UI
             var rbManual = new RadioButton
             {
                 Text = "Manual (Recommended: Observe & report only; explicit user action)",
-                Checked = _settings.GlobalPolicy == GlobalManagementPolicy.Manual,
+                Checked = _coordinator.ActivePolicy == GlobalManagementPolicy.Manual,
                 Top = 25,
                 Left = 15,
                 Width = 385,
@@ -45,7 +56,7 @@ namespace DXVKCompanion.UI
             var rbAutomated = new RadioButton
             {
                 Text = "Automated (Experimental: Auto-install & maintain DXVK on exit)",
-                Checked = _settings.GlobalPolicy == GlobalManagementPolicy.Automated,
+                Checked = _coordinator.ActivePolicy == GlobalManagementPolicy.Automated,
                 Top = 60,
                 Left = 15,
                 Width = 385,
@@ -54,20 +65,36 @@ namespace DXVKCompanion.UI
 
             rbManual.CheckedChanged += (_, _) =>
             {
-                if (rbManual.Checked)
+                if (_reentrancyGuard.IsExecuting) return;
+                if (!rbManual.Checked) return;
+
+                _reentrancyGuard.TryExecute(() =>
                 {
-                    _settings.GlobalPolicy = GlobalManagementPolicy.Manual;
-                    _settings.Save();
-                }
+                    var result = _coordinator.ChangePolicy(GlobalManagementPolicy.Manual);
+                    DisplayResult(result);
+                    if (result.ShouldRevertUI)
+                    {
+                        rbManual.Checked = result.ActivePolicy == GlobalManagementPolicy.Manual;
+                        rbAutomated.Checked = result.ActivePolicy == GlobalManagementPolicy.Automated;
+                    }
+                });
             };
 
             rbAutomated.CheckedChanged += (_, _) =>
             {
-                if (rbAutomated.Checked)
+                if (_reentrancyGuard.IsExecuting) return;
+                if (!rbAutomated.Checked) return;
+
+                _reentrancyGuard.TryExecute(() =>
                 {
-                    _settings.GlobalPolicy = GlobalManagementPolicy.Automated;
-                    _settings.Save();
-                }
+                    var result = _coordinator.ChangePolicy(GlobalManagementPolicy.Automated);
+                    DisplayResult(result);
+                    if (result.ShouldRevertUI)
+                    {
+                        rbManual.Checked = result.ActivePolicy == GlobalManagementPolicy.Manual;
+                        rbAutomated.Checked = result.ActivePolicy == GlobalManagementPolicy.Automated;
+                    }
+                });
             };
 
             policyGroup.Controls.Add(rbManual);
@@ -77,33 +104,70 @@ namespace DXVKCompanion.UI
             var startupCheckbox = new CheckBox
             {
                 Text = "Launch DXVK Companion on Windows startup",
-                Checked = _settings.LaunchOnStartup,
+                Checked = _coordinator.ActiveLaunchOnStartup,
                 AutoSize = true,
-                Top = 140,
+                Top = 135,
                 Left = 20
             };
             startupCheckbox.CheckedChanged += (_, _) =>
             {
-                _settings.LaunchOnStartup = startupCheckbox.Checked;
-                _settings.Save();
+                if (_reentrancyGuard.IsExecuting) return;
 
-                if (startupCheckbox.Checked)
-                    _startup.EnableStartup();
-                else
-                    _startup.DisableStartup();
+                _reentrancyGuard.TryExecute(() =>
+                {
+                    var result = _coordinator.ChangeLaunchOnStartup(startupCheckbox.Checked);
+                    DisplayResult(result);
+                    if (result.ShouldRevertUI)
+                    {
+                        startupCheckbox.Checked = result.ActiveLaunchOnStartup;
+                    }
+                });
             };
             Controls.Add(startupCheckbox);
+
+            _statusLabel = new Label
+            {
+                Top = 165,
+                Left = 20,
+                Width = 415,
+                Height = 45,
+                AutoSize = false,
+                ForeColor = Color.Red,
+                Visible = false
+            };
+            Controls.Add(_statusLabel);
 
             var btnClose = new Button
             {
                 Text = "Close",
-                Top = 190,
+                Top = 220,
                 Left = 330,
                 Width = 100,
                 Height = 32
             };
             btnClose.Click += (_, _) => Close();
             Controls.Add(btnClose);
+        }
+
+        private void DisplayResult(SettingsOperationResult result)
+        {
+            if (result.Status == SettingsOperationStatus.Success)
+            {
+                _statusLabel.Text = string.Empty;
+                _statusLabel.Visible = false;
+            }
+            else if (result.Status == SettingsOperationStatus.Warning)
+            {
+                _statusLabel.ForeColor = Color.DarkOrange;
+                _statusLabel.Text = result.Message ?? "Warning: settings update partially succeeded.";
+                _statusLabel.Visible = true;
+            }
+            else // Failure
+            {
+                _statusLabel.ForeColor = Color.Red;
+                _statusLabel.Text = result.Message ?? "Error: settings update failed.";
+                _statusLabel.Visible = true;
+            }
         }
     }
 }
