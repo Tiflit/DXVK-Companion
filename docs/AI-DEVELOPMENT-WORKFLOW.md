@@ -56,7 +56,7 @@ Use for:
 - implementation;
 - broad but task-relevant refactoring;
 - regression tests and test generation;
-- local iteration;
+- local iteration and test execution (under explicit human authorization for the proposed scope);
 - build/test diagnosis;
 - focused revisions after review findings and bounded repairs.
 
@@ -282,8 +282,8 @@ Key verification principles:
 
 Verification depth should match the risk profile of the task:
 - **Documentation tasks**: Focus on source/link accuracy, scope compliance, and contract alignment, retaining direct inspection of task-relevant evidence (such as CI logs or documentation sources) when required by the contract. Do not imply platform status checks alone verify underlying test counts or execution details, and do not mandate running local application test suites or TRX parsing solely for documentation edits unless explicitly required by the task contract.
-- **File safety and transaction tasks**: Require robust local verification, synthetic test coverage, regression fixtures for edge cases (e.g., in-process exception rollback, baseline backup preservation), and direct inspection of test evidence.
-- **Reporting discipline**: Explicitly distinguish locally *executed* commands/tests from remotely *inspected* CI job logs and platform metadata. Never assert a test ran locally if only CI logs were read.
+- **File safety and transaction tasks**: Require robust local verification and synthetic test coverage under the local test authorization gate, regression fixtures for edge cases (e.g., in-process exception rollback, baseline backup preservation), and direct inspection of test evidence. If local test execution is not yet authorized by the human, honestly report planned local checks as `NOT RUN` (pending authorization) while remote CI executes.
+- **Reporting discipline**: Explicitly distinguish locally *executed* commands/tests from remotely *inspected* CI job logs and platform metadata. Never assert a test ran locally if only CI logs were read. Unapproved or blocked local checks must be reported as `NOT RUN` (pending human authorization)—never silently omitted or called `PASS`.
 
 ## Documentation lifecycle
 
@@ -705,6 +705,53 @@ python scripts/ai-workflow/update_pr_body.py --issue 42 --append-file post_merge
   4. Open findings and pending decisions
   5. Exact next action and assigned owner
   6. Out-of-scope findings: `none` / `links` / `pending persistence (reason and next owner)` (exposes omissions but cannot prove exhaustive discovery)
+
+## Human Authorization Gate for Local Test Execution
+
+Executing tests on the user's local system directly interacts with the human developer's workstation. To protect ongoing work, avoid interrupting active applications, and ensure the developer can secure open projects before an AI agent runs tests or fault-injection experiments, agents MUST obtain explicit human authorization for the proposed test scope before local execution begins.
+
+### 1. Mandatory Preflight Gate and Scope Covered
+- **Scope Covered**: The authorization requirement applies to all local test execution on the user's system, including:
+  - Local unit and integration test suites (e.g. `dotnet test`, `python -m unittest`);
+  - Desktop and packaged application runs (running dev builds, packaged binaries, or background daemons);
+  - CLI test harnesses and scripts;
+  - Attached hardware or peripheral device testing.
+- **No Waiver by Isolation**: Using a dedicated disposable directory, temporary scratch path, or local virtual machine does **NOT** waive this gate.
+
+### 2. Required Authorization Request Specification
+Before initiating local test execution, the agent or coordinator must present an authorization request clearly stating:
+1. **What will run**: The exact test commands, runner suites, or executable paths to be executed.
+2. **Where (Host Environment)**: The target host environment, explicitly declaring whether it will run on the user's active desktop/session or a separate isolated environment. Agents must **never** silently substitute the user's host or desktop when an isolated environment is unavailable.
+3. **Affected Resources**: What files, directories, registry keys, configuration settings, child processes, or devices may be created, read, or modified.
+4. **Potential Disruption**: Anticipated system impacts, including window creation, UI focus stealing, CPU/memory consumption, network activity, and process termination risks, so the human can secure open applications.
+5. **Exit and Cleanup Intent**: Planned process termination method and whether test workspaces or diagnostic artifacts will be retained for coordinator inspection or cleaned up.
+
+### 3. Recording Authorization in Assigned Issues
+Authorization must be recorded in the assigned primary task Issue before execution begins, following established approval-source conventions:
+- **Valid Authorization Sources**:
+  1. A direct link to an authentic human GitHub comment or issue decision; or
+  2. A clearly attributed coordinator transcription quoting the human's instruction verbatim, explicitly marked as not mechanically authenticated.
+- **Invalid Sources**: An agent recommendation (from ChatGPT, Gemini, or Claude), a primary task assignment, a general "Continue" or "Proceed" direction, an issue or PR merge, green CI status, or an editable approval text flag is **NOT** permission to run local tests.
+- **Scope Reuse and Fresh Authorization**: Valid authorization applies strictly to the specified test scope and may be reused for subsequent sessions covering that identical scope without repeated prompting. Materially broader test suites, additional test phases, or different host environments require fresh authorization.
+- **Non-Blocking Preparation**: Repository exploration, code editing, static analysis, git diff reviews, fail-closed privacy scanning, and documentation preparation may proceed while local test authorization is pending.
+
+### 4. Distinction from CI and Read-Only Operations
+- **GitHub-Hosted CI Unaffected**: Cloud-hosted GitHub Actions workflows (e.g. `build-and-test`, `ai-scope-check`, `ai-pr-hygiene`) are already-authorized repository automation. This gate must **not** disable normal CI or add approval prompts to cloud pipeline runs.
+- **Read-Only Operations**: Routine file inspection, git status/diff queries, privacy scans, GitHub metadata retrieval via `gh`, and safe documentation generation are standard read-only operations and do **not** require authorization prompts.
+- **No Disguised Execution**: Read-only operations and documentation tasks must never be used as a cover or disguise for executing application, harness, or device tests.
+
+### 5. Invariant Boundaries and Stop-at-Blocker Discipline
+- **Explicit Authorization Does Not Waive Boundaries**: Authorization for a defined test scope does not grant open-ended authority to improvise broader automation or bypass task boundaries. Agents must not:
+  - Download, install, or construct ad hoc desktop automation frameworks (e.g. Selenium, Appium, WinAppDriver);
+  - Execute unauthorized fault injection or crash testing;
+  - Forcefully terminate arbitrary processes outside the authorized test harness;
+  - Alter system-wide environment configurations; or
+  - Perform destructive cleanup.
+- **Stop at Observability Blockers**: If a desktop or application behavior cannot be observed within available capabilities (e.g. desktop session isolation), the agent must STOP at the blocker, honestly report the test as `NOT RUN` / blocked with diagnostic details, and hand off to the coordinator. Never infer GUI success from process existence alone.
+
+### 6. Truthful Reporting Discipline
+- **Truthful NOT RUN Reporting**: Unapproved or blocked local test checks must be honestly recorded in test summaries and handoffs as `NOT RUN` (pending human authorization)—never silently omitted, hidden, or claimed as `PASS`.
+- **Reporting Clarity**: Explicitly distinguish locally *executed* commands/tests from remotely *inspected* CI job logs and platform metadata. Never assert a test ran locally if only CI logs were read.
 
 ## Bounded Observation Reporting and Triage
 

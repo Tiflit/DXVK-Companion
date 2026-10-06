@@ -44,6 +44,9 @@ Active task assignments, in-flight work, and open PR inventories are derived dyn
 - **Human Approval Preflight**: Policy implementation is blocked until explicit human approval is authenticated in the task Issue. Agent recommendations (e.g. from ChatGPT or Gemini) do not constitute approval.
 - **Investigation Allowed**: Preparatory investigation, options analysis, and decision briefs may proceed while decisions are pending, but policy changes to production code or canonical specifications must not be implemented or merged without recorded approval.
 
+### Local Test Execution Authorization Gate
+- **Human Authorization Required**: Executing tests on the user's local system (unit/integration suites, desktop/application runs, device testing) requires explicit human authorization recorded in the task Issue before execution begins ([AGENTS.md](../AGENTS.md)). A disposable folder, separate directory, or local VM does not waive the gate.
+- **Safe Preparation & CI**: GitHub-hosted CI runs and read-only source/evidence retrieval do not require approval prompts. Unapproved local checks must be recorded honestly as `NOT RUN` (pending human authorization).
 
 ---
 
@@ -62,9 +65,12 @@ Active task assignments, in-flight work, and open PR inventories are derived dyn
 2. Read the assigned GitHub Issue (`gh issue view <number>`). Note acceptance criteria and `### Allowed paths`.
 3. Verify git status, fetch `origin/main`, and work in an isolated worktree. Reference durable evidence using portable GitHub URLs (referencing immutable commit SHAs, PRs, or Issue numbers), avoiding personal home paths, raw transcripts, or secrets.
 4. Write failing regression fixtures first when addressing a defect.
-5. Run task-relevant tests:
-   - Application changes: `dotnet test tests/DXVKCompanion.PhaseA.Tests/DXVKCompanion.PhaseA.Tests.csproj` (CI-verified).
-   - Workflow automation changes: `python -m unittest discover -s tests/ai-workflow -v`.
+5. Verify task-relevant tests:
+   - **Local Test Execution Gate**: Before executing test suites, desktop/application runs, or device tests on the user's local system, verify that explicit human authorization is recorded in the assigned Issue for the proposed scope ([AGENTS.md](../AGENTS.md)). If unapproved or blocked, do NOT execute locally; honestly record checks as `NOT RUN` (pending human authorization) rather than claiming `PASS` or silently omitting them.
+   - **CI & Remote Verification**: GitHub Actions CI executes automatically on pull request pushes (`build-and-test`, `ai-scope-check`, `ai-pr-hygiene`). Distinguish remote CI verification from local test execution.
+   - When authorized for local execution:
+     - Application changes: `dotnet test tests/DXVKCompanion.PhaseA.Tests/DXVKCompanion.PhaseA.Tests.csproj`.
+     - Workflow automation changes: `python -m unittest discover -s tests/ai-workflow -v`.
 6. Push your branch, open a PR with required headings (`Primary Issue`, `Summary`, `Scope`, `Verification`, `Documentation`), and verify that GitHub Actions CI checks complete successfully.
 7. Record a factual session entry in `docs/ai-journal/<YYYY-MM-DD>-<issue>-gemini-session-<n>.md`. Do not edit out-of-scope files.
 
@@ -112,6 +118,7 @@ Active task assignments, in-flight work, and open PR inventories are derived dyn
 - **Normative Specification Authority (Issue #12)**: Canonical specification is [`docs/spec/DXVK-COMPANION-SPEC.md`](../docs/spec/DXVK-COMPANION-SPEC.md), with [`docs/spec/DXVK-Companion-PhaseA5-Safety-and-Identity-Design-FINAL.md`](../docs/spec/DXVK-Companion-PhaseA5-Safety-and-Identity-Design-FINAL.md) as normative safety supplement.
 - **Clean-Slate V1 Policy**: No legacy configuration import; modern clean-slate setup.
 - **Deployment Guards**: Refuse DXVK deployment for DX12 and Vulkan executables, while preserving restore operations.
+- **Local Test Execution Authorization Gate (Issue #56)**: Required explicit human authorization before executing local unit/integration test suites, desktop/application runs, or device tests on the user's host system ([Issue #56](https://github.com/Tiflit/DXVK-Companion/issues/56)).
 - **Repository Protection Rulesets**: GitHub Actions workflows (`ai-scope-check`, `ai-pr-hygiene`, `build-and-test`) currently run as status checks. Enabling mandatory branch protection rulesets remains a human administrative choice.
 
 

@@ -35,6 +35,7 @@ Gemini implementation -> CI -> ChatGPT verification & arbitration -> Human merge
 - **Specification Authority & Precedence**: The canonical project specification is [`docs/spec/DXVK-COMPANION-SPEC.md`](docs/spec/DXVK-COMPANION-SPEC.md), with [`docs/spec/DXVK-Companion-PhaseA5-Safety-and-Identity-Design-FINAL.md`](docs/spec/DXVK-Companion-PhaseA5-Safety-and-Identity-Design-FINAL.md) as the normative safety and identity supplement.
 - **Precedence Order**: `Assigned Task Contract (Issue) > Canonical Specification > Safety Supplement`.
 - **Safety Invariant Protection**: Task Issues cannot silently override safety invariants without an explicit human decision.
+- **Local Test Execution Authorization Gate**: Before executing tests on the user's local system (including unit/integration suites, desktop/application runs, or device testing), agents MUST obtain explicit human authorization for the proposed scope. A disposable folder or local VM does NOT waive the gate.
 - **Encountered Out-of-Scope Findings**: Actionable out-of-scope problems encountered during assigned work must be recorded per the bounded observation policy ([observation workflow](docs/AI-DEVELOPMENT-WORKFLOW.md#bounded-observation-reporting-and-triage)). Check existing tracking with one targeted keyword search (link existing tracking first, otherwise file a supported Issue with label `ai-observation`); up to three routine observations per task ('none' is valid). Findings never expand implementation scope. Narrow safety exception: credible risks of loss of restoration/baseline guarantees, game directory data loss, or privacy/credentials leaks bypass the cap and escalate promptly. Scope guard: live GitHub API mode rejects task Issues carrying `ai-observation` before parsing allowed paths (a narrow automated guardrail, not human governance).
 
 ## Decision Governance and Policy Preflight
@@ -57,11 +58,32 @@ When a task involves an unresolved policy or architectural choice, the assigned 
   - Source of explicit human approval must be either: (1) a direct link to a human-authored GitHub comment or issue decision; or (2) a clearly attributed coordinator transcription citing the human developer's explicit instruction verbatim, explicitly noting that the transcription is not mechanically authenticated.
   - Do not decide architectural or safety policies in preparatory or unrelated workflow tasks.
 
+## Local Test Execution Authorization Gate
+
+Before executing tests on the user's local system (including local unit/integration suites, desktop/application runs, or device testing), agents MUST obtain explicit human authorization for the proposed scope. Using a disposable folder, isolated directory, or local virtual machine does NOT waive this gate.
+
+- **Authorization Request Requirements**: The request must clearly specify:
+  1. *What will run*: exact test commands, suites, or executables;
+  2. *Where*: target host environment, explicitly identifying whether the user's active desktop/host or a separate environment is used (never silently substitute the user's host for unavailable isolated access);
+  3. *Affected resources*: target files, registry keys, settings, child processes, or devices;
+  4. *Potential disruption*: resource consumption, UI focus stealing, window activation, or process termination risks;
+  5. *Exit & cleanup intent*: termination method and post-test retention or cleanup so the human can secure ongoing work.
+- **Authorization Recording & Precedence**: Authorization must be recorded in the assigned Issue via:
+  1. A direct link to an authentic human GitHub comment or issue decision; or
+  2. A clearly attributed exact coordinator transcription citing the human's instruction verbatim, explicitly marked as not mechanically authenticated.
+  - An agent recommendation, task assignment, general "Continue", PR merge, green CI run, or editable approval flag is NOT permission to run local tests.
+  - Valid authorization applies to the specified scope and may be reused for that identical scope without repeated requests; materially broader suites or different host environments require fresh authorization.
+  - Preparation, source inspection, diff review, and documentation work may proceed while authorization is pending.
+- **Distinction from CI and Read-Only Operations**: GitHub-hosted CI runs in cloud environments and read-only source/evidence retrieval (routine reading, git diffs, privacy scanning, GitHub metadata acquisition via `gh`, safe documentation preparation) are already authorized and do NOT require authorization prompts. These read-only operations must never be used to disguise application or device test execution.
+- **Scope and Stop Boundaries Preserved**: Explicit authorization does NOT waive assigned scope or stop boundaries. Do not broaden into ad hoc desktop automation frameworks, fault injection, forceful process termination, environment changes, or disruptive cleanup to overcome a blocker unless specifically included in the authorized scope. If a test cannot be observed within available capabilities, report `NOT RUN` / blocked and hand off; never infer GUI success from process existence alone.
+- **Truthful Reporting**: Unapproved or blocked local checks must be honestly recorded in test summaries as `NOT RUN` (pending human authorization)—never silently omitted or claimed as `PASS`.
+
 ## Tests and Evidence
 
 - A green CI run is evidence, not absolute proof that an invariant is satisfied.
 - Add regression coverage exercising real application orchestration rather than only mocked paths.
 - Review packets generated by `.github/workflows/ai-review-packet.yml` serve as the standardized entry point for verification, binding immutable commit SHAs, checkout provenance, and structured Visual Studio TRX test totals.
+- Unapproved or blocked local test checks must be honestly recorded as `NOT RUN` (pending human authorization), not silently omitted or called `PASS`.
 - **Portable Evidence Links**: Use portable GitHub URLs (referencing inspected immutable commit SHAs, PRs, or Issue numbers where applicable) for durable source and evidence references so they resolve across both local environments and cloud agents. Generic repository-relative paths may appear separately. Never publish personal home paths (e.g., local user directories), raw transcripts, or secrets (`update_pr_body.py` enforces this with fail-closed privacy scanning before preview or PATCH).
 
 ## Revision and Handoff Discipline
