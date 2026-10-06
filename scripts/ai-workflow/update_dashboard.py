@@ -173,7 +173,9 @@ class RepositoryFacts:
     queries_executed: List[str] = field(default_factory=list)
     source_repo: str = ""
     prs_error: Optional[str] = None
+    prs_truncated: bool = False
     issues_error: Optional[str] = None
+    issues_truncated: bool = False
     open_observations_count: Optional[int] = None
     observations_truncated: bool = False
     observations_error: Optional[str] = None
@@ -241,6 +243,27 @@ class GitHubClient:
         if isinstance(res, dict):
             return res.get("artifacts", [])
         return []
+
+    def search_issues_paged(
+        self,
+        query: str,
+        per_page: int = 30,
+        page: int = 1,
+        sort: str = "created",
+        order: str = "desc",
+    ) -> Dict[str, Any]:
+        """
+        Searches issues via GitHub Search API with pagination.
+        Used for bounded queries that filter out labels or types before pagination.
+        """
+        params = f"q={urllib.parse.quote_plus(query)}&sort={sort}&order={order}&per_page={per_page}&page={page}"
+        url = f"search/issues?{params}"
+        res = self._request("GET", url)
+        if isinstance(res, dict):
+            return res
+        if isinstance(res, list):
+            return {"items": res, "total_count": len(res)}
+        return {"items": [], "total_count": 0}
 
     def search_issues(
         self,
@@ -335,6 +358,7 @@ class GitHubFactsCollector:
 
         # 2. Fetch open pull requests with pagination
         open_prs: List[Dict[str, Any]] = []
+        prs_truncated = False
         queries.append("pulls?state=open")
         try:
             for page in range(1, max_pages + 1):
@@ -424,6 +448,7 @@ class GitHubFactsCollector:
                     })
 
                 if page == max_pages and len(page_prs) == per_page:
+                    prs_truncated = True
                     is_truncated = True
         except Exception as e:
             prs_error = sanitize_diagnostic(str(e))
@@ -465,18 +490,20 @@ class GitHubFactsCollector:
         if obs_truncated:
             is_truncated = True
 
-        # 4. Fetch open task issues with pagination (avoiding starvation from observation volume)
+        # 4. Fetch open task issues via bounded query excluding observations before pagination
         open_issues: List[Dict[str, Any]] = []
-        queries.append("issues?state=open")
-        max_task_pages_budget = max_pages * 3
-        target_tasks_quota = max_pages * per_page
-        tasks_hit_quota = False
+        issues_truncated = False
+        task_query = f"repo:{self.repo} is:issue is:open -label:ai-observation"
+        queries.append(f"search/issues?q={task_query}")
         try:
-            for page in range(1, max_task_pages_budget + 1):
-                page_issues = self.client.fetch_paged("issues?state=open", per_page=per_page, page=page)
-                if not page_issues:
-                    break
-                for iss in page_issues:
+            for page in range(1, max_pages + 1):
+                search_res = self.client.search_issues_paged(
+                    task_query, per_page=per_page, page=page, sort="created", order="desc"
+                )
+                items = search_res.get("items", []) if isinstance(search_res, dict) else []
+                total_count = search_res.get("total_count", 0) if isinstance(search_res, dict) else 0
+
+                for iss in items:
                     if iss.get("pull_request"):
                         continue
                     iss_num = iss.get("number")
@@ -487,7 +514,7 @@ class GitHubFactsCollector:
                     if iss_title_raw.strip().startswith("[AI Dashboard]"):
                         continue
 
-                    # Filter out issues carrying 'ai-observation' label from task inventory
+                    # Defense in depth: filter out issues carrying 'ai-observation'
                     has_obs_label = any(
                         (l.get("name") if isinstance(l, dict) else str(l)) == "ai-observation"
                         for l in iss.get("labels", [])
@@ -508,21 +535,12 @@ class GitHubFactsCollector:
                         "labels": labels,
                     })
 
-                    if len(open_issues) >= target_tasks_quota:
-                        tasks_hit_quota = True
-                        break
-
-                if tasks_hit_quota:
-                    if len(page_issues) == per_page:
-                        is_truncated = True
+                if len(items) < per_page or len(open_issues) >= total_count:
                     break
 
-                if len(page_issues) < per_page:
-                    break
-
-                if page == max_task_pages_budget:
+                if page == max_pages:
+                    issues_truncated = True
                     is_truncated = True
-                    break
         except Exception as e:
             issues_error = sanitize_diagnostic(str(e))
             if completeness == COMPLETENESS_COMPLETE:
@@ -560,7 +578,9 @@ class GitHubFactsCollector:
             queries_executed=queries,
             source_repo=self.repo,
             prs_error=prs_error,
+            prs_truncated=prs_truncated,
             issues_error=issues_error,
+            issues_truncated=issues_truncated,
             open_observations_count=None if obs_error else open_observations_count,
             observations_truncated=obs_truncated,
             observations_error=obs_error,
@@ -752,12 +772,21 @@ def render_dashboard(
             sec1.append("- **Open Observations**: _Unavailable_\n")
 
         # PRs
-        sec1.append(f"### Open Pull Requests ({len(facts.open_prs)})\n")
         if facts.prs_error:
+            sec1.append("### Open Pull Requests (_Unavailable_)\n")
             sec1.append(f"_Pull requests inventory unavailable due to API error: {facts.prs_error}_\n")
+        elif facts.prs_truncated and not facts.open_prs:
+            sec1.append("### Open Pull Requests (_Incomplete_)\n")
+            sec1.append("_Pull requests inventory incomplete (truncated at pagination limit)._\n")
+        elif facts.prs_truncated:
+            sec1.append(f"### Open Pull Requests (>={len(facts.open_prs)} [incomplete at limit])\n")
         elif not facts.open_prs:
+            sec1.append("### Open Pull Requests (0)\n")
             sec1.append("_None (all active PRs merged)._\n")
         else:
+            sec1.append(f"### Open Pull Requests ({len(facts.open_prs)})\n")
+
+        if not facts.prs_error and not (facts.prs_truncated and not facts.open_prs) and facts.open_prs:
             sec1.append("| PR | Title | Head SHA | Base SHA | CI Run | Attempt | Status | Build Provenance |\n")
             sec1.append("|---|---|---|---|---|---|---|---|\n")
             displayed_prs = facts.open_prs[:limit_prs] if limit_prs else facts.open_prs
@@ -773,14 +802,25 @@ def render_dashboard(
             if limit_prs and len(facts.open_prs) > limit_prs:
                 omitted_prs = len(facts.open_prs) - limit_prs
                 sec1.append(f"\n> ... [{omitted_prs} PRs omitted to respect snapshot word budget; view all via [{pulls_url}]({pulls_url})]\n")
+            elif facts.prs_truncated:
+                sec1.append(f"\n> _Note: Pull requests inventory truncated at pagination limit; view all via [{pulls_url}]({pulls_url})_\n")
 
         # Issues
-        sec1.append(f"\n### Open Task Issues ({len(facts.open_issues)})\n")
         if facts.issues_error:
+            sec1.append("\n### Open Task Issues (_Unavailable_)\n")
             sec1.append(f"_Task issues inventory unavailable due to API error: {facts.issues_error}_\n")
+        elif facts.issues_truncated and not facts.open_issues:
+            sec1.append("\n### Open Task Issues (_Incomplete_)\n")
+            sec1.append("_Task issues inventory incomplete (truncated at pagination limit)._\n")
+        elif facts.issues_truncated:
+            sec1.append(f"\n### Open Task Issues (>={len(facts.open_issues)} [incomplete at limit])\n")
         elif not facts.open_issues:
+            sec1.append("\n### Open Task Issues (0)\n")
             sec1.append("_No open task issues._\n")
         else:
+            sec1.append(f"\n### Open Task Issues ({len(facts.open_issues)})\n")
+
+        if not facts.issues_error and not (facts.issues_truncated and not facts.open_issues) and facts.open_issues:
             sec1.append("| Issue | Title | Labels |\n")
             sec1.append("|---|---|---|\n")
             displayed_issues = facts.open_issues[:limit_issues] if limit_issues else facts.open_issues
@@ -790,6 +830,8 @@ def render_dashboard(
             if limit_issues and len(facts.open_issues) > limit_issues:
                 omitted_iss = len(facts.open_issues) - limit_issues
                 sec1.append(f"\n> ... [{omitted_iss} issues omitted to respect snapshot word budget; view all via [{issues_url}]({issues_url})]\n")
+            elif facts.issues_truncated:
+                sec1.append(f"\n> _Note: Task issues inventory truncated at pagination limit; view all via [{issues_url}]({issues_url})_\n")
 
         # Curated
         if link_curated_only:

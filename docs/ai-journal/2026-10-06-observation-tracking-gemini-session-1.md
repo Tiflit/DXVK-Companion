@@ -16,18 +16,20 @@ Implement Issue #48 to formally decouple bounded observations from authorized ta
 4. **Issue Form (`ai-observation.yml`)**: Explicitly sets `labels: ["ai-observation"]`, contains prominent banner `Observation — unassigned; implementation not authorized`, captures evidence, trigger, expected/observed behavior, consequence, uncertainty, and existing tracking, and strictly omits `Allowed paths` and task-assignment fields.
 5. **Visibility & Checkpoint**: Added required `Out-of-scope findings: none / links / pending persistence (reason and next owner)` checkpoint line to `AGENTS.md`, `AI-DEVELOPMENT-WORKFLOW.md`, and `AI-ACTIVITY-JOURNAL.md`.
 6. **Heading Normalization in Scope Evaluation (`evaluate_scope.py`)**: `parse_contract.py`'s allowed path section parser terminates on level-3 headings (`###`). When an issue contract format places a level-2 heading (e.g. `## Acceptance criteria`) immediately after `### Allowed paths`, `evaluate_scope.py` normalizes the section boundary before delegating to `parse_allowed_paths`, preventing subsequent heading prose from being misparsed as path entries while keeping `parse_contract.py` unedited.
+7. **Query-Level Task Acquisition Separation & Honest Incomplete Rendering (PR #49 Review 1)**: Replaced page-by-page filtering of `issues?state=open` with a bounded GitHub Search query (`search/issues?q=repo:... is:issue is:open -label:ai-observation`) that excludes observations before pagination. This genuinely decouples task and observation request budgets, guaranteeing tasks are discovered even if hundreds of observation issues precede them. Added `issues_truncated` and `prs_truncated` flags to `RepositoryFacts`, and updated `render_dashboard` to render lower-bound counts (`>=N [incomplete at limit]`), `_Incomplete_`, or `_Unavailable_` rather than false zeroes or misleading "none" states when acquisitions are incomplete or fail.
+8. **Historical Index Accuracy & Template Reconciliation (PR #49 Review 1)**: Corrected `docs/AI-ACTIVITY-JOURNAL.md` session index row for Issue #15 (implemented by Merged PR #36, not PR #35). Reconciled `docs/AI-DEVELOPMENT-WORKFLOW.md` to note `proposed_investigation` is optional in the template form while required tracking fields remain mandatory.
 
 ### Actions Executed
 - Created `.github/ISSUE_TEMPLATE/ai-observation.yml`.
 - Updated `.github/workflows/ai-current-state.yml` to trigger on `labeled` and `unlabeled` issue events.
 - Updated `scripts/ai-workflow/evaluate_scope.py` to enforce the observation label guardrail in API mode and normalize heading boundaries for `### Allowed paths`.
-- Updated `scripts/ai-workflow/update_dashboard.py` to acquire and render separate open observations and prevent task starvation.
-- Updated guidance and templates in `AGENTS.md`, `docs/AI-DEVELOPMENT-WORKFLOW.md`, and `docs/AI-ACTIVITY-JOURNAL.md` (opportunistically indexed recent merged sessions).
-- Added regression tests in `tests/ai-workflow/test_scope_check.py` and `tests/ai-workflow/test_dashboard.py`.
-- Ran full test suite via `python -m unittest discover -s tests/ai-workflow -v` (198 tests passing).
+- Updated `scripts/ai-workflow/update_dashboard.py` to query ordinary tasks excluding `ai-observation` before pagination, track task/PR truncation, and render honest lower-bound/unavailable statuses.
+- Updated guidance and templates in `AGENTS.md`, `docs/AI-DEVELOPMENT-WORKFLOW.md` (reconciling field requirement and budget separation), and `docs/AI-ACTIVITY-JOURNAL.md` (fixing Issue #15 reference).
+- Added regression tests in `tests/ai-workflow/test_scope_check.py` and `tests/ai-workflow/test_dashboard.py` (including pre-pagination exclusion and incomplete rendering).
+- Ran full test suite via `python -m unittest discover -s tests/ai-workflow -v` (199 tests passing).
 
 ### Evidence & Limitations
-- **Test Evidence**: 198 python unittest tests passed locally across `test_scope_check.py`, `test_dashboard.py`, `test_handoff.py`, `test_review_packet.py`, and `test_pr_body_updater.py`.
+- **Test Evidence**: 199 python unittest tests passed locally across `test_scope_check.py`, `test_dashboard.py`, `test_handoff.py`, `test_review_packet.py`, and `test_pr_body_updater.py`.
 - **Scope Compliance**: All changes strictly confined to the 10 allowed paths in Issue #48.
 - **Privacy Check**: Zero private paths, tokens, or personal home directories introduced.
 
@@ -37,10 +39,11 @@ Implement Issue #48 to formally decouple bounded observations from authorized ta
 - Repeated investigations from missing context: 0
 - Session blocked / required extra session: No
 - Quota / elapsed clock time: not measured
-- Journal word count: ~460 words
+- Journal word count: ~560 words
 
 ### Outcome & Next Steps
-- Result: SUCCESS
-- Resulting Head: `workflow/issue-48-bounded-observations-and-dashboard`
-- Next Action & Owner: Open PR with `Closes #48` and hand off to ChatGPT for coordinator verification; human retains merge authority.
+- Result: REVISED (PR #49 Review 1 addressed)
+- Resulting Head: `workflow/issue-48-bounded-observations-and-dashboard` (PR #49)
+- Next Action & Owner: ChatGPT coordinator verification of revised PR #49 head; human retains merge authority.
 - Out-of-scope findings: none
+

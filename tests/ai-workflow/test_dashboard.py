@@ -1038,11 +1038,12 @@ class TestDashboardGenerator(unittest.TestCase):
     # Issue #48: Observation Separation, Anti-Starvation & Completeness Tests
     # =========================================================================
 
-    def test_task_acquisition_survives_observation_heavy_inventory(self):
-        """Issue #48: Tasks on later pages are acquired even when early pages are filled with observations."""
+    def test_task_acquisition_excludes_observations_before_pagination(self):
+        """Issue #48 / R1: Task acquisition excludes observations before pagination, acquiring tasks even if 270+ observations exist."""
         client = update_dashboard.GitHubClient(token="mock", repo=self.repo)
 
-        # 4 observation issues on page 1 & 2 (2 per page), and 1 task issue on page 3
+        # Even if 270+ observation issues precede an ordinary task in the repository,
+        # the task search query excludes observations before pagination.
         def mock_urlopen(req, timeout=30):
             url = req.full_url
             if "git/ref/heads/main" in url:
@@ -1057,41 +1058,62 @@ class TestDashboardGenerator(unittest.TestCase):
                         {"number": 101, "title": "[Observation] Obs 1", "labels": [{"name": "ai-observation"}]},
                         {"number": 102, "title": "[Observation] Obs 2", "labels": [{"name": "ai-observation"}]},
                     ])
-                if "&page=2" in url:
-                    return MockHttpResponse([
-                        {"number": 103, "title": "[Observation] Obs 3", "labels": [{"name": "ai-observation"}]},
-                        {"number": 104, "title": "[Observation] Obs 4", "labels": [{"name": "ai-observation"}]},
-                    ])
                 return MockHttpResponse([])
-            if "issues?state=open" in url:
-                if "&page=1" in url:
-                    return MockHttpResponse([
-                        {"number": 101, "title": "[Observation] Obs 1", "labels": [{"name": "ai-observation"}]},
-                        {"number": 102, "title": "[Observation] Obs 2", "labels": [{"name": "ai-observation"}]},
-                    ])
-                if "&page=2" in url:
-                    return MockHttpResponse([
-                        {"number": 103, "title": "[Observation] Obs 3", "labels": [{"name": "ai-observation"}]},
-                        {"number": 104, "title": "[Observation] Obs 4", "labels": [{"name": "ai-observation"}]},
-                    ])
-                if "&page=3" in url:
-                    return MockHttpResponse([
+            if "search/issues?q=" in url:
+                # The bounded query 'is:issue is:open -label:ai-observation' filters out observations server-side
+                self.assertIn("-label%3Aai-observation", url)
+                return MockHttpResponse({
+                    "total_count": 1,
+                    "items": [
                         {"number": 201, "title": "[AI] Genuine Task 1", "labels": [{"name": "task"}]},
-                    ])
-                return MockHttpResponse([])
+                    ],
+                })
             return MockHttpResponse([])
 
         with patch("urllib.request.urlopen", side_effect=mock_urlopen):
             collector = update_dashboard.GitHubFactsCollector(client=client, repo=self.repo)
-            # max_pages=2, per_page=2 -> page budget ceiling = 6
             facts = collector.collect(max_pages=2, per_page=2)
 
-            # Observation count collected: 4
-            self.assertEqual(facts.open_observations_count, 4)
-            # Task acquired despite early pages being 100% observations:
+            self.assertEqual(facts.open_observations_count, 2)
             self.assertEqual(len(facts.open_issues), 1)
             self.assertEqual(facts.open_issues[0]["number"], 201)
             self.assertEqual(facts.open_issues[0]["title"], "[AI] Genuine Task 1")
+
+    def test_incomplete_task_inventory_rendering_when_truncated_or_error(self):
+        """Issue #48 / R1: Renders lower-bound/unavailable task counts rather than exact counts or 'none' when incomplete."""
+        # 1. Truncated with 0 items: must say Incomplete, NOT 'No open task issues' or (0)
+        facts_empty_truncated = update_dashboard.RepositoryFacts(
+            main_head_sha=self.main_sha,
+            open_issues=[],
+            issues_truncated=True,
+        )
+        rendered1 = update_dashboard.render_dashboard(facts_empty_truncated, self.curated_text, repo=self.repo)
+        self.assertIn("### Open Task Issues (_Incomplete_)", rendered1)
+        self.assertIn("_Task issues inventory incomplete (truncated at pagination limit)._", rendered1)
+        self.assertNotIn("No open task issues", rendered1)
+        self.assertNotIn("### Open Task Issues (0)", rendered1)
+
+        # 2. Truncated with items: must say >=N [incomplete at limit], NOT exact (N)
+        facts_items_truncated = update_dashboard.RepositoryFacts(
+            main_head_sha=self.main_sha,
+            open_issues=[{"number": 48, "title": "Task 48", "labels": []}],
+            issues_truncated=True,
+        )
+        rendered2 = update_dashboard.render_dashboard(facts_items_truncated, self.curated_text, repo=self.repo)
+        self.assertIn("### Open Task Issues (>=1 [incomplete at limit])", rendered2)
+        self.assertNotIn("### Open Task Issues (1)\n", rendered2)
+
+        # 3. API error: must say _Unavailable_, NOT exact (0) or 'No open task issues'
+        facts_error = update_dashboard.RepositoryFacts(
+            main_head_sha=self.main_sha,
+            open_issues=[],
+            issues_error="HTTP 500: Server Error",
+        )
+        rendered3 = update_dashboard.render_dashboard(facts_error, self.curated_text, repo=self.repo)
+        self.assertIn("### Open Task Issues (_Unavailable_)", rendered3)
+        self.assertIn("_Task issues inventory unavailable due to API error: HTTP 500: Server Error_", rendered3)
+        self.assertNotIn("No open task issues", rendered3)
+        self.assertNotIn("### Open Task Issues (0)", rendered3)
 
     def test_separate_observation_count_rendered_in_live_repository_status(self):
         """Issue #48: Open observations are rendered as a compact count and link under Live Repository Status."""
