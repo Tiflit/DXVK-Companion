@@ -592,14 +592,14 @@ To minimize idle waiting without weakening evidence gates:
   - `Blocked / Unavailable evidence`: CI failed, required evidence or provenance is unavailable, or an unexpected blocker occurred.
 - **Single Check and Immediate Yield**:
   - Upon completing local verification and submitting the PR, check GitHub submission state ONCE (e.g. PR URL and known check run links).
-  - Yield immediately with the `Implementation complete — CI pending` completion format.
+  - Yield immediately with the acquired operational state: `Implementation complete — CI pending` when checks are pending or in progress, or the appropriate completed/blocked state (`Ready for verification` or `Blocked / Unavailable evidence`) if already known from the single check.
   - Eliminate routine sleep/check polling loops and waiting narration in chat.
   - Do NOT run repeated full-suite test runs solely to reconfirm an unchanged successful test count (reruns remain appropriate after code modifications, failures, or specific verification requirements).
   - Do NOT promise token savings or faster CI. While automated webhooks or notifications may assist environments that support them, separate consumer chats or agent sessions are not automatically awakened; human relay remains normal.
 - **Overlapping Coordinator Review (Provisional Source Review)**:
   - The coordinator (ChatGPT) may inspect the PR task contract, test design, and source diff while CI runs in the background.
   - The coordinator records provisional source findings or notes.
-  - **Strict Evidence Invariant**: Final acceptance, formal approval, and merge remain strictly blocked until required matching-head CI status checks and evidence provenance (tested checkout SHA matching PR head) are acquired and verified. Source approval alone and pending CI reports are insufficient.
+  - **Strict Evidence Invariant**: Final acceptance, formal approval, and merge remain strictly blocked until required matching-revision CI checks and verified checkout provenance (a checkout of the reviewed head, or a synthetic merge checkout whose base/head parents match the acquired integration identities) are acquired and verified. Merely green checks, source approval alone, and pending CI reports are insufficient.
 - **Evidence Reacquisition at Decision Boundaries**:
   - At a meaningful boundary (CI completion, run failure, or review decision), acquire live head/base refs, final status checks, and actual tested checkout SHA/provenance.
   - Refresh the durable handoff snapshot via `scripts/ai-workflow/generate_handoff.py` and update the PR body via `scripts/ai-workflow/update_pr_body.py` without manually transcribing generated identity fields.
@@ -618,7 +618,7 @@ To minimize idle waiting without weakening evidence gates:
   - **One-Sentence Summary**: <CONCISE_DESCRIPTION_OF_CHANGE>
   - **Local Evidence Executed**: <LOCAL_TESTS_OR_CHECKS_RUN>
   - **CI State**: In progress (<KNOWN_RUN_URLS_OR_UNAVAILABLE>)
-  - **Pending Evidence**: Full matching-head CI completion and provenance verification
+  - **Pending Evidence**: Full matching-revision CI completion and verified checkout provenance
   - **Next Owner & Action**: ChatGPT (Provisional source review; final acceptance blocked on matching-head CI)
   ```
 

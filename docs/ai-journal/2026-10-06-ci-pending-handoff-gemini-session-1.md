@@ -36,7 +36,7 @@
 - **Scope Check**: Exactly 2 files modified/added (`docs/AI-DEVELOPMENT-WORKFLOW.md`, `docs/ai-journal/2026-10-06-ci-pending-handoff-gemini-session-1.md`), matching Issue #50 allowed paths. No forbidden paths touched (`AGENTS.md`, application code, scripts, test suites, workflow YAML, etc.).
 - **Privacy Scanner**: Passed fail-closed privacy checks (no personal user home paths or credentials; generic paths only).
 - **Link Portability**: Portable repository links and markdown formatting verified.
-- **Workflow Scope Test**: Verified with `python -m unittest tests/ai-workflow/test_scope_check.py` — 14 tests passed.
+- **Workflow Scope Test**: Verified with `python -m unittest tests/ai-workflow/test_scope_check.py` — 12 tests passed.
 
 ### Limitations
 - Guidance establishes operating conventions and presentation protocol; it does not alter automated GitHub Actions workflows, create external state machines, or guarantee automatic cross-environment agent wakeups.
@@ -47,3 +47,32 @@
 ### Next Owner & Action
 - **Next Owner**: ChatGPT (Coordinator provisional source review & verification).
 - **Action**: Perform provisional source review of PR diff and contract alignment while CI runs; final acceptance blocked on matching-head CI evidence. Human retains merge authority.
+
+---
+
+## Revision 1: Addressing Coordinator Review R1 & R2 (2026-10-06)
+
+- **Review Reference**: Addressing `chatgpt-20261006-pr51-review1` ([PR #51 Comment 6020286563](https://github.com/Tiflit/DXVK-Companion/pull/51#issuecomment-6020286563)).
+- **Reviewed Head**: `ea89c4ced637b371067a0bf23675741b2c4e8bcd`
+- **Acquired Base/Main**: `395a4c39aed35b7058998449e75d0892aa692923`
+
+### Implemented Corrections:
+1. **R1 — Correct Checkout Provenance Invariant (`docs/AI-DEVELOPMENT-WORKFLOW.md`)**:
+   - Replaced exact equality requirement ("tested checkout SHA matching PR head") with verified provenance: a checkout of the reviewed head, or a synthetic merge checkout whose base/head parents match the acquired integration identities.
+   - Retained the completed required-check gate, triggering-run/checkout provenance checks, and fresh head/base acquisition at final acceptance.
+   - Clarified adjacent single-check submission guidance to hand off the state actually acquired: `Implementation complete — CI pending` when pending or in progress, or the appropriate completed/blocked state (`Ready for verification` or `Blocked / Unavailable evidence`) when already known.
+2. **R2 — Correct Recorded Local Test Count (`docs/ai-journal/...`)**:
+   - Corrected local workflow scope test count under "Actual Documentation Checks & Local Verification" from 14 to 12 tests, matching actual executed evidence in `tests/ai-workflow/test_scope_check.py` (12 test methods).
+
+### Local Checks & Verification:
+- **Scope Check**: Exactly 2 files modified (`docs/AI-DEVELOPMENT-WORKFLOW.md`, `docs/ai-journal/2026-10-06-ci-pending-handoff-gemini-session-1.md`), matching Issue #50 allowed paths.
+- **Privacy Scanner**: Passed fail-closed privacy checks (no personal user home paths or credentials; generic paths only).
+- **Link Portability**: Portable repository links and markdown formatting verified.
+
+### Out-of-Scope Findings
+- Out-of-scope findings: none.
+
+### Next Owner & Action
+- **Next Owner**: ChatGPT (Coordinator verification).
+- **Action**: Verify revision against reviewed head `ea89c4ced637b371067a0bf23675741b2c4e8bcd`; acquire final CI and provenance at decision boundary; PR #51 left unmerged.
+
