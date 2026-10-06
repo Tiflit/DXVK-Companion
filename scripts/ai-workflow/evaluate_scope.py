@@ -1,10 +1,21 @@
-"""Evaluates changed pull request files against Issue allowed paths contracts."""
+"""Evaluates changed pull request files against Issue allowed paths contracts.
+
+Includes a narrow automated guardrail in live GitHub API mode: primary task Issues
+carrying the exact label 'ai-observation' are rejected before parsing allowed paths,
+preventing implementation of unassigned observations even if the issue body contains
+otherwise valid paths.
+
+Note: The label guard is a narrow automated guardrail, not proof of assignment/approval
+or a replacement for human governance. Local / file-based mode operates on issue body
+text only and does not acquire or claim label metadata.
+"""
 
 from __future__ import annotations
 
 import argparse
 import json
 import os
+import re
 import sys
 import urllib.request
 from dataclasses import dataclass
@@ -16,6 +27,14 @@ try:
     from .parse_contract import AllowedPaths, ContractParseError, extract_primary_issue, parse_allowed_paths
 except ImportError:
     from parse_contract import AllowedPaths, ContractParseError, extract_primary_issue, parse_allowed_paths
+
+
+def normalize_allowed_paths_section(text: str) -> str:
+    """Normalizes Issue body so subsequent markdown headings (# or ##) act as section delimiters for parse_allowed_paths."""
+    if not text:
+        return text
+    pattern = r"(^###\s+Allowed paths\s*[\r\n]+[\s\S]*?)(?=^#{1,2}\s+)"
+    return re.sub(pattern, r"\1\n### Section Boundary\n", text, count=1, flags=re.MULTILINE | re.IGNORECASE)
 
 
 @dataclass
@@ -111,13 +130,13 @@ def fetch_pr_files(repo: str, pr_number: int, token: str) -> List[Dict[str, any]
     return files
 
 
-def main() -> int:
+def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Evaluate PR changed files against Issue scope contract.")
     parser.add_argument("--pr-number", type=int, default=int(os.environ.get("PR_NUMBER", 0)) if os.environ.get("PR_NUMBER") else None)
     parser.add_argument("--pr-body-file", type=Path, help="Path to file containing PR body text.")
     parser.add_argument("--issue-body-file", type=Path, help="Path to file containing Issue body text.")
     parser.add_argument("--files-json", type=Path, help="Path to JSON file containing PR changed files list.")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
     repo = os.environ.get("GH_REPO") or os.environ.get("GITHUB_REPOSITORY")
@@ -139,7 +158,25 @@ def main() -> int:
             pr_body = pr_data.get("body", "")
             primary_issue_num = extract_primary_issue(pr_body)
             issue_data = fetch_github_api(f"https://api.github.com/repos/{repo}/issues/{primary_issue_num}", token)
-            allowed = parse_allowed_paths(issue_data.get("body", ""))
+
+            # Automated Scope Guard: reject unassigned observations carrying 'ai-observation' label
+            # before parsing allowed paths (even if the body contains valid paths).
+            labels = [
+                lbl.get("name") if isinstance(lbl, dict) else str(lbl)
+                for lbl in issue_data.get("labels", [])
+            ]
+            if "ai-observation" in labels:
+                msg = (
+                    f"ERROR: Primary Issue #{primary_issue_num} carries label 'ai-observation'. "
+                    "Observations are unassigned and implementation is not authorized."
+                )
+                print(msg, file=sys.stderr)
+                write_summary("### AI Scope Check\n\n")
+                write_summary(f"- Linked Issue: #{primary_issue_num}\n")
+                write_summary("- Status: FAIL (Primary Issue carries 'ai-observation' label; implementation not authorized)\n")
+                return 1
+
+            allowed = parse_allowed_paths(normalize_allowed_paths_section(issue_data.get("body", "")))
             files_data = fetch_pr_files(repo, args.pr_number, token)
         except Exception as e:
             msg = f"ERROR evaluating scope for PR #{args.pr_number}: {e}"
@@ -180,7 +217,7 @@ def main() -> int:
         return 1
 
     try:
-        allowed = parse_allowed_paths(issue_body)
+        allowed = parse_allowed_paths(normalize_allowed_paths_section(issue_body))
     except ContractParseError as e:
         print(f"ERROR: Contract parse error: {e}", file=sys.stderr)
         return 1

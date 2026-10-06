@@ -1034,6 +1034,435 @@ class TestDashboardGenerator(unittest.TestCase):
         self.assertNotIn("## 1. Foundational Milestones", rendered)
         self.assertNotIn("## 6. Live Dashboard Discovery", rendered)
 
+    # =========================================================================
+    # Issue #48: Observation Separation, Anti-Starvation & Completeness Tests
+    # =========================================================================
+
+    def test_task_acquisition_excludes_observations_before_pagination(self):
+        """Issue #48 / R1: Task acquisition excludes observations before pagination, acquiring tasks even if 270+ observations exist."""
+        client = update_dashboard.GitHubClient(token="mock", repo=self.repo)
+
+        # Even if 270+ observation issues precede an ordinary task in the repository,
+        # the task search query excludes observations before pagination.
+        def mock_urlopen(req, timeout=30):
+            url = req.full_url
+            if "git/ref/heads/main" in url:
+                return MockHttpResponse({"object": {"sha": self.main_sha}})
+            if "pulls?state=open" in url:
+                return MockHttpResponse([])
+            if "actions/runs?branch=main" in url:
+                return MockHttpResponse([])
+            if "issues?state=open&labels=ai-observation" in url:
+                if "&page=1" in url:
+                    return MockHttpResponse([
+                        {"number": 101, "title": "[Observation] Obs 1", "labels": [{"name": "ai-observation"}]},
+                        {"number": 102, "title": "[Observation] Obs 2", "labels": [{"name": "ai-observation"}]},
+                    ])
+                return MockHttpResponse([])
+            if "search/issues?q=" in url:
+                # The bounded query 'is:issue is:open -label:ai-observation' filters out observations server-side
+                self.assertIn("-label%3Aai-observation", url)
+                return MockHttpResponse({
+                    "total_count": 1,
+                    "items": [
+                        {"number": 201, "title": "[AI] Genuine Task 1", "labels": [{"name": "task"}]},
+                    ],
+                })
+            return MockHttpResponse([])
+
+        with patch("urllib.request.urlopen", side_effect=mock_urlopen):
+            collector = update_dashboard.GitHubFactsCollector(client=client, repo=self.repo)
+            facts = collector.collect(max_pages=2, per_page=2)
+
+            self.assertEqual(facts.open_observations_count, 2)
+            self.assertEqual(len(facts.open_issues), 1)
+            self.assertEqual(facts.open_issues[0]["number"], 201)
+            self.assertEqual(facts.open_issues[0]["title"], "[AI] Genuine Task 1")
+
+    def test_incomplete_task_inventory_rendering_when_truncated_or_error(self):
+        """Issue #48 / R1: Renders lower-bound/unavailable task counts rather than exact counts or 'none' when incomplete."""
+        # 1. Truncated with 0 items: must say Incomplete, NOT 'No open task issues' or (0)
+        facts_empty_truncated = update_dashboard.RepositoryFacts(
+            main_head_sha=self.main_sha,
+            open_issues=[],
+            issues_truncated=True,
+        )
+        rendered1 = update_dashboard.render_dashboard(facts_empty_truncated, self.curated_text, repo=self.repo)
+        self.assertIn("### Open Task Issues (_Incomplete_)", rendered1)
+        self.assertIn("_Task issues inventory incomplete (truncated at pagination limit)._", rendered1)
+        self.assertNotIn("No open task issues", rendered1)
+        self.assertNotIn("### Open Task Issues (0)", rendered1)
+
+        # 2. Truncated with items: must say >=N [incomplete at limit], NOT exact (N)
+        facts_items_truncated = update_dashboard.RepositoryFacts(
+            main_head_sha=self.main_sha,
+            open_issues=[{"number": 48, "title": "Task 48", "labels": []}],
+            issues_truncated=True,
+        )
+        rendered2 = update_dashboard.render_dashboard(facts_items_truncated, self.curated_text, repo=self.repo)
+        self.assertIn("### Open Task Issues (>=1 [incomplete at limit])", rendered2)
+        self.assertNotIn("### Open Task Issues (1)\n", rendered2)
+
+        # 3. API error: must say _Unavailable_, NOT exact (0) or 'No open task issues'
+        facts_error = update_dashboard.RepositoryFacts(
+            main_head_sha=self.main_sha,
+            open_issues=[],
+            issues_error="HTTP 500: Server Error",
+        )
+        rendered3 = update_dashboard.render_dashboard(facts_error, self.curated_text, repo=self.repo)
+        self.assertIn("### Open Task Issues (_Unavailable_)", rendered3)
+        self.assertIn("_Task issues inventory unavailable due to API error: HTTP 500: Server Error_", rendered3)
+        self.assertNotIn("No open task issues", rendered3)
+        self.assertNotIn("### Open Task Issues (0)", rendered3)
+
+    def test_separate_observation_count_rendered_in_live_repository_status(self):
+        """Issue #48: Open observations are rendered as a compact count and link under Live Repository Status."""
+        facts = update_dashboard.RepositoryFacts(
+            main_head_sha=self.main_sha,
+            open_observations_count=3,
+        )
+        rendered = update_dashboard.render_dashboard(facts, self.curated_text, repo=self.repo)
+        obs_link = f"https://github.com/{self.repo}/issues?q=is%3Aissue+is%3Aopen+label%3Aai-observation"
+        self.assertIn(f"- **Open Observations**: [3]({obs_link})", rendered)
+        self.assertNotIn("untriaged", rendered.lower())
+
+    def test_observation_truncation_rendered_and_completeness_flagged(self):
+        """Issue #48: Truncated observation inventory sets completeness INCOMPLETE and renders incomplete marker."""
+        client = update_dashboard.GitHubClient(token="mock", repo=self.repo)
+
+        def mock_urlopen(req, timeout=30):
+            url = req.full_url
+            if "git/ref/heads/main" in url:
+                return MockHttpResponse({"object": {"sha": self.main_sha}})
+            if "pulls?state=open" in url:
+                return MockHttpResponse([])
+            if "actions/runs?branch=main" in url:
+                return MockHttpResponse([])
+            if "issues?state=open&labels=ai-observation" in url:
+                # Return full page of 2 items on page 1 (max_pages=1, per_page=2)
+                return MockHttpResponse([
+                    {"number": 1, "title": "Obs 1", "labels": [{"name": "ai-observation"}]},
+                    {"number": 2, "title": "Obs 2", "labels": [{"name": "ai-observation"}]},
+                ])
+            if "issues?state=open" in url:
+                return MockHttpResponse([])
+            return MockHttpResponse([])
+
+        with patch("urllib.request.urlopen", side_effect=mock_urlopen):
+            collector = update_dashboard.GitHubFactsCollector(client=client, repo=self.repo)
+            facts = collector.collect(max_pages=1, per_page=2)
+
+            self.assertTrue(facts.observations_truncated)
+            self.assertIn("INCOMPLETE", facts.completeness)
+            rendered = update_dashboard.render_dashboard(facts, self.curated_text, repo=self.repo)
+            self.assertIn("[>=2 (incomplete at limit)]", rendered)
+
+    def test_observation_api_error_rendered_and_completeness_flagged(self):
+        """Issue #48: API error fetching observations records error without false zero and sets completeness."""
+        client = update_dashboard.GitHubClient(token="mock", repo=self.repo)
+
+        def mock_urlopen(req, timeout=30):
+            url = req.full_url
+            if "git/ref/heads/main" in url:
+                return MockHttpResponse({"object": {"sha": self.main_sha}})
+            if "pulls?state=open" in url:
+                return MockHttpResponse([])
+            if "actions/runs?branch=main" in url:
+                return MockHttpResponse([])
+            if "issues?state=open&labels=ai-observation" in url:
+                raise urllib.error.HTTPError(url, 500, "Internal Server Error", {}, io.BytesIO(b"API Failure"))
+            if "issues?state=open" in url:
+                return MockHttpResponse([])
+            return MockHttpResponse([])
+
+        with patch("urllib.request.urlopen", side_effect=mock_urlopen):
+            collector = update_dashboard.GitHubFactsCollector(client=client, repo=self.repo)
+            facts = collector.collect(max_pages=1, per_page=2)
+
+            self.assertIsNone(facts.open_observations_count)
+            self.assertIsNotNone(facts.observations_error)
+            self.assertIn("INCOMPLETE: Failed to fetch observations", facts.completeness)
+            rendered = update_dashboard.render_dashboard(facts, self.curated_text, repo=self.repo)
+            self.assertIn("- **Open Observations**: _Unavailable due to API error:", rendered)
+
+    def test_observation_query_excludes_prs_and_dashboard_issue(self):
+        """Issue #48: Observation query excludes PR items and machine dashboard issues."""
+        client = update_dashboard.GitHubClient(token="mock", repo=self.repo)
+
+        def mock_urlopen(req, timeout=30):
+            url = req.full_url
+            if "git/ref/heads/main" in url:
+                return MockHttpResponse({"object": {"sha": self.main_sha}})
+            if "pulls?state=open" in url:
+                return MockHttpResponse([])
+            if "actions/runs?branch=main" in url:
+                return MockHttpResponse([])
+            if "issues?state=open&labels=ai-observation" in url:
+                return MockHttpResponse([
+                    {"number": 10, "title": "PR with label", "pull_request": {"url": "pr_url"}, "labels": [{"name": "ai-observation"}]},
+                    {"number": 11, "title": update_dashboard.DASHBOARD_TITLE, "labels": [{"name": "ai-observation"}]},
+                    {"number": 12, "title": "[Observation] Genuine observation", "labels": [{"name": "ai-observation"}]},
+                ])
+            if "issues?state=open" in url:
+                return MockHttpResponse([])
+            return MockHttpResponse([])
+
+        with patch("urllib.request.urlopen", side_effect=mock_urlopen):
+            collector = update_dashboard.GitHubFactsCollector(client=client, repo=self.repo)
+            facts = collector.collect(max_pages=1, per_page=10)
+
+            # Excludes PR (#10) and Dashboard (#11), counts only Genuine observation (#12)
+            self.assertEqual(facts.open_observations_count, 1)
+
+    def test_publication_safeguards_and_discovery_cap_intact(self):
+        """Issue #48: Preserves publication security safeguards and fail-closed 5x50 discovery cap."""
+        client = update_dashboard.GitHubClient(token="mock", repo=self.repo)
+        pages_called = []
+
+        def mock_urlopen(req, timeout=30):
+            url = req.full_url
+            if "issues?state=all" in url:
+                pages_called.append(url)
+                # Return 50 items on every page to trigger pagination cap
+                return MockHttpResponse([{"number": i, "title": f"Issue {i}"} for i in range(50)])
+            return MockHttpResponse({})
+
+        with patch("urllib.request.urlopen", side_effect=mock_urlopen):
+            with self.assertRaises(update_dashboard.SecurityValidationError) as ctx:
+                client.search_issues()
+            self.assertIn("Dashboard discovery reached pagination limit (5 pages / 250 items)", str(ctx.exception))
+            self.assertEqual(len(pages_called), 5, "Must attempt exactly 5 pages before failing closed")
+
+    # =========================================================================
+    # Issue #48 / R3: Search Incomplete Results & Response Shape Regressions
+    # =========================================================================
+
+    def test_search_incomplete_results_zero_items_collector_to_renderer(self):
+        """Issue #48 / R3: Search incomplete_results: true with 0 items sets INCOMPLETE, issues_truncated, and renders Incomplete."""
+        client = update_dashboard.GitHubClient(token="mock", repo=self.repo)
+
+        def mock_urlopen(req, timeout=30):
+            url = req.full_url
+            if "git/ref/heads/main" in url:
+                return MockHttpResponse({"object": {"sha": self.main_sha}})
+            if "pulls?state=open" in url:
+                return MockHttpResponse([])
+            if "actions/runs?branch=main" in url:
+                return MockHttpResponse([])
+            if "issues?state=open&labels=ai-observation" in url:
+                return MockHttpResponse([])
+            if "search/issues?q=" in url:
+                # GitHub Search API timeout / partial results with 0 items
+                return MockHttpResponse({
+                    "total_count": 0,
+                    "incomplete_results": True,
+                    "items": [],
+                })
+            return MockHttpResponse([])
+
+        with patch("urllib.request.urlopen", side_effect=mock_urlopen):
+            collector = update_dashboard.GitHubFactsCollector(client=client, repo=self.repo)
+            facts = collector.collect(max_pages=2, per_page=10)
+
+            self.assertTrue(facts.issues_truncated)
+            self.assertEqual(len(facts.open_issues), 0)
+            self.assertIn("INCOMPLETE: Search query returned incomplete results", facts.completeness)
+
+            rendered = update_dashboard.render_dashboard(facts, self.curated_text, repo=self.repo)
+            self.assertIn("Status: `INCOMPLETE: Search query returned incomplete results (incomplete_results=true)`", rendered)
+            self.assertIn("### Open Task Issues (_Incomplete_)", rendered)
+            self.assertIn("_Task issues inventory incomplete (truncated at pagination limit)._", rendered)
+            self.assertNotIn("No open task issues", rendered)
+            self.assertNotIn("### Open Task Issues (0)", rendered)
+
+    def test_search_incomplete_results_nonzero_items_collector_to_renderer(self):
+        """Issue #48 / R3: Search incomplete_results: true with nonzero items sets INCOMPLETE, issues_truncated, and renders lower bound."""
+        client = update_dashboard.GitHubClient(token="mock", repo=self.repo)
+
+        def mock_urlopen(req, timeout=30):
+            url = req.full_url
+            if "git/ref/heads/main" in url:
+                return MockHttpResponse({"object": self.main_sha}) if False else MockHttpResponse({"object": {"sha": self.main_sha}})
+            if "pulls?state=open" in url:
+                return MockHttpResponse([])
+            if "actions/runs?branch=main" in url:
+                return MockHttpResponse([])
+            if "issues?state=open&labels=ai-observation" in url:
+                return MockHttpResponse([])
+            if "search/issues?q=" in url:
+                # GitHub Search API timeout / partial results with 1 valid item out of reported 12
+                return MockHttpResponse({
+                    "total_count": 12,
+                    "incomplete_results": True,
+                    "items": [
+                        {"number": 201, "title": "[AI] Valid Task", "labels": [{"name": "task"}]},
+                    ],
+                })
+            return MockHttpResponse([])
+
+        with patch("urllib.request.urlopen", side_effect=mock_urlopen):
+            collector = update_dashboard.GitHubFactsCollector(client=client, repo=self.repo)
+            facts = collector.collect(max_pages=2, per_page=10)
+
+            self.assertTrue(facts.issues_truncated)
+            self.assertEqual(len(facts.open_issues), 1)
+            self.assertIn("INCOMPLETE: Search query returned incomplete results", facts.completeness)
+
+            rendered = update_dashboard.render_dashboard(facts, self.curated_text, repo=self.repo)
+            self.assertIn("Status: `INCOMPLETE: Search query returned incomplete results (incomplete_results=true)`", rendered)
+            self.assertIn("### Open Task Issues (>=1 [incomplete at limit])", rendered)
+            self.assertNotIn("### Open Task Issues (1)\n", rendered)
+            self.assertIn("| **#201** | [AI] Valid Task | task |", rendered)
+
+    def test_search_ordinary_complete_responses_collector_to_renderer(self):
+        """Issue #48 / R3: Ordinary complete search responses (incomplete_results: false) report COMPLETE and exact counts."""
+        client = update_dashboard.GitHubClient(token="mock", repo=self.repo)
+
+        # 1. Non-empty complete search
+        def mock_urlopen_items(req, timeout=30):
+            url = req.full_url
+            if "git/ref/heads/main" in url:
+                return MockHttpResponse({"object": {"sha": self.main_sha}})
+            if "pulls?state=open" in url:
+                return MockHttpResponse([])
+            if "actions/runs?branch=main" in url:
+                return MockHttpResponse([])
+            if "issues?state=open&labels=ai-observation" in url:
+                return MockHttpResponse([])
+            if "search/issues?q=" in url:
+                return MockHttpResponse({
+                    "total_count": 1,
+                    "incomplete_results": False,
+                    "items": [
+                        {"number": 42, "title": "[AI] Complete Task", "labels": [{"name": "backend"}]},
+                    ],
+                })
+            return MockHttpResponse([])
+
+        with patch("urllib.request.urlopen", side_effect=mock_urlopen_items):
+            collector = update_dashboard.GitHubFactsCollector(client=client, repo=self.repo)
+            facts = collector.collect(max_pages=2, per_page=10)
+
+            self.assertFalse(facts.issues_truncated)
+            self.assertEqual(facts.completeness, update_dashboard.COMPLETENESS_COMPLETE)
+            rendered = update_dashboard.render_dashboard(facts, self.curated_text, repo=self.repo)
+            self.assertIn("Status: `COMPLETE`", rendered)
+            self.assertIn("### Open Task Issues (1)", rendered)
+            self.assertIn("| **#42** | [AI] Complete Task | backend |", rendered)
+
+        # 2. Empty complete search
+        def mock_urlopen_empty(req, timeout=30):
+            url = req.full_url
+            if "git/ref/heads/main" in url:
+                return MockHttpResponse({"object": {"sha": self.main_sha}})
+            if "pulls?state=open" in url:
+                return MockHttpResponse([])
+            if "actions/runs?branch=main" in url:
+                return MockHttpResponse([])
+            if "issues?state=open&labels=ai-observation" in url:
+                return MockHttpResponse([])
+            if "search/issues?q=" in url:
+                return MockHttpResponse({
+                    "total_count": 0,
+                    "incomplete_results": False,
+                    "items": [],
+                })
+            return MockHttpResponse([])
+
+        with patch("urllib.request.urlopen", side_effect=mock_urlopen_empty):
+            collector = update_dashboard.GitHubFactsCollector(client=client, repo=self.repo)
+            facts = collector.collect(max_pages=2, per_page=10)
+
+            self.assertFalse(facts.issues_truncated)
+            self.assertEqual(facts.completeness, update_dashboard.COMPLETENESS_COMPLETE)
+            rendered = update_dashboard.render_dashboard(facts, self.curated_text, repo=self.repo)
+            self.assertIn("Status: `COMPLETE`", rendered)
+            self.assertIn("### Open Task Issues (0)", rendered)
+            self.assertIn("_No open task issues._", rendered)
+
+    def test_search_malformed_responses_rejected_to_unavailable(self):
+        """Issue #48 / R3: Non-object or missing-items search responses are rejected to unavailable rather than synthesized."""
+        client = update_dashboard.GitHubClient(token="mock", repo=self.repo)
+
+        # 1. Non-dict response (list shape)
+        def mock_urlopen_list(req, timeout=30):
+            url = req.full_url
+            if "git/ref/heads/main" in url:
+                return MockHttpResponse({"object": {"sha": self.main_sha}})
+            if "pulls?state=open" in url:
+                return MockHttpResponse([])
+            if "actions/runs?branch=main" in url:
+                return MockHttpResponse([])
+            if "issues?state=open&labels=ai-observation" in url:
+                return MockHttpResponse([])
+            if "search/issues?q=" in url:
+                return MockHttpResponse([{"number": 1, "title": "Malformed list"}])
+            return MockHttpResponse([])
+
+        with patch("urllib.request.urlopen", side_effect=mock_urlopen_list):
+            collector = update_dashboard.GitHubFactsCollector(client=client, repo=self.repo)
+            facts = collector.collect(max_pages=2, per_page=10)
+
+            self.assertIsNotNone(facts.issues_error)
+            self.assertIn("INCOMPLETE: Failed to fetch open issues", facts.completeness)
+            rendered = update_dashboard.render_dashboard(facts, self.curated_text, repo=self.repo)
+            self.assertIn("### Open Task Issues (_Unavailable_)", rendered)
+            self.assertIn("_Task issues inventory unavailable due to API error:", rendered)
+            self.assertNotIn("No open task issues", rendered)
+            self.assertNotIn("### Open Task Issues (0)", rendered)
+
+        # 2. Missing 'items' field
+        def mock_urlopen_no_items(req, timeout=30):
+            url = req.full_url
+            if "git/ref/heads/main" in url:
+                return MockHttpResponse({"object": {"sha": self.main_sha}})
+            if "pulls?state=open" in url:
+                return MockHttpResponse([])
+            if "actions/runs?branch=main" in url:
+                return MockHttpResponse([])
+            if "issues?state=open&labels=ai-observation" in url:
+                return MockHttpResponse([])
+            if "search/issues?q=" in url:
+                return MockHttpResponse({"total_count": 5})
+            return MockHttpResponse([])
+
+        with patch("urllib.request.urlopen", side_effect=mock_urlopen_no_items):
+            collector = update_dashboard.GitHubFactsCollector(client=client, repo=self.repo)
+            facts = collector.collect(max_pages=2, per_page=10)
+
+            self.assertIsNotNone(facts.issues_error)
+            self.assertIn("missing or invalid 'items' field", facts.issues_error)
+            rendered = update_dashboard.render_dashboard(facts, self.curated_text, repo=self.repo)
+            self.assertIn("### Open Task Issues (_Unavailable_)", rendered)
+
+    def test_search_issues_paged_client_validates_shape(self):
+        """Issue #48 / R3: search_issues_paged validates response dictionary and list items field."""
+        client = update_dashboard.GitHubClient(token="mock", repo=self.repo)
+
+        # Non-dict response
+        with patch.object(client, "_request", return_value=["not", "a", "dict"]):
+            with self.assertRaises(update_dashboard.GitHubApiError) as ctx:
+                client.search_issues_paged("test query")
+            self.assertIn("expected dict, got list", str(ctx.exception))
+
+        # Dict without items
+        with patch.object(client, "_request", return_value={"total_count": 0}):
+            with self.assertRaises(update_dashboard.GitHubApiError) as ctx:
+                client.search_issues_paged("test query")
+            self.assertIn("missing or invalid 'items' field", str(ctx.exception))
+
+        # Dict with items not a list
+        with patch.object(client, "_request", return_value={"items": "not-a-list"}):
+            with self.assertRaises(update_dashboard.GitHubApiError) as ctx:
+                client.search_issues_paged("test query")
+            self.assertIn("missing or invalid 'items' field", str(ctx.exception))
+
+        # Valid response passes through
+        valid_resp = {"items": [], "total_count": 0, "incomplete_results": False}
+        with patch.object(client, "_request", return_value=valid_resp):
+            res = client.search_issues_paged("test query")
+            self.assertEqual(res, valid_resp)
+
 
 if __name__ == "__main__":
     unittest.main()
