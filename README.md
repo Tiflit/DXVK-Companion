@@ -9,11 +9,11 @@ Optimized for modern GPUs—especially Intel Arc / Battlemage architectures (Arc
 ## ⚡ Core Principles
 
 * **Strict Portability**: Completely self-contained in its application folder. Never writes to `%APPDATA%`, the Windows Registry, or system directories (with the exception of optional Windows startup integration).
-* **Self-Cleaning Game Directories**: Game directories remain pristine. Original DLLs are backed up exclusively inside Companion's isolated storage (`Profiles/Backups/{id}`), never leaving `.bak` artifacts in game folders. On restore, injected DXVK DLLs and generated `dxvk.conf` files are cleanly removed.
-* **Atomic Multi-File Transactions**: Multi-file deployments (such as `d3d11.dll` + `dxgi.dll` for DirectX 11) are executed as a single logical transaction with SHA-256 pre-flight identity verification and automatic rollback if any file operation fails.
+* **Self-Cleaning Game Directories**: Avoids leaving `.bak` artifacts in game directories by storing original baseline DLL backups inside Companion's isolated storage (`Profiles/Backups/{id}`). On restore, injected DXVK DLLs and generated `dxvk.conf` files are cleanly removed.
+* **Transaction & In-Process Rollback**: Multi-file operations (such as `d3d11.dll` + `dxgi.dll` for DirectX 11) execute under an in-process transaction state machine with SHA-256 pre-flight identity verification and automatic rollback if an operation encounters an in-process exception. (Note: in-process rollback handles caught exceptions during execution, but does not provide OS-level atomic multi-file visibility to external processes or guarantee restart recovery after abrupt process termination or power loss).
 * **Zero External Dependencies**: Built on .NET 8 using native Windows APIs and runtime capabilities (including in-memory release tarball decompression via `GZipStream` and `System.Formats.Tar`).
 * **Non-Aggressive Execution**: Never modifies running game processes. Deployment actions are staged and executed safely after the game cleanly terminates.
-* **Anti-Cheat Safety**: Detects anti-cheat modules (Easy Anti-Cheat, BattlEye, Vanguard, etc.) with fail-closed heuristics (`UnableToDetermine` / `SuspectedOrKnown`) to protect online multiplayer titles from risky modifications.
+* **Anti-Cheat Heuristics**: Detects known anti-cheat modules and signatures (Easy Anti-Cheat, BattlEye, Vanguard, etc.) with fail-closed heuristics (`UnableToDetermine` / `SuspectedOrKnown`) that block automated deployment. (Heuristics reduce risk but do not guarantee detection of all anti-cheat software or guarantee ban safety in online games).
 
 ---
 
@@ -37,7 +37,7 @@ DXVK Companion supports two operating modes configured globally in **Settings** 
 * Direct control available via **Manage Games** and **Game Details** dialogs.
 
 ### 2. Automated Mode (Experimental)
-* Automatically selects and deploys the latest official DXVK release for newly launched compatible Direct3D games.
+* Automatically selects and deploys the latest official DXVK release for newly launched compatible Direct3D 9, 10, and 11 games (DX12 and Vulkan titles are detected for informational reporting only; DXVK deployment is refused).
 * Queues safe deployment while the game is running and applies the transaction automatically upon game exit.
 * Detects external game patches or file updates and automatically re-evaluates the baseline before reapplying DXVK.
 * Respects fail-closed anti-cheat protection: automatic actions are strictly blocked if anti-cheat or anti-tamper components are detected.
@@ -80,8 +80,8 @@ Right-clicking the tray icon presents a clean, static, and predictable menu:
        (ProcessFilter, ModuleScanner, PE Import Fallback)
                            │
                            ▼
-                   API CLASSIFICATION
-             (DX9, DX10, DX11, ModernAPI DX12/Vulkan)
+                    API CLASSIFICATION
+         (DX9, DX10, DX11, DX12, Vulkan [Informational])
                            │
                            ▼
                     POLICY ENGINE
@@ -107,17 +107,17 @@ Right-clicking the tray icon presents a clean, static, and predictable menu:
 ### Component Breakdown
 
 * **Safety & Transactions (`DXVKCompanion.Safety`)**:
-  * `MultiFileTransactionEngine`: Executes atomic multi-file operations (`Install`, `Update`, `Reapply`, `Restore`), manages isolated backups, and provides automatic rollback upon failure.
-  * `SingleFileTransactionEngine`: Atomic single-file state machine with crash recovery.
+  * `MultiFileTransactionEngine`: Executes multi-file operations (`Install`, `Update`, `Reapply`, `Restore`), manages isolated backups, and provides automatic rollback upon caught in-process exceptions.
+  * `SingleFileTransactionEngine`: Single-file state machine with backup tracking and simulated crash/recovery state handling.
   * `FileIdentity`: Deterministic SHA-256 and byte-size identity tracking for file provenance and tampering detection.
   * `TransactionContracts`: Formal state machines and outcome records.
 
 * **Domain & Storage (`DXVKCompanion.Models`, `DXVKCompanion.Storage`)**:
-  * `GameInstallation`: Tracks installation roots, multiple executables, managed file records, and conflict flags.
+  * `GameInstallation`: Tracks installation roots, multiple executables, managed file records, and conflict flags. Under approved shared-directory policy, if any recorded executable is classified as incompatible (DirectX 12, Vulkan, or Unknown/unsupported), DXVK deployment is refused across the entire installation directory, while Restore and RestoreAll remain available (undiscovered sibling executables remain a known limitation).
   * `ManagedFileRecord`: Tracks original state (`Existing` vs. `DidNotExist`), baseline hashes, and backup pointers.
   * `ManagedFileInspector`: Real-time inspection of managed files, detecting external modifications, deletions, and invalidating stale pending actions.
-  * `GameLibraryStore`: Atomic JSON persistence for game libraries with corruption recovery, name-based enum serialization (`GraphicsApi`), legacy `ModernAPI` compatibility, clean-slate V1 initialization (does not import pre-release `games.json` profiles), and preservation of recovery snapshots (`.recovery.*.json`) if downgraded builds encounter unrecognized string API values (`DX12` / `Vulkan`).
-  * `ProfileStore`: Active flat profile persistence for UI components using pinned integer ordinals (`0..6`), operating independently from `GameLibraryStore` (unsupported legacy import into `GameLibraryStore` is omitted under Clean-Slate V1 policy), where numeric values deserialize via underlying cast without exception (though unhandled ordinals fall back to unmanaged application behavior).
+  * `GameLibraryStore`: Atomic JSON persistence for hierarchical game installations (`game-library.json`) with corruption recovery, name-based enum serialization (`GraphicsApi`), legacy `ModernAPI` compatibility, clean-slate V1 initialization (does not import pre-release `games.json` profiles), and preservation of recovery snapshots (`.recovery.*.json`) if downgraded builds encounter unrecognized string API values (`DX12` / `Vulkan`). (Note: serializer simulations test downgrade compatibility and snapshot emission, but are not execution of older application binaries, and recovery snapshots are preserved data files rather than automatically restored state).
+  * `ProfileStore`: Active flat profile persistence (`games.json`) for UI components using pinned integer ordinals (`0..6`), operating independently from `GameLibraryStore` (unsupported legacy import into `GameLibraryStore` is omitted under Clean-Slate V1 policy, while `games.json` remains actively maintained by `ProfileStore`), where numeric values deserialize via underlying cast without exception (though unhandled ordinals fall back to unmanaged application behavior).
   * `CacheStore` & `SettingsStore`: Portable configuration, release caching, and global policy persistence.
 
 * **Detection & Monitoring (`DXVKCompanion.Monitoring`)**:
@@ -125,13 +125,13 @@ Right-clicking the tray icon presents a clean, static, and predictable menu:
   * `GameDetector`: Filters out system processes and store launchers, and assesses anti-cheat risks (`AntiCheatAssessment`) across process modules and game directories.
   * `ModuleScanner`: Inspects loaded graphics runtime modules in running processes.
   * `PeParser`: Static PE header and Import Address Table (IAT) inspection fallback with architecture detection.
-  * `ApiClassifier`: Classifies Direct3D 9, 10, 11, and Modern API (DX12 / Vulkan) games with confidence levels and evidence tracking (`ApiClassificationResult`).
+  * `ApiClassifier`: Classifies Direct3D 9, 10, 11, DirectX 12, and Vulkan games with confidence levels and evidence tracking (`ApiClassificationResult`). Supported DXVK deployment targets are DX9, DX10, and DX11; DX12 and Vulkan classifications are informational, and DXVK deployment is refused for them (legacy `ModernAPI` is retained only as an obsolete enum value for deserialization backward compatibility).
 
 * **DXVK Management (`DXVKCompanion.DXVK`)**:
   * `DxvkGithubClient`: Fetches official release metadata from the GitHub API with local caching.
   * `DxvkReleaseCatalog`: Deterministic SHA-256 hash lookup for official DXVK releases.
   * `ExistingDxvkDetector`: Inspects game directories, PE version metadata, and SHA-256 hashes to reliably recognize official releases, unknown builds, or native files.
-  * `DxvkInstaller`: In-memory extraction of release archives, atomic game deployment, configuration staging, existing DXVK adoption, and reapplication.
+  * `DxvkInstaller`: In-memory extraction of release archives, staged deployment with in-process rollback, configuration staging, existing DXVK adoption, and reapplication.
   * `DxvkRollback`: Clean restoration of original game baselines and self-cleaning deletion of injected DXVK files.
   * `DxvkConfigManager`: Manages `dxvk.conf` settings (Section 36 invariant: atomic merge, zero unneeded config creation).
   * `RestoreAllAsync`: Global baseline restoration with per-game error isolation (Section 23).
@@ -151,7 +151,7 @@ DXVK-Companion/
 ├── DXVK-Companion.exe      # Standalone single-file executable
 ├── Profiles/
 │   ├── game-library.json   # Hierarchical game installations and managed file records
-│   ├── games.json          # Legacy profile configuration (migrated automatically)
+│   ├── games.json          # Flat profile configuration used by ProfileStore (not imported into GameLibraryStore under Clean-Slate V1)
 │   └── Backups/            # Pristine original game file baselines (isolated from game folders)
 ├── Cache/                  # Cached DXVK release metadata
 ├── Logs/                   # Application log files
@@ -162,7 +162,7 @@ DXVK-Companion/
 
 ## 🧪 Testing & Validation
 
-All file safety operations are validated using sandboxed synthetic environments (`SyntheticTestDirectory`) that guarantee tests never touch real game installations or developer workspaces:
+Automated file operations and state transitions are validated using sandboxed synthetic environments (`SyntheticTestDirectory`) to ensure tests never touch real game installations or developer workspaces. While synthetic test suites verify component logic and simulated error paths, they do not certify live Windows desktop integration, real-game runtime compatibility, graphics driver interactions, or concurrency under external processes:
 
 ```bash
 # Build application in Release
@@ -191,7 +191,6 @@ For complete specifications and architectural contracts, refer to the canonical 
 
 ### Development Progress & Verification Status
 * [x] **Phase A**: Data Foundation (Hierarchical `GameInstallation`, `ExecutableProfile`, `ManagedFileRecord`)
-* [x] **Phase A.1**: Legacy Profile Migration (`games.json` -> `game-library.json`)
 * [x] **Phase A.5**: Multi-File Atomic Transaction Engine (`MultiFileTransactionEngine`, `FileIdentity`)
 * [x] **Phase B**: Detection Layer Refactoring (Multi-executable folder tracking, delayed runtime scans, enhanced anti-cheat heuristics, and API transitions)
 * [x] **Phase C**: DXVK Release Repository (Official release catalog, deterministic hash identification, existing DXVK adoption, Reapply, and Section 36 `dxvk.conf` management)
@@ -202,16 +201,27 @@ For complete specifications and architectural contracts, refer to the canonical 
 * [x] **Release CI**: Standalone self-contained `win-x64` GitHub release pipeline
 
 > [!NOTE]
-> Completed checkboxes reflect implementation and unit test coverage in Phase A. Active product safety investigations (such as potential baseline overwrite during Reapply under [Issue #13](https://github.com/Tiflit/DXVK-Companion/issues/13)) and multi-executable policy choices ([Issue #14](https://github.com/Tiflit/DXVK-Companion/issues/14)) are tracked as open issues.
+> Completed checkboxes reflect implementation and unit test coverage in Phase A synthetic test suites. Product safety enhancements and approved policy choices are implemented and closed on `main`:
+> * **Reapply Baseline Preservation**: Baseline capture and backup preservation defects repaired ([Issue #13](https://github.com/Tiflit/DXVK-Companion/issues/13), [PR #23](https://github.com/Tiflit/DXVK-Companion/pull/23)).
+> * **Shared-Directory Compatibility Policy**: Approved installation-wide DXVK refusal across shared directories when any recorded executable is incompatible (DX12, Vulkan, or Unknown/unsupported), while preserving Restore and RestoreAll operations ([Issue #14](https://github.com/Tiflit/DXVK-Companion/issues/14), [PR #35](https://github.com/Tiflit/DXVK-Companion/pull/35); undiscovered sibling executables remain a known limitation).
+> * **Pre-Execution API Reassessment**: Reassesses runtime API classification before executing queued actions to catch runtime transitions ([Issue #15](https://github.com/Tiflit/DXVK-Companion/issues/15), [PR #36](https://github.com/Tiflit/DXVK-Companion/pull/36)).
+> * **Incompatible Pending Action Lifecycle**: Terminal cancellation lifecycle for compatibility-refused pending actions, preventing automatic revival without explicit user intent ([Issue #16](https://github.com/Tiflit/DXVK-Companion/issues/16), [PR #37](https://github.com/Tiflit/DXVK-Companion/pull/37)).
+> * **Clean-Slate V1 & Persistence Alignment**: `GraphicsApi` name serialization and clean-slate V1 initialization without legacy profile import ([Issue #18](https://github.com/Tiflit/DXVK-Companion/issues/18), [PR #30](https://github.com/Tiflit/DXVK-Companion/pull/30); [Issue #32](https://github.com/Tiflit/DXVK-Companion/issues/32), [PR #34](https://github.com/Tiflit/DXVK-Companion/pull/34)).
 
 ---
 
 ## 🤖 AI Development & Workflow
 
-This project uses a GitHub-native multi-agent development workflow:
-* [Agent Operating Rules](AGENTS.md): Core rules for AI contributors
-* [Current Development State & Handoff](docs/AI-CURRENT-STATE.md): Active dashboard, branch heads, and work queue
-* [AI Development Workflow](docs/AI-DEVELOPMENT-WORKFLOW.md): Operating policies, review standards, and contract grammar
-* [Agent Activity Journal](docs/AI-ACTIVITY-JOURNAL.md): Session logs and activity records
-* [Pilot & Review Log](docs/AI-PILOT-LOG.md): Historical record of review findings and arbitration
-
+This project uses a GitHub-native multi-agent development workflow with GitHub as the durable source of truth:
+* **Model Role Allocation**:
+  * **Gemini**: Primary implementation layer (repository code, test suites, local verification, focused revisions).
+  * **ChatGPT**: Verification, architecture, reproduction analysis, and arbitration layer.
+  * **Claude**: Reserved for occasional independent audits and high-risk material decisions (quota-conserving).
+  * **Human**: Retains final merge authority, policy governance, and architectural decisions.
+* **Workflow Navigation**:
+  * [Agent Operating Rules](AGENTS.md): Core rules, 4-step startup route, and repository invariants for AI contributors.
+  * [Live AI Dashboard (Issue #27)](https://github.com/Tiflit/DXVK-Companion/issues/27): Automated machine-owned orientation dashboard tracking real-time default branch SHA, open PRs, and active CI runs. Underlying GitHub records (commits, PRs, Issues) remain authoritative.
+  * [Curated Orientation & State](docs/AI-CURRENT-STATE.md): Curated guidance, stable decisions, role allocation, and governance protocols.
+  * [AI Development Workflow](docs/AI-DEVELOPMENT-WORKFLOW.md): Operating policies, review standards, and contract grammar.
+  * [Agent Activity Journal](docs/AI-ACTIVITY-JOURNAL.md) and [`docs/ai-journal/`](docs/ai-journal/): Session logs and activity records.
+  * [Pilot & Review Log](docs/AI-PILOT-LOG.md): Selective historical reference for pilot outcomes and review arbitration.
