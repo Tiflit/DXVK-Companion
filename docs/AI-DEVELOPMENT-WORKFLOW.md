@@ -243,7 +243,7 @@ When conducting an initial verification pass:
 - **Finding classification**: Clearly distinguish:
   - *Blocking findings*: Violations of task contracts, unproven safety invariants, regressions, privacy leaks, or inaccurate descriptions of implemented behavior.
   - *Non-blocking suggestions*: Optional editorial enhancements, stylistic polish, or future cleanup.
-- **Single focused revision**: Group all material findings into a single coherent review pass so the implementer can resolve them in one focused revision cycle.
+- **Single focused revision**: Group material findings identified in the review pass so the implementer can resolve them in one focused revision cycle, without promising discovery of every possible finding in a single pass.
 - **Escalation boundary**: Persistent disagreements or new out-of-scope requirements escalate to the human rather than triggering unbounded review loops.
 
 ### Incremental revision verification
@@ -253,7 +253,7 @@ When evaluating a revision submitted to address prior review findings:
 2. **Compare against prior reviewed revision**: Inspect the diff between the prior reviewed head and the current head, evaluating whether specific review findings were resolved.
 3. **Inspect affected context**: Trace modified call sites, documentation, or entry points to confirm the fix did not destabilize previously accepted behavior.
 4. **Scope-bound validity**: Prior findings and verdicts remain bound to their specific reviewed commit SHA. Do not blindly carry forward a prior `PASS` across new code changes. Conversely, do not mandate re-reading full historical archives or re-auditing unchanged code for routine prose or targeted fixes.
-5. **Selective expansion**: Expand review depth beyond the revision diff only when changes introduce new dependencies, shift contract boundaries, touch safety-critical code, or reveal unresolved ambiguity. Independent audits by Claude retain strict fresh-context rules when engaged.
+5. **Selective expansion**: Expand review depth beyond the revision diff when changes involve relevant base movement (such as default-branch updates or merge conflict resolutions), contract adjustments, scope shifts, new dependencies, safety-critical code touchpoints, or contradictory evidence, or when unresolved ambiguity is revealed. Preserve current-integration evidence and documented review applicability. Independent audits by Claude retain strict fresh-context rules when engaged.
 
 ## Evidence discipline
 
@@ -280,7 +280,7 @@ Key verification principles:
 ### Risk-proportionate verification depth
 
 Verification depth should match the risk profile of the task:
-- **Documentation tasks**: Focus on source/link accuracy, scope compliance, and contract alignment. Do not require local application test execution or TRX parsing solely for documentation edits unless explicitly mandated by the task contract. Normal CI status checks provide sufficient regression evidence.
+- **Documentation tasks**: Focus on source/link accuracy, scope compliance, and contract alignment, retaining direct inspection of task-relevant evidence (such as CI logs or documentation sources) when required by the contract. Do not imply platform status checks alone verify underlying test counts or execution details, and do not mandate running local application test suites or TRX parsing solely for documentation edits unless explicitly required by the task contract.
 - **File safety and transaction tasks**: Require robust local verification, synthetic test coverage, regression fixtures for edge cases (e.g., in-process exception rollback, baseline backup preservation), and direct inspection of test evidence.
 - **Reporting discipline**: Explicitly distinguish locally *executed* commands/tests from remotely *inspected* CI job logs and platform metadata. Never assert a test ran locally if only CI logs were read.
 
@@ -570,13 +570,16 @@ python scripts/ai-workflow/generate_handoff.py --pr 33 --json
 
 When completing an implementation task or revision, agents should provide a concise user-facing summary pointing to the generated snapshot rather than repeating full contracts, long logs, or manually transcribed details:
 - **PR Link**: Direct URL to the active Pull Request (e.g. `https://github.com/Tiflit/DXVK-Companion/pull/45`).
-- **Readiness State**: Clearly state either `Implementation complete — CI pending` or `Ready for verification` (all CI passed).
+- **Readiness State**: Clearly state the operational state:
+  - `Implementation complete — CI pending` (code pushed, CI in progress).
+  - `Ready for verification` (required commit/branch identities, source checks, task-relevant evidence, and required CI status checks acquired and verified; green CI alone is insufficient without verified evidence provenance).
+  - `Blocked / Unavailable evidence` (CI failed, required evidence or provenance unavailable, or unexpected blocker encountered).
 - **Acquired Head SHA**: Full 40-character commit SHA acquired directly from git or GitHub API (never manually reconstructed).
 - **One-Sentence Summary**: Concise statement of the change made.
 - **Evidence Reference**: Direct link to the triggering CI run, review packet, or TRX summary.
 - **Next Owner & Action**: Exact assigned owner (e.g. `ChatGPT (Coordinator verification)`) and required next action.
 
-This presentation convention reduces report bloat and eliminates manual transcription errors; it does not replace the durable generated snapshot on GitHub or serve as an automated state machine.
+This presentation convention reduces report bloat and aims to reduce manual transcription errors; it does not replace the durable generated snapshot on GitHub or serve as an automated state machine.
 
 ### 3. Safe Body Preservation and Activity Update Helper (`update_pr_body.py`)
 
@@ -657,6 +660,7 @@ python scripts/ai-workflow/update_pr_body.py --issue 42 --append-file post_merge
   3. Verified evidence and test results
   4. Open findings and pending decisions
   5. Exact next action and assigned owner
+- **After-Task Bounded Observations**: After a task, record up to three evidence-backed observations encountered during its execution; “none” is acceptable. Do not perform an additional repository-wide review solely to manufacture suggestions. Each observation gives evidence, consequence, proposed next action and uncertainty, and checks for existing tracking. Gemini reports implementation friction; ChatGPT triages; Claude contributes only when explicitly assigned a high-risk audit. Broader reviews occur at milestones, recurring failures or explicit assignments. Suggestions do not authorize implementation or change approved policy.
 
 ### 5. Manual Workflow Efficiency Trial Note
 
