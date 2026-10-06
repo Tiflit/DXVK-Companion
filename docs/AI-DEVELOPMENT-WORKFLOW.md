@@ -160,6 +160,14 @@ There should be no open-ended AI ping-pong.
 
 The normal policy is at most one focused revision cycle after a material independent-review finding. Persistent disagreement or uncertainty becomes an explicit escalation.
 
+### Polling and notification boundaries
+
+To minimize execution overhead and report churn:
+- **Submission and boundary checks**: Query CI status immediately after PR submission and at meaningful completion or blocker boundaries rather than executing tight sleep-and-poll loops.
+- **Notification utilization**: Where platform notifications or reactive wakeups are supported by the execution environment, rely on them rather than repetitive terminal polling. (Note: notification support depends on specific client tooling and does not automatically activate consumer-chat agents).
+- **Silent waiting**: Avoid uninformative waiting narration or repetitive polling chatter in progress reports.
+- **Evidence before readiness**: Ensure all relevant CI runs, status checks, and job logs have completed before declaring a task ready for verification or merge.
+
 ## Risk-based use of independent review
 
 ### Active role allocation and execution flow
@@ -228,6 +236,25 @@ For each important invariant:
 
 Review should concentrate on correctness, safety, architectural invariants, and scope rather than stylistic preferences.
 
+### Coherent first-pass reviews and finding classification
+
+When conducting an initial verification pass:
+- **Adjacent failure paths**: Inspect adjacent material failure paths rather than evaluating diff chunks in isolation.
+- **Finding classification**: Clearly distinguish:
+  - *Blocking findings*: Violations of task contracts, unproven safety invariants, regressions, privacy leaks, or inaccurate descriptions of implemented behavior.
+  - *Non-blocking suggestions*: Optional editorial enhancements, stylistic polish, or future cleanup.
+- **Single focused revision**: Group material findings identified in the review pass so the implementer can resolve them in one focused revision cycle, without promising discovery of every possible finding in a single pass.
+- **Escalation boundary**: Persistent disagreements or new out-of-scope requirements escalate to the human rather than triggering unbounded review loops.
+
+### Incremental revision verification
+
+When evaluating a revision submitted to address prior review findings:
+1. **Acquire live revisions**: Query the current head, base, contract, and evidence fresh from GitHub.
+2. **Compare against prior reviewed revision**: Inspect the diff between the prior reviewed head and the current head, evaluating whether specific review findings were resolved.
+3. **Inspect affected context**: Trace modified call sites, documentation, or entry points to confirm the fix did not destabilize previously accepted behavior.
+4. **Scope-bound validity**: Prior findings and verdicts remain bound to their specific reviewed commit SHA. Do not blindly carry forward a prior `PASS` across new code changes. Conversely, do not mandate re-reading full historical archives or re-auditing unchanged code for routine prose or targeted fixes.
+5. **Selective expansion**: Expand review depth beyond the revision diff when changes involve relevant base movement (such as default-branch updates or merge conflict resolutions), contract adjustments, scope shifts, new dependencies, safety-critical code touchpoints, or contradictory evidence, or when unresolved ambiguity is revealed. Preserve current-integration evidence and documented review applicability. Independent audits by Claude retain strict fresh-context rules when engaged.
+
 ## Evidence discipline
 
 Claims about validation must be tied to actual evidence.
@@ -249,6 +276,13 @@ Key verification principles:
 - **Review depth follows risk**: Routine chores or minor refactors need only basic sanity checks, while high-risk tasks (such as Issue #13's file deletion and backup safety or Issue #14's architectural policy changes) warrant rigorous verification regardless of reviewer allocation.
 - **Documentation and test findings can be material**: Missing documentation or test coverage is not automatically advisory. If omitted documentation or missing test coverage violates explicit task acceptance criteria or conceals an architectural safety failure, it is material and must be arbitrated accordingly.
 - **Capability claims are recorded per session**: AI agents must honestly report whether test counts or results were directly executed in the session or merely transcribed. Unverified counts must be labeled as unverified.
+
+### Risk-proportionate verification depth
+
+Verification depth should match the risk profile of the task:
+- **Documentation tasks**: Focus on source/link accuracy, scope compliance, and contract alignment, retaining direct inspection of task-relevant evidence (such as CI logs or documentation sources) when required by the contract. Do not imply platform status checks alone verify underlying test counts or execution details, and do not mandate running local application test suites or TRX parsing solely for documentation edits unless explicitly required by the task contract.
+- **File safety and transaction tasks**: Require robust local verification, synthetic test coverage, regression fixtures for edge cases (e.g., in-process exception rollback, baseline backup preservation), and direct inspection of test evidence.
+- **Reporting discipline**: Explicitly distinguish locally *executed* commands/tests from remotely *inspected* CI job logs and platform metadata. Never assert a test ran locally if only CI logs were read.
 
 ## Documentation lifecycle
 
@@ -532,6 +566,21 @@ python scripts/ai-workflow/generate_handoff.py --pr 33 --json
 - **Evidence Provenance & Reduced Capability Boundary**: Pulls triggering workflow run, attempt, tested checkout SHA, and TRX totals from build provenance artifacts. Requires full 40-hex SHAs and exact PR merge ref (`refs/pull/{pr_number}/merge`). If commit relationships are unverified or artifacts unavailable, checkout is marked `UNAVAILABLE / UNPROVEN`.
 - **Fact Separation & Intentional Capability Reduction**: Acquired facts (revisions, test totals, CI statuses) are strictly separated from model conclusions and pending decision prerequisites. The tool intentionally does not infer review approval or merge readiness from prose keywords, prefixes, or green CI; attributed review records are displayed factually and approval/merge decisions are left to coordinator verification and human authority.
 
+#### Standard User-Facing Completion Format
+
+When completing an implementation task or revision, agents should provide a concise user-facing summary pointing to the generated snapshot rather than repeating full contracts, long logs, or manually transcribed details:
+- **PR Link**: Direct URL to the active Pull Request (e.g. `https://github.com/Tiflit/DXVK-Companion/pull/45`).
+- **Readiness State**: Clearly state the operational state:
+  - `Implementation complete — CI pending` (code pushed, CI in progress).
+  - `Ready for verification` (required commit/branch identities, source checks, task-relevant evidence, and required CI status checks acquired and verified; green CI alone is insufficient without verified evidence provenance).
+  - `Blocked / Unavailable evidence` (CI failed, required evidence or provenance unavailable, or unexpected blocker encountered).
+- **Acquired Head SHA**: Full 40-character commit SHA acquired directly from git or GitHub API (never manually reconstructed).
+- **One-Sentence Summary**: Concise statement of the change made.
+- **Evidence Reference**: Direct link to the triggering CI run, review packet, or TRX summary.
+- **Next Owner & Action**: Exact assigned owner (e.g. `ChatGPT (Coordinator verification)`) and required next action.
+
+This presentation convention reduces report bloat and aims to reduce manual transcription errors; it does not replace the durable generated snapshot on GitHub or serve as an automated state machine.
+
 ### 3. Safe Body Preservation and Activity Update Helper (`update_pr_body.py`)
 
 A dual-mode update helper preventing accidental history loss, preserving unmarked prose and assignments, detecting concurrent modifications, and enforcing privacy safety before publishing changes to GitHub PR or Issue bodies:
@@ -611,5 +660,16 @@ python scripts/ai-workflow/update_pr_body.py --issue 42 --append-file post_merge
   3. Verified evidence and test results
   4. Open findings and pending decisions
   5. Exact next action and assigned owner
+- **After-Task Bounded Observations**: After a task, record up to three evidence-backed observations encountered during its execution; “none” is acceptable. Do not perform an additional repository-wide review solely to manufacture suggestions. Each observation gives evidence, consequence, proposed next action and uncertainty, and checks for existing tracking. Gemini reports implementation friction; ChatGPT triages; Claude contributes only when explicitly assigned a high-risk audit. Broader reviews occur at milestones, recurring failures or explicit assignments. Suggestions do not authorize implementation or change approved policy.
+
+### 5. Manual Workflow Efficiency Trial Note
+
+Over subsequent tasks, human coordinators and agents observe and record observable counts without introducing automated telemetry, token estimates, or unproven causal claims:
+- Human handoff and clarification count.
+- Review-driven revision cycles (normal target: <= 1).
+- Repeated retrieval, redundant checks, or polling iterations.
+- Material findings discovered after an initial review pass.
+
+Observations must reflect verified counts; do not assert unsubstantiated process improvements or efficiency gains.
 
 
