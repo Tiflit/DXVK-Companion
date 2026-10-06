@@ -46,7 +46,8 @@ Active task assignments, in-flight work, and open PR inventories are derived dyn
 
 ### Local Test Execution Authorization Gate
 - **Human Authorization Required**: Executing tests on the user's local system (unit/integration suites, desktop/application runs, device testing) requires explicit human authorization recorded in the task Issue before execution begins ([AGENTS.md](../AGENTS.md)). A disposable folder, separate directory, or local VM does not waive the gate.
-- **Safe Preparation & CI**: GitHub-hosted CI runs and read-only source/evidence retrieval do not require approval prompts. Unapproved local checks must be recorded honestly as `NOT RUN` (pending human authorization).
+- **Reporting & Boundaries**: Built-in OS scripts and test-created processes do not authorize desktop bridging or forced termination without explicit scope and permission. Distinguish `NOT RUN (pending human authorization)` from `NOT RUN (blocked: capability/desktop limitation)`, while preserving verified results for steps already executed.
+- **Safe Preparation & CI**: GitHub-hosted CI runs and read-only source/evidence retrieval do not require approval prompts.
 
 ---
 
@@ -66,7 +67,7 @@ Active task assignments, in-flight work, and open PR inventories are derived dyn
 3. Verify git status, fetch `origin/main`, and work in an isolated worktree. Reference durable evidence using portable GitHub URLs (referencing immutable commit SHAs, PRs, or Issue numbers), avoiding personal home paths, raw transcripts, or secrets.
 4. Write failing regression fixtures first when addressing a defect.
 5. Verify task-relevant tests:
-   - **Local Test Execution Gate**: Before executing test suites, desktop/application runs, or device tests on the user's local system, verify that explicit human authorization is recorded in the assigned Issue for the proposed scope ([AGENTS.md](../AGENTS.md)). If unapproved or blocked, do NOT execute locally; honestly record checks as `NOT RUN` (pending human authorization) rather than claiming `PASS` or silently omitting them.
+   - **Local Test Execution Gate**: Before executing test suites, desktop/application runs, or device tests on the user's local system, verify that explicit human authorization is recorded in the assigned Issue for the proposed scope ([AGENTS.md](../AGENTS.md)). If unapproved or blocked, do NOT execute locally; honestly record checks as `NOT RUN (pending human authorization)` or `NOT RUN (blocked: capability/desktop limitation)` rather than claiming `PASS` or silently omitting them, while preserving verified results for steps already executed.
    - **CI & Remote Verification**: GitHub Actions CI executes automatically on pull request pushes (`build-and-test`, `ai-scope-check`, `ai-pr-hygiene`). Distinguish remote CI verification from local test execution.
    - When authorized for local execution:
      - Application changes: `dotnet test tests/DXVKCompanion.PhaseA.Tests/DXVKCompanion.PhaseA.Tests.csproj`.

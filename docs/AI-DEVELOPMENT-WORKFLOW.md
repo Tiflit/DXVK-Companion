@@ -282,8 +282,8 @@ Key verification principles:
 
 Verification depth should match the risk profile of the task:
 - **Documentation tasks**: Focus on source/link accuracy, scope compliance, and contract alignment, retaining direct inspection of task-relevant evidence (such as CI logs or documentation sources) when required by the contract. Do not imply platform status checks alone verify underlying test counts or execution details, and do not mandate running local application test suites or TRX parsing solely for documentation edits unless explicitly required by the task contract.
-- **File safety and transaction tasks**: Require robust local verification and synthetic test coverage under the local test authorization gate, regression fixtures for edge cases (e.g., in-process exception rollback, baseline backup preservation), and direct inspection of test evidence. If local test execution is not yet authorized by the human, honestly report planned local checks as `NOT RUN` (pending authorization) while remote CI executes.
-- **Reporting discipline**: Explicitly distinguish locally *executed* commands/tests from remotely *inspected* CI job logs and platform metadata. Never assert a test ran locally if only CI logs were read. Unapproved or blocked local checks must be reported as `NOT RUN` (pending human authorization)—never silently omitted or called `PASS`.
+- **File safety and transaction tasks**: Require robust local verification and synthetic test coverage under the local test authorization gate, regression fixtures for edge cases (e.g., in-process exception rollback, baseline backup preservation), and direct inspection of test evidence. If local test execution is not yet authorized by the human, honestly report planned local checks as `NOT RUN (pending human authorization)` while remote CI executes.
+- **Reporting discipline**: Explicitly distinguish locally *executed* commands/tests from remotely *inspected* CI job logs and platform metadata. Never assert a test ran locally if only CI logs were read. Unapproved or blocked local checks must be reported honestly—distinguishing `NOT RUN (pending human authorization)` from `NOT RUN (blocked: capability/desktop limitation)`—while preserving verified outcomes for steps already executed prior to any blocker.
 
 ## Documentation lifecycle
 
@@ -743,14 +743,19 @@ Authorization must be recorded in the assigned primary task Issue before executi
 ### 5. Invariant Boundaries and Stop-at-Blocker Discipline
 - **Explicit Authorization Does Not Waive Boundaries**: Authorization for a defined test scope does not grant open-ended authority to improvise broader automation or bypass task boundaries. Agents must not:
   - Download, install, or construct ad hoc desktop automation frameworks (e.g. Selenium, Appium, WinAppDriver);
+  - Bridge across to the interactive desktop (`WinSta0\Default`) via built-in OS APIs or scripts (such as Win32 P/Invoke, `OpenDesktop`, `SetThreadDesktop`, or `System.Windows.Automation`) without explicit scope and human permission;
   - Execute unauthorized fault injection or crash testing;
-  - Forcefully terminate arbitrary processes outside the authorized test harness;
+  - Forcefully terminate arbitrary processes or test-created processes (`Stop-Process -Force` or `TerminateProcess`) without explicit scope and permission;
   - Alter system-wide environment configurations; or
   - Perform destructive cleanup.
-- **Stop at Observability Blockers**: If a desktop or application behavior cannot be observed within available capabilities (e.g. desktop session isolation), the agent must STOP at the blocker, honestly report the test as `NOT RUN` / blocked with diagnostic details, and hand off to the coordinator. Never infer GUI success from process existence alone.
+- **Built-in Scripts and Test Processes Do Not Grant Implied Authority**: Using built-in OS scripting or launching a process specifically for a test does not confer implied authority to bridge desktops, manipulate outside windows, or forcefully kill processes. If desktop bridging or process lifecycle termination is required, it must be explicitly declared in the authorization request and approved by the human.
+- **Stop at Observability Blockers**: If a desktop or application behavior cannot be observed within available capabilities (e.g. desktop session isolation), the agent must STOP at the blocker, honestly report the test as `NOT RUN (blocked: capability/desktop limitation)` with diagnostic details, and hand off to the coordinator. Never infer GUI success from process existence alone.
 
-### 6. Truthful Reporting Discipline
-- **Truthful NOT RUN Reporting**: Unapproved or blocked local test checks must be honestly recorded in test summaries and handoffs as `NOT RUN` (pending human authorization)—never silently omitted, hidden, or claimed as `PASS`.
+### 6. Truthful Reporting Discipline and Step Result Preservation
+- **Distinguishing NOT RUN Categories**: Unapproved or blocked local test checks must be honestly reported in test summaries and handoffs—never silently omitted, hidden, or claimed as `PASS`. Agents must clearly distinguish:
+  1. `NOT RUN (pending human authorization)`: Local test execution was not requested or has not been authorized by the human for the proposed scope.
+  2. `NOT RUN (blocked: capability/desktop limitation)`: Authorized execution was halted because of environment constraints, desktop/session isolation, or observability limits.
+- **Preserve Verified Outcomes for Executed Steps**: When a multi-step test workflow is halted at an observability or environment blocker, agents must preserve and report verified results for all steps or cases that were already executed and verified prior to the blocker (e.g. initial setup, file creation, config parsing, or initial launch responsiveness). Halting at a subsequent step must not erase earlier verified evidence or falsely characterize previously completed steps as unexecuted.
 - **Reporting Clarity**: Explicitly distinguish locally *executed* commands/tests from remotely *inspected* CI job logs and platform metadata. Never assert a test ran locally if only CI logs were read.
 
 ## Bounded Observation Reporting and Triage

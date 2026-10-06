@@ -68,7 +68,24 @@
 - GitHub Actions CI continues to run automatically in cloud runners for conforming PRs.
 - This documentation change does not certify past smoke test results from Issue #55 or assign application repairs.
 
+### Out-of-Scope Findings
+
+Out-of-scope findings: none.
+
 ### Next Owner & Action
 
 - **Next Owner**: ChatGPT (Coordinator Verification).
 - **Action**: Inspect consistency across `AGENTS.md`, `docs/AI-DEVELOPMENT-WORKFLOW.md`, `docs/AI-CURRENT-STATE.md`, and this journal entry; human retains final merge authority.
+
+---
+
+## Revision 1: Addressing Coordinator Clarifications (2026-10-06)
+
+- **Clarifications Addressed**:
+  1. **Distinguish NOT RUN Categories**: Explicitly distinguished `NOT RUN (pending human authorization)` (unapproved test scope) from `NOT RUN (blocked: capability/desktop limitation)` (authorized scope halted by environment, observability, or desktop session constraints).
+  2. **Preserve Verified Outcomes for Executed Steps**: Codified requirement that when execution halts at an environment or observability blocker, verified results for earlier executed steps must be preserved and reported rather than erased or mischaracterized as unexecuted.
+  3. **No Implied Authority for Desktop Bridging or Forced Termination**: Clarified that utilizing built-in OS scripts/APIs (Win32 P/Invoke, `OpenDesktop`, `SetThreadDesktop`, `System.Windows.Automation`) does not authorize desktop bridging across to `WinSta0\Default`, and spawning test-created processes does not authorize forced termination (`Stop-Process -Force` or `TerminateProcess`), without explicit scope and human permission.
+  4. **Added Out-of-Scope Findings**: Added missing `Out-of-scope findings: none` per checkpoint guidelines.
+  5. **Snapshot Refreshed**: Re-generated PR #57 handoff snapshot with current verified CI runs and updated PR body.
+- **Documentation Checks**: Diff, link portability, scope check (`evaluate_scope.py`: PASS), and privacy scan (`scan_for_privacy_violations`: 0 violations) verified. No local tests executed.
+
