@@ -174,6 +174,9 @@ class RepositoryFacts:
     source_repo: str = ""
     prs_error: Optional[str] = None
     issues_error: Optional[str] = None
+    open_observations_count: Optional[int] = None
+    observations_truncated: bool = False
+    observations_error: Optional[str] = None
 
 
 class GitHubClient:
@@ -427,11 +430,49 @@ class GitHubFactsCollector:
             if completeness == COMPLETENESS_COMPLETE:
                 completeness = f"INCOMPLETE: Failed to fetch open pulls: {prs_error}"
 
-        # 3. Fetch open issues with pagination
-        open_issues: List[Dict[str, Any]] = []
-        queries.append("issues?state=open")
+        # 3. Fetch open observations with bounded pagination
+        open_observations_count: int = 0
+        obs_error: Optional[str] = None
+        obs_truncated: bool = False
+        queries.append("issues?state=open&labels=ai-observation")
         try:
             for page in range(1, max_pages + 1):
+                page_obs = self.client.fetch_paged(
+                    "issues?state=open&labels=ai-observation", per_page=per_page, page=page
+                )
+                if not page_obs:
+                    break
+                for iss in page_obs:
+                    if iss.get("pull_request"):
+                        continue
+                    iss_num = iss.get("number")
+                    if not is_valid_positive_int(iss_num):
+                        continue
+                    iss_title_raw = iss.get("title") or ""
+                    if iss_title_raw.strip().startswith("[AI Dashboard]"):
+                        continue
+                    open_observations_count += 1
+
+                if len(page_obs) < per_page:
+                    break
+                if page == max_pages:
+                    obs_truncated = True
+        except Exception as e:
+            obs_error = sanitize_diagnostic(str(e))
+            if completeness == COMPLETENESS_COMPLETE:
+                completeness = f"INCOMPLETE: Failed to fetch observations: {obs_error}"
+
+        if obs_truncated:
+            is_truncated = True
+
+        # 4. Fetch open task issues with pagination (avoiding starvation from observation volume)
+        open_issues: List[Dict[str, Any]] = []
+        queries.append("issues?state=open")
+        max_task_pages_budget = max_pages * 3
+        target_tasks_quota = max_pages * per_page
+        tasks_hit_quota = False
+        try:
+            for page in range(1, max_task_pages_budget + 1):
                 page_issues = self.client.fetch_paged("issues?state=open", per_page=per_page, page=page)
                 if not page_issues:
                     break
@@ -444,6 +485,14 @@ class GitHubFactsCollector:
                     iss_num = int(iss_num)
                     iss_title_raw = iss.get("title") or ""
                     if iss_title_raw.strip().startswith("[AI Dashboard]"):
+                        continue
+
+                    # Filter out issues carrying 'ai-observation' label from task inventory
+                    has_obs_label = any(
+                        (l.get("name") if isinstance(l, dict) else str(l)) == "ai-observation"
+                        for l in iss.get("labels", [])
+                    )
+                    if has_obs_label:
                         continue
 
                     iss_title = sanitize_display_text(iss_title_raw, max_len=75)
@@ -459,14 +508,27 @@ class GitHubFactsCollector:
                         "labels": labels,
                     })
 
-                if page == max_pages and len(page_issues) == per_page:
+                    if len(open_issues) >= target_tasks_quota:
+                        tasks_hit_quota = True
+                        break
+
+                if tasks_hit_quota:
+                    if len(page_issues) == per_page:
+                        is_truncated = True
+                    break
+
+                if len(page_issues) < per_page:
+                    break
+
+                if page == max_task_pages_budget:
                     is_truncated = True
+                    break
         except Exception as e:
             issues_error = sanitize_diagnostic(str(e))
             if completeness == COMPLETENESS_COMPLETE:
                 completeness = f"INCOMPLETE: Failed to fetch open issues: {issues_error}"
 
-        # 4. Fetch recent runs on default branch
+        # 5. Fetch recent runs on default branch
         main_runs: List[Dict[str, Any]] = []
         queries.append("actions/runs?branch=main")
         try:
@@ -499,6 +561,9 @@ class GitHubFactsCollector:
             source_repo=self.repo,
             prs_error=prs_error,
             issues_error=issues_error,
+            open_observations_count=None if obs_error else open_observations_count,
+            observations_truncated=obs_truncated,
+            observations_error=obs_error,
         )
         return facts, is_truncated
 
@@ -675,6 +740,16 @@ def render_dashboard(
     def render_doc(limit_issues: Optional[int] = None, limit_prs: Optional[int] = None, link_curated_only: bool = False) -> str:
         sec1 = ["\n## 1. Live Repository Status\n"]
         sec1.append(f"- **Default Branch (`main`)**: `{facts.main_head_sha}`\n")
+
+        obs_url = f"https://github.com/{repo}/issues?q=is%3Aissue+is%3Aopen+label%3Aai-observation"
+        if facts.observations_error:
+            sec1.append(f"- **Open Observations**: _Unavailable due to API error: {facts.observations_error}_\n")
+        elif facts.observations_truncated:
+            sec1.append(f"- **Open Observations**: [>={facts.open_observations_count} (incomplete at limit)]({obs_url})\n")
+        elif facts.open_observations_count is not None:
+            sec1.append(f"- **Open Observations**: [{facts.open_observations_count}]({obs_url})\n")
+        else:
+            sec1.append("- **Open Observations**: _Unavailable_\n")
 
         # PRs
         sec1.append(f"### Open Pull Requests ({len(facts.open_prs)})\n")

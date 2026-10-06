@@ -27,6 +27,7 @@ Every agent engaging in a meaningful work session on this repository must leave 
    - Verified evidence and test results
    - Open findings and pending decisions
    - Exact next action and assigned owner
+   - Out-of-scope findings: `none` / `links` / `pending persistence (reason and next owner)` (exposes omissions but cannot prove exhaustive discovery)
 4. **Session Continuity vs Reset**: Continue a reliable implementation session for focused revisions and bounded repairs; restart into a fresh session only when context window saturation, tool failure, or capability degradation requires it. Independent audits and reviews retain strict fresh-context discipline.
 5. **Accurate attribution**: Attribute each entry strictly to the agent that performed the actions. Do not conflate implementer actions with coordinator or auditor actions.
 6. **No guessed model versions**: Record only confirmed agent identities (e.g., `Gemini (Implementer)`, `ChatGPT (Coordinator)`, `Claude (Auditor)`, `Human`).
@@ -75,6 +76,7 @@ Every agent engaging in a meaningful work session on this repository must leave 
 - Result: [SUCCESS | CHANGES_REQUIRED | REVISED | BLOCKED | NO_CHANGE]
 - Resulting Head: [Commit SHA or PR #]
 - Next Action & Owner: [Concrete next step and responsible role]
+- Out-of-scope findings: [none | links | pending persistence (reason and next owner)]
 ```
 
 ---
@@ -96,3 +98,13 @@ The index is updated opportunistically during authorized documentation tasks:
 | **2026-10-04** | Issue #31 Handoff automation & review preservation | Gemini (Implementer) | SUCCESS (PR #33) | [2026-10-04-issue-31-gemini-session-1.md](ai-journal/2026-10-04-issue-31-gemini-session-1.md) |
 | **2026-10-04** | Issue #31 PR #33 focused revision (R1-R4) | Gemini (Implementer) | SUCCESS (PR #33 revision) | [2026-10-04-issue-31-gemini-session-2.md](ai-journal/2026-10-04-issue-31-gemini-session-2.md) |
 | **2026-10-04** | Issue #31 PR #33 authorized reduced closeout | Gemini (Implementer) | SUCCESS (PR #33 closeout) | [2026-10-04-issue-31-gemini-session-3.md](ai-journal/2026-10-04-issue-31-gemini-session-3.md) |
+| **2026-10-04** | Issue #32 Align GameLibraryStore with V1 Policy | Gemini (Implementer) | SUCCESS (Merged PR #34) | [2026-10-04-issue-32-gemini-session-1.md](ai-journal/2026-10-04-issue-32-gemini-session-1.md) |
+| **2026-10-05** | Issue #15 API Reassessment Before Queued Execution | Gemini (Implementer) | SUCCESS (Merged PR #35) | [2026-10-05-issue-15-gemini-session-1.md](ai-journal/2026-10-05-issue-15-gemini-session-1.md) |
+| **2026-10-05** | Issue #16 Incompatible Pending Action Lifecycle | Gemini (Implementer) | CHANGES_REQUIRED (Revision) | [2026-10-05-issue-16-gemini-session-1.md](ai-journal/2026-10-05-issue-16-gemini-session-1.md) |
+| **2026-10-05** | Issue #16 Focused Revision (PR #37 Review 1) | Gemini (Implementer) | SUCCESS (Merged PR #37) | [2026-10-05-issue-16-gemini-session-2.md](ai-journal/2026-10-05-issue-16-gemini-session-2.md) |
+| **2026-10-05** | Issue #38 Refresh Durable Orientation & Repair Dashboard | Gemini (Implementer) | SUCCESS (Merged PR #39) | [2026-10-05-issue-38-gemini-session-1.md](ai-journal/2026-10-05-issue-38-gemini-session-1.md) |
+| **2026-10-05** | Issue #40 Clarify Startup Objective & Test Resumption | Gemini (Implementer) | SUCCESS (Merged PR #41) | [2026-10-05-issue-40-gemini-session-1.md](ai-journal/2026-10-05-issue-40-gemini-session-1.md) |
+| **2026-10-05** | Issue #42 Safe Issue Append-Only Activity Updates | Gemini (Implementer) | SUCCESS (Merged PR #43) | [2026-10-05-issue-42-gemini-session-1.md](ai-journal/2026-10-05-issue-42-gemini-session-1.md) |
+| **2026-10-06** | Issue #44 README Status & Evidence Alignment | Gemini (Implementer) | SUCCESS (Merged PR #45) | [2026-10-06-readme-status-gemini-session-1.md](ai-journal/2026-10-06-readme-status-gemini-session-1.md) |
+| **2026-10-06** | Issue #46 Workflow Efficiency & Revision Verification | Gemini (Implementer) | SUCCESS (Merged PR #47) | [2026-10-06-workflow-efficiency-gemini-session-1.md](ai-journal/2026-10-06-workflow-efficiency-gemini-session-1.md) |
+| **2026-10-06** | Issue #48 Bounded Observations & Dashboard Separation | Gemini (Implementer) | IN_PROGRESS (PR pending) | [2026-10-06-observation-tracking-gemini-session-1.md](ai-journal/2026-10-06-observation-tracking-gemini-session-1.md) |

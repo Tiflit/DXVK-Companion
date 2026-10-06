@@ -1,7 +1,9 @@
+import json
 import os
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT / "scripts" / "ai-workflow"))
@@ -127,6 +129,71 @@ class TestScopeCheck(unittest.TestCase):
         res = evaluate_scope.check_files(f1, patterns, is_unconstrained=False)
         self.assertFalse(res.is_valid)
         self.assertEqual(len(res.violations), 1)
+
+    def test_api_mode_rejects_issue_carrying_ai_observation_label_even_with_valid_paths(self):
+        """Scope guard: Live API mode rejects primary issue with 'ai-observation' label before parsing paths."""
+        pr_data = {"body": "Closes #88\n\nAutomated implementation attempt."}
+        issue_data = {
+            "number": 88,
+            "title": "[Observation] Bounded finding",
+            "labels": [{"name": "ai-observation"}],
+            "body": "### Allowed paths\n- src/DXVKCompanion/Utils/CompanionVersion.cs\n",
+        }
+
+        def mock_fetch_api(url, token):
+            if "pulls/50" in url:
+                return pr_data
+            if "issues/88" in url:
+                return issue_data
+            return {}
+
+        with patch.dict(os.environ, {"GH_TOKEN": "mock-token", "GH_REPO": "Tiflit/DXVK-Companion"}):
+            with patch("evaluate_scope.fetch_github_api", side_effect=mock_fetch_api):
+                with patch("evaluate_scope.fetch_pr_files") as mock_fetch_files:
+                    code = evaluate_scope.main(["--pr-number", "50"])
+                    self.assertEqual(code, 1, "Must exit with code 1 when issue carries 'ai-observation'")
+                    mock_fetch_files.assert_not_called()
+
+    def test_api_mode_accepts_ordinary_task_issue(self):
+        """Ordinary task compatibility: Live API mode evaluates allowed paths for tasks without observation label."""
+        pr_data = {"body": "Resolves #89\n\nAuthorized task."}
+        issue_data = {
+            "number": 89,
+            "title": "[AI] Authorized Task",
+            "labels": [{"name": "task"}],
+            "body": "### Allowed paths\n- src/DXVKCompanion/Utils/CompanionVersion.cs\n",
+        }
+        pr_files = [{"filename": "src/DXVKCompanion/Utils/CompanionVersion.cs", "status": "modified"}]
+
+        def mock_fetch_api(url, token):
+            if "pulls/51" in url:
+                return pr_data
+            if "issues/89" in url:
+                return issue_data
+            return {}
+
+        with patch.dict(os.environ, {"GH_TOKEN": "mock-token", "GH_REPO": "Tiflit/DXVK-Companion"}):
+            with patch("evaluate_scope.fetch_github_api", side_effect=mock_fetch_api):
+                with patch("evaluate_scope.fetch_pr_files", return_value=pr_files):
+                    code = evaluate_scope.main(["--pr-number", "51"])
+                    self.assertEqual(code, 0, "Must exit with code 0 for valid task within scope")
+
+    def test_local_file_mode_evaluates_paths_without_requiring_label_metadata(self):
+        """Local mode operates purely on file text and changed files list without claiming label metadata."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+            issue_file = tmppath / "issue.md"
+            issue_file.write_text("### Allowed paths\n- src/**\n", encoding="utf-8")
+
+            files_json = tmppath / "files.json"
+            files_json.write_text(json.dumps([{"filename": "src/DXVKCompanion/App.cs"}]), encoding="utf-8")
+
+            code = evaluate_scope.main([
+                "--issue-body-file", str(issue_file),
+                "--files-json", str(files_json),
+            ])
+            self.assertEqual(code, 0, "Local mode should parse body paths without label metadata")
 
 
 if __name__ == "__main__":

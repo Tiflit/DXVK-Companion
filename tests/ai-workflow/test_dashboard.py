@@ -1034,6 +1034,183 @@ class TestDashboardGenerator(unittest.TestCase):
         self.assertNotIn("## 1. Foundational Milestones", rendered)
         self.assertNotIn("## 6. Live Dashboard Discovery", rendered)
 
+    # =========================================================================
+    # Issue #48: Observation Separation, Anti-Starvation & Completeness Tests
+    # =========================================================================
+
+    def test_task_acquisition_survives_observation_heavy_inventory(self):
+        """Issue #48: Tasks on later pages are acquired even when early pages are filled with observations."""
+        client = update_dashboard.GitHubClient(token="mock", repo=self.repo)
+
+        # 4 observation issues on page 1 & 2 (2 per page), and 1 task issue on page 3
+        def mock_urlopen(req, timeout=30):
+            url = req.full_url
+            if "git/ref/heads/main" in url:
+                return MockHttpResponse({"object": {"sha": self.main_sha}})
+            if "pulls?state=open" in url:
+                return MockHttpResponse([])
+            if "actions/runs?branch=main" in url:
+                return MockHttpResponse([])
+            if "issues?state=open&labels=ai-observation" in url:
+                if "&page=1" in url:
+                    return MockHttpResponse([
+                        {"number": 101, "title": "[Observation] Obs 1", "labels": [{"name": "ai-observation"}]},
+                        {"number": 102, "title": "[Observation] Obs 2", "labels": [{"name": "ai-observation"}]},
+                    ])
+                if "&page=2" in url:
+                    return MockHttpResponse([
+                        {"number": 103, "title": "[Observation] Obs 3", "labels": [{"name": "ai-observation"}]},
+                        {"number": 104, "title": "[Observation] Obs 4", "labels": [{"name": "ai-observation"}]},
+                    ])
+                return MockHttpResponse([])
+            if "issues?state=open" in url:
+                if "&page=1" in url:
+                    return MockHttpResponse([
+                        {"number": 101, "title": "[Observation] Obs 1", "labels": [{"name": "ai-observation"}]},
+                        {"number": 102, "title": "[Observation] Obs 2", "labels": [{"name": "ai-observation"}]},
+                    ])
+                if "&page=2" in url:
+                    return MockHttpResponse([
+                        {"number": 103, "title": "[Observation] Obs 3", "labels": [{"name": "ai-observation"}]},
+                        {"number": 104, "title": "[Observation] Obs 4", "labels": [{"name": "ai-observation"}]},
+                    ])
+                if "&page=3" in url:
+                    return MockHttpResponse([
+                        {"number": 201, "title": "[AI] Genuine Task 1", "labels": [{"name": "task"}]},
+                    ])
+                return MockHttpResponse([])
+            return MockHttpResponse([])
+
+        with patch("urllib.request.urlopen", side_effect=mock_urlopen):
+            collector = update_dashboard.GitHubFactsCollector(client=client, repo=self.repo)
+            # max_pages=2, per_page=2 -> page budget ceiling = 6
+            facts = collector.collect(max_pages=2, per_page=2)
+
+            # Observation count collected: 4
+            self.assertEqual(facts.open_observations_count, 4)
+            # Task acquired despite early pages being 100% observations:
+            self.assertEqual(len(facts.open_issues), 1)
+            self.assertEqual(facts.open_issues[0]["number"], 201)
+            self.assertEqual(facts.open_issues[0]["title"], "[AI] Genuine Task 1")
+
+    def test_separate_observation_count_rendered_in_live_repository_status(self):
+        """Issue #48: Open observations are rendered as a compact count and link under Live Repository Status."""
+        facts = update_dashboard.RepositoryFacts(
+            main_head_sha=self.main_sha,
+            open_observations_count=3,
+        )
+        rendered = update_dashboard.render_dashboard(facts, self.curated_text, repo=self.repo)
+        obs_link = f"https://github.com/{self.repo}/issues?q=is%3Aissue+is%3Aopen+label%3Aai-observation"
+        self.assertIn(f"- **Open Observations**: [3]({obs_link})", rendered)
+        self.assertNotIn("untriaged", rendered.lower())
+
+    def test_observation_truncation_rendered_and_completeness_flagged(self):
+        """Issue #48: Truncated observation inventory sets completeness INCOMPLETE and renders incomplete marker."""
+        client = update_dashboard.GitHubClient(token="mock", repo=self.repo)
+
+        def mock_urlopen(req, timeout=30):
+            url = req.full_url
+            if "git/ref/heads/main" in url:
+                return MockHttpResponse({"object": {"sha": self.main_sha}})
+            if "pulls?state=open" in url:
+                return MockHttpResponse([])
+            if "actions/runs?branch=main" in url:
+                return MockHttpResponse([])
+            if "issues?state=open&labels=ai-observation" in url:
+                # Return full page of 2 items on page 1 (max_pages=1, per_page=2)
+                return MockHttpResponse([
+                    {"number": 1, "title": "Obs 1", "labels": [{"name": "ai-observation"}]},
+                    {"number": 2, "title": "Obs 2", "labels": [{"name": "ai-observation"}]},
+                ])
+            if "issues?state=open" in url:
+                return MockHttpResponse([])
+            return MockHttpResponse([])
+
+        with patch("urllib.request.urlopen", side_effect=mock_urlopen):
+            collector = update_dashboard.GitHubFactsCollector(client=client, repo=self.repo)
+            facts = collector.collect(max_pages=1, per_page=2)
+
+            self.assertTrue(facts.observations_truncated)
+            self.assertIn("INCOMPLETE", facts.completeness)
+            rendered = update_dashboard.render_dashboard(facts, self.curated_text, repo=self.repo)
+            self.assertIn("[>=2 (incomplete at limit)]", rendered)
+
+    def test_observation_api_error_rendered_and_completeness_flagged(self):
+        """Issue #48: API error fetching observations records error without false zero and sets completeness."""
+        client = update_dashboard.GitHubClient(token="mock", repo=self.repo)
+
+        def mock_urlopen(req, timeout=30):
+            url = req.full_url
+            if "git/ref/heads/main" in url:
+                return MockHttpResponse({"object": {"sha": self.main_sha}})
+            if "pulls?state=open" in url:
+                return MockHttpResponse([])
+            if "actions/runs?branch=main" in url:
+                return MockHttpResponse([])
+            if "issues?state=open&labels=ai-observation" in url:
+                raise urllib.error.HTTPError(url, 500, "Internal Server Error", {}, io.BytesIO(b"API Failure"))
+            if "issues?state=open" in url:
+                return MockHttpResponse([])
+            return MockHttpResponse([])
+
+        with patch("urllib.request.urlopen", side_effect=mock_urlopen):
+            collector = update_dashboard.GitHubFactsCollector(client=client, repo=self.repo)
+            facts = collector.collect(max_pages=1, per_page=2)
+
+            self.assertIsNone(facts.open_observations_count)
+            self.assertIsNotNone(facts.observations_error)
+            self.assertIn("INCOMPLETE: Failed to fetch observations", facts.completeness)
+            rendered = update_dashboard.render_dashboard(facts, self.curated_text, repo=self.repo)
+            self.assertIn("- **Open Observations**: _Unavailable due to API error:", rendered)
+
+    def test_observation_query_excludes_prs_and_dashboard_issue(self):
+        """Issue #48: Observation query excludes PR items and machine dashboard issues."""
+        client = update_dashboard.GitHubClient(token="mock", repo=self.repo)
+
+        def mock_urlopen(req, timeout=30):
+            url = req.full_url
+            if "git/ref/heads/main" in url:
+                return MockHttpResponse({"object": {"sha": self.main_sha}})
+            if "pulls?state=open" in url:
+                return MockHttpResponse([])
+            if "actions/runs?branch=main" in url:
+                return MockHttpResponse([])
+            if "issues?state=open&labels=ai-observation" in url:
+                return MockHttpResponse([
+                    {"number": 10, "title": "PR with label", "pull_request": {"url": "pr_url"}, "labels": [{"name": "ai-observation"}]},
+                    {"number": 11, "title": update_dashboard.DASHBOARD_TITLE, "labels": [{"name": "ai-observation"}]},
+                    {"number": 12, "title": "[Observation] Genuine observation", "labels": [{"name": "ai-observation"}]},
+                ])
+            if "issues?state=open" in url:
+                return MockHttpResponse([])
+            return MockHttpResponse([])
+
+        with patch("urllib.request.urlopen", side_effect=mock_urlopen):
+            collector = update_dashboard.GitHubFactsCollector(client=client, repo=self.repo)
+            facts = collector.collect(max_pages=1, per_page=10)
+
+            # Excludes PR (#10) and Dashboard (#11), counts only Genuine observation (#12)
+            self.assertEqual(facts.open_observations_count, 1)
+
+    def test_publication_safeguards_and_discovery_cap_intact(self):
+        """Issue #48: Preserves publication security safeguards and fail-closed 5x50 discovery cap."""
+        client = update_dashboard.GitHubClient(token="mock", repo=self.repo)
+        pages_called = []
+
+        def mock_urlopen(req, timeout=30):
+            url = req.full_url
+            if "issues?state=all" in url:
+                pages_called.append(url)
+                # Return 50 items on every page to trigger pagination cap
+                return MockHttpResponse([{"number": i, "title": f"Issue {i}"} for i in range(50)])
+            return MockHttpResponse({})
+
+        with patch("urllib.request.urlopen", side_effect=mock_urlopen):
+            with self.assertRaises(update_dashboard.SecurityValidationError) as ctx:
+                client.search_issues()
+            self.assertIn("Dashboard discovery reached pagination limit (5 pages / 250 items)", str(ctx.exception))
+            self.assertEqual(len(pages_called), 5, "Must attempt exactly 5 pages before failing closed")
+
 
 if __name__ == "__main__":
     unittest.main()
