@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import urllib.request
 from dataclasses import dataclass
@@ -26,6 +27,14 @@ try:
     from .parse_contract import AllowedPaths, ContractParseError, extract_primary_issue, parse_allowed_paths
 except ImportError:
     from parse_contract import AllowedPaths, ContractParseError, extract_primary_issue, parse_allowed_paths
+
+
+def normalize_allowed_paths_section(text: str) -> str:
+    """Normalizes Issue body so subsequent markdown headings (# or ##) act as section delimiters for parse_allowed_paths."""
+    if not text:
+        return text
+    pattern = r"(^###\s+Allowed paths\s*[\r\n]+[\s\S]*?)(?=^#{1,2}\s+)"
+    return re.sub(pattern, r"\1\n### Section Boundary\n", text, count=1, flags=re.MULTILINE | re.IGNORECASE)
 
 
 @dataclass
@@ -167,7 +176,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 write_summary("- Status: FAIL (Primary Issue carries 'ai-observation' label; implementation not authorized)\n")
                 return 1
 
-            allowed = parse_allowed_paths(issue_data.get("body", ""))
+            allowed = parse_allowed_paths(normalize_allowed_paths_section(issue_data.get("body", "")))
             files_data = fetch_pr_files(repo, args.pr_number, token)
         except Exception as e:
             msg = f"ERROR evaluating scope for PR #{args.pr_number}: {e}"
@@ -208,7 +217,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 1
 
     try:
-        allowed = parse_allowed_paths(issue_body)
+        allowed = parse_allowed_paths(normalize_allowed_paths_section(issue_body))
     except ContractParseError as e:
         print(f"ERROR: Contract parse error: {e}", file=sys.stderr)
         return 1

@@ -195,6 +195,23 @@ class TestScopeCheck(unittest.TestCase):
             ])
             self.assertEqual(code, 0, "Local mode should parse body paths without label metadata")
 
+    def test_normalize_allowed_paths_section_delimits_level_two_heading(self):
+        """Allowed paths followed immediately by level 2 headings (e.g. ## Acceptance criteria) are isolated properly."""
+        body = (
+            "### Allowed paths\n"
+            "- scripts/ai-workflow/evaluate_scope.py\n"
+            "- tests/ai-workflow/test_scope_check.py\n\n"
+            "## Acceptance criteria\n"
+            "1. Must pass tests\n"
+        )
+        normalized = evaluate_scope.normalize_allowed_paths_section(body)
+        self.assertIn("### Section Boundary", normalized)
+        allowed = evaluate_scope.parse_allowed_paths(normalized)
+        self.assertEqual(
+            allowed.patterns,
+            ["scripts/ai-workflow/evaluate_scope.py", "tests/ai-workflow/test_scope_check.py"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

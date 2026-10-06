@@ -15,18 +15,19 @@ Implement Issue #48 to formally decouple bounded observations from authorized ta
 3. **Observation Dashboard Separation (`update_dashboard.py` & `ai-current-state.yml`)**: Bounded separate acquisition queries `issues?state=open&labels=ai-observation`, filtering out PRs and machine dashboard issues. Renders a compact count and link under Live Repository Status (`- **Open Observations**: [{count}]({url})`). If truncated or failed, marks `completeness` as `INCOMPLETE` and displays explicit truncation/error markers without false zeroes or claiming "untriaged". Added `labeled` and `unlabeled` triggers to `ai-current-state.yml`.
 4. **Issue Form (`ai-observation.yml`)**: Explicitly sets `labels: ["ai-observation"]`, contains prominent banner `Observation — unassigned; implementation not authorized`, captures evidence, trigger, expected/observed behavior, consequence, uncertainty, and existing tracking, and strictly omits `Allowed paths` and task-assignment fields.
 5. **Visibility & Checkpoint**: Added required `Out-of-scope findings: none / links / pending persistence (reason and next owner)` checkpoint line to `AGENTS.md`, `AI-DEVELOPMENT-WORKFLOW.md`, and `AI-ACTIVITY-JOURNAL.md`.
+6. **Heading Normalization in Scope Evaluation (`evaluate_scope.py`)**: `parse_contract.py`'s allowed path section parser terminates on level-3 headings (`###`). When an issue contract format places a level-2 heading (e.g. `## Acceptance criteria`) immediately after `### Allowed paths`, `evaluate_scope.py` normalizes the section boundary before delegating to `parse_allowed_paths`, preventing subsequent heading prose from being misparsed as path entries while keeping `parse_contract.py` unedited.
 
 ### Actions Executed
 - Created `.github/ISSUE_TEMPLATE/ai-observation.yml`.
 - Updated `.github/workflows/ai-current-state.yml` to trigger on `labeled` and `unlabeled` issue events.
-- Updated `scripts/ai-workflow/evaluate_scope.py` to enforce the observation label guardrail in API mode.
+- Updated `scripts/ai-workflow/evaluate_scope.py` to enforce the observation label guardrail in API mode and normalize heading boundaries for `### Allowed paths`.
 - Updated `scripts/ai-workflow/update_dashboard.py` to acquire and render separate open observations and prevent task starvation.
 - Updated guidance and templates in `AGENTS.md`, `docs/AI-DEVELOPMENT-WORKFLOW.md`, and `docs/AI-ACTIVITY-JOURNAL.md` (opportunistically indexed recent merged sessions).
 - Added regression tests in `tests/ai-workflow/test_scope_check.py` and `tests/ai-workflow/test_dashboard.py`.
-- Ran full test suite via `python -m unittest discover -s tests/ai-workflow -v` (197 tests passing).
+- Ran full test suite via `python -m unittest discover -s tests/ai-workflow -v` (198 tests passing).
 
 ### Evidence & Limitations
-- **Test Evidence**: 197 python unittest tests passed locally across `test_scope_check.py`, `test_dashboard.py`, `test_handoff.py`, `test_review_packet.py`, and `test_pr_body_updater.py`.
+- **Test Evidence**: 198 python unittest tests passed locally across `test_scope_check.py`, `test_dashboard.py`, `test_handoff.py`, `test_review_packet.py`, and `test_pr_body_updater.py`.
 - **Scope Compliance**: All changes strictly confined to the 10 allowed paths in Issue #48.
 - **Privacy Check**: Zero private paths, tokens, or personal home directories introduced.
 
