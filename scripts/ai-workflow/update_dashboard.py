@@ -259,11 +259,15 @@ class GitHubClient:
         params = f"q={urllib.parse.quote_plus(query)}&sort={sort}&order={order}&per_page={per_page}&page={page}"
         url = f"search/issues?{params}"
         res = self._request("GET", url)
-        if isinstance(res, dict):
-            return res
-        if isinstance(res, list):
-            return {"items": res, "total_count": len(res)}
-        return {"items": [], "total_count": 0}
+        if not isinstance(res, dict):
+            raise GitHubApiError(
+                f"Unexpected response format during issue search on page {page}: expected dict, got {type(res).__name__}"
+            )
+        if not isinstance(res.get("items"), list):
+            raise GitHubApiError(
+                f"Unexpected response format during issue search on page {page}: missing or invalid 'items' field"
+            )
+        return res
 
     def search_issues(
         self,
@@ -502,6 +506,13 @@ class GitHubFactsCollector:
                 )
                 items = search_res.get("items", []) if isinstance(search_res, dict) else []
                 total_count = search_res.get("total_count", 0) if isinstance(search_res, dict) else 0
+
+                # Propagate search timeout / partial match flag (GitHub incomplete_results)
+                if bool(search_res.get("incomplete_results")):
+                    issues_truncated = True
+                    is_truncated = True
+                    if completeness == COMPLETENESS_COMPLETE:
+                        completeness = "INCOMPLETE: Search query returned incomplete results (incomplete_results=true)"
 
                 for iss in items:
                     if iss.get("pull_request"):
