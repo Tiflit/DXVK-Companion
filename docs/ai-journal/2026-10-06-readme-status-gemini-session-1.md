@@ -1,6 +1,6 @@
 # Session Record: 2026-10-06 — Issue #44 README Status & Evidence Alignment
 
-- **Date / Timestamp**: 2026-10-06 00:45:00 UTC
+- **Date / Timestamp**: 2026-10-06 00:50:00 UTC
 - **Agent Role & Model**: Gemini (Implementer)
 - **Task / Issue**: Issue #44 — `[AI] Correct stale README statements with verified evidence`
 - **Starting Head**: `04055386f10ee2d49bf9200b46dbe07abdb23981` (`origin/main`)
@@ -13,7 +13,7 @@
   - [PR #28](https://github.com/Tiflit/DXVK-Companion/pull/28) (Issue #12): Canonical specification authority and Clean-Slate V1 policy.
   - [PR #23](https://github.com/Tiflit/DXVK-Companion/pull/23) (Issue #13): Reapply baseline capture and backup preservation defect repair.
   - [PR #35](https://github.com/Tiflit/DXVK-Companion/pull/35) (Issue #14): Approved installation-wide DXVK refusal for incompatible executables (DX12, Vulkan, Unknown/unsupported siblings) in shared directories, preserving Restore and RestoreAll.
-  - [PR #36](https://github.com/Tiflit/DXVK-Companion/pull/36) (Issue #15): Pre-execution runtime API reassessment.
+  - [PR #36](https://github.com/Tiflit/DXVK-Companion/pull/36) (Issue #15): Pre-execution API reassessment against latest recorded evidence.
   - [PR #37](https://github.com/Tiflit/DXVK-Companion/pull/37) (Issue #16): Terminal cancellation lifecycle for incompatible pending actions.
   - [PR #30](https://github.com/Tiflit/DXVK-Companion/pull/30) (Issue #18) & [PR #34](https://github.com/Tiflit/DXVK-Companion/pull/34) (Issue #32): GraphicsApi enum persistence, serializer simulations, and removal of pre-release profile import from `GameLibraryStore` while preserving independent flat `ProfileStore` (`games.json`).
 - **Live Dashboard & Governance**:
@@ -33,7 +33,7 @@
    - Preserved approved human policies without requesting renewed decisions.
 
 3. **AI Workflow Navigation & Role Model**:
-   - Highlighted [Issue #27](https://github.com/Tiflit/DXVK-Companion/issues/27) as the automated machine-owned orientation dashboard, clarifying that underlying GitHub records remain authoritative.
+   - Highlighted [Issue #27](https://github.com/Tiflit/DXVK-Companion/issues/27) as the automated machine-owned orientation dashboard, maintaining an automatically refreshed snapshot of repository state, clarifying that underlying GitHub records remain authoritative.
    - Identified [docs/AI-CURRENT-STATE.md](https://github.com/Tiflit/DXVK-Companion/blob/04055386f10ee2d49bf9200b46dbe07abdb23981/docs/AI-CURRENT-STATE.md) as curated governance and stable architectural guidance.
    - Explicitly documented active role allocation: Gemini (implementation), ChatGPT (verification & arbitration), Claude (occasional high-risk audit), and Human (final merge authority).
 
@@ -44,9 +44,18 @@
    - Documented approved installation-wide refusal across shared directories when any recorded executable is incompatible, while preserving Restore and RestoreAll (noting undiscovered sibling executables as a limitation).
 
 5. **Assurance & Status Language Qualification**:
-   - Replaced unqualified atomicity claims with precise description of the in-process transaction state machine and exception rollback, noting it does not provide OS-level atomic multi-file visibility to external processes or guarantee restart recovery after abrupt process termination / power loss.
+   - Replaced unqualified atomicity claims with precise description of the in-process transaction state machine, stating that rollback is attempted upon caught exceptions following writes and reports unresolved recovery (`AttentionRequired`) if rollback fails; pre-write validation aborts exit cleanly without needing rollback. Noted lack of OS-level atomic multi-file visibility to external processes or crash recovery across abrupt process termination.
    - Qualified anti-cheat heuristics: detects known anti-cheat modules and signatures (`UnableToDetermine` / `SuspectedOrKnown`) to block automated actions, but heuristics do not guarantee detection of all anti-cheat software or guarantee ban safety in online games.
    - Clarified that sandboxed synthetic test suites (`SyntheticTestDirectory`) verify component logic and simulated error paths, but do not certify live Windows desktop integration, real-game runtime compatibility, graphics driver interactions, or concurrency under external processes.
+
+### Review 1 Revision: Addressing Coordinator Findings R1 & Adjacent Corrections
+Addressed review findings from `chatgpt-20261006-pr45-review1` on PR #45:
+1. **R1: Stored-Evidence Reconciliation vs Runtime Reassessment**:
+   - Updated README note on Issue #15 to describe reassessment against latest available recorded API evidence prior to execution, preserving conservative unsupported and conflicting classifications; clarified that this reconciles stored profile and installation records but does not perform fresh runtime process scanning or ensure detection of late-loaded APIs.
+2. **Adjacent Corrections**:
+   - Replaced live dashboard "real-time" tracking description with "automatically refreshed snapshot"; noted underlying GitHub records remain authoritative.
+   - Refined transaction engine descriptions to state that rollback is attempted upon caught exceptions following writes and reports unresolved recovery (`AttentionRequired`) if rollback fails; pre-write validation aborts exit cleanly without needing rollback.
+   - Updated roadmap item from "Multi-File Atomic Transaction Engine" to "Multi-File Transaction Engine" to match the qualified visibility limits.
 
 ### Local Checks & Verification
 - **Scope Compliance**: Exactly 2 files modified (`README.md`, `docs/ai-journal/2026-10-06-readme-status-gemini-session-1.md`), matching Issue #44 `### Allowed paths`.
@@ -58,4 +67,4 @@
 
 ### Next Owner & Action
 - **Next Owner**: ChatGPT (Verification / Arbitration).
-- **Action**: Verify PR review packet, scope compliance, and contract alignment against Issue #44; human retains final merge authority.
+- **Action**: Coordinator verification of revised head; human retains final merge authority.

@@ -10,7 +10,7 @@ Optimized for modern GPUs—especially Intel Arc / Battlemage architectures (Arc
 
 * **Strict Portability**: Completely self-contained in its application folder. Never writes to `%APPDATA%`, the Windows Registry, or system directories (with the exception of optional Windows startup integration).
 * **Self-Cleaning Game Directories**: Avoids leaving `.bak` artifacts in game directories by storing original baseline DLL backups inside Companion's isolated storage (`Profiles/Backups/{id}`). On restore, injected DXVK DLLs and generated `dxvk.conf` files are cleanly removed.
-* **Transaction & In-Process Rollback**: Multi-file operations (such as `d3d11.dll` + `dxgi.dll` for DirectX 11) execute under an in-process transaction state machine with SHA-256 pre-flight identity verification and automatic rollback if an operation encounters an in-process exception. (Note: in-process rollback handles caught exceptions during execution, but does not provide OS-level atomic multi-file visibility to external processes or guarantee restart recovery after abrupt process termination or power loss).
+* **Transaction & In-Process Rollback**: Multi-file operations (such as `d3d11.dll` + `dxgi.dll` for DirectX 11) execute under an in-process transaction state machine with SHA-256 pre-flight identity verification; if an operation encounters an in-process exception following writes, it attempts rollback to restore backed-up baselines and reports unresolved recovery (`AttentionRequired`) if rollback fails. (Note: attempted rollback handles caught in-process exceptions, but does not provide OS-level atomic multi-file visibility to external processes or guarantee restart recovery after abrupt process termination or power loss; pre-write validation aborts exit cleanly without needing rollback).
 * **Zero External Dependencies**: Built on .NET 8 using native Windows APIs and runtime capabilities (including in-memory release tarball decompression via `GZipStream` and `System.Formats.Tar`).
 * **Non-Aggressive Execution**: Never modifies running game processes. Deployment actions are staged and executed safely after the game cleanly terminates.
 * **Anti-Cheat Heuristics**: Detects known anti-cheat modules and signatures (Easy Anti-Cheat, BattlEye, Vanguard, etc.) with fail-closed heuristics (`UnableToDetermine` / `SuspectedOrKnown`) that block automated deployment. (Heuristics reduce risk but do not guarantee detection of all anti-cheat software or guarantee ban safety in online games).
@@ -107,7 +107,7 @@ Right-clicking the tray icon presents a clean, static, and predictable menu:
 ### Component Breakdown
 
 * **Safety & Transactions (`DXVKCompanion.Safety`)**:
-  * `MultiFileTransactionEngine`: Executes multi-file operations (`Install`, `Update`, `Reapply`, `Restore`), manages isolated backups, and provides automatic rollback upon caught in-process exceptions.
+  * `MultiFileTransactionEngine`: Executes multi-file operations (`Install`, `Update`, `Reapply`, `Restore`), manages isolated backups, and attempts in-process rollback upon caught exceptions following writes, reporting unresolved recovery (`AttentionRequired`) if rollback cannot be completed.
   * `SingleFileTransactionEngine`: Single-file state machine with backup tracking and simulated crash/recovery state handling.
   * `FileIdentity`: Deterministic SHA-256 and byte-size identity tracking for file provenance and tampering detection.
   * `TransactionContracts`: Formal state machines and outcome records.
@@ -191,7 +191,7 @@ For complete specifications and architectural contracts, refer to the canonical 
 
 ### Development Progress & Verification Status
 * [x] **Phase A**: Data Foundation (Hierarchical `GameInstallation`, `ExecutableProfile`, `ManagedFileRecord`)
-* [x] **Phase A.5**: Multi-File Atomic Transaction Engine (`MultiFileTransactionEngine`, `FileIdentity`)
+* [x] **Phase A.5**: Multi-File Transaction Engine (`MultiFileTransactionEngine`, `FileIdentity`)
 * [x] **Phase B**: Detection Layer Refactoring (Multi-executable folder tracking, delayed runtime scans, enhanced anti-cheat heuristics, and API transitions)
 * [x] **Phase C**: DXVK Release Repository (Official release catalog, deterministic hash identification, existing DXVK adoption, Reapply, and Section 36 `dxvk.conf` management)
 * [x] **Phase D**: External-Change & Pending-Action Handling (`ManagedFileInspector`, Section 20 supersession, baseline replacement, and persistent restart handling)
@@ -204,7 +204,7 @@ For complete specifications and architectural contracts, refer to the canonical 
 > Completed checkboxes reflect implementation and unit test coverage in Phase A synthetic test suites. Product safety enhancements and approved policy choices are implemented and closed on `main`:
 > * **Reapply Baseline Preservation**: Baseline capture and backup preservation defects repaired ([Issue #13](https://github.com/Tiflit/DXVK-Companion/issues/13), [PR #23](https://github.com/Tiflit/DXVK-Companion/pull/23)).
 > * **Shared-Directory Compatibility Policy**: Approved installation-wide DXVK refusal across shared directories when any recorded executable is incompatible (DX12, Vulkan, or Unknown/unsupported), while preserving Restore and RestoreAll operations ([Issue #14](https://github.com/Tiflit/DXVK-Companion/issues/14), [PR #35](https://github.com/Tiflit/DXVK-Companion/pull/35); undiscovered sibling executables remain a known limitation).
-> * **Pre-Execution API Reassessment**: Reassesses runtime API classification before executing queued actions to catch runtime transitions ([Issue #15](https://github.com/Tiflit/DXVK-Companion/issues/15), [PR #36](https://github.com/Tiflit/DXVK-Companion/pull/36)).
+> * **Pre-Execution API Reassessment**: Reassesses queued actions against the latest available recorded API evidence prior to execution, preserving conservative unsupported and conflicting classifications; this reconciles stored profile and installation records but does not perform fresh runtime process scanning or ensure detection of late-loaded APIs ([Issue #15](https://github.com/Tiflit/DXVK-Companion/issues/15), [PR #36](https://github.com/Tiflit/DXVK-Companion/pull/36)).
 > * **Incompatible Pending Action Lifecycle**: Terminal cancellation lifecycle for compatibility-refused pending actions, preventing automatic revival without explicit user intent ([Issue #16](https://github.com/Tiflit/DXVK-Companion/issues/16), [PR #37](https://github.com/Tiflit/DXVK-Companion/pull/37)).
 > * **Clean-Slate V1 & Persistence Alignment**: `GraphicsApi` name serialization and clean-slate V1 initialization without legacy profile import ([Issue #18](https://github.com/Tiflit/DXVK-Companion/issues/18), [PR #30](https://github.com/Tiflit/DXVK-Companion/pull/30); [Issue #32](https://github.com/Tiflit/DXVK-Companion/issues/32), [PR #34](https://github.com/Tiflit/DXVK-Companion/pull/34)).
 
@@ -220,7 +220,7 @@ This project uses a GitHub-native multi-agent development workflow with GitHub a
   * **Human**: Retains final merge authority, policy governance, and architectural decisions.
 * **Workflow Navigation**:
   * [Agent Operating Rules](AGENTS.md): Core rules, 4-step startup route, and repository invariants for AI contributors.
-  * [Live AI Dashboard (Issue #27)](https://github.com/Tiflit/DXVK-Companion/issues/27): Automated machine-owned orientation dashboard tracking real-time default branch SHA, open PRs, and active CI runs. Underlying GitHub records (commits, PRs, Issues) remain authoritative.
+  * [Live AI Dashboard (Issue #27)](https://github.com/Tiflit/DXVK-Companion/issues/27): Automated machine-owned orientation dashboard maintaining an automatically refreshed snapshot of default branch SHA, open PRs, and active CI runs. Underlying GitHub records (commits, PRs, Issues) remain authoritative.
   * [Curated Orientation & State](docs/AI-CURRENT-STATE.md): Curated guidance, stable decisions, role allocation, and governance protocols.
   * [AI Development Workflow](docs/AI-DEVELOPMENT-WORKFLOW.md): Operating policies, review standards, and contract grammar.
   * [Agent Activity Journal](docs/AI-ACTIVITY-JOURNAL.md) and [`docs/ai-journal/`](docs/ai-journal/): Session logs and activity records.
