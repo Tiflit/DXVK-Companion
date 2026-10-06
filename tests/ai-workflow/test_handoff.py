@@ -1183,6 +1183,160 @@ class TestHandoffGenerator(unittest.TestCase):
         self.assertIn("Ambiguous build-provenance artifacts: found 2 candidates; rejected", output)
         self.assertIn("Tested Checkout SHA**: UNAVAILABLE / UNPROVEN", output)
 
+    # =========================================================================
+    # R4: PR-Body Scoped Review Reporting Tests (Issue #52)
+    # =========================================================================
+
+    @patch("urllib.request.urlopen")
+    def test_markdown_review_reporting_zero_records_in_pr_body(self, mock_urlopen):
+        """Verifies that 0 review records in PR body is explicitly labeled as body-scoped and notes comments are not inspected."""
+        clean_issue = dict(self.sample_issue)
+        clean_issue["body"] = "### Objective\nStandard task.\n"
+
+        def fake_urlopen(req, *args, **kwargs):
+            url = req.full_url if hasattr(req, "full_url") else str(req)
+            if "/pulls/31" in url:
+                return MockHttpResponse(self.sample_pr)
+            if f"/repos/{self.repo}" in url and "/git" not in url and "/pulls" not in url and "/issues" not in url and "/actions" not in url:
+                return MockHttpResponse({"default_branch": "main"})
+            if "/git/ref/heads/main" in url:
+                return MockHttpResponse({"object": {"sha": self.main_sha}})
+            if "/issues/31" in url:
+                return MockHttpResponse(clean_issue)
+            if "/actions/runs?head_sha=" in url:
+                return MockHttpResponse({
+                    "workflow_runs": [
+                        {"id": 1, "name": "Build and Test", "run_attempt": 1, "conclusion": "success", "head_sha": self.head_sha}
+                    ]
+                })
+            if "/actions/runs/1/artifacts" in url:
+                return MockHttpResponse({"artifacts": []})
+            if "/actions/runs/1/jobs" in url:
+                return MockHttpResponse({"jobs": []})
+            return MockHttpResponse({})
+
+        mock_urlopen.side_effect = fake_urlopen
+
+        stdout_capture = io.StringIO()
+        with patch("sys.stdout", stdout_capture):
+            exit_code = generate_handoff.main(["--pr", "31", "--token", "mock-token"])
+
+        self.assertEqual(exit_code, 0)
+        output = stdout_capture.getvalue()
+        self.assertIn("- **Attributed Review Records (PR Body)**: 0 recorded in PR body", output)
+        self.assertIn("(Conversation comments and formal reviews not inspected; absence in body does not prove absence of review)", output)
+        self.assertNotIn("- **Attributed Review Records**: 0 recorded\n", output)
+
+        # Budget check
+        words = generate_handoff.count_words_excluding_urls(output)
+        self.assertLessEqual(words, generate_handoff.MAX_HANDOFF_WORDS)
+
+    @patch("urllib.request.urlopen")
+    def test_markdown_review_reporting_nonzero_records_in_pr_body(self, mock_urlopen):
+        """Verifies that non-zero review records in PR body are labeled as body-scoped with comment disclaimer."""
+        pr_with_review = dict(self.sample_pr)
+        pr_with_review["body"] = (
+            "## Primary Issue\nFixes #31\n\n"
+            "<!-- AI-REVIEW-RECORD: chatgpt-20261004-pr31-rev1 -->\n"
+            "## ChatGPT coordinator verification\n\n"
+            f"**Result: PASS.** Reviewed head `{self.head_sha}`\n"
+            "<!-- AI-REVIEW-RECORD-END -->\n"
+        )
+        clean_issue = dict(self.sample_issue)
+        clean_issue["body"] = "### Objective\nStandard task.\n"
+
+        def fake_urlopen(req, *args, **kwargs):
+            url = req.full_url if hasattr(req, "full_url") else str(req)
+            if "/pulls/31" in url:
+                return MockHttpResponse(pr_with_review)
+            if f"/repos/{self.repo}" in url and "/git" not in url and "/pulls" not in url and "/issues" not in url and "/actions" not in url:
+                return MockHttpResponse({"default_branch": "main"})
+            if "/git/ref/heads/main" in url:
+                return MockHttpResponse({"object": {"sha": self.main_sha}})
+            if "/issues/31" in url:
+                return MockHttpResponse(clean_issue)
+            if "/actions/runs?head_sha=" in url:
+                return MockHttpResponse({
+                    "workflow_runs": [
+                        {"id": 1, "name": "Build and Test", "run_attempt": 1, "conclusion": "success", "head_sha": self.head_sha}
+                    ]
+                })
+            if "/actions/runs/1/artifacts" in url:
+                return MockHttpResponse({"artifacts": []})
+            if "/actions/runs/1/jobs" in url:
+                return MockHttpResponse({"jobs": []})
+            return MockHttpResponse({})
+
+        mock_urlopen.side_effect = fake_urlopen
+
+        stdout_capture = io.StringIO()
+        with patch("sys.stdout", stdout_capture):
+            exit_code = generate_handoff.main(["--pr", "31", "--token", "mock-token"])
+
+        self.assertEqual(exit_code, 0)
+        output = stdout_capture.getvalue()
+        self.assertIn("- **Attributed Review Records (PR Body)**: 1 record(s) found in PR body", output)
+        self.assertIn("`chatgpt-20261004-pr31-rev1`: **PASS**", output)
+        self.assertIn("(Conversation comments and formal reviews not inspected; absence in body does not prove absence of review)", output)
+
+        # Budget check
+        words = generate_handoff.count_words_excluding_urls(output)
+        self.assertLessEqual(words, generate_handoff.MAX_HANDOFF_WORDS)
+
+    @patch("urllib.request.urlopen")
+    def test_json_review_records_shape_and_body_derivation_unchanged(self, mock_urlopen):
+        """Verifies that JSON output retains the unchanged review_records schema and is strictly body-derived."""
+        pr_with_review = dict(self.sample_pr)
+        pr_with_review["body"] = (
+            "## Primary Issue\nFixes #31\n\n"
+            "<!-- AI-REVIEW-RECORD: chatgpt-20261004-pr31-rev1 -->\n"
+            "## ChatGPT coordinator verification\n\n"
+            f"**Result: PASS.** Reviewed head `{self.head_sha}` against base `{self.base_sha}`\n"
+            "<!-- AI-REVIEW-RECORD-END -->\n"
+        )
+        clean_issue = dict(self.sample_issue)
+        clean_issue["body"] = "### Objective\nStandard task.\n"
+
+        def fake_urlopen(req, *args, **kwargs):
+            url = req.full_url if hasattr(req, "full_url") else str(req)
+            if "/pulls/31" in url:
+                return MockHttpResponse(pr_with_review)
+            if f"/repos/{self.repo}" in url and "/git" not in url and "/pulls" not in url and "/issues" not in url and "/actions" not in url:
+                return MockHttpResponse({"default_branch": "main"})
+            if "/git/ref/heads/main" in url:
+                return MockHttpResponse({"object": {"sha": self.main_sha}})
+            if "/issues/31" in url:
+                return MockHttpResponse(clean_issue)
+            if "/actions/runs?head_sha=" in url:
+                return MockHttpResponse({
+                    "workflow_runs": [
+                        {"id": 1, "name": "Build and Test", "run_attempt": 1, "conclusion": "success", "head_sha": self.head_sha}
+                    ]
+                })
+            if "/actions/runs/1/artifacts" in url:
+                return MockHttpResponse({"artifacts": []})
+            if "/actions/runs/1/jobs" in url:
+                return MockHttpResponse({"jobs": []})
+            return MockHttpResponse({})
+
+        mock_urlopen.side_effect = fake_urlopen
+
+        stdout_capture = io.StringIO()
+        with patch("sys.stdout", stdout_capture):
+            exit_code = generate_handoff.main(["--pr", "31", "--json", "--token", "mock-token"])
+
+        self.assertEqual(exit_code, 0)
+        json_output = stdout_capture.getvalue()
+        data = json.loads(json_output)
+        self.assertIn("review_records", data)
+        self.assertEqual(len(data["review_records"]), 1)
+        record = data["review_records"][0]
+        self.assertEqual(record["record_id"], "chatgpt-20261004-pr31-rev1")
+        self.assertEqual(record["reviewer"], "ChatGPT")
+        self.assertEqual(record["result"], "PASS")
+        self.assertEqual(record["reviewed_head_sha"], self.head_sha)
+        self.assertEqual(record["reviewed_base_sha"], self.base_sha)
+
 
 if __name__ == "__main__":
     unittest.main()

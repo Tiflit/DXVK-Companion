@@ -747,9 +747,16 @@ def format_handoff_markdown(snap: HandoffSnapshot, max_words: int = MAX_HANDOFF_
         for r in snap.reviews:
             head_str = f" on head `{r.reviewed_head_sha[:7]}`" if r.reviewed_head_sha else ""
             review_summaries.append(f"`{r.record_id}`: **{r.result}**{head_str}")
-        lines.append(f"- **Attributed Review Records**: {len(snap.reviews)} record(s) ({', '.join(review_summaries)})")
+        lines.append(
+            f"- **Attributed Review Records (PR Body)**: {len(snap.reviews)} record(s) found in PR body "
+            f"({', '.join(review_summaries)}) "
+            "(Conversation comments and formal reviews not inspected; absence in body does not prove absence of review)"
+        )
     else:
-        lines.append("- **Attributed Review Records**: 0 recorded")
+        lines.append(
+            "- **Attributed Review Records (PR Body)**: 0 recorded in PR body "
+            "(Conversation comments and formal reviews not inspected; absence in body does not prove absence of review)"
+        )
 
     lines.append("")
 
@@ -804,7 +811,13 @@ def format_handoff_markdown(snap: HandoffSnapshot, max_words: int = MAX_HANDOFF_
 
 
 def format_handoff_json(snap: HandoffSnapshot) -> str:
-    """Formats the handoff snapshot as structured JSON."""
+    """
+    Formats the handoff snapshot as structured JSON.
+
+    Note: 'review_records' contains attributed records parsed strictly from the
+    PR body. Conversation comments and formal GitHub reviews are not inspected,
+    and absence in the body does not prove absence of review.
+    """
     data = {
         "capture_time_utc": snap.capture_time_utc,
         "repo": snap.repo,
