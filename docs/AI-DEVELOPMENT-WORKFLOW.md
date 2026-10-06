@@ -64,7 +64,7 @@ A large task should be decomposed by scope and acceptance criteria, not by an ar
 
 The workflow should optimize for completed useful work rather than equalizing model usage across agents.
 
-Continue a reliable implementation session for focused revisions and bounded repairs; restart in a fresh session only when context window saturation, tool failures, or capability degradation requires it. Independent reviewer and auditor passes retain strict fresh-context discipline.
+Continue a reliable implementation session for focused revisions and bounded repairs; restart in a fresh session only when context window saturation, tool failures, or capability degradation requires it. Independent reviewer and auditor passes retain strict fresh-context discipline. When local verification is complete and the PR is submitted, check submission state once and yield with `Implementation complete — CI pending` rather than executing active polling loops or waiting narration in chat.
 
 ### ChatGPT
 
@@ -75,6 +75,7 @@ Use for:
 - defining or refining task contracts;
 - tracing architectural boundaries;
 - analyzing ambiguous requirements;
+- reviewing PR contract, test design, and source diff while CI runs (provisional source review, with final acceptance blocked on completed matching-head CI evidence);
 - independent execution checks and reproduction analysis;
 - arbitrating review findings when agents or reviewers disagree;
 - verifying repairs and revisions prior to merge;
@@ -581,6 +582,47 @@ When completing an implementation task or revision, agents should provide a conc
 
 This presentation convention reduces report bloat and aims to reduce manual transcription errors; it does not replace the durable generated snapshot on GitHub or serve as an automated state machine.
 
+#### CI-Pending Handoff and Overlapping Review Protocol
+
+To minimize idle waiting without weakening evidence gates:
+
+- **Operational State Distinction**: Distinguish a submitted implementation awaiting CI from a fully verified implementation:
+  - `Implementation complete — CI pending`: Local checks are complete, changes are committed and pushed, the PR is published with a concise checkpoint, and submission state is checked once. The PR is ready for provisional source inspection, but NOT for formal acceptance or merge.
+  - `Ready for verification`: All required head/base identities, source checks, task-relevant evidence provenance, and matching-head CI status checks are completed, acquired, and verified.
+  - `Blocked / Unavailable evidence`: CI failed, required evidence or provenance is unavailable, or an unexpected blocker occurred.
+- **Single Check and Immediate Yield**:
+  - Upon completing local verification and submitting the PR, check GitHub submission state ONCE (e.g. PR URL and known check run links).
+  - Yield immediately with the acquired operational state: `Implementation complete — CI pending` when checks are pending or in progress, or the appropriate completed/blocked state (`Ready for verification` or `Blocked / Unavailable evidence`) if already known from the single check.
+  - Eliminate routine sleep/check polling loops and waiting narration in chat.
+  - Do NOT run repeated full-suite test runs solely to reconfirm an unchanged successful test count (reruns remain appropriate after code modifications, failures, or specific verification requirements).
+  - Do NOT promise token savings or faster CI. While automated webhooks or notifications may assist environments that support them, separate consumer chats or agent sessions are not automatically awakened; human relay remains normal.
+- **Overlapping Coordinator Review (Provisional Source Review)**:
+  - The coordinator (ChatGPT) may inspect the PR task contract, test design, and source diff while CI runs in the background.
+  - The coordinator records provisional source findings or notes.
+  - **Strict Evidence Invariant**: Final acceptance, formal approval, and merge remain strictly blocked until required matching-revision CI checks and verified checkout provenance (a checkout of the reviewed head, or a synthetic merge checkout whose base/head parents match the acquired integration identities) are acquired and verified. Merely green checks, source approval alone, and pending CI reports are insufficient.
+- **Evidence Reacquisition at Decision Boundaries**:
+  - At a meaningful boundary (CI completion, run failure, or review decision), acquire live head/base refs, final status checks, and actual tested checkout SHA/provenance.
+  - Refresh the durable handoff snapshot via `scripts/ai-workflow/generate_handoff.py` and update the PR body via `scripts/ai-workflow/update_pr_body.py` without manually transcribing generated identity fields.
+  - Distinguish between executed evidence (run locally by the implementer) and inspected evidence (CI runs or coordinator observations). Never fabricate run/checkout identities, test counts, or future success.
+- **Failure and Rework Routing**:
+  - Return work to Gemini only for concrete CI failures or review findings within assigned scope.
+  - Distinguish between CI still running, CI failed, and unavailable evidence.
+  - Do not start unrelated work or weaken scope just to fill the waiting period.
+  - The coordinator does not duplicate all implementer test execution without a specific verification reason.
+- **Standard CI-Pending Handoff Format Example**:
+  When yielding with pending CI, use this concise structure with clearly labeled placeholders:
+  ```markdown
+  - **PR Link**: https://github.com/Tiflit/DXVK-Companion/pull/<PR_NUMBER>
+  - **Readiness State**: Implementation complete — CI pending
+  - **Acquired Head SHA**: <FULL_40_CHAR_COMMIT_SHA>
+  - **One-Sentence Summary**: <CONCISE_DESCRIPTION_OF_CHANGE>
+  - **Local Evidence Executed**: <LOCAL_TESTS_OR_CHECKS_RUN>
+  - **CI State**: In progress (<KNOWN_RUN_URLS_OR_UNAVAILABLE>)
+  - **Pending Evidence**: Full matching-revision CI completion and verified checkout provenance
+  - **Next Owner & Action**: ChatGPT (Provisional source review; final acceptance blocked on matching-head CI)
+  ```
+
+
 ### 3. Safe Body Preservation and Activity Update Helper (`update_pr_body.py`)
 
 A dual-mode update helper preventing accidental history loss, preserving unmarked prose and assignments, detecting concurrent modifications, and enforcing privacy safety before publishing changes to GitHub PR or Issue bodies:
@@ -654,6 +696,7 @@ python scripts/ai-workflow/update_pr_body.py --issue 42 --append-file post_merge
 ### 4. Session Continuity and Checkpoint Guidelines
 
 - **Revision Discipline**: Routine revisions and bounded repairs should continue in the reliable implementation session rather than forcing unnecessary context resets. Reset into a fresh session when context window saturation, tool failure, or capability degradation requires it. Independent reviewer and auditor passes maintain strict fresh-context discipline.
+- **Operational State Distinction**: Distinguish a submitted implementation handed off with `Implementation complete — CI pending` (ready for provisional source inspection) from a task in `Ready for verification` (all matching-head CI and provenance verified).
 - **Concise Checkpoints**: At milestones and before stopping, record:
   1. Completed work
   2. Changed / uncommitted files
