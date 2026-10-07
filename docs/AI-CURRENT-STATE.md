@@ -1,14 +1,14 @@
 # Current AI Development State & Handoff Orientation
 
 > **Two-Layer Handoff System**:
-> 1. **Live Automated Dashboard (Machine-Published)**: Real-time facts (current main SHA, open PRs, CI identities, tested checkouts) are automatically maintained in the dedicated GitHub Issue: `[AI Dashboard] Current Repository State & Handoff Orientation` (find via `gh issue list --search "[AI Dashboard]"`).
+> 1. **Automated Dashboard (Machine-Published Snapshot)**: Automatically refreshed facts (current main SHA, open PRs, CI identities, tested checkouts) are published by GitHub Actions to the dedicated issue: `[AI Dashboard] Current Repository State & Handoff Orientation` (find via `gh issue list --search "[AI Dashboard]"`). It is an automatically refreshed snapshot rather than real-time state or independently authenticated authority; underlying GitHub records remain authoritative, and machine publication does not authenticate human-only approvals.
 > 2. **Curated Repository Orientation (This Document)**: Curated work queue, role allocation, architectural decisions, and handoff protocols. The automated dashboard generator reads and republishes this guidance; agents update it directly through authorized documentation tasks.
 >
-> **Selective Reading Rule**: Routine agent sessions must NOT read the entire historical pilot log or journal archive. To conserve context and avoid drift, follow the 4-step startup route in [AGENTS.md](../AGENTS.md).
+> **Governing Navigation & Selective Reading**: Routine agent sessions must NOT read the entire historical pilot log or journal archive. To conserve context and avoid drift, follow the 4-step startup route in [AGENTS.md](../AGENTS.md), navigating under adopted [AI-WORKFLOW-KERNEL.md](AI-WORKFLOW-KERNEL.md) (v0.4) and [AI-ENFORCEMENT-REGISTER.md](AI-ENFORCEMENT-REGISTER.md) via on-demand register loading while keeping mandatory project operating rules visible.
 
 - **Current Repository Priority**: Validating a reliable, low-overhead multi-agent workflow centered on GitHub ([workflow purpose](AI-DEVELOPMENT-WORKFLOW.md#purpose)); broader application feature work and release testing follow separately under human direction.
-- **Live Repository Status**: Maintained in real time by GitHub Actions in authenticated dashboard [**Issue #27**](https://github.com/Tiflit/DXVK-Companion/issues/27) (`[AI Dashboard] Current Repository State & Handoff Orientation`) for live default-branch SHA, open PRs, and active CI runs.
-- **Active Task & PR Tracking**: Live task assignments and open PR inventories are tracked dynamically in the automated dashboard and via GitHub queries (`gh issue list`, `gh pr list`). This curated document provides stable architecture, role allocation, and governance protocols; it does not maintain a second live inventory by hand.
+- **Repository Status Snapshot**: Published periodically by GitHub Actions in dashboard [**Issue #27**](https://github.com/Tiflit/DXVK-Companion/issues/27) (`[AI Dashboard] Current Repository State & Handoff Orientation`) for latest observed default-branch SHA, open PRs, and active CI runs.
+- **Active Task & PR Tracking**: Task assignments and open PR inventories are tracked dynamically through GitHub queries (`gh issue list`, `gh pr list`) and reflected in the dashboard snapshot. This curated document provides stable architecture, role allocation, and governance protocols; it does not maintain a second live inventory by hand.
 
 ---
 
@@ -27,7 +27,7 @@ Major foundational pilot features, bugfixes, and CI harnesses merged into `main`
 | **PR #24** (`audit/issue-22-privacy-coverage`) | `4f44059` | **MERGED** | Historical privacy audit, rule redaction, and durable evidence annex (Issue #22). |
 | **PR #23** (`fix/issue-13-reapply-original-baseline`) | `51691ee` | **MERGED** | Reapply original-baseline capture and backup preservation defect repair (Issue #13). |
 | **PR #21** (`docs/issue-20-workflow-cleanup`) | `093664d` | **MERGED** | Post-#19 cleanup, connector journaling, and dashboard orientation (Issue #20). |
-| **PR #19** (`workflow/review-packet-provenance`) | `0dcc2bd` | **MERGED** | Review packet provenance hardening, TRX parsing, blocking scope/hygiene gates (Issue #11). |
+| **PR #19** (`workflow/review-packet-provenance`) | `0dcc2bd` | **MERGED** | Review packet provenance hardening, TRX parsing, scope/hygiene CI checks reporting PR violations (Issue #11). |
 | **PR #10** (`docs/pilot-2-current-checkpoint`) | `e7b6e06` | **MERGED** | Preserved final Pilot #2 review, workflow handoff, and pilot outcomes. |
 | **PR #8** (`automation/ai-workflow-foundation`) | `38b4d83` | **MERGED** | Initial GitHub-native workflow foundations. |
 
@@ -37,11 +37,12 @@ Major foundational pilot features, bugfixes, and CI harnesses merged into `main`
 
 - **Active Priority**: Validating a reliable, low-overhead multi-agent workflow centered on GitHub ([workflow purpose](AI-DEVELOPMENT-WORKFLOW.md#purpose)). Broader application revisions and release testing follow separately under human direction.
 
-Active task assignments, in-flight work, and open PR inventories are derived dynamically from GitHub (see authenticated dashboard [Issue #27](https://github.com/Tiflit/DXVK-Companion/issues/27) and `gh issue list` / `gh pr list`). Static documentation maintains stable governance rules, architecture, and role allocation without duplicating a secondary live task inventory.
+Active task assignments, in-flight work, and open PR inventories are derived dynamically from GitHub (see dashboard snapshot [Issue #27](https://github.com/Tiflit/DXVK-Companion/issues/27) and `gh issue list` / `gh pr list`). Static documentation maintains stable governance rules, architecture, and role allocation without duplicating a secondary live task inventory.
 
 ### Decision Governance Rules
 - **Decision Governance Block**: Tasks requiring architectural or policy choices must contain a structured Decision Governance Block in the GitHub Issue description (`Decision required`, `Proposed option`, `Status`, `Source of explicit human approval`).
-- **Human Approval Preflight**: Policy implementation is blocked until explicit human approval is authenticated in the task Issue. Agent recommendations (e.g. from ChatGPT or Gemini) do not constitute approval.
+- **Human Approval Routes & Provenance**: Direct verified human decisions and clearly attributed coordinator transcriptions are permitted existing approval routes; transcriptions and shared credentials remain cooperative, not independently authenticated human authorship. Agent recommendations, flags, passing CI checks, unrelated merges, and generic continuation do not grant new permissions.
+- **Human Design & Merge Authority**: The human developer retains exclusive design preference, policy governance, and final merge authority. Policy changes to production code or canonical specifications must not be implemented or merged without recorded approval.
 - **Investigation Allowed**: Preparatory investigation, options analysis, and decision briefs may proceed while decisions are pending, but policy changes to production code or canonical specifications must not be implemented or merged without recorded approval.
 
 ### Local Test Execution Authorization Gate
@@ -62,7 +63,7 @@ Active task assignments, in-flight work, and open PR inventories are derived dyn
 ### Fresh-Session Operating Instructions
 
 #### For Gemini (Implementer)
-1. Read [AGENTS.md](../AGENTS.md) and the live dashboard issue for compact orientation. The present repository priority is validating a reliable multi-agent development workflow ([workflow purpose](AI-DEVELOPMENT-WORKFLOW.md#purpose)). Independently verify task-critical remote identities mechanically (e.g. `gh api repos/Tiflit/DXVK-Companion/git/ref/heads/main --jq .object.sha`), distinguishing remote default branch, PR head/base, and local workspace HEAD. Underlying GitHub records are authoritative; this static document provides stable governance, not live task state.
+1. Read [AGENTS.md](../AGENTS.md) and the dashboard snapshot for compact orientation under adopted [AI-WORKFLOW-KERNEL.md](AI-WORKFLOW-KERNEL.md) (v0.4) and [AI-ENFORCEMENT-REGISTER.md](AI-ENFORCEMENT-REGISTER.md). The present repository priority is validating a reliable multi-agent development workflow ([workflow purpose](AI-DEVELOPMENT-WORKFLOW.md#purpose)). Independently verify task-critical remote identities mechanically (e.g. `gh api repos/Tiflit/DXVK-Companion/git/ref/heads/main --jq .object.sha`), distinguishing remote default branch, PR head/base, and local workspace HEAD. Underlying GitHub records are authoritative; this static document provides stable governance, not live task state.
 2. Read the assigned GitHub Issue (`gh issue view <number>`). Note acceptance criteria and `### Allowed paths`.
 3. Verify git status, fetch `origin/main`, and work in an isolated worktree. Reference durable evidence using portable GitHub URLs (referencing immutable commit SHAs, PRs, or Issue numbers), avoiding personal home paths, raw transcripts, or secrets.
 4. Write failing regression fixtures first when addressing a defect.
@@ -72,7 +73,7 @@ Active task assignments, in-flight work, and open PR inventories are derived dyn
    - When authorized for local execution:
      - Application changes: `dotnet test tests/DXVKCompanion.PhaseA.Tests/DXVKCompanion.PhaseA.Tests.csproj`.
      - Workflow automation changes: `python -m unittest discover -s tests/ai-workflow -v`.
-6. Push your branch, open a PR with required headings (`Primary Issue`, `Summary`, `Scope`, `Verification`, `Documentation`), and verify that GitHub Actions CI checks complete successfully.
+6. Push your branch, open a PR with required headings (`Primary Issue`, `Summary`, `Scope`, `Verification`, `Documentation`) and initial generated durable handoff snapshot. Check submission state once via GitHub CLI/API without polling. If CI checks are running, yield honestly with `Implementation complete — CI pending` (no sleep/check loops or waiting narration); final coordinator acceptance still requires matching-revision CI and provenance. Once CI completes, refresh the durable pre-merge handoff snapshot in the PR description via the guarded helper before human merge.
 7. Record a factual session entry in `docs/ai-journal/<YYYY-MM-DD>-<issue>-gemini-session-<n>.md`. Do not edit out-of-scope files.
 
 #### For ChatGPT (Verifier / Arbitrator)
@@ -109,7 +110,7 @@ Active task assignments, in-flight work, and open PR inventories are derived dyn
 ## 5. Architectural & Governance Decisions
 
 ### Unresolved Decisions
-- **None currently pending**: All specifically tracked Phase A architectural and safety policy decisions (#12, #14, #15, #16, #18) are resolved and implemented. Policy implementation for future tasks remains blocked until explicit human approval is authenticated in the respective GitHub Issue.
+- **None currently pending**: All specifically tracked Phase A architectural and safety policy decisions (#12, #14, #15, #16, #18) are resolved and implemented. Policy implementation for future tasks remains blocked until explicit human approval (direct verified decision or clearly attributed coordinator transcription) is recorded in the respective GitHub Issue.
 
 ### Preserved Approved Decisions
 - **Issue #14 (Shared-Directory Multi-Executable Policy)**: Approved installation-wide compatibility refusal across shared directories, with Restore and RestoreAll operations preserved ([Issue #14](https://github.com/Tiflit/DXVK-Companion/issues/14), [PR #35](https://github.com/Tiflit/DXVK-Companion/pull/35)).
@@ -125,9 +126,9 @@ Active task assignments, in-flight work, and open PR inventories are derived dyn
 
 ---
 
-## 6. Live Dashboard Discovery, Fallback & Operations
+## 6. Dashboard Discovery, Fallback & Operations
 
-- **Discovery Mechanism**: The live automated repository state is published to the dedicated machine-owned Issue titled `[AI Dashboard] Current Repository State & Handoff Orientation` (searchable via `gh issue list --search "[AI Dashboard]"` or by label `ai-dashboard`).
-- **Stale / Offline Fallback Protocol**: If the live dashboard Issue is unavailable, closed, rate-limited, or reports an `INCOMPLETE` status, fresh agent sessions must inspect underlying GitHub records directly (verify latest default-branch commit via `git log -n 1 origin/main`, and open PRs via `gh pr list --state open`), consulting `docs/AI-CURRENT-STATE.md` only for stable governance rules and role allocation.
-- **Publisher Activation**: Active on `main` following merge of PR #26 (currently publishing to authenticated Issue #27).
-- **Rollback / Disable Procedure**: In the event of unexpected publishing behavior, the workflow can be instantly disabled via `gh workflow disable ai-current-state.yml` without altering credentials or codebase files.
+- **Discovery Mechanism**: The automated repository state snapshot is published by GitHub Actions to the dedicated machine-owned Issue titled `[AI Dashboard] Current Repository State & Handoff Orientation` (searchable via `gh issue list --search "[AI Dashboard]"` or by label `ai-dashboard`). It is an automatically refreshed snapshot, not real-time state or independently authenticated authority; underlying GitHub records remain authoritative, and machine publication does not authenticate human-only approvals.
+- **Stale / Offline Fallback Protocol**: If the dashboard snapshot Issue is unavailable, closed, rate-limited, or reports an `INCOMPLETE` status, fresh agent sessions must inspect underlying GitHub records directly: independently acquire remote default-branch identity via connector/API (e.g. `gh api repos/Tiflit/DXVK-Companion/git/ref/heads/main --jq .object.sha`), distinguish it from local HEAD and cached `origin/main`, and inspect underlying task/PR records directly (`gh issue list`, `gh pr list`). Retain this static document as stable guidance, not a second live inventory.
+- **Publisher Activation**: Active on `main` following merge of PR #26 (publishing snapshot updates to dedicated Issue #27).
+- **Administrative Disablement & Stop Boundaries**: In the event of unexpected publishing behavior or workflow errors, disabling workflows is a human administrative decision (e.g. via GitHub repository settings or `gh workflow disable`). Under kernel guarantee K6, safe in-flight stopping is bounded at defined safe boundaries rather than instantaneous cross-agent cancellation.
