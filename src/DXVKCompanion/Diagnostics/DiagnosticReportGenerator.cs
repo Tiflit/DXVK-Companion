@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using DXVKCompanion.Models;
-using DXVKCompanion.Utils;
 
 namespace DXVKCompanion.Diagnostics
 {
@@ -19,8 +18,7 @@ namespace DXVKCompanion.Diagnostics
             GameInstallation? installation,
             string? appVersion = null)
         {
-            string effectiveAppVersion = appVersion ?? CompanionVersion.Current;
-            string validAppVersion = IsValidNumericVersion(effectiveAppVersion) ? effectiveAppVersion : "Unavailable";
+            string validAppVersion = IsValidNumericVersion(appVersion) ? appVersion! : "Unavailable";
 
             string apiText = profile != null ? FormatGraphicsApi(profile.Api) : "Unknown";
             string archText = profile != null ? FormatArchitecture(profile.Architecture) : "Unknown";

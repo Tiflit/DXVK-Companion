@@ -1,6 +1,6 @@
 # Session Record: 2026-10-07 — Issue #71 Diagnostic Report Implementation
 
-- **Date / Timestamp**: 2026-10-07 19:05:00 UTC
+- **Date / Timestamp**: 2026-10-07 ~23:05 UTC (~19:05 EDT) (approximate session time, following 18:56 America/Toronto coordinator approval)
 - **Agent Role & Model**: Gemini (Implementer)
 - **Task / Issue**: Issue #71 — `[AI] Add an allowlisted diagnostic preview and explicit copy in Game Details`
 - **Starting Head**: `c3c102944256934d9b27ba834b229cea3215c6b2` (`origin/main`)
@@ -23,7 +23,8 @@
 Work strictly confined to the 5 assigned allowed paths:
 
 1. **`src/DXVKCompanion/Diagnostics/DiagnosticReportGenerator.cs`** (new):
-   - Stateless, pure report generator operating strictly on supplied `GameProfile` and optional `GameInstallation` in-memory snapshot references and trusted app version.
+   - Stateless, pure report generator operating strictly on supplied `GameProfile` and optional `GameInstallation` in-memory snapshot references and supplied `appVersion` argument.
+   - Strictly dependent on supplied inputs: null or invalid `appVersion` input always yields `Unavailable`, with zero fallback to `CompanionVersion.Current` or assembly metadata.
    - Bounded ASCII numeric version validator (2–3 dot-separated components, each 1–9 digits, length <= 29; rejects controls, newlines, Unicode digits, prefixes/suffixes, whitespace, and non-numeric prose).
    - Strict constant architecture mapping (`x64`, `x86`, `x32`; others map to `Unknown`).
    - Named-value enum allowlists for `GraphicsApi`, `RestorationState`, `ManagementMode`.
@@ -41,7 +42,8 @@ Work strictly confined to the 5 assigned allowed paths:
 
 3. **`src/DXVKCompanion/UI/GameDetailsWindow.cs`** (modified):
    - Added `using DXVKCompanion.Diagnostics;`.
-   - Added a "Diagnostic Report..." button invoking `DiagnosticReportPreviewDialog` with the output of `DiagnosticReportGenerator.Generate(_profile, installation)`.
+   - Added `GetAppVersion()` helper supplying typed assembly version components (`Major.Minor.Build` or `Major.Minor`) as a trusted 2–3-component numeric string to `DiagnosticReportGenerator.Generate`.
+   - Added a "Diagnostic Report..." button invoking `DiagnosticReportPreviewDialog`.
    - Operates strictly on existing local snapshot references already available in the constructor; never initializes stores or calls `GetOrCreateInstallation` for reporting.
 
 4. **`tests/DXVKCompanion.PhaseA.Tests/DiagnosticReportGeneratorTests.cs`** (new):
@@ -52,6 +54,7 @@ Work strictly confined to the 5 assigned allowed paths:
      - Each ordinary classification and out-of-range casts for `GraphicsApi`, `RestorationState`, `ManagementMode`.
      - Supported architectures and unrecognized strings.
      - Valid and invalid version format boundaries (length, newlines, controls, Unicode digits, signs, suffixes).
+     - Explicit test verifying default omitted / null `appVersion` yields `Unavailable` independently of build metadata.
      - Known conflict flag combinations, single flags, and unknown bitmasks.
      - Negative tests on dirty models with sensitive paths, usernames, game titles, GUIDs, and refusal strings ensuring zero leakage.
      - Repeatability and verification of zero input mutation.

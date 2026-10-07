@@ -374,11 +374,25 @@ namespace DXVKCompanion.UI
             };
             btnReport.Click += (_, _) =>
             {
-                string report = DiagnosticReportGenerator.Generate(_profile, installation);
+                string appVersion = GetAppVersion();
+                string report = DiagnosticReportGenerator.Generate(_profile, installation, appVersion);
                 using var dialog = new DiagnosticReportPreviewDialog(report);
                 dialog.ShowDialog(this);
             };
             Controls.Add(btnReport);
+        }
+
+        private static string GetAppVersion()
+        {
+            var version = typeof(GameDetailsWindow).Assembly.GetName().Version;
+            if (version == null)
+            {
+                return "Unavailable";
+            }
+
+            return version.Build >= 0
+                ? $"{version.Major}.{version.Minor}.{version.Build}"
+                : $"{version.Major}.{version.Minor}";
         }
     }
 }

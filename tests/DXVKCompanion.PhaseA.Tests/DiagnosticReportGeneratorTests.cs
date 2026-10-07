@@ -195,6 +195,13 @@ namespace DXVKCompanion.PhaseA.Tests
         }
 
         [Fact]
+        public void Generate_DefaultOmittedAppVersion_ProducesUnavailable()
+        {
+            string report = DiagnosticReportGenerator.Generate(null, null);
+            Assert.Contains("App Version: Unavailable", report);
+        }
+
+        [Fact]
         public void Generate_ManagedDxvkVersion_ValidatedWithSameRules()
         {
             var validInstallation = new GameInstallation { ManagedDxvkVersion = "2.5" };
