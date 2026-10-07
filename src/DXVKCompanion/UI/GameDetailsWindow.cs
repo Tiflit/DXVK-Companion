@@ -2,6 +2,7 @@ using System;
 using System.Drawing;
 using System.IO;
 using System.Windows.Forms;
+using DXVKCompanion.Diagnostics;
 using DXVKCompanion.DXVK;
 using DXVKCompanion.Models;
 using DXVKCompanion.Storage;
@@ -362,6 +363,22 @@ namespace DXVKCompanion.UI
             };
             btnClose.Click += (_, _) => Close();
             Controls.Add(btnClose);
+
+            var btnReport = new Button
+            {
+                Text = "Diagnostic Report...",
+                Top = top,
+                Left = 270,
+                Width = 145,
+                Height = 32
+            };
+            btnReport.Click += (_, _) =>
+            {
+                string report = DiagnosticReportGenerator.Generate(_profile, installation);
+                using var dialog = new DiagnosticReportPreviewDialog(report);
+                dialog.ShowDialog(this);
+            };
+            Controls.Add(btnReport);
         }
     }
 }
