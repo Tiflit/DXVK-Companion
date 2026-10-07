@@ -10,8 +10,21 @@ The project has adopted the normative **Multi-Agent Workflow Kernel (v0.4)** ([`
 
 - **Kernel Authority & Guarantees**: The kernel establishes normative guarantees (K1 Authorization & Scope, K2 Sensitive Information, K3 Truthful Evidence, K4 History Preservation, K5 Untrusted Content, K6 Stop/Revocation/Resume, K7 No Self-Granted Authority).
 - **Deployment Posture**: The DXVK-Companion deployment operates under the **Manual Starter Preset** (cooperative baseline; unattended automation disabled; human-mediated consequential execution; shared-credential gap declared). All proposed adversarial probes are **NOT RUN**.
+- **Historical Inspected Baseline vs Dynamic Policy Revision**:
+  - `bee62aa8aef47ab539c82a07a668919d736842a5` is retained explicitly as the historical immutable inspected baseline.
+  - Current policy revision identity is derived dynamically from the latest commit touching applicable policy files on the acquired revision via:
+    ```bash
+    git log -1 --format=%H <acquired-revision> -- AGENTS.md docs/AI-WORKFLOW-KERNEL.md docs/AI-ENFORCEMENT-REGISTER.md docs/AI-DEVELOPMENT-WORKFLOW.md
+    ```
+    The path set includes the kernel, register, `AGENTS.md`, and workflow guidance because all four define or constrain operating rules. Compare this hash against a previously trusted policy checkpoint (not unverified local HEAD); changed, missing, or divergent checkpoints require refreshing affected guidance before relying on changed authority. Task activity, recent PRs, and external permission/credential changes remain separate checks; unchanged policy files do not prove unchanged runtime enforcement.
 - **Precedence Rule**: Configuration and project rules remain subject to the adopted kernel; project rules may add stricter restrictions (e.g. human final merge authority, local test authorization gate, guarded append-only issue updates) but cannot remove kernel guarantees. Incompatible requirements block dependent actions until an authorized human resolution is recorded.
-- **Load Policy**: Fresh sessions load the compact protected kernel (~800 words target); register lookups and detailed operating guidance (this document) are loaded on demand.
+- **Load Policy & Operating Alignment**:
+  - Fresh sessions load the compact protected kernel (~800 words target) and mandatory project operating rules in `AGENTS.md`.
+  - Check the adopted version (v0.4) and verify policy revision identity.
+  - Register entries ([`docs/AI-ENFORCEMENT-REGISTER.md`](AI-ENFORCEMENT-REGISTER.md)) are retrieved on demand by guarantee ID or boundary relevant to proposed actions.
+  - New agents orient to roles, authority, and unresolved gaps; returning agents reuse reliable unchanged context without demanding full historical rereads or claiming measured token savings.
+  - On-demand loading must not hide required authorization, provider/identity limitations, or stricter project rules.
+- **Scope CI Merge Gate Limits**: Failing scope CI detects violations on pull requests, but as verified on `main`, required-status-check merge protection is not configured on `main`; human review remains the actual integration barrier.
 - **Preserved Project Procedures**: Adoption preserves existing role assignments (Gemini implementation, ChatGPT coordination/verification, Claude audit, Human merge authority), task grammar, allowed paths restrictions, privacy/history helpers, CI/handoff procedure, bounded observations, and local test authorization gates. This task does not separately relax the pre-merge snapshot-refresh procedure or adopt automatic integration.
 
 ## Durable-memory rule
