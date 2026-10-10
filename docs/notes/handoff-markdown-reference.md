@@ -178,7 +178,7 @@ This section determines the next operational role and concrete task using a dete
 
 ### 2.6 Word-Budget Truncation Algorithm
 
-Handoff snapshots enforce a configurable word-budget limit:
+Handoff snapshots apply a configurable word-budget truncation heuristic:
 
 1. **Word-Counting Metric (`count_words_excluding_urls`)**:
    - Strips HTTP and HTTPS URLs (`https?://\S+`).
@@ -194,19 +194,18 @@ Handoff snapshots enforce a configurable word-budget limit:
      - When adding a line would exceed `(max_words - 15)`, iteration terminates, and the trailing notice is appended:
        `> ... [Handoff truncated to meet <MAX_WORDS>-word budget; total was <WORDS> words]`
 4. **Behavioral Caveats & Limitations**:
-   - Line-prefix accumulation is a heuristic approach, not an unconditional guarantee. For very small or nonpositive `--max-words` values (e.g., `<= 15`), zero lines are emitted before appending the notice, and the notice itself will exceed the budget.
-   - Truncation halts at the first line that breaches the budget threshold; there is no guarantee that all four sections will survive truncation if earlier sections consume the word allowance.
+   - The line-prefix algorithm reserves 15 words for the notice, but does not validate the requested budget. A sufficiently small or nonpositive budget can be exceeded by the notice (for example, a zero-word budget). Sections can be omitted after prefix truncation.
 
 ---
 
 ### 2.7 Evidence Boundaries & Operational Effects
 
 - **Operational Effects of Evidence Collection**:
-  - While `generate_handoff.py` never modifies tracked project or product files, executing the script produces the following operational effects:
+  - The generator does not intentionally edit application code or Git history, but `--output` creates parent directories and writes or overwrites the caller-selected file; it does not enforce a boundary against tracked project files. Collection may also discover credentials, query Git metadata, download artifacts and extract temporary files. This exercise inspects those effects without executing the generator.
+  - Operational list:
     1. Subprocess execution for token discovery (`gh auth token` fallback).
     2. Downloading artifact archives (up to 50MB) and extracting `.trx` zip contents into a temporary directory (`tempfile.TemporaryDirectory`).
     3. Writing output files and creating parent directories if `--output` is specified.
-  - *Note*: This documentation reference exercise performs static source inspection only and does not execute these operations.
 - **Static Issue Body Parsing Scope**:
   - Decision governance is parsed strictly from the `Decision Governance Block` in the primary Issue description **body**. Authoritative subsequent comments (such as Gate activations or human approvals posted as issue comments) are not queried or parsed by the generator.
 - **Separation of Local and Remote Identities**:
