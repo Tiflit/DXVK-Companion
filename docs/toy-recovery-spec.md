@@ -6,8 +6,7 @@ Synthetic message exchange rules for diagnostic agent synchronization:
 | Message Kind | Required Field | Response Rule |
 | :--- | :--- | :--- |
 | `HeartbeatPing` | `sequence_id` (uint64) | Respond with `HeartbeatAck` within 200ms. |
-
-*(Note: Additional message kinds pending specification.)*
+| `TelemetryReport` | `session_token` (uuid) | Emit acknowledgment status `ReportReceived` or reject if unauthenticated. |
 
 ## Section 2: Profile Requirements
 Requirements governing the telemetry framing profile:
