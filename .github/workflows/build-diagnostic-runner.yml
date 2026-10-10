@@ -82,10 +82,10 @@ jobs:
           }
 
       - name: Restore using cleared NuGet sources
-        run: dotnet restore tools/DiagnosticPreviewRunner/DiagnosticPreviewRunner.csproj -r win-x64 -p:SelfContained=false --configfile tools/DiagnosticPreviewRunner/NuGet.Config -p:NuGetAudit=false
+        run: dotnet restore tools/DiagnosticPreviewRunner/DiagnosticPreviewRunner.csproj -p:SelfContained=false -p:UseAppHost=false --configfile tools/DiagnosticPreviewRunner/NuGet.Config -p:NuGetAudit=false
 
-      - name: Publish win-x64 Framework-Dependent Binary
-        run: dotnet publish tools/DiagnosticPreviewRunner/DiagnosticPreviewRunner.csproj -c Release -r win-x64 --no-self-contained --no-restore -o publish/
+      - name: Publish framework-dependent DLL-only Binary
+        run: dotnet publish tools/DiagnosticPreviewRunner/DiagnosticPreviewRunner.csproj -c Release --no-self-contained -p:UseAppHost=false --no-restore -o publish/
 
       - name: Generate Build Manifest & Record Summary
         shell: pwsh
@@ -102,6 +102,25 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "dotnet --version failed with exit code $LASTEXITCODE"
           }
+
+          $requiredFiles = @(
+            "publish/DiagnosticPreviewRunner.dll",
+            "publish/DiagnosticPreviewRunner.runtimeconfig.json",
+            "publish/DiagnosticPreviewRunner.deps.json"
+          )
+          foreach ($rf in $requiredFiles) {
+            if (-not (Test-Path $rf)) {
+              throw "Required publish output missing: $rf"
+            }
+          }
+
+          $exeFiles = Get-ChildItem -Path "publish" -Filter "*.exe"
+          if ($exeFiles.Count -gt 0) {
+            throw "Unexpected .exe file found in publish outputs! Expected UseAppHost=false"
+          }
+
+          Write-Host "runtimeconfig.json content:"
+          Get-Content -Path "publish/DiagnosticPreviewRunner.runtimeconfig.json" -Raw | Write-Host
 
           $sourceHashes = [ordered]@{}
           $sourceFiles = @(
@@ -126,6 +145,10 @@ jobs:
             runId = $env:GITHUB_RUN_ID
             runAttempt = $env:GITHUB_RUN_ATTEMPT
             sdkVersion = $sdkVersion
+            deploymentModel = "framework-dependent"
+            targetFramework = "net8.0-windows"
+            explicitRid = "omitted"
+            useAppHost = $false
             sourceHashes = $sourceHashes
             outputHashes = $outputHashes
           }
@@ -141,6 +164,8 @@ jobs:
             "- **Commit**: $actualHead",
             "- **Run ID**: $($env:GITHUB_RUN_ID) (Attempt $($env:GITHUB_RUN_ATTEMPT))",
             "- **SDK Version**: $sdkVersion",
+            "- **Deployment Model**: framework-dependent (UseAppHost=false, RID omitted)",
+            "- **Target Framework**: net8.0-windows",
             "",
             "#### Source Checksums",
             "| File | SHA-256 |",
@@ -163,7 +188,7 @@ jobs:
       - name: Upload Runner Artifact
         uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
         with:
-          name: diagnostic-preview-runner-win-x64
+          name: diagnostic-preview-runner-framework-dependent
           path: publish/
           retention-days: 7
           if-no-files-found: error
