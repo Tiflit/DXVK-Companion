@@ -1,0 +1,141 @@
+name: Build Diagnostic Preview Runner
+
+on:
+  push:
+    branches:
+      - fixture/issue-76-preview-runner
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - name: Configure Git Line Endings
+        run: git config --global core.autocrlf false
+
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            tools/DiagnosticPreviewRunner
+            .github/workflows
+          sparse-checkout-cone-mode: false
+
+      - name: Set up .NET 8 SDK
+        uses: actions/setup-dotnet@3951f0dfe7a07e2313ec93c75700083e2005cbab # v4.3.0
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Verify Staged Source Checksums
+        shell: pwsh
+        run: |
+          $expected = [ordered]@{
+            "tools/DiagnosticPreviewRunner/Program.cs" = "706485DF3E9D22E0A24C67241CCE98823FF5BC9DFC82BB411402D5C4F3BAE5DC"
+            "tools/DiagnosticPreviewRunner/DiagnosticReportPreviewDialog.cs" = "E3F049BEA920A931DFD65D5C7A5BAC76F3568E230596162BC6119F16D0F9BF0F"
+            "tools/DiagnosticPreviewRunner/DiagnosticPreviewRunner.csproj" = "59ED55717F8FFB7878BBD8DF013F74DBF0EFD5897F3C97FD680C03CEC1A2880E"
+            "tools/DiagnosticPreviewRunner/NuGet.Config" = "5256A7E3E07D2C5C94F7A1E6C45F39AAB011C659C5E2D53E452DEA525CE04575"
+          }
+
+          Write-Host "Verifying source file SHA-256 checksums:"
+          foreach ($file in $expected.Keys) {
+            if (-not (Test-Path $file)) {
+              throw "Required source file missing: $file"
+            }
+            $hash = (Get-FileHash -Algorithm SHA256 -Path $file).Hash
+            Write-Host "  $file : $hash"
+            if ($hash -ne $expected[$file]) {
+              throw "Checksum mismatch for $file! Expected: $($expected[$file]), Actual: $hash"
+            }
+          }
+          Write-Host "All source files match accepted SHA-256 values."
+
+      - name: Restore using cleared NuGet sources
+        run: dotnet restore tools/DiagnosticPreviewRunner/DiagnosticPreviewRunner.csproj -r win-x64 -p:SelfContained=false --configfile tools/DiagnosticPreviewRunner/NuGet.Config -p:NuGetAudit=false
+
+      - name: Publish win-x64 Framework-Dependent Binary
+        run: dotnet publish tools/DiagnosticPreviewRunner/DiagnosticPreviewRunner.csproj -c Release -r win-x64 --no-self-contained --no-restore -o publish/
+
+      - name: Generate Build Manifest & Record Summary
+        shell: pwsh
+        run: |
+          $actualHead = (git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0) {
+            throw "git rev-parse HEAD failed with exit code $LASTEXITCODE"
+          }
+          if ($actualHead -ne $env:GITHUB_SHA) {
+            throw "Checkout commit mismatch! git rev-parse HEAD ($actualHead) != GITHUB_SHA ($env:GITHUB_SHA)"
+          }
+
+          $sdkVersion = (dotnet --version).Trim()
+          if ($LASTEXITCODE -ne 0) {
+            throw "dotnet --version failed with exit code $LASTEXITCODE"
+          }
+
+          $sourceHashes = [ordered]@{}
+          $sourceFiles = @(
+            "tools/DiagnosticPreviewRunner/Program.cs",
+            "tools/DiagnosticPreviewRunner/DiagnosticReportPreviewDialog.cs",
+            "tools/DiagnosticPreviewRunner/DiagnosticPreviewRunner.csproj",
+            "tools/DiagnosticPreviewRunner/NuGet.Config"
+          )
+          foreach ($sf in $sourceFiles) {
+            $sourceHashes[$sf] = (Get-FileHash -Algorithm SHA256 -Path $sf).Hash
+          }
+
+          $outputHashes = [ordered]@{}
+          Get-ChildItem -Path "publish" -File | ForEach-Object {
+            $relPath = "publish/$($_.Name)"
+            $outputHashes[$relPath] = (Get-FileHash -Algorithm SHA256 -Path $_.FullName).Hash
+          }
+
+          $manifest = [ordered]@{
+            commit = $actualHead
+            githubSha = $env:GITHUB_SHA
+            runId = $env:GITHUB_RUN_ID
+            runAttempt = $env:GITHUB_RUN_ATTEMPT
+            sdkVersion = $sdkVersion
+            sourceHashes = $sourceHashes
+            outputHashes = $outputHashes
+          }
+
+          $manifestJson = $manifest | ConvertTo-Json -Depth 4
+          Set-Content -Path "publish/build-manifest.json" -Value $manifestJson -Encoding utf8
+
+          Write-Host "Build Manifest:"
+          Write-Host $manifestJson
+
+          $summaryLines = @(
+            "### Build Manifest Summary",
+            "- **Commit**: $actualHead",
+            "- **Run ID**: $($env:GITHUB_RUN_ID) (Attempt $($env:GITHUB_RUN_ATTEMPT))",
+            "- **SDK Version**: $sdkVersion",
+            "",
+            "#### Source Checksums",
+            "| File | SHA-256 |",
+            "| :--- | :--- |"
+          )
+          foreach ($k in $sourceHashes.Keys) {
+            $summaryLines += ('| {0} | {1} |' -f $k, $sourceHashes[$k])
+          }
+          $summaryLines += ""
+          $summaryLines += "#### Output Checksums"
+          $summaryLines += "| File | SHA-256 |"
+          $summaryLines += "| :--- | :--- |"
+          foreach ($k in $outputHashes.Keys) {
+            $summaryLines += ('| {0} | {1} |' -f $k, $outputHashes[$k])
+          }
+
+          $summaryText = $summaryLines -join "`n"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $summaryText -Encoding utf8
+
+      - name: Upload Runner Artifact
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
+        with:
+          name: diagnostic-preview-runner-win-x64
+          path: publish/
+          retention-days: 7
+          if-no-files-found: error
