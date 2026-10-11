@@ -11,7 +11,7 @@ namespace DXVKCompanion.Diagnostics
     /// </summary>
     public static class DiagnosticReportGenerator
     {
-        public const string ReportSchemaVersion = "v1";
+        public const string ReportSchemaVersion = "v2";
 
         public static string Generate(
             GameProfile? profile,
@@ -27,6 +27,8 @@ namespace DXVKCompanion.Diagnostics
             string managedVersionText;
             string conflictFlagsText;
             string policyModeText;
+            string pendingActionText;
+            string cancelledActionText;
 
             if (installation != null)
             {
@@ -38,6 +40,8 @@ namespace DXVKCompanion.Diagnostics
                 policyModeText = installation.ManagementPolicy != null
                     ? FormatManagementMode(installation.ManagementPolicy.Mode)
                     : "Unavailable";
+                pendingActionText = FormatActionType(installation.PendingAction);
+                cancelledActionText = FormatActionType(installation.LastCancelledAction);
             }
             else
             {
@@ -45,6 +49,8 @@ namespace DXVKCompanion.Diagnostics
                 managedVersionText = "Unavailable";
                 conflictFlagsText = "Unavailable";
                 policyModeText = "Unavailable";
+                pendingActionText = "Unavailable";
+                cancelledActionText = "Unavailable";
             }
 
             return string.Join(Environment.NewLine, new[]
@@ -57,6 +63,8 @@ namespace DXVKCompanion.Diagnostics
                 $"Managed DXVK: {managedVersionText}",
                 $"Conflict Flags: {conflictFlagsText}",
                 $"Installation Policy Mode: {policyModeText}",
+                $"Recorded Pending Action: {pendingActionText}",
+                $"Recorded Last Cancelled Action: {cancelledActionText}",
                 "Refusal Details: Unavailable",
                 "Evidence Freshness: RecordedSnapshotOnly",
                 "Anti-Cheat Assessment: NotAcquired"
@@ -195,6 +203,24 @@ namespace DXVKCompanion.Diagnostics
             }
 
             return string.Join(", ", list);
+        }
+
+        private static string FormatActionType(PendingAction? action)
+        {
+            if (action == null)
+            {
+                return "None";
+            }
+
+            return action.Type switch
+            {
+                PendingActionType.None => "None",
+                PendingActionType.Install => "Install",
+                PendingActionType.Update => "Update",
+                PendingActionType.Reapply => "Reapply",
+                PendingActionType.Restore => "Restore",
+                _ => "Unknown"
+            };
         }
     }
 }

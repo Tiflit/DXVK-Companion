@@ -30,7 +30,7 @@ namespace DXVKCompanion.PhaseA.Tests
 
             string expected = string.Join(Environment.NewLine, new[]
             {
-                "DXVK Companion Diagnostic Report (v1)",
+                "DXVK Companion Diagnostic Report (v2)",
                 "App Version: 1.0.0",
                 "Recorded API: DX11",
                 "Recorded Arch: x64",
@@ -38,6 +38,8 @@ namespace DXVKCompanion.PhaseA.Tests
                 "Managed DXVK: 2.5",
                 "Conflict Flags: None",
                 "Installation Policy Mode: UseGlobal",
+                "Recorded Pending Action: None",
+                "Recorded Last Cancelled Action: None",
                 "Refusal Details: Unavailable",
                 "Evidence Freshness: RecordedSnapshotOnly",
                 "Anti-Cheat Assessment: NotAcquired"
@@ -63,6 +65,8 @@ namespace DXVKCompanion.PhaseA.Tests
             Assert.Contains("Managed DXVK: Unavailable", report);
             Assert.Contains("Conflict Flags: Unavailable", report);
             Assert.Contains("Installation Policy Mode: Unavailable", report);
+            Assert.Contains("Recorded Pending Action: Unavailable", report);
+            Assert.Contains("Recorded Last Cancelled Action: Unavailable", report);
             Assert.Contains("Refusal Details: Unavailable", report);
             Assert.Contains("Evidence Freshness: RecordedSnapshotOnly", report);
             Assert.Contains("Anti-Cheat Assessment: NotAcquired", report);
@@ -87,6 +91,74 @@ namespace DXVKCompanion.PhaseA.Tests
             Assert.Contains("Managed DXVK: 2.4", report);
             Assert.Contains("Conflict Flags: None", report);
             Assert.Contains("Installation Policy Mode: Automatic", report);
+            Assert.Contains("Recorded Pending Action: None", report);
+            Assert.Contains("Recorded Last Cancelled Action: None", report);
+        }
+
+        [Fact]
+        public void Generate_NonNullInstallationWithNullActionObjects_ReportsNoneForBothActionFields()
+        {
+            var installation = new GameInstallation
+            {
+                PendingAction = null,
+                LastCancelledAction = null
+            };
+
+            string report = DiagnosticReportGenerator.Generate(null, installation, "1.0.0");
+
+            Assert.Contains("Recorded Pending Action: None", report);
+            Assert.Contains("Recorded Last Cancelled Action: None", report);
+        }
+
+        [Theory]
+        [InlineData(PendingActionType.None, "Recorded Pending Action: None")]
+        [InlineData(PendingActionType.Install, "Recorded Pending Action: Install")]
+        [InlineData(PendingActionType.Update, "Recorded Pending Action: Update")]
+        [InlineData(PendingActionType.Reapply, "Recorded Pending Action: Reapply")]
+        [InlineData(PendingActionType.Restore, "Recorded Pending Action: Restore")]
+        [InlineData((PendingActionType)99, "Recorded Pending Action: Unknown")]
+        [InlineData((PendingActionType)(-1), "Recorded Pending Action: Unknown")]
+        public void Generate_PendingActionTypes_MappedCorrectly(PendingActionType actionType, string expectedLine)
+        {
+            var installation = new GameInstallation
+            {
+                PendingAction = new PendingAction { Type = actionType }
+            };
+            string report = DiagnosticReportGenerator.Generate(null, installation, "1.0.0");
+            Assert.Contains(expectedLine, report);
+        }
+
+        [Theory]
+        [InlineData(PendingActionType.None, "Recorded Last Cancelled Action: None")]
+        [InlineData(PendingActionType.Install, "Recorded Last Cancelled Action: Install")]
+        [InlineData(PendingActionType.Update, "Recorded Last Cancelled Action: Update")]
+        [InlineData(PendingActionType.Reapply, "Recorded Last Cancelled Action: Reapply")]
+        [InlineData(PendingActionType.Restore, "Recorded Last Cancelled Action: Restore")]
+        [InlineData((PendingActionType)99, "Recorded Last Cancelled Action: Unknown")]
+        [InlineData((PendingActionType)(-1), "Recorded Last Cancelled Action: Unknown")]
+        public void Generate_LastCancelledActionTypes_MappedCorrectly(PendingActionType actionType, string expectedLine)
+        {
+            var installation = new GameInstallation
+            {
+                LastCancelledAction = new PendingAction { Type = actionType }
+            };
+            string report = DiagnosticReportGenerator.Generate(null, installation, "1.0.0");
+            Assert.Contains(expectedLine, report);
+        }
+
+        [Fact]
+        public void Generate_ConcurrentQueuedAndHistoricalCancelledActions_RendersBothConcurrently()
+        {
+            var installation = new GameInstallation
+            {
+                PendingAction = PendingAction.Install("2.5"),
+                LastCancelledAction = PendingAction.Restore()
+            };
+
+            string report = DiagnosticReportGenerator.Generate(null, installation, "1.0.0");
+
+            Assert.Contains("Recorded Pending Action: Install", report);
+            Assert.Contains("Recorded Last Cancelled Action: Restore", report);
         }
 
         [Theory]
@@ -254,6 +326,20 @@ namespace DXVKCompanion.PhaseA.Tests
                 ManagedDxvkVersion = "2.5",
                 RestorationState = RestorationState.Managed,
                 ConflictFlags = InstallationConflictFlags.None,
+                PendingAction = new PendingAction
+                {
+                    Type = PendingActionType.Install,
+                    TargetDxvkVersion = "2.5-sensitive-dxvk-target",
+                    Reason = "SensitivePendingReasonThatMustNotAppearInReport"
+                },
+                LastCancelledAction = new PendingAction
+                {
+                    Type = PendingActionType.Restore,
+                    TargetDxvkVersion = "2.3-sensitive-cancelled-target",
+                    Reason = "SensitiveCancelledReasonThatMustNotAppearInReport"
+                },
+                LastCancellationReason = "SensitiveCancellationReasonTopSecret",
+                LastCancellationOutcome = "SensitiveCancellationOutcomeTopSecret",
                 LastRefusalReason = "Target executable 'SecretGameExe.exe' at 'D:\\CustomInstall\\ConfidentialLocation' deployment refused.",
                 ManagementPolicy = ManagementPolicy.UseGlobal()
             };
@@ -271,7 +357,15 @@ namespace DXVKCompanion.PhaseA.Tests
             Assert.DoesNotContain(@"D:\", report, StringComparison.OrdinalIgnoreCase);
             Assert.DoesNotContain(".exe", report, StringComparison.OrdinalIgnoreCase);
             Assert.DoesNotContain("refused", report, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("SensitivePendingReason", report, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("SensitiveCancelledReason", report, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("sensitive-dxvk-target", report, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("sensitive-cancelled-target", report, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("SensitiveCancellationReasonTopSecret", report, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("SensitiveCancellationOutcomeTopSecret", report, StringComparison.OrdinalIgnoreCase);
             Assert.Contains("App Version: Unavailable", report);
+            Assert.Contains("Recorded Pending Action: Install", report);
+            Assert.Contains("Recorded Last Cancelled Action: Restore", report);
         }
 
         [Fact]
@@ -287,7 +381,9 @@ namespace DXVKCompanion.PhaseA.Tests
                 RestorationState = RestorationState.Restored,
                 ManagedDxvkVersion = "2.3",
                 ConflictFlags = InstallationConflictFlags.FrameLimit,
-                ManagementPolicy = ManagementPolicy.Disabled()
+                ManagementPolicy = ManagementPolicy.Disabled(),
+                PendingAction = PendingAction.Update("2.4"),
+                LastCancelledAction = PendingAction.Install("2.3")
             };
 
             string report1 = DiagnosticReportGenerator.Generate(profile, installation, "1.0.0");
@@ -307,6 +403,8 @@ namespace DXVKCompanion.PhaseA.Tests
                 HudEnabled = true,
                 FrameLimit = 60
             };
+            var pendingAction = PendingAction.Install("2.5", "some pending reason");
+            var cancelledAction = PendingAction.Restore("some cancelled reason");
             var installation = new GameInstallation
             {
                 Id = "stable-id",
@@ -316,6 +414,8 @@ namespace DXVKCompanion.PhaseA.Tests
                 ManagedDxvkVersion = "2.5",
                 ConflictFlags = InstallationConflictFlags.None,
                 ManagementPolicy = ManagementPolicy.Automatic(),
+                PendingAction = pendingAction,
+                LastCancelledAction = cancelledAction,
                 LastRefusalReason = "some refusal"
             };
 
@@ -336,6 +436,15 @@ namespace DXVKCompanion.PhaseA.Tests
             Assert.Equal(InstallationConflictFlags.None, installation.ConflictFlags);
             Assert.Equal(ManagementMode.Automatic, installation.ManagementPolicy.Mode);
             Assert.Equal("some refusal", installation.LastRefusalReason);
+
+            Assert.Same(pendingAction, installation.PendingAction);
+            Assert.Equal(PendingActionType.Install, pendingAction.Type);
+            Assert.Equal("2.5", pendingAction.TargetDxvkVersion);
+            Assert.Equal("some pending reason", pendingAction.Reason);
+
+            Assert.Same(cancelledAction, installation.LastCancelledAction);
+            Assert.Equal(PendingActionType.Restore, cancelledAction.Type);
+            Assert.Equal("some cancelled reason", cancelledAction.Reason);
         }
     }
 }
