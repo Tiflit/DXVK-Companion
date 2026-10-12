@@ -1,6 +1,10 @@
+import builtins
+import hashlib
 import io
 import json
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -13,6 +17,16 @@ sys.path.insert(0, str(REPO_ROOT / "scripts" / "ai-workflow"))
 import preflight_check
 
 
+def compute_dir_hashes(root_dir: Path) -> dict[str, str]:
+    """Computes SHA-256 hashes for all regular files in a directory tree."""
+    hashes = {}
+    for p in sorted(root_dir.rglob("*")):
+        if p.is_file():
+            rel = str(p.relative_to(root_dir)).replace("\\", "/")
+            hashes[rel] = hashlib.sha256(p.read_bytes()).hexdigest()
+    return hashes
+
+
 class TestPreflightCheck(unittest.TestCase):
     """Regression test suite for read-only operator-invoked preflight CLI."""
 
@@ -23,9 +37,14 @@ class TestPreflightCheck(unittest.TestCase):
     def tearDown(self):
         self.temp_dir.cleanup()
 
-    def _write_file(self, name: str, content: str) -> Path:
+    def _write_file(self, name: str, content: str, encoding: str = "utf-8") -> Path:
         file_path = self.dir_path / name
-        file_path.write_text(content, encoding="utf-8")
+        file_path.write_text(content, encoding=encoding)
+        return file_path
+
+    def _write_bytes(self, name: str, data: bytes) -> Path:
+        file_path = self.dir_path / name
+        file_path.write_bytes(data)
         return file_path
 
     def _create_standard_inputs(
@@ -78,7 +97,36 @@ class TestPreflightCheck(unittest.TestCase):
         self.assertIn("Scope check:   PASS", output)
         self.assertIn("PR hygiene:    PASS", output)
         self.assertIn("Overall:       PASS", output)
-        self.assertIn("NOT VERIFIED: Authority/approval", output)
+        self.assertIn(preflight_check.NOT_VERIFIED_NOTICE, output)
+
+    def test_unconstrained_and_empty_manifest_semantics(self):
+        # 1. Unconstrained displays explicit PASS (Unconstrained)
+        issue_unconstrained = "### Allowed paths\n- Unconstrained\n"
+        pr_content = (
+            "## Primary Issue\nFixes #1\n\n## Summary\nS\n\n## Scope\nSc\n\n## Verification\nV\n\n## Documentation\nD\n"
+        )
+        argv_unconstrained = self._create_standard_inputs(
+            issue_unconstrained,
+            pr_content,
+            [{"filename": "any/path/file.cs"}],
+        )
+        stdout1 = io.StringIO()
+        with patch("sys.stdout", stdout1):
+            ret1 = preflight_check.main(argv_unconstrained)
+        self.assertEqual(ret1, 0)
+        self.assertIn("Scope check:   PASS (Unconstrained)", stdout1.getvalue())
+
+        # 2. Empty manifest passes scope vacuously
+        argv_empty = self._create_standard_inputs(
+            "### Allowed paths\n- src/file.cs\n",
+            pr_content,
+            [],
+        )
+        stdout2 = io.StringIO()
+        with patch("sys.stdout", stdout2):
+            ret2 = preflight_check.main(argv_empty)
+        self.assertEqual(ret2, 0)
+        self.assertIn("Scope check:   PASS", stdout2.getvalue())
 
     def test_prose_in_allowed_paths_issue_80_style(self):
         issue_content = (
@@ -112,6 +160,7 @@ class TestPreflightCheck(unittest.TestCase):
         self.assertIn("Scope check:   FAIL", output)
         self.assertIn("contains whitespace or prose", output)
         self.assertIn("Overall:       FAIL", output)
+        self.assertIn(preflight_check.NOT_VERIFIED_NOTICE, output)
 
     def test_corrected_issue_82_style_contract(self):
         issue_content = (
@@ -147,7 +196,6 @@ class TestPreflightCheck(unittest.TestCase):
         self.assertIn("Overall:       PASS", output)
 
     def test_heading_boundaries(self):
-        # Section boundary terminated by ## Next Heading
         issue_content_normalized = (
             "### Allowed paths\n"
             "- src/allowed.cs\n\n"
@@ -168,7 +216,7 @@ class TestPreflightCheck(unittest.TestCase):
         with patch("sys.stdout", stdout1):
             self.assertEqual(preflight_check.main(argv1), 0)
 
-        # 2. File under Next Section fails
+        # 2. File under Next Section fails without echoing filename
         argv2 = self._create_standard_inputs(
             issue_content_normalized,
             pr_content,
@@ -177,6 +225,9 @@ class TestPreflightCheck(unittest.TestCase):
         stdout2 = io.StringIO()
         with patch("sys.stdout", stdout2):
             self.assertEqual(preflight_check.main(argv2), 1)
+        out2 = stdout2.getvalue()
+        self.assertIn("Scope violation: item at manifest index 0", out2)
+        self.assertNotIn("src/unauthorized.cs", out2)
 
         # 3. Using H2 '## Allowed paths' instead of '### Allowed paths' fails
         issue_h2 = (
@@ -233,7 +284,8 @@ class TestPreflightCheck(unittest.TestCase):
         self.assertEqual(ret, 1)
         self.assertIn("mixed 'Unconstrained' and explicit path patterns", stdout.getvalue())
 
-    def test_rename_outside_scope(self):
+    def test_rename_outside_scope_and_sanitized_diagnostics(self):
+        # Inverted assertion: verify raw previous_filename is NOT in output
         issue_content = (
             "### Allowed paths\n"
             "- src/new_name.cs\n"
@@ -257,7 +309,84 @@ class TestPreflightCheck(unittest.TestCase):
         self.assertEqual(ret, 1)
         output = stdout.getvalue()
         self.assertIn("Scope check:   FAIL", output)
-        self.assertIn("src/unauthorized_old_name.cs", output)
+        self.assertIn("item at manifest index 0 violates allowed contract paths", output)
+        self.assertNotIn("src/unauthorized_old_name.cs", output)
+        self.assertNotIn("src/new_name.cs", output)
+
+    def test_sensitive_filenames_rename_sources_and_newlines(self):
+        issue_content = "### Allowed paths\n- src/valid.cs\n"
+        pr_content = (
+            "## Primary Issue\nFixes #1\n\n## Summary\nS\n\n## Scope\nSc\n\n## Verification\nV\n\n## Documentation\nD\n"
+        )
+        files = [
+            {
+                "filename": "ghp_sensitiveFilenameToken1234567890\nwithNewline.cs",
+                "previous_filename": "ghp_sensitivePrevToken9999999999.cs",
+            }
+        ]
+        argv = self._create_standard_inputs(issue_content, pr_content, files)
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with patch("sys.stdout", stdout), patch("sys.stderr", stderr):
+            ret = preflight_check.main(argv)
+
+        self.assertEqual(ret, 1)
+        combined = stdout.getvalue() + stderr.getvalue()
+        self.assertNotIn("ghp_sensitiveFilenameToken", combined)
+        self.assertNotIn("ghp_sensitivePrevToken", combined)
+        self.assertNotIn("withNewline", combined)
+        self.assertIn("item at manifest index 0 violates allowed contract paths", stdout.getvalue())
+
+    def test_large_violation_list_capping_and_truncation(self):
+        issue_content = "### Allowed paths\n- src/allowed.cs\n"
+        pr_content = (
+            "## Primary Issue\nFixes #1\n\n## Summary\nS\n\n## Scope\nSc\n\n## Verification\nV\n\n## Documentation\nD\n"
+        )
+        files = [{"filename": f"src/violating_{i}.cs"} for i in range(10)]
+        argv = self._create_standard_inputs(issue_content, pr_content, files)
+
+        stdout = io.StringIO()
+        with patch("sys.stdout", stdout):
+            ret = preflight_check.main(argv)
+
+        self.assertEqual(ret, 1)
+        output = stdout.getvalue()
+        for idx in range(5):
+            self.assertIn(f"item at manifest index {idx} violates allowed contract paths", output)
+        self.assertNotIn("item at manifest index 5", output)
+        self.assertIn("... and 5 additional scope violation(s) truncated.", output)
+
+    def test_utf8_bom_compatibility_across_inputs(self):
+        bom = b"\xef\xbb\xbf"
+        issue_bytes = bom + b"### Allowed paths\n- src/bom_file.cs\n"
+        pr_bytes = bom + (
+            b"## Primary Issue\nFixes #1\n\n"
+            b"## Summary\nSummary\n\n"
+            b"## Scope\nScope\n\n"
+            b"## Verification\nVerification\n\n"
+            b"## Documentation\nDocumentation\n"
+        )
+        files_bytes = bom + json.dumps([{"filename": "src/bom_file.cs"}]).encode("utf-8")
+
+        issue_file = self._write_bytes("issue_bom.md", issue_bytes)
+        pr_file = self._write_bytes("pr_bom.md", pr_bytes)
+        files_file = self._write_bytes("files_bom.json", files_bytes)
+
+        argv = [
+            "--issue-body-file", str(issue_file),
+            "--pr-body-file", str(pr_file),
+            "--files-json", str(files_file),
+        ]
+        stdout = io.StringIO()
+        with patch("sys.stdout", stdout):
+            ret = preflight_check.main(argv)
+
+        self.assertEqual(ret, 0)
+        output = stdout.getvalue()
+        self.assertIn("Scope check:   PASS", output)
+        self.assertIn("PR hygiene:    PASS", output)
+        self.assertIn("Overall:       PASS", output)
 
     def test_missing_and_conflicting_primary_issue(self):
         issue_content = "### Allowed paths\n- src/file.cs\n"
@@ -288,7 +417,6 @@ class TestPreflightCheck(unittest.TestCase):
         issue_content = "### Allowed paths\n- src/file.cs\n"
         files = [{"filename": "src/file.cs"}]
 
-        # Missing ## Verification
         pr_missing_heading = (
             "## Primary Issue\nFixes #1\n\n"
             "## Summary\nS\n\n## Scope\nSc\n\n## Documentation\nD\n"
@@ -303,7 +431,7 @@ class TestPreflightCheck(unittest.TestCase):
         self.assertIn("PR hygiene:    FAIL", output)
         self.assertIn("missing required section heading '## Verification'", output)
 
-    def test_malformed_changed_file_json(self):
+    def test_malformed_changed_file_json_and_exit_notices(self):
         issue_file = self._write_file("issue.md", "### Allowed paths\n- src/f.cs\n")
         pr_file = self._write_file(
             "pr.md",
@@ -329,9 +457,11 @@ class TestPreflightCheck(unittest.TestCase):
             with patch("sys.stderr", stderr):
                 ret = preflight_check.main(argv)
             self.assertEqual(ret, 1)
-            self.assertIn(expected_msg, stderr.getvalue())
+            err_text = stderr.getvalue()
+            self.assertIn(expected_msg, err_text)
+            self.assertIn(preflight_check.NOT_VERIFIED_NOTICE, err_text)
 
-    def test_unreadable_or_missing_inputs(self):
+    def test_unreadable_or_missing_inputs_and_exit_notices(self):
         pr_file = self._write_file("pr.md", "text")
         files_file = self._write_file("files.json", "[]")
 
@@ -345,7 +475,9 @@ class TestPreflightCheck(unittest.TestCase):
         with patch("sys.stderr", stderr):
             ret = preflight_check.main(argv)
         self.assertEqual(ret, 1)
-        self.assertIn("Input --issue-body-file does not exist", stderr.getvalue())
+        err_text = stderr.getvalue()
+        self.assertIn("Input --issue-body-file does not exist", err_text)
+        self.assertIn(preflight_check.NOT_VERIFIED_NOTICE, err_text)
 
         # Directory passed as file
         argv_dir = [
@@ -357,10 +489,43 @@ class TestPreflightCheck(unittest.TestCase):
         with patch("sys.stderr", stderr2):
             ret2 = preflight_check.main(argv_dir)
         self.assertEqual(ret2, 1)
-        self.assertIn("is not a regular file", stderr2.getvalue())
+        err_text2 = stderr2.getvalue()
+        self.assertIn("is not a regular file", err_text2)
+        self.assertIn(preflight_check.NOT_VERIFIED_NOTICE, err_text2)
+
+    def test_argparse_sanitization_and_no_flag_abbreviation(self):
+        # 1. Unknown flag: fixed error text, no raw argument echo, exit status 2
+        stderr1 = io.StringIO()
+        with patch("sys.stderr", stderr1):
+            with self.assertRaises(SystemExit) as cm:
+                preflight_check.main(["--unknown-injected-flag-foo-bar"])
+            self.assertEqual(cm.exception.code, 2)
+        err_text1 = stderr1.getvalue()
+        self.assertIn("ERROR: Invalid command-line arguments.", err_text1)
+        self.assertNotIn("--unknown-injected-flag-foo-bar", err_text1)
+        self.assertIn(preflight_check.NOT_VERIFIED_NOTICE, err_text1)
+
+        # 2. Flag abbreviation rejected (allow_abbrev=False)
+        stderr2 = io.StringIO()
+        with patch("sys.stderr", stderr2):
+            with self.assertRaises(SystemExit) as cm2:
+                preflight_check.main(["--issue", "some/path.md"])
+            self.assertEqual(cm2.exception.code, 2)
+        err_text2 = stderr2.getvalue()
+        self.assertIn("ERROR: Invalid command-line arguments.", err_text2)
+        self.assertIn(preflight_check.NOT_VERIFIED_NOTICE, err_text2)
+
+        # 3. --help displays sanitized help with NOT VERIFIED notice and exits 0
+        stdout3 = io.StringIO()
+        with patch("sys.stdout", stdout3):
+            with self.assertRaises(SystemExit) as cm3:
+                preflight_check.main(["--help"])
+            self.assertEqual(cm3.exception.code, 0)
+        out3 = stdout3.getvalue()
+        self.assertIn("preflight_check.py", out3)
+        self.assertIn(preflight_check.NOT_VERIFIED_NOTICE, out3)
 
     def test_sensitive_diagnostic_input(self):
-        # Sensitive token in issue prose and PR heading
         issue_content = (
             "### Allowed paths\n"
             "- `ghp_superSecretToken12345678901234567890` (some prose)\n"
@@ -412,10 +577,9 @@ class TestPreflightCheck(unittest.TestCase):
         self.assertIn("Scope check:   PASS", output)
         self.assertIn("PR hygiene:    PASS", output)
         self.assertIn("Overall:       PASS", output)
-        # Verify that preflight explicitly disclaims decision verification
-        self.assertIn("NOT VERIFIED: Authority/approval", output)
+        self.assertIn(preflight_check.NOT_VERIFIED_NOTICE, output)
 
-    def test_no_network_subprocess_or_file_write_attempts(self):
+    def test_in_process_guards_against_writes_and_network(self):
         issue_content = "### Allowed paths\n- src/f.cs\n"
         pr_content = (
             "## Primary Issue\nFixes #1\n\n## Summary\nS\n\n## Scope\nSc\n\n## Verification\nV\n\n## Documentation\nD\n"
@@ -423,9 +587,19 @@ class TestPreflightCheck(unittest.TestCase):
         files = [{"filename": "src/f.cs"}]
         argv = self._create_standard_inputs(issue_content, pr_content, files)
 
-        before_files = set(self.dir_path.iterdir())
+        def guarded_open(file, mode="r", *args, **kwargs):
+            if any(m in mode for m in ("w", "a", "+", "x")):
+                raise PermissionError("Write operation forbidden in read-only preflight.")
+            return original_open(file, mode, *args, **kwargs)
 
-        with patch("urllib.request.urlopen") as mock_urlopen, \
+        original_open = builtins.open
+
+        with patch("builtins.open", side_effect=guarded_open), \
+             patch("pathlib.Path.write_text", side_effect=PermissionError("write_text forbidden")), \
+             patch("pathlib.Path.write_bytes", side_effect=PermissionError("write_bytes forbidden")), \
+             patch("os.remove", side_effect=PermissionError("os.remove forbidden")), \
+             patch("os.unlink", side_effect=PermissionError("os.unlink forbidden")), \
+             patch("urllib.request.urlopen") as mock_urlopen, \
              patch("subprocess.run") as mock_subproc_run, \
              patch("subprocess.Popen") as mock_subproc_popen:
 
@@ -438,9 +612,94 @@ class TestPreflightCheck(unittest.TestCase):
             mock_subproc_run.assert_not_called()
             mock_subproc_popen.assert_not_called()
 
-        after_files = set(self.dir_path.iterdir())
-        # No new files created by the CLI
-        self.assertEqual(before_files, after_files)
+    def test_cloud_subprocess_startup_and_no_bytecode_or_mutations(self):
+        """Cloud-only subprocess test copying scripts to clean temp tree to verify startup and zero pycache."""
+        with tempfile.TemporaryDirectory() as clean_worktree:
+            clean_path = Path(clean_worktree)
+            scripts_dir = clean_path / "scripts" / "ai-workflow"
+            scripts_dir.mkdir(parents=True, exist_ok=True)
+
+            src_scripts = REPO_ROOT / "scripts" / "ai-workflow"
+            for script_name in ["preflight_check.py", "evaluate_scope.py", "check_pr_hygiene.py", "parse_contract.py"]:
+                src_file = src_scripts / script_name
+                dest_file = scripts_dir / script_name
+                dest_file.write_text(src_file.read_text(encoding="utf-8"), encoding="utf-8")
+
+            # Synthetic fixture files
+            issue_f = clean_path / "issue.md"
+            issue_f.write_text("### Allowed paths\n- src/clean.cs\n", encoding="utf-8")
+
+            pr_f = clean_path / "pr.md"
+            pr_f.write_text(
+                "## Primary Issue\nFixes #1\n\n## Summary\nS\n\n## Scope\nSc\n\n## Verification\nV\n\n## Documentation\nD\n",
+                encoding="utf-8",
+            )
+
+            files_f = clean_path / "files.json"
+            files_f.write_text(json.dumps([{"filename": "src/clean.cs"}]), encoding="utf-8")
+
+            # Compute hashes before any execution
+            initial_hashes = compute_dir_hashes(clean_path)
+
+            target_script = scripts_dir / "preflight_check.py"
+
+            env = os.environ.copy()
+            # Do NOT set PYTHONDONTWRITEBYTECODE externally; test the script's internal sys.dont_write_bytecode
+            env.pop("PYTHONDONTWRITEBYTECODE", None)
+
+            # 1. Successful execution
+            cmd_pass = [
+                sys.executable,
+                str(target_script),
+                "--issue-body-file", str(issue_f),
+                "--pr-body-file", str(pr_f),
+                "--files-json", str(files_f),
+            ]
+            res_pass = subprocess.run(cmd_pass, capture_output=True, text=True, env=env)
+            self.assertEqual(res_pass.returncode, 0)
+            self.assertIn("Scope check:   PASS", res_pass.stdout)
+            self.assertIn(preflight_check.NOT_VERIFIED_NOTICE, res_pass.stdout)
+
+            # 2. Validation failure execution
+            bad_files_f = clean_path / "bad_files.json"
+            bad_files_f.write_text(json.dumps([{"filename": "src/outside_scope.cs"}]), encoding="utf-8")
+
+            cmd_fail = [
+                sys.executable,
+                str(target_script),
+                "--issue-body-file", str(issue_f),
+                "--pr-body-file", str(pr_f),
+                "--files-json", str(bad_files_f),
+            ]
+            res_fail = subprocess.run(cmd_fail, capture_output=True, text=True, env=env)
+            self.assertEqual(res_fail.returncode, 1)
+            self.assertIn("Scope check:   FAIL", res_fail.stdout)
+            self.assertIn(preflight_check.NOT_VERIFIED_NOTICE, res_fail.stdout)
+
+            # 3. Argument error execution
+            cmd_arg_err = [
+                sys.executable,
+                str(target_script),
+                "--invalid-flag-attempt",
+            ]
+            res_arg = subprocess.run(cmd_arg_err, capture_output=True, text=True, env=env)
+            self.assertEqual(res_arg.returncode, 2)
+            self.assertIn("ERROR: Invalid command-line arguments.", res_arg.stderr)
+            self.assertIn(preflight_check.NOT_VERIFIED_NOTICE, res_arg.stderr)
+
+            # Assert NO __pycache__ directory was ever created
+            pycache_dirs = list(clean_path.rglob("__pycache__"))
+            self.assertEqual(pycache_dirs, [], "Bytecode cache directory __pycache__ must not be created.")
+
+            # Assert NO .pyc files exist
+            pyc_files = list(clean_path.rglob("*.pyc"))
+            self.assertEqual(pyc_files, [], "Compiled bytecode files (*.pyc) must not be created.")
+
+            # Assert original fixture files were not modified
+            post_hashes = compute_dir_hashes(clean_path)
+            for rel_path, initial_hash in initial_hashes.items():
+                self.assertIn(rel_path, post_hashes)
+                self.assertEqual(post_hashes[rel_path], initial_hash, f"File {rel_path} was modified during CLI execution.")
 
 
 if __name__ == "__main__":
