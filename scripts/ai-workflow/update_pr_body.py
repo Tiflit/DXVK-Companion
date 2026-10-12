@@ -33,6 +33,11 @@ except ImportError:
         sanitize_display_text,
     )
 
+try:
+    from .check_pr_hygiene import verify_pr_body
+except ImportError:
+    from check_pr_hygiene import verify_pr_body
+
 
 SUPPORTED_RECORD_FAMILIES = ("REVIEW", "POST-MERGE", "ASSIGNMENT")
 SUPPORTED_FAMILIES_PATTERN = r"(?:REVIEW|POST-MERGE|ASSIGNMENT)"
@@ -872,6 +877,15 @@ def main() -> int:
     if privacy_violations:
         for line_num, category in privacy_violations:
             print(f"ERROR: Privacy violation detected on line {line_num}: {category}.", file=sys.stderr)
+        return 1
+
+    # Validate candidate body for PR hygiene requirements (fail closed before preview diff or PATCH)
+    hygiene_result = verify_pr_body(final_body)
+    if not hygiene_result.is_valid:
+        print(
+            "ERROR: PR body hygiene validation failed: candidate description is missing required sections or valid primary issue reference.",
+            file=sys.stderr,
+        )
         return 1
 
     # Preview Mode
