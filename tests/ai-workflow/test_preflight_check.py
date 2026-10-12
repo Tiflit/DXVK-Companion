@@ -625,7 +625,7 @@ class TestPreflightCheck(unittest.TestCase):
                 dest_file = scripts_dir / script_name
                 dest_file.write_text(src_file.read_text(encoding="utf-8"), encoding="utf-8")
 
-            # Synthetic fixture files
+            # Synthetic fixture files - create all fixtures before taking baseline
             issue_f = clean_path / "issue.md"
             issue_f.write_text("### Allowed paths\n- src/clean.cs\n", encoding="utf-8")
 
@@ -638,8 +638,11 @@ class TestPreflightCheck(unittest.TestCase):
             files_f = clean_path / "files.json"
             files_f.write_text(json.dumps([{"filename": "src/clean.cs"}]), encoding="utf-8")
 
-            # Compute hashes before any execution
-            initial_hashes = compute_dir_hashes(clean_path)
+            bad_files_f = clean_path / "bad_files.json"
+            bad_files_f.write_text(json.dumps([{"filename": "src/outside_scope.cs"}]), encoding="utf-8")
+
+            # Compute complete recursive file path/hash baseline with all fixtures present
+            baseline_hashes = compute_dir_hashes(clean_path)
 
             target_script = scripts_dir / "preflight_check.py"
 
@@ -659,11 +662,13 @@ class TestPreflightCheck(unittest.TestCase):
             self.assertEqual(res_pass.returncode, 0)
             self.assertIn("Scope check:   PASS", res_pass.stdout)
             self.assertIn(preflight_check.NOT_VERIFIED_NOTICE, res_pass.stdout)
+            self.assertEqual(
+                compute_dir_hashes(clean_path),
+                baseline_hashes,
+                "Tree state modified during successful preflight execution.",
+            )
 
             # 2. Validation failure execution
-            bad_files_f = clean_path / "bad_files.json"
-            bad_files_f.write_text(json.dumps([{"filename": "src/outside_scope.cs"}]), encoding="utf-8")
-
             cmd_fail = [
                 sys.executable,
                 str(target_script),
@@ -675,6 +680,11 @@ class TestPreflightCheck(unittest.TestCase):
             self.assertEqual(res_fail.returncode, 1)
             self.assertIn("Scope check:   FAIL", res_fail.stdout)
             self.assertIn(preflight_check.NOT_VERIFIED_NOTICE, res_fail.stdout)
+            self.assertEqual(
+                compute_dir_hashes(clean_path),
+                baseline_hashes,
+                "Tree state modified during validation failure execution.",
+            )
 
             # 3. Argument error execution
             cmd_arg_err = [
@@ -686,6 +696,11 @@ class TestPreflightCheck(unittest.TestCase):
             self.assertEqual(res_arg.returncode, 2)
             self.assertIn("ERROR: Invalid command-line arguments.", res_arg.stderr)
             self.assertIn(preflight_check.NOT_VERIFIED_NOTICE, res_arg.stderr)
+            self.assertEqual(
+                compute_dir_hashes(clean_path),
+                baseline_hashes,
+                "Tree state modified during argument error execution.",
+            )
 
             # Assert NO __pycache__ directory was ever created
             pycache_dirs = list(clean_path.rglob("__pycache__"))
@@ -694,12 +709,6 @@ class TestPreflightCheck(unittest.TestCase):
             # Assert NO .pyc files exist
             pyc_files = list(clean_path.rglob("*.pyc"))
             self.assertEqual(pyc_files, [], "Compiled bytecode files (*.pyc) must not be created.")
-
-            # Assert original fixture files were not modified
-            post_hashes = compute_dir_hashes(clean_path)
-            for rel_path, initial_hash in initial_hashes.items():
-                self.assertIn(rel_path, post_hashes)
-                self.assertEqual(post_hashes[rel_path], initial_hash, f"File {rel_path} was modified during CLI execution.")
 
 
 if __name__ == "__main__":
