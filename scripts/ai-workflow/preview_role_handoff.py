@@ -13,8 +13,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 
-HEX_SHA_REGEX = re.compile(r"^[0-9a-fA-F]{40}$")
-REPO_REGEX = re.compile(r"^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$")
+HEX_SHA_REGEX = re.compile(r"\A[0-9a-fA-F]{40}\Z")
+REPO_PART_REGEX = re.compile(r"\A[a-zA-Z0-9_.-]+\Z")
 
 VALID_ROLES = ("implementer", "coordinator", "reviewer")
 
@@ -55,9 +55,17 @@ def validate_snapshot_data(data: Any) -> Dict[str, Any]:
     if not isinstance(data, dict):
         raise ValueError("Snapshot root must be a JSON object.")
 
-    # 1. repo
+    # 1. repo: must be owner/name with non-empty parts, no dot components
     repo = data.get("repo")
-    if not isinstance(repo, str) or not REPO_REGEX.match(repo):
+    if not isinstance(repo, str):
+        raise ValueError("Field 'repo' must be a valid 'owner/name' string.")
+    parts = repo.split("/")
+    if len(parts) != 2:
+        raise ValueError("Field 'repo' must be a valid 'owner/name' string.")
+    owner, name = parts
+    if owner in (".", "..") or name in (".", ".."):
+        raise ValueError("Field 'repo' must not contain dot components '.' or '..'.")
+    if not REPO_PART_REGEX.fullmatch(owner) or not REPO_PART_REGEX.fullmatch(name):
         raise ValueError("Field 'repo' must be a valid 'owner/name' string.")
 
     # 2. pr_number
@@ -73,32 +81,35 @@ def validate_snapshot_data(data: Any) -> Dict[str, Any]:
     # 4. full 40-hex SHAs
     for key in ("live_pr_head_sha", "live_pr_base_sha", "live_default_branch_sha"):
         val = data.get(key)
-        if not isinstance(val, str) or not HEX_SHA_REGEX.match(val):
+        if not isinstance(val, str) or not HEX_SHA_REGEX.fullmatch(val):
             raise ValueError(f"Field '{key}' must be a 40-character hexadecimal SHA.")
 
-    # 5. task states
+    # 5. task states: exact case-insensitive match against finite vocabulary {"open", "closed"}
     pr_state = data.get("pr_state")
-    if not isinstance(pr_state, str) or not pr_state.strip():
-        raise ValueError("Field 'pr_state' must be a non-empty string.")
+    if not isinstance(pr_state, str) or pr_state.lower() not in ("open", "closed"):
+        raise ValueError("Field 'pr_state' must be exactly 'open' or 'closed'.")
 
     pr_merged = data.get("pr_merged")
     if type(pr_merged) is not bool:
         raise ValueError("Field 'pr_merged' must be a boolean.")
 
+    if pr_merged and pr_state.lower() != "closed":
+        raise ValueError("Field 'pr_merged' true requires 'pr_state' to be 'closed'.")
+
     primary_issue_state = data.get("primary_issue_state")
-    if not isinstance(primary_issue_state, str) or not primary_issue_state.strip():
-        raise ValueError("Field 'primary_issue_state' must be a non-empty string.")
+    if not isinstance(primary_issue_state, str) or primary_issue_state.lower() not in ("open", "closed"):
+        raise ValueError("Field 'primary_issue_state' must be exactly 'open' or 'closed'.")
 
     return {
         "repo": repo,
         "pr_number": pr_number,
         "primary_issue_number": primary_issue_number,
-        "live_pr_head_sha": data["live_pr_head_sha"],
-        "live_pr_base_sha": data["live_pr_base_sha"],
-        "live_default_branch_sha": data["live_default_branch_sha"],
-        "pr_state": pr_state.strip().upper(),
+        "live_pr_head_sha": data["live_pr_head_sha"].lower(),
+        "live_pr_base_sha": data["live_pr_base_sha"].lower(),
+        "live_default_branch_sha": data["live_default_branch_sha"].lower(),
+        "pr_state": pr_state.upper(),
         "pr_merged": pr_merged,
-        "primary_issue_state": primary_issue_state.strip().upper(),
+        "primary_issue_state": primary_issue_state.upper(),
     }
 
 
@@ -174,23 +185,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    parser = SanitizedArgumentParser(
-        description="Generate compact read-only role handoff preview from existing handoff JSON.",
-    )
-    parser.add_argument(
-        "--snapshot-file",
-        required=True,
-        type=Path,
-        help="Path to handoff snapshot JSON file.",
-    )
-    parser.add_argument(
-        "--role",
-        required=True,
-        choices=VALID_ROLES,
-        type=str.lower,
-        help="Target agent role (implementer, coordinator, reviewer).",
-    )
-    args = parser.parse_args(argv)
+    args = parse_args(argv)
 
     snapshot_path = args.snapshot_file
     if not snapshot_path.exists():

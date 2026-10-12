@@ -135,9 +135,11 @@ class TestRoleHandoffPreview(unittest.TestCase):
             self.assertIn(expected_step_snippet, output)
             self.assertIn("Stop Boundary:", output)
 
-    def test_case_insensitive_roles(self):
+    def test_case_insensitive_roles_and_states(self):
         snapshot = make_valid_snapshot()
-        f_path = self._write_file("snapshot.json", json.dumps(snapshot))
+        snapshot["pr_state"] = "open"
+        snapshot["primary_issue_state"] = "Closed"
+        f_path = self._write_file("snapshot_mixed_case.json", json.dumps(snapshot))
 
         for role_arg in ["IMPLEMENTER", "Coordinator", "REVIEWER"]:
             stdout = io.StringIO()
@@ -158,8 +160,9 @@ class TestRoleHandoffPreview(unittest.TestCase):
         self.assertIn("Role Handoff Preview", stdout.getvalue())
 
     def test_closed_and_merged_task_behavior(self):
-        # 1. PR merged
+        # 1. PR merged: requires pr_state="CLOSED" per real GitHub semantics
         s_merged = make_valid_snapshot()
+        s_merged["pr_state"] = "CLOSED"
         s_merged["pr_merged"] = True
         f_merged = self._write_file("snapshot_merged.json", json.dumps(s_merged))
 
@@ -173,9 +176,10 @@ class TestRoleHandoffPreview(unittest.TestCase):
         self.assertIn("never restart implementation", out1)
         self.assertLessEqual(len(out1.split()), 180)
 
-        # 2. PR closed
+        # 2. PR closed (unmerged)
         s_closed_pr = make_valid_snapshot()
         s_closed_pr["pr_state"] = "CLOSED"
+        s_closed_pr["pr_merged"] = False
         f_closed_pr = self._write_file("snapshot_closed_pr.json", json.dumps(s_closed_pr))
 
         stdout2 = io.StringIO()
@@ -201,58 +205,64 @@ class TestRoleHandoffPreview(unittest.TestCase):
         self.assertIn("never restart implementation", out3)
         self.assertLessEqual(len(out3.split()), 180)
 
-    def test_missing_and_wrong_type_fields(self):
+    def test_hostile_consumed_fields_rejected_with_empty_stdout(self):
         base = make_valid_snapshot()
 
-        invalid_cases = [
-            ("root not dict", json.dumps(["not", "a", "dict"])),
-            ("missing repo", json.dumps({k: v for k, v in base.items() if k != "repo"})),
-            ("repo not str", json.dumps({**base, "repo": 123})),
-            ("missing pr_number", json.dumps({k: v for k, v in base.items() if k != "pr_number"})),
-            ("pr_number string", json.dumps({**base, "pr_number": "86"})),
-            ("pr_number bool", json.dumps({**base, "pr_number": True})),
-            ("pr_number zero", json.dumps({**base, "pr_number": 0})),
-            ("pr_number negative", json.dumps({**base, "pr_number": -5})),
-            ("missing issue_number", json.dumps({k: v for k, v in base.items() if k != "primary_issue_number"})),
-            ("issue_number string", json.dumps({**base, "primary_issue_number": "85"})),
-            ("issue_number zero", json.dumps({**base, "primary_issue_number": 0})),
-            ("missing head_sha", json.dumps({k: v for k, v in base.items() if k != "live_pr_head_sha"})),
-            ("head_sha short", json.dumps({**base, "live_pr_head_sha": "c700fcd"})),
-            ("head_sha non-hex", json.dumps({**base, "live_pr_head_sha": "c700fcd16091e946246694565d1a5f55fdd3ad1z"})),
-            ("missing base_sha", json.dumps({k: v for k, v in base.items() if k != "live_pr_base_sha"})),
-            ("missing default_sha", json.dumps({k: v for k, v in base.items() if k != "live_default_branch_sha"})),
-            ("missing pr_state", json.dumps({k: v for k, v in base.items() if k != "pr_state"})),
-            ("empty pr_state", json.dumps({**base, "pr_state": "   "})),
-            ("missing pr_merged", json.dumps({k: v for k, v in base.items() if k != "pr_merged"})),
-            ("pr_merged not bool", json.dumps({**base, "pr_merged": "false"})),
-            ("missing issue_state", json.dumps({k: v for k, v in base.items() if k != "primary_issue_state"})),
-            ("empty issue_state", json.dumps({**base, "primary_issue_state": ""})),
+        hostile_cases = [
+            ("repo trailing newline", {**base, "repo": "Tiflit/DXVK-Companion\n"}),
+            ("repo leading newline", {**base, "repo": "\nTiflit/DXVK-Companion"}),
+            ("repo dot-dot component", {**base, "repo": "owner/.."}),
+            ("repo dot component", {**base, "repo": "owner/."}),
+            ("repo dot-dot owner", {**base, "repo": "../repo"}),
+            ("repo dot owner", {**base, "repo": "./repo"}),
+            ("repo no slash", {**base, "repo": "DXVK-Companion"}),
+            ("repo triple slash", {**base, "repo": "a/b/c"}),
+            ("head SHA trailing newline", {**base, "live_pr_head_sha": "c700fcd16091e946246694565d1a5f55fdd3ad1e\n"}),
+            ("base SHA trailing newline", {**base, "live_pr_base_sha": "3c231c1ab67c2b94b7aef76c536e8ca83a5810f3\n"}),
+            ("default SHA trailing newline", {**base, "live_default_branch_sha": "91d72bc015559b2268abb7b9b3a033c9f63bad05\n"}),
+            ("head SHA short", {**base, "live_pr_head_sha": "c700fcd"}),
+            ("head SHA non-hex", {**base, "live_pr_head_sha": "c700fcd16091e946246694565d1a5f55fdd3ad1z"}),
+            ("pr_state trailing newline", {**base, "pr_state": "open\n"}),
+            ("pr_state unknown", {**base, "pr_state": "unknown"}),
+            ("pr_state MERGED", {**base, "pr_state": "MERGED"}),
+            ("pr_state DRAFT", {**base, "pr_state": "DRAFT"}),
+            ("pr_state whitespace", {**base, "pr_state": " open "}),
+            ("primary_issue_state trailing newline", {**base, "primary_issue_state": "open\n"}),
+            ("primary_issue_state unknown", {**base, "primary_issue_state": "unknown"}),
+            ("primary_issue_state PENDING", {**base, "primary_issue_state": "PENDING"}),
+            ("pr_merged string true", {**base, "pr_merged": "true"}),
+            ("pr_merged integer 1", {**base, "pr_merged": 1}),
+            ("pr_merged None", {**base, "pr_merged": None}),
+            ("inconsistent merged True with open state", {**base, "pr_merged": True, "pr_state": "OPEN"}),
+            ("pr_number bool True", {**base, "pr_number": True}),
+            ("pr_number zero", {**base, "pr_number": 0}),
+            ("pr_number negative", {**base, "pr_number": -1}),
+            ("pr_number string", {**base, "pr_number": "86"}),
+            ("issue_number bool True", {**base, "primary_issue_number": True}),
+            ("issue_number zero", {**base, "primary_issue_number": 0}),
+            ("issue_number negative", {**base, "primary_issue_number": -1}),
+            ("issue_number string", {**base, "primary_issue_number": "85"}),
+            ("root not dict", ["not", "a", "dict"]),
+            ("missing repo", {k: v for k, v in base.items() if k != "repo"}),
+            ("missing pr_number", {k: v for k, v in base.items() if k != "pr_number"}),
+            ("missing issue_number", {k: v for k, v in base.items() if k != "primary_issue_number"}),
+            ("missing head_sha", {k: v for k, v in base.items() if k != "live_pr_head_sha"}),
+            ("missing base_sha", {k: v for k, v in base.items() if k != "live_pr_base_sha"}),
+            ("missing default_sha", {k: v for k, v in base.items() if k != "live_default_branch_sha"}),
+            ("missing pr_state", {k: v for k, v in base.items() if k != "pr_state"}),
+            ("missing pr_merged", {k: v for k, v in base.items() if k != "pr_merged"}),
+            ("missing issue_state", {k: v for k, v in base.items() if k != "primary_issue_state"}),
         ]
 
-        for desc, content in invalid_cases:
-            f_path = self._write_file(f"bad_{desc.replace(' ', '_')}.json", content)
+        for desc, hostile_data in hostile_cases:
+            f_path = self._write_file(f"bad_{desc.replace(' ', '_')}.json", json.dumps(hostile_data))
+            stdout = io.StringIO()
             stderr = io.StringIO()
-            with patch("sys.stderr", stderr):
+            with patch("sys.stdout", stdout), patch("sys.stderr", stderr):
                 ret = preview_role_handoff.main(["--snapshot-file", str(f_path), "--role", "implementer"])
-            self.assertEqual(ret, 1, f"Case '{desc}' should have exited with code 1")
-            self.assertIn("ERROR: Snapshot schema validation failed", stderr.getvalue())
-
-    def test_invalid_repo_and_sha_formats(self):
-        base = make_valid_snapshot()
-
-        bad_repos = [
-            "no_slash_repo",
-            "too/many/slashes/repo",
-            "repo/with spaces",
-            "../traversal/repo",
-        ]
-        for bad_repo in bad_repos:
-            f_path = self._write_file("bad_repo.json", json.dumps({**base, "repo": bad_repo}))
-            stderr = io.StringIO()
-            with patch("sys.stderr", stderr):
-                ret = preview_role_handoff.main(["--snapshot-file", str(f_path), "--role", "implementer"])
-            self.assertEqual(ret, 1)
-            self.assertIn("Snapshot schema validation failed", stderr.getvalue())
+            self.assertEqual(ret, 1, f"Hostile case '{desc}' did not exit with code 1")
+            self.assertEqual(stdout.getvalue(), "", f"Hostile case '{desc}' produced non-empty stdout!")
+            self.assertIn("Snapshot schema validation failed", stderr.getvalue(), f"Hostile case '{desc}' missing schema failure diagnostic in stderr")
 
     def test_stale_or_moved_identities(self):
         snapshot = make_valid_snapshot()
@@ -278,7 +288,7 @@ class TestRoleHandoffPreview(unittest.TestCase):
         self.assertEqual(ret, 0)
         self.assertIn("Role Handoff Preview", stdout.getvalue())
 
-    def test_malicious_content_injection_defense(self):
+    def test_malicious_content_injection_defense_on_ignored_fields(self):
         snapshot = make_valid_snapshot()
         evil_tokens = [
             "EVIL_PROMPT_INJECTION_TITLE_PAYLOAD",
@@ -354,38 +364,63 @@ class TestRoleHandoffPreview(unittest.TestCase):
     def test_unreadable_or_missing_snapshot_file(self):
         # Nonexistent file
         stderr1 = io.StringIO()
-        with patch("sys.stderr", stderr1):
+        stdout1 = io.StringIO()
+        with patch("sys.stdout", stdout1), patch("sys.stderr", stderr1):
             ret1 = preview_role_handoff.main(["--snapshot-file", str(self.dir_path / "nonexistent.json"), "--role", "implementer"])
         self.assertEqual(ret1, 1)
+        self.assertEqual(stdout1.getvalue(), "")
         self.assertIn("Input --snapshot-file does not exist", stderr1.getvalue())
 
         # Directory passed as file
         stderr2 = io.StringIO()
-        with patch("sys.stderr", stderr2):
+        stdout2 = io.StringIO()
+        with patch("sys.stdout", stdout2), patch("sys.stderr", stderr2):
             ret2 = preview_role_handoff.main(["--snapshot-file", str(self.dir_path), "--role", "implementer"])
         self.assertEqual(ret2, 1)
+        self.assertEqual(stdout2.getvalue(), "")
         self.assertIn("is not a regular file", stderr2.getvalue())
 
         # Malformed JSON syntax
         bad_json_path = self._write_file("bad_syntax.json", "NOT JSON {{{")
         stderr3 = io.StringIO()
-        with patch("sys.stderr", stderr3):
+        stdout3 = io.StringIO()
+        with patch("sys.stdout", stdout3), patch("sys.stderr", stderr3):
             ret3 = preview_role_handoff.main(["--snapshot-file", str(bad_json_path), "--role", "implementer"])
         self.assertEqual(ret3, 1)
+        self.assertEqual(stdout3.getvalue(), "")
         self.assertIn("does not contain valid JSON syntax", stderr3.getvalue())
 
     def test_in_process_guards_against_writes_network_and_subprocesses(self):
         snapshot = make_valid_snapshot()
         f_path = self._write_file("snapshot.json", json.dumps(snapshot))
 
-        def guarded_open(file, mode="r", *args, **kwargs):
+        original_io_open = io.open
+        original_builtins_open = builtins.open
+        original_os_open = os.open
+
+        def guarded_io_open(file, mode="r", *args, **kwargs):
             if any(m in mode for m in ("w", "a", "+", "x")):
-                raise PermissionError("Write operation forbidden in read-only preview.")
-            return original_open(file, mode, *args, **kwargs)
+                raise PermissionError(f"Write operation forbidden in read-only preview: mode '{mode}'.")
+            return original_io_open(file, mode, *args, **kwargs)
 
-        original_open = builtins.open
+        def guarded_builtins_open(file, mode="r", *args, **kwargs):
+            if any(m in mode for m in ("w", "a", "+", "x")):
+                raise PermissionError(f"Write operation forbidden in read-only preview: mode '{mode}'.")
+            return original_builtins_open(file, mode, *args, **kwargs)
 
-        with patch("builtins.open", side_effect=guarded_open), \
+        def guarded_os_open(path, flags, *args, **kwargs):
+            write_flags = os.O_WRONLY | os.O_RDWR
+            if hasattr(os, "O_CREAT"):
+                write_flags |= os.O_CREAT
+            if hasattr(os, "O_APPEND"):
+                write_flags |= os.O_APPEND
+            if flags & write_flags:
+                raise PermissionError(f"os.open write flags forbidden: {flags}")
+            return original_os_open(path, flags, *args, **kwargs)
+
+        with patch("io.open", side_effect=guarded_io_open), \
+             patch("builtins.open", side_effect=guarded_builtins_open), \
+             patch("os.open", side_effect=guarded_os_open), \
              patch("pathlib.Path.write_text", side_effect=PermissionError("write_text forbidden")), \
              patch("pathlib.Path.write_bytes", side_effect=PermissionError("write_bytes forbidden")), \
              patch("os.remove", side_effect=PermissionError("os.remove forbidden")), \
@@ -394,10 +429,39 @@ class TestRoleHandoffPreview(unittest.TestCase):
              patch("subprocess.run") as mock_subproc_run, \
              patch("subprocess.Popen") as mock_subproc_popen:
 
+            # Positive control: verify that deliberate write attempts raise PermissionError and preserve bytes
+            test_target = self.dir_path / "guarded_test.txt"
+            initial_target_bytes = b"original-content"
+            test_target.write_bytes(initial_target_bytes)
+
+            with self.assertRaises(PermissionError):
+                io.open(str(test_target), "w")
+            self.assertEqual(test_target.read_bytes(), initial_target_bytes)
+
+            with self.assertRaises(PermissionError):
+                builtins.open(str(test_target), "w")
+            self.assertEqual(test_target.read_bytes(), initial_target_bytes)
+
+            with self.assertRaises(PermissionError):
+                os.open(str(test_target), os.O_WRONLY)
+            self.assertEqual(test_target.read_bytes(), initial_target_bytes)
+
+            # Exercise real CLI success under patched boundaries
             stdout = io.StringIO()
             with patch("sys.stdout", stdout):
-                ret = preview_role_handoff.main(["--snapshot-file", str(f_path), "--role", "implementer"])
-            self.assertEqual(ret, 0)
+                ret_pass = preview_role_handoff.main(["--snapshot-file", str(f_path), "--role", "implementer"])
+            self.assertEqual(ret_pass, 0)
+            self.assertIn("Role Handoff Preview", stdout.getvalue())
+
+            # Exercise representative CLI failure under patched boundaries
+            bad_path = self._write_file("bad_under_guard.json", "INVALID JSON")
+            stderr = io.StringIO()
+            stdout_fail = io.StringIO()
+            with patch("sys.stdout", stdout_fail), patch("sys.stderr", stderr):
+                ret_fail = preview_role_handoff.main(["--snapshot-file", str(bad_path), "--role", "implementer"])
+            self.assertEqual(ret_fail, 1)
+            self.assertEqual(stdout_fail.getvalue(), "")
+
             mock_urlopen.assert_not_called()
             mock_subproc_run.assert_not_called()
             mock_subproc_popen.assert_not_called()
@@ -454,6 +518,7 @@ class TestRoleHandoffPreview(unittest.TestCase):
             ]
             res_fail = subprocess.run(cmd_fail, capture_output=True, text=True, env=env)
             self.assertEqual(res_fail.returncode, 1)
+            self.assertEqual(res_fail.stdout, "")
             self.assertIn("Snapshot schema validation failed", res_fail.stderr)
             self.assertEqual(
                 compute_dir_hashes(clean_path),
