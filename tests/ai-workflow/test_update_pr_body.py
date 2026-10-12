@@ -936,10 +936,12 @@ class TestUpdatePrBody(unittest.TestCase):
     @patch("urllib.request.urlopen")
     def test_pr_preview_redacts_removed_private_path_in_diff(self, mock_urlopen):
         remote_leaking_body = (
+            "## Primary Issue\nFixes #33\n\n"
             "## Summary\nOld summary with C:\\Users\\alice_secret\\passwords.txt\n\n"
             "## Scope\nscripts/\n\n## Verification\nDone\n\n## Documentation\nDone\n"
         )
         proposed_clean_body = (
+            "## Primary Issue\nFixes #33\n\n"
             "## Summary\nClean summary without any private path.\n\n"
             "## Scope\nscripts/\n\n## Verification\nDone\n\n## Documentation\nDone\n"
         )
@@ -1260,10 +1262,12 @@ class TestUpdatePrBody(unittest.TestCase):
     @patch("urllib.request.urlopen")
     def test_pr_preview_redacts_removed_posix_path_at_column_1_in_diff(self, mock_urlopen):
         remote_leaking_body = (
+            "## Primary Issue\nFixes #33\n\n"
             "/home/alice_secret/private_repo_details.txt\n"
             "## Summary\nOld summary\n\n## Scope\nscripts/\n\n## Verification\nDone\n\n## Documentation\nDone\n"
         )
         proposed_clean_body = (
+            "## Primary Issue\nFixes #33\n\n"
             "Clean replacement line\n"
             "## Summary\nOld summary\n\n## Scope\nscripts/\n\n## Verification\nDone\n\n## Documentation\nDone\n"
         )
@@ -1304,10 +1308,12 @@ class TestUpdatePrBody(unittest.TestCase):
     @patch("urllib.request.urlopen")
     def test_pr_preview_redacts_removed_windows_path_at_column_1_in_diff(self, mock_urlopen):
         remote_leaking_body = (
+            "## Primary Issue\nFixes #33\n\n"
             "C:\\Users\\alice_secret\\private_repo_details.txt\n"
             "## Summary\nOld summary\n\n## Scope\nscripts/\n\n## Verification\nDone\n\n## Documentation\nDone\n"
         )
         proposed_clean_body = (
+            "## Primary Issue\nFixes #33\n\n"
             "Clean replacement line\n"
             "## Summary\nOld summary\n\n## Scope\nscripts/\n\n## Verification\nDone\n\n## Documentation\nDone\n"
         )
@@ -1328,10 +1334,12 @@ class TestUpdatePrBody(unittest.TestCase):
     @patch("urllib.request.urlopen")
     def test_pr_preview_redacts_removed_header_looking_line_with_posix_path_in_diff(self, mock_urlopen):
         remote_leaking_body = (
+            "## Primary Issue\nFixes #33\n\n"
             "-- /home/alice_secret/private_repo_details.txt\n"
             "## Summary\nOld summary\n\n## Scope\nscripts/\n\n## Verification\nDone\n\n## Documentation\nDone\n"
         )
         proposed_clean_body = (
+            "## Primary Issue\nFixes #33\n\n"
             "Clean replacement line\n"
             "## Summary\nOld summary\n\n## Scope\nscripts/\n\n## Verification\nDone\n\n## Documentation\nDone\n"
         )
@@ -1354,10 +1362,12 @@ class TestUpdatePrBody(unittest.TestCase):
     @patch("urllib.request.urlopen")
     def test_pr_preview_redacts_removed_header_looking_line_with_token_in_diff(self, mock_urlopen):
         remote_leaking_body = (
+            "## Primary Issue\nFixes #33\n\n"
             "-- ghp_0123456789abcdef0123456789abcdef\n"
             "## Summary\nOld summary\n\n## Scope\nscripts/\n\n## Verification\nDone\n\n## Documentation\nDone\n"
         )
         proposed_clean_body = (
+            "## Primary Issue\nFixes #33\n\n"
             "Clean replacement line\n"
             "## Summary\nOld summary\n\n## Scope\nscripts/\n\n## Verification\nDone\n\n## Documentation\nDone\n"
         )
@@ -1427,6 +1437,324 @@ class TestUpdatePrBody(unittest.TestCase):
                 self.assertIn("Body file not found", err)
                 self.assertNotIn("ghp_9876543210fedcba9876543210fedcba", err)
                 self.assertIn("<redacted-filename>", err)
+
+
+    # =========================================================================
+    # 9. PR Body Hygiene Validation Guard (Issue #91)
+    # =========================================================================
+
+    @patch("urllib.request.urlopen")
+    def test_pr_hygiene_missing_summary_heading_rejected(self, mock_urlopen):
+        mock_urlopen.return_value = MockHttpResponse({"number": 31, "body": self.sample_remote_body})
+        body_missing_summary = (
+            "## Primary Issue\nFixes #31\n\n"
+            "## Scope\nscripts/ai-workflow/**\n\n"
+            "## Verification\nAll cloud tests passed.\n\n"
+            "## Documentation\nUpdated.\n"
+        )
+        test_args = ["update_pr_body.py", "--pr", "31", "--body", body_missing_summary]
+        with patch.object(sys, "argv", test_args):
+            with patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+                with patch("sys.stderr", new_callable=io.StringIO) as mock_err:
+                    exit_code = update_pr_body.main()
+                    self.assertEqual(exit_code, 1)
+                    self.assertIn(
+                        "ERROR: PR body hygiene validation failed: candidate description is missing required sections or valid primary issue reference.",
+                        mock_err.getvalue(),
+                    )
+                    self.assertNotIn("DIFF PREVIEW", mock_out.getvalue())
+
+    @patch("urllib.request.urlopen")
+    def test_pr_hygiene_missing_scope_heading_rejected(self, mock_urlopen):
+        mock_urlopen.return_value = MockHttpResponse({"number": 31, "body": self.sample_remote_body})
+        body_missing_scope = (
+            "## Primary Issue\nFixes #31\n\n"
+            "## Summary\nAdditive check.\n\n"
+            "## Verification\nAll cloud tests passed.\n\n"
+            "## Documentation\nUpdated.\n"
+        )
+        test_args = ["update_pr_body.py", "--pr", "31", "--body", body_missing_scope]
+        with patch.object(sys, "argv", test_args):
+            with patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+                with patch("sys.stderr", new_callable=io.StringIO) as mock_err:
+                    exit_code = update_pr_body.main()
+                    self.assertEqual(exit_code, 1)
+                    self.assertIn(
+                        "ERROR: PR body hygiene validation failed: candidate description is missing required sections or valid primary issue reference.",
+                        mock_err.getvalue(),
+                    )
+                    self.assertNotIn("DIFF PREVIEW", mock_out.getvalue())
+
+    @patch("urllib.request.urlopen")
+    def test_pr_hygiene_missing_verification_heading_rejected(self, mock_urlopen):
+        mock_urlopen.return_value = MockHttpResponse({"number": 31, "body": self.sample_remote_body})
+        body_missing_verification = (
+            "## Primary Issue\nFixes #31\n\n"
+            "## Summary\nAdditive check.\n\n"
+            "## Scope\nscripts/ai-workflow/**\n\n"
+            "## Documentation\nUpdated.\n"
+        )
+        test_args = ["update_pr_body.py", "--pr", "31", "--body", body_missing_verification]
+        with patch.object(sys, "argv", test_args):
+            with patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+                with patch("sys.stderr", new_callable=io.StringIO) as mock_err:
+                    exit_code = update_pr_body.main()
+                    self.assertEqual(exit_code, 1)
+                    self.assertIn(
+                        "ERROR: PR body hygiene validation failed: candidate description is missing required sections or valid primary issue reference.",
+                        mock_err.getvalue(),
+                    )
+                    self.assertNotIn("DIFF PREVIEW", mock_out.getvalue())
+
+    @patch("urllib.request.urlopen")
+    def test_pr_hygiene_missing_documentation_heading_rejected(self, mock_urlopen):
+        mock_urlopen.return_value = MockHttpResponse({"number": 31, "body": self.sample_remote_body})
+        body_missing_doc = (
+            "## Primary Issue\nFixes #31\n\n"
+            "## Summary\nAdditive check.\n\n"
+            "## Scope\nscripts/ai-workflow/**\n\n"
+            "## Verification\nAll cloud tests passed.\n"
+        )
+        test_args = ["update_pr_body.py", "--pr", "31", "--body", body_missing_doc]
+        with patch.object(sys, "argv", test_args):
+            with patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+                with patch("sys.stderr", new_callable=io.StringIO) as mock_err:
+                    exit_code = update_pr_body.main()
+                    self.assertEqual(exit_code, 1)
+                    self.assertIn(
+                        "ERROR: PR body hygiene validation failed: candidate description is missing required sections or valid primary issue reference.",
+                        mock_err.getvalue(),
+                    )
+                    self.assertNotIn("DIFF PREVIEW", mock_out.getvalue())
+
+    @patch("urllib.request.urlopen")
+    def test_pr_hygiene_empty_body_rejected(self, mock_urlopen):
+        mock_urlopen.return_value = MockHttpResponse({"number": 31, "body": self.sample_remote_body})
+        test_args = ["update_pr_body.py", "--pr", "31", "--body", "   \n\n   "]
+        with patch.object(sys, "argv", test_args):
+            with patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+                with patch("sys.stderr", new_callable=io.StringIO) as mock_err:
+                    exit_code = update_pr_body.main()
+                    self.assertEqual(exit_code, 1)
+                    self.assertIn(
+                        "ERROR: PR body hygiene validation failed: candidate description is missing required sections or valid primary issue reference.",
+                        mock_err.getvalue(),
+                    )
+                    self.assertNotIn("DIFF PREVIEW", mock_out.getvalue())
+
+    @patch("urllib.request.urlopen")
+    def test_pr_hygiene_missing_primary_issue_reference_rejected(self, mock_urlopen):
+        mock_urlopen.return_value = MockHttpResponse({"number": 31, "body": self.sample_remote_body})
+        body_without_issue = (
+            "## Summary\nValid summary.\n\n"
+            "## Scope\nscripts/ai-workflow/**\n\n"
+            "## Verification\nAll cloud tests passed.\n\n"
+            "## Documentation\nUpdated.\n"
+        )
+        test_args = ["update_pr_body.py", "--pr", "31", "--body", body_without_issue]
+        with patch.object(sys, "argv", test_args):
+            with patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+                with patch("sys.stderr", new_callable=io.StringIO) as mock_err:
+                    exit_code = update_pr_body.main()
+                    self.assertEqual(exit_code, 1)
+                    self.assertIn(
+                        "ERROR: PR body hygiene validation failed: candidate description is missing required sections or valid primary issue reference.",
+                        mock_err.getvalue(),
+                    )
+                    self.assertNotIn("DIFF PREVIEW", mock_out.getvalue())
+
+    @patch("urllib.request.urlopen")
+    def test_pr_hygiene_conflicting_primary_issue_references_rejected(self, mock_urlopen):
+        mock_urlopen.return_value = MockHttpResponse({"number": 31, "body": self.sample_remote_body})
+        body_with_conflicting_issues = (
+            "Fixes #31\n"
+            "Closes #42\n\n"
+            "## Summary\nValid summary.\n\n"
+            "## Scope\nscripts/ai-workflow/**\n\n"
+            "## Verification\nAll cloud tests passed.\n\n"
+            "## Documentation\nUpdated.\n"
+        )
+        test_args = ["update_pr_body.py", "--pr", "31", "--body", body_with_conflicting_issues]
+        with patch.object(sys, "argv", test_args):
+            with patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+                with patch("sys.stderr", new_callable=io.StringIO) as mock_err:
+                    exit_code = update_pr_body.main()
+                    self.assertEqual(exit_code, 1)
+                    self.assertIn(
+                        "ERROR: PR body hygiene validation failed: candidate description is missing required sections or valid primary issue reference.",
+                        mock_err.getvalue(),
+                    )
+                    self.assertNotIn("DIFF PREVIEW", mock_out.getvalue())
+
+    @patch("urllib.request.urlopen")
+    def test_pr_hygiene_error_suppresses_hostile_free_text_and_diagnostics(self, mock_urlopen):
+        mock_urlopen.return_value = MockHttpResponse({"number": 31, "body": self.sample_remote_body})
+        hostile_text = (
+            "DROP TABLE users; <script>malicious()</script> "
+            "SELECT secret FROM keys WHERE 1=1; arbitrary_issue_#999999"
+        )
+        body_with_hostile_text = f"## Summary\n{hostile_text}\n"
+        test_args = ["update_pr_body.py", "--pr", "31", "--body", body_with_hostile_text]
+        with patch.object(sys, "argv", test_args):
+            with patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+                with patch("sys.stderr", new_callable=io.StringIO) as mock_err:
+                    exit_code = update_pr_body.main()
+                    self.assertEqual(exit_code, 1)
+                    err = mock_err.getvalue()
+                    self.assertEqual(
+                        err.strip(),
+                        "ERROR: PR body hygiene validation failed: candidate description is missing required sections or valid primary issue reference.",
+                    )
+                    self.assertNotIn("DROP TABLE", err)
+                    self.assertNotIn("<script>", err)
+                    self.assertNotIn("999999", err)
+                    self.assertNotIn("ContractParseError", err)
+                    self.assertNotIn("missing_sections", err)
+                    self.assertNotIn(hostile_text, mock_out.getvalue())
+
+    @patch("urllib.request.urlopen")
+    def test_pr_privacy_scan_precedes_hygiene_validation(self, mock_urlopen):
+        mock_urlopen.return_value = MockHttpResponse({"number": 31, "body": self.sample_remote_body})
+        leaking_and_malformed_body = (
+            "Here is /home/secret_user/keys.txt\n"
+            "No valid headings at all."
+        )
+        test_args = ["update_pr_body.py", "--pr", "31", "--body", leaking_and_malformed_body]
+        with patch.object(sys, "argv", test_args):
+            with patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+                with patch("sys.stderr", new_callable=io.StringIO) as mock_err:
+                    exit_code = update_pr_body.main()
+                    self.assertEqual(exit_code, 1)
+                    err = mock_err.getvalue()
+                    self.assertIn("POSIX personal-home path", err)
+                    self.assertNotIn("PR body hygiene validation failed", err)
+                    self.assertNotIn("DIFF PREVIEW", mock_out.getvalue())
+
+    @patch("urllib.request.urlopen")
+    def test_pr_hygiene_preview_succeeds_with_valid_body(self, mock_urlopen):
+        mock_urlopen.return_value = MockHttpResponse({"number": 31, "body": self.sample_remote_body})
+        valid_body = (
+            "## Primary Issue\nFixes #31\n\n"
+            "## Summary\nValid summary text.\n\n"
+            "## Scope\nscripts/ai-workflow/**\n\n"
+            "## Verification\n92 tests passed.\n\n"
+            "## Documentation\nUpdated.\n"
+        )
+        test_args = ["update_pr_body.py", "--pr", "31", "--body", valid_body]
+        with patch.object(sys, "argv", test_args):
+            with patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+                with patch("sys.stderr", new_callable=io.StringIO) as mock_err:
+                    exit_code = update_pr_body.main()
+                    self.assertEqual(exit_code, 0)
+                    out = mock_out.getvalue()
+                    self.assertIn("[PREVIEW] PR #31 body update (zero writes committed):", out)
+                    self.assertIn("--- DIFF PREVIEW ---", out)
+                    self.assertEqual(mock_err.getvalue(), "")
+
+    @patch("urllib.request.urlopen")
+    def test_pr_hygiene_rejects_in_write_mode_before_backup_or_patch(self, mock_urlopen):
+        mock_urlopen.return_value = MockHttpResponse({"number": 31, "body": self.sample_remote_body})
+        invalid_body = (
+            "## Summary\nMissing other sections and primary issue.\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp_backup_dir:
+            test_args = [
+                "update_pr_body.py",
+                "--pr", "31",
+                "--body", invalid_body,
+                "--backup-dir", tmp_backup_dir,
+                "--write",
+                "--token", "tok",
+            ]
+            with patch.object(sys, "argv", test_args):
+                with patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+                    with patch("sys.stderr", new_callable=io.StringIO) as mock_err:
+                        exit_code = update_pr_body.main()
+                        self.assertEqual(exit_code, 1)
+                        self.assertIn(
+                            "ERROR: PR body hygiene validation failed: candidate description is missing required sections or valid primary issue reference.",
+                            mock_err.getvalue(),
+                        )
+
+            # Assert NO backup files created
+            backup_files = list(Path(tmp_backup_dir).glob("*"))
+            self.assertEqual(len(backup_files), 0)
+
+            # Assert NO PATCH calls made
+            for call in mock_urlopen.call_args_list:
+                req = call[0][0]
+                method = req.get_method() if hasattr(req, "get_method") else "GET"
+                self.assertNotEqual(method, "PATCH")
+
+    @patch("urllib.request.urlopen")
+    def test_pr_hygiene_write_mode_succeeds_with_valid_body(self, mock_urlopen):
+        remote_body = self.sample_remote_body
+        expected_hash = compute_body_sha256(remote_body)
+        proposed_body = (
+            "## Primary Issue\nFixes #31\n\n"
+            "## Summary\nUpdated valid summary.\n\n"
+            "## Scope\nscripts/ai-workflow/**\n\n"
+            "## Verification\n92 tests passed.\n\n"
+            "## Documentation\nUpdated.\n"
+        )
+        expected_final, _ = merge_and_preserve_review_records(
+            remote_body=remote_body,
+            proposed_body=proposed_body,
+        )
+
+        call_count = 0
+        def fake_urlopen(req, *args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            method = req.get_method() if hasattr(req, "get_method") else "GET"
+            if method == "PATCH":
+                return MockHttpResponse({"number": 31, "body": expected_final})
+            if call_count <= 2:
+                return MockHttpResponse({"number": 31, "body": remote_body})
+            else:
+                return MockHttpResponse({"number": 31, "body": expected_final})
+
+        mock_urlopen.side_effect = fake_urlopen
+
+        with tempfile.TemporaryDirectory() as tmp_backup_dir:
+            test_args = [
+                "update_pr_body.py",
+                "--pr", "31",
+                "--body", proposed_body,
+                "--expected-base-hash", expected_hash,
+                "--backup-dir", tmp_backup_dir,
+                "--write",
+                "--token", "tok",
+            ]
+            with patch.object(sys, "argv", test_args):
+                with patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+                    exit_code = update_pr_body.main()
+                    self.assertEqual(exit_code, 0)
+                    out = mock_out.getvalue()
+                    self.assertIn("SUCCESS: PR #31 body updated", out)
+
+            backups = list(Path(tmp_backup_dir).glob("pr_31_body_backup_*.md"))
+            self.assertEqual(len(backups), 1)
+            self.assertEqual(backups[0].read_text(encoding="utf-8"), remote_body)
+
+    @patch("urllib.request.urlopen")
+    def test_pr_hygiene_preserves_review_records_in_final_candidate(self, mock_urlopen):
+        mock_urlopen.return_value = MockHttpResponse({"number": 31, "body": self.sample_remote_body})
+        valid_proposed = (
+            "## Primary Issue\nFixes #31\n\n"
+            "## Summary\nUpdated summary.\n\n"
+            "## Scope\nscripts/ai-workflow/**\n\n"
+            "## Verification\n92 passed.\n\n"
+            "## Documentation\nUpdated.\n"
+        )
+        test_args = ["update_pr_body.py", "--pr", "31", "--body", valid_proposed]
+        with patch.object(sys, "argv", test_args):
+            with patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+                exit_code = update_pr_body.main()
+                self.assertEqual(exit_code, 0)
+                out = mock_out.getvalue()
+                self.assertIn("chatgpt-2026-10-04-rev1", out)
+                self.assertIn("Preserved Review Records (1): chatgpt-2026-10-04-rev1", out)
 
 
 if __name__ == "__main__":
