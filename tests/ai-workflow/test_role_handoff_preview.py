@@ -393,6 +393,10 @@ class TestRoleHandoffPreview(unittest.TestCase):
     def test_in_process_guards_against_writes_network_and_subprocesses(self):
         snapshot = make_valid_snapshot()
         f_path = self._write_file("snapshot.json", json.dumps(snapshot))
+        bad_path = self._write_file("bad_under_guard.json", "INVALID JSON")
+        test_target = self.dir_path / "guarded_test.txt"
+        initial_target_bytes = b"original-content"
+        test_target.write_bytes(initial_target_bytes)
 
         original_io_open = io.open
         original_builtins_open = builtins.open
@@ -430,9 +434,13 @@ class TestRoleHandoffPreview(unittest.TestCase):
              patch("subprocess.Popen") as mock_subproc_popen:
 
             # Positive control: verify that deliberate write attempts raise PermissionError and preserve bytes
-            test_target = self.dir_path / "guarded_test.txt"
-            initial_target_bytes = b"original-content"
-            test_target.write_bytes(initial_target_bytes)
+            with self.assertRaises(PermissionError):
+                test_target.write_bytes(b"forbidden-bytes")
+            self.assertEqual(test_target.read_bytes(), initial_target_bytes)
+
+            with self.assertRaises(PermissionError):
+                test_target.write_text("forbidden-text")
+            self.assertEqual(test_target.read_bytes(), initial_target_bytes)
 
             with self.assertRaises(PermissionError):
                 io.open(str(test_target), "w")
@@ -454,7 +462,6 @@ class TestRoleHandoffPreview(unittest.TestCase):
             self.assertIn("Role Handoff Preview", stdout.getvalue())
 
             # Exercise representative CLI failure under patched boundaries
-            bad_path = self._write_file("bad_under_guard.json", "INVALID JSON")
             stderr = io.StringIO()
             stdout_fail = io.StringIO()
             with patch("sys.stdout", stdout_fail), patch("sys.stderr", stderr):
