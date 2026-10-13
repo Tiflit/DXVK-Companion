@@ -254,21 +254,11 @@ namespace DXVKCompanion.UI
                 Left = 20,
                 Width = 240
             };
-            policyCombo.Items.Add("Use Global Policy");
-            policyCombo.Items.Add("Automatic Management");
-            policyCombo.Items.Add("Disabled");
-
-            int policyIndex = 0;
-            if (installation?.ManagementPolicy != null)
+            foreach (var label in GameDetailsPolicySelection.GetAvailableLabels(installation?.ManagementPolicy))
             {
-                policyIndex = installation.ManagementPolicy.Mode switch
-                {
-                    ManagementMode.Automatic => 1,
-                    ManagementMode.Disabled => 2,
-                    _ => 0
-                };
+                policyCombo.Items.Add(label);
             }
-            policyCombo.SelectedIndex = policyIndex;
+            policyCombo.SelectedIndex = GameDetailsPolicySelection.GetInitialSelectedIndex(installation?.ManagementPolicy);
             Controls.Add(policyCombo);
             top += 35;
 
@@ -338,12 +328,9 @@ namespace DXVKCompanion.UI
                     installation.Configuration.FrameLimitEnabled = frameLimitBox.Value > 0;
                     installation.IsHidden = hideCheckbox.Checked;
 
-                    installation.ManagementPolicy = policyCombo.SelectedIndex switch
-                    {
-                        1 => ManagementPolicy.Automatic(),
-                        2 => ManagementPolicy.Disabled(),
-                        _ => ManagementPolicy.UseGlobal()
-                    };
+                    installation.ManagementPolicy = GameDetailsPolicySelection.ResolvePolicy(
+                        policyCombo.SelectedIndex,
+                        installation.ManagementPolicy);
 
                     _gameLibraryStore.Save(installation);
                 }
