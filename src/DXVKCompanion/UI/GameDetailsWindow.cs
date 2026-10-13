@@ -37,10 +37,16 @@ namespace DXVKCompanion.UI
             string gameDir = Path.GetDirectoryName(_profile.ExePath) ?? string.Empty;
             var installation = _gameLibraryStore.FindInstallationForExecutable(_profile.ExePath)
                 ?? (!string.IsNullOrWhiteSpace(gameDir) ? _gameLibraryStore.FindByInstallationPath(gameDir) : null);
+            bool isPreexistingInstallation = installation != null;
             if (installation == null && !string.IsNullOrWhiteSpace(gameDir))
             {
                 installation = _gameLibraryStore.GetOrCreateInstallation(gameDir, _profile.ExeName);
             }
+
+            var initialConfigDisplay = GameDetailsConfigurationSelection.GetInitialDisplay(
+                installation,
+                isPreexistingInstallation,
+                _profile);
 
             int top = 20;
 
@@ -277,7 +283,7 @@ namespace DXVKCompanion.UI
             var hudCheckbox = new CheckBox
             {
                 Text = "Enable DXVK HUD (fps, devinfo)",
-                Checked = _profile.HudEnabled,
+                Checked = initialConfigDisplay.HudEnabled,
                 Top = top,
                 Left = 20,
                 AutoSize = true
@@ -297,9 +303,9 @@ namespace DXVKCompanion.UI
 
             var frameLimitBox = new NumericUpDown
             {
-                Minimum = 0,
-                Maximum = 1000,
-                Value = _profile.FrameLimit,
+                Minimum = GameDetailsConfigurationSelection.MinFrameLimit,
+                Maximum = GameDetailsConfigurationSelection.MaxFrameLimit,
+                Value = initialConfigDisplay.FrameLimit,
                 Top = top,
                 Left = 20,
                 Width = 120
@@ -317,15 +323,18 @@ namespace DXVKCompanion.UI
             };
             btnSave.Click += (_, _) =>
             {
-                _profile.HudEnabled = hudCheckbox.Checked;
-                _profile.FrameLimit = (int)frameLimitBox.Value;
+                GameDetailsConfigurationSelection.ApplyConfiguration(
+                    hudCheckbox.Checked,
+                    (int)frameLimitBox.Value,
+                    initialConfigDisplay,
+                    installation,
+                    isPreexistingInstallation,
+                    _profile);
+
                 _profileStore.Save(_profile);
 
                 if (installation != null)
                 {
-                    installation.Configuration.HudEnabled = hudCheckbox.Checked;
-                    installation.Configuration.FrameLimit = (int)frameLimitBox.Value;
-                    installation.Configuration.FrameLimitEnabled = frameLimitBox.Value > 0;
                     installation.IsHidden = hideCheckbox.Checked;
 
                     installation.ManagementPolicy = GameDetailsPolicySelection.ResolvePolicy(
