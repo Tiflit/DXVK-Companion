@@ -14,6 +14,10 @@ namespace DXVKCompanion.Storage
         private readonly Dictionary<string, GameInstallation> _installations =
             new(StringComparer.OrdinalIgnoreCase);
 
+        internal Action<string, string>? CustomTempWriter { get; set; }
+        internal Action<string, string>? CustomCommitReplace { get; set; }
+        internal Action<string>? CustomTempCleaner { get; set; }
+
         private static readonly JsonSerializerOptions JsonOptions = new()
         {
             WriteIndented = true,
@@ -262,23 +266,57 @@ namespace DXVKCompanion.Storage
             };
 
             var json = JsonSerializer.Serialize(library, JsonOptions);
-            var tempPath = _libraryFilePath + ".tmp";
+            var tempPath = _libraryFilePath + ".tmp." + Guid.NewGuid().ToString("N");
+            bool committed = false;
 
             try
             {
-                File.WriteAllText(tempPath, json);
-                File.Move(tempPath, _libraryFilePath, true);
+                if (CustomTempWriter != null)
+                {
+                    CustomTempWriter(tempPath, json);
+                }
+                else
+                {
+                    File.WriteAllText(tempPath, json);
+                }
+
+                if (CustomCommitReplace != null)
+                {
+                    CustomCommitReplace(tempPath, _libraryFilePath);
+                }
+                else
+                {
+                    if (File.Exists(_libraryFilePath))
+                    {
+                        File.Move(tempPath, _libraryFilePath, overwrite: true);
+                    }
+                    else
+                    {
+                        File.Move(tempPath, _libraryFilePath);
+                    }
+                }
+
+                committed = true;
             }
             finally
             {
-                try
+                if (!committed)
                 {
-                    if (File.Exists(tempPath))
-                        File.Delete(tempPath);
-                }
-                catch
-                {
-                    // Cleanup failure must not mask the primary operation.
+                    try
+                    {
+                        if (CustomTempCleaner != null)
+                        {
+                            CustomTempCleaner(tempPath);
+                        }
+                        else if (File.Exists(tempPath))
+                        {
+                            File.Delete(tempPath);
+                        }
+                    }
+                    catch
+                    {
+                        // Cleanup failure must not mask the primary operation.
+                    }
                 }
             }
         }
