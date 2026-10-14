@@ -25,7 +25,7 @@ The project has adopted the normative **Multi-Agent Workflow Kernel (v0.4)** ([`
   - New agents orient to roles, authority, and unresolved gaps; returning agents reuse reliable unchanged context without demanding full historical rereads or claiming measured token savings.
   - On-demand loading must not hide required authorization, provider/identity limitations, or stricter project rules.
 - **Scope CI Merge Gate Limits**: Failing scope CI detects violations on pull requests, but as verified on `main`, required-status-check merge protection is not configured on `main`; human review remains the actual integration barrier.
-- **Preserved Project Procedures**: Adoption preserves existing role assignments (Gemini implementation, ChatGPT coordination/verification, Claude audit, Human merge authority), task grammar, allowed paths restrictions, privacy/history helpers, CI/handoff procedure, bounded observations, and local test authorization gates. This task does not separately relax the pre-merge snapshot-refresh procedure or adopt automatic integration.
+- **Operating Procedures**: [AGENTS.md](../AGENTS.md) defines delegated engineering, concrete stop triggers, review routing and reusable local execution approvals. Kernel guarantees, task scope, guarded publication and human merge authority remain intact. One final coordinator evidence record may complete a historical submission snapshot; automatic integration remains disabled.
 
 ## Durable-memory rule
 
@@ -148,41 +148,9 @@ Do not spend model quota asking an LLM to verify something the repository can ve
 
 ## Standard task lifecycle
 
-```text
-GitHub Issue
-    |
-    v
-Gemini / Antigravity implementation
-    |
-    v
-Pull Request
-    |
-    +--> deterministic CI
-    +--> scope / hygiene checks
-    |
-    v
-Independent review when required
-    |
-    +--> PASS -----------> Human merge
-    |
-    +--> material finding
-              |
-              v
-       Focused revision / repair (Gemini context)
-              |
-              v
-          CI / tests
-              |
-              v
-       Independent re-review
-              |
-              v
-          Human merge
-```
+Approved Issue/profile -> Gemini implementation and routine verification/repairs -> one grouped ChatGPT review -> focused revision verification if needed -> human merge. Claude participates selectively at consequential checkpoints; an optional Gemini-web design perspective does not authorize new actions.
 
-There should be no open-ended AI ping-pong.
-
-The normal policy is at most one focused revision cycle after a material independent-review finding. Persistent disagreement or uncertainty becomes an explicit escalation.
+The concrete stop/finding rules are in [AGENTS.md](../AGENTS.md#delegated-engineering-and-stop-rules). Continue independent work while a dependent decision is queued. The normal target is one grouped repair, not repeated style rounds or acceptance of unresolved defects.
 
 ### Polling and notification boundaries
 
@@ -262,13 +230,7 @@ Review should concentrate on correctness, safety, architectural invariants, and 
 
 ### Coherent first-pass reviews and finding classification
 
-When conducting an initial verification pass:
-- **Adjacent failure paths**: Inspect adjacent material failure paths rather than evaluating diff chunks in isolation.
-- **Finding classification**: Clearly distinguish:
-  - *Blocking findings*: Violations of task contracts, unproven safety invariants, regressions, privacy leaks, or inaccurate descriptions of implemented behavior.
-  - *Non-blocking suggestions*: Optional editorial enhancements, stylistic polish, or future cleanup.
-- **Single focused revision**: Group material findings identified in the review pass so the implementer can resolve them in one focused revision cycle, without promising discovery of every possible finding in a single pass.
-- **Escalation boundary**: Persistent disagreements or new out-of-scope requirements escalate to the human rather than triggering unbounded review loops.
+Use [AGENTS.md](../AGENTS.md#review-and-delivery) for blocking/nonblocking/decision dispositions. Review adjacent failure paths together and recommend useful improvements within the objective. Correct consequential evidence errors; editorial wording alone does not require another repair round. New product choices await the human. Reviewer consensus cannot expand authority.
 
 ### Incremental revision verification
 
@@ -351,12 +313,12 @@ The following remain intentionally manual during the pilot phase:
 
 - choosing when Claude review is required;
 - triaging Claude findings;
-- deciding whether a finding is material;
-- initiating the one allowed revision;
+- settling undelegated behavior or policy choices;
+- resolving persistent blocking disagreement after the normal grouped repair;
 - arbitration of disagreement;
 - final merge.
 
-Automation should first make these decisions easier to audit, not silently make them for the human.
+Routine in-scope repairs are already part of an approved engineering cycle; no separate human release is needed for each review comment. Model activation remains manual. Automation must not silently make protected decisions for the human.
 
 ## Security principles
 
@@ -421,7 +383,7 @@ Reviewers propose materiality; arbitration records the decision. Coverage weakne
 
 Record the coordinator, date, exact head/base, review reference and each finding's disposition separately from the reviewer result. For each finding state validity (confirmed, plausible/unverified or rejected), severity, materiality, scope, introduced/pre-existing/unknown, supporting evidence, decision and rationale.
 
-Accepted material in-scope findings normally trigger one focused implementation revision. Nonmaterial findings may become follow-ups. Out-of-scope safety concerns need an explicit tracking disposition, not silent dismissal. Count CI repair iterations separately from adversarial-review revision cycles. Unresolved disagreement escalates to the human.
+Blocking in-scope findings normally trigger one grouped implementation revision under existing delegation. Nonblocking findings may be fixed within scope or tracked without blocking delivery. Verify changed code and affected context even when the original suggestion was nonblocking; do not restart review of unchanged code without a new reason. Out-of-scope safety concerns need explicit tracking. Count CI repairs separately from review-driven revisions; persistent blocking disagreement escalates.
 
 Record follow-up Issue links when created; otherwise say pending with a concrete next action. A coordinator recommendation is not the human merge decision.
 
@@ -626,7 +588,7 @@ To minimize idle waiting without weakening evidence gates:
   - **Strict Evidence Invariant**: Final acceptance, formal approval, and merge remain strictly blocked until required matching-revision CI checks and verified checkout provenance (a checkout of the reviewed head, or a synthetic merge checkout whose base/head parents match the acquired integration identities) are acquired and verified. Merely green checks, source approval alone, and pending CI reports are insufficient.
 - **Evidence Reacquisition at Decision Boundaries**:
   - At a meaningful boundary (CI completion, run failure, or review decision), acquire live head/base refs, final status checks, and actual tested checkout SHA/provenance.
-  - Refresh the durable handoff snapshot via `scripts/ai-workflow/generate_handoff.py` and update the PR body via `scripts/ai-workflow/update_pr_body.py` without manually transcribing generated identity fields.
+  - Complete evidence in one revision-bound coordinator Conversation comment, or refresh the snapshot through the guarded helpers when needed. Keep the submission snapshot labeled historical; acquire full identities mechanically rather than reconstructing them. No routine handoff regeneration solely to change pending-CI wording.
   - Distinguish between executed evidence (run locally by the implementer) and inspected evidence (CI runs or coordinator observations). Never fabricate run/checkout identities, test counts, or future success.
 - **Failure and Rework Routing**:
   - Return work to Gemini only for concrete CI failures or review findings within assigned scope.
@@ -731,55 +693,9 @@ python scripts/ai-workflow/update_pr_body.py --issue 42 --append-file post_merge
 
 ## Human Authorization Gate for Local Test Execution
 
-Executing tests on the user's local system directly interacts with the human developer's workstation. To protect ongoing work, avoid interrupting active applications, and ensure the developer can secure open projects before an AI agent runs tests or fault-injection experiments, agents MUST obtain explicit human authorization for the proposed test scope before local execution begins.
+[AGENTS.md — Local Execution Profiles](../AGENTS.md#local-execution-profiles) is the single operating specification for this gate. Task-specific approval or a linked standing profile must cover commands, host, resources, disruption, readiness, stopping and retention. Approved scope can be reused without another permission request; new effects or an unavailable host block affected execution.
 
-### 1. Mandatory Preflight Gate and Scope Covered
-- **Scope Covered**: The authorization requirement applies to all local test execution on the user's system, including:
-  - Local unit and integration test suites (e.g. `dotnet test`, `python -m unittest`);
-  - Desktop and packaged application runs (running dev builds, packaged binaries, or background daemons);
-  - CLI test harnesses and scripts;
-  - Attached hardware or peripheral device testing.
-- **No Waiver by Isolation**: Using a dedicated disposable directory, temporary scratch path, or local virtual machine does **NOT** waive this gate.
-
-### 2. Required Authorization Request Specification
-Before initiating local test execution, the agent or coordinator must present an authorization request clearly stating:
-1. **What will run**: The exact test commands, runner suites, or executable paths to be executed.
-2. **Where (Host Environment)**: The target host environment, explicitly declaring whether it will run on the user's active desktop/session or a separate isolated environment. Agents must **never** silently substitute the user's host or desktop when an isolated environment is unavailable.
-3. **Affected Resources**: What files, directories, registry keys, configuration settings, child processes, or devices may be created, read, or modified.
-4. **Potential Disruption**: Anticipated system impacts, including window creation, UI focus stealing, CPU/memory consumption, network activity, and process termination risks, so the human can secure open applications.
-5. **Exit and Cleanup Intent**: Planned process termination method and whether test workspaces or diagnostic artifacts will be retained for coordinator inspection or cleaned up.
-
-### 3. Recording Authorization in Assigned Issues
-Authorization must be recorded in the assigned primary task Issue before execution begins, following established approval-source conventions:
-- **Valid Authorization Sources**:
-  1. A direct link to an authentic human GitHub comment or issue decision; or
-  2. A clearly attributed coordinator transcription quoting the human's instruction verbatim, explicitly marked as not mechanically authenticated.
-- **Invalid Sources**: An agent recommendation (from ChatGPT, Gemini, or Claude), a primary task assignment, a general "Continue" or "Proceed" direction, an issue or PR merge, green CI status, or an editable approval text flag is **NOT** permission to run local tests.
-- **Scope Reuse and Fresh Authorization**: Valid authorization applies strictly to the specified test scope and may be reused for subsequent sessions covering that identical scope without repeated prompting. Materially broader test suites, additional test phases, or different host environments require fresh authorization.
-- **Non-Blocking Preparation**: Repository exploration, code editing, static analysis, git diff reviews, fail-closed privacy scanning, and documentation preparation may proceed while local test authorization is pending.
-
-### 4. Distinction from CI and Read-Only Operations
-- **GitHub-Hosted CI Unaffected**: Cloud-hosted GitHub Actions workflows (e.g. `build-and-test`, `ai-scope-check`, `ai-pr-hygiene`) are already-authorized repository automation. This gate must **not** disable normal CI or add approval prompts to cloud pipeline runs.
-- **Read-Only Operations**: Routine file inspection, git status/diff queries, privacy scans, GitHub metadata retrieval via `gh`, and safe documentation generation are standard read-only operations and do **not** require authorization prompts.
-- **No Disguised Execution**: Read-only operations and documentation tasks must never be used as a cover or disguise for executing application, harness, or device tests.
-
-### 5. Invariant Boundaries and Stop-at-Blocker Discipline
-- **Explicit Authorization Does Not Waive Boundaries**: Authorization for a defined test scope does not grant open-ended authority to improvise broader automation or bypass task boundaries. Agents must not:
-  - Download, install, or construct ad hoc desktop automation frameworks (e.g. Selenium, Appium, WinAppDriver);
-  - Bridge across to the interactive desktop (`WinSta0\Default`) via built-in OS APIs or scripts (such as Win32 P/Invoke, `OpenDesktop`, `SetThreadDesktop`, or `System.Windows.Automation`) without explicit scope and human permission;
-  - Execute unauthorized fault injection or crash testing;
-  - Forcefully terminate arbitrary processes or test-created processes (`Stop-Process -Force` or `TerminateProcess`) without explicit scope and permission;
-  - Alter system-wide environment configurations; or
-  - Perform destructive cleanup.
-- **Built-in Scripts and Test Processes Do Not Grant Implied Authority**: Using built-in OS scripting or launching a process specifically for a test does not confer implied authority to bridge desktops, manipulate outside windows, or forcefully kill processes. If desktop bridging or process lifecycle termination is required, it must be explicitly declared in the authorization request and approved by the human.
-- **Stop at Observability Blockers**: If a desktop or application behavior cannot be observed within available capabilities (e.g. desktop session isolation), the agent must STOP at the blocker, honestly report the test as `NOT RUN (blocked: capability/desktop limitation)` with diagnostic details, and hand off to the coordinator. Never infer GUI success from process existence alone.
-
-### 6. Truthful Reporting Discipline and Step Result Preservation
-- **Distinguishing NOT RUN Categories**: Unapproved or blocked local test checks must be honestly reported in test summaries and handoffs—never silently omitted, hidden, or claimed as `PASS`. Agents must clearly distinguish:
-  1. `NOT RUN (pending human authorization)`: Local test execution was not requested or has not been authorized by the human for the proposed scope.
-  2. `NOT RUN (blocked: capability/desktop limitation)`: Authorized execution was halted because of environment constraints, desktop/session isolation, or observability limits.
-- **Preserve Verified Outcomes for Executed Steps**: When a multi-step test workflow is halted at an observability or environment blocker, agents must preserve and report verified results for all steps or cases that were already executed and verified prior to the blocker (e.g. initial setup, file creation, config parsing, or initial launch responsiveness). Halting at a subsequent step must not erase earlier verified evidence or falsely characterize previously completed steps as unexecuted.
-- **Reporting Clarity**: Explicitly distinguish locally *executed* commands/tests from remotely *inspected* CI job logs and platform metadata. Never assert a test ran locally if only CI logs were read.
+The [register](AI-ENFORCEMENT-REGISTER.md#standing-host-profile-approval) records profile approval requirements. No standing profile is activated by this amendment. Kernel K1 and truthful NOT RUN reporting remain mandatory. Cloud CI and routine source/metadata acquisition are unaffected.
 
 ## Bounded Observation Reporting and Triage
 

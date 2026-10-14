@@ -1,102 +1,69 @@
 # Agent Operating Rules
 
-This repository uses AI-assisted development with GitHub as the durable source of truth. DXVK-Companion serves as the application and pilot repository; the present active priority is establishing and validating a reliable, low-overhead multi-agent software development workflow ([workflow purpose](docs/AI-DEVELOPMENT-WORKFLOW.md#purpose)). Broader application revisions and release testing follow separately under human direction.
+DXVK-Companion is the application and testbed for a GitHub-centered multi-agent workflow. The adopted [kernel v0.4](docs/AI-WORKFLOW-KERNEL.md) governs; the [enforcement register](docs/AI-ENFORCEMENT-REGISTER.md) declares cooperative controls and their gaps. Human merge authority remains unchanged.
 
-## Fresh-Session Quick Start (4-Step Startup Route)
+## Fresh-Session Quick Start
 
-Before proposing or modifying code in a fresh session:
+1. Read the kernel and this document. Derive policy identity on the acquired revision with `git log -1 --format=%H <acquired-revision> -- AGENTS.md docs/AI-WORKFLOW-KERNEL.md docs/AI-ENFORCEMENT-REGISTER.md docs/AI-DEVELOPMENT-WORKFLOW.md`; compare with the trusted policy checkpoint. Refresh changed guidance. Load relevant register entries on demand; reuse reliable unchanged context.
+2. Inspect machine dashboard [Issue #27](https://github.com/Tiflit/DXVK-Companion/issues/27), then independently query task-critical remote main/head/base identities through GitHub API or connector. Dashboard, local HEAD and static orientation are not substitutes.
+3. Read the assigned Issue, latest approval/hold and checkpoint. Acceptance criteria, delegated actions and `### Allowed paths` define the task. An `ai-observation` Issue is unassigned evidence, not permission.
+4. Read the latest relevant session or PR evidence. Do not reload the full journal/pilot archive.
 
-1. **Operating rules & workflow kernel**: Load the adopted workflow kernel ([`docs/AI-WORKFLOW-KERNEL.md`](docs/AI-WORKFLOW-KERNEL.md) v0.4) and mandatory project operating rules in this document (`AGENTS.md`). Check the adopted kernel version and verify policy revision identity on the acquired revision (`git log -1 --format=%H <acquired-revision> -- AGENTS.md docs/AI-WORKFLOW-KERNEL.md docs/AI-ENFORCEMENT-REGISTER.md docs/AI-DEVELOPMENT-WORKFLOW.md`). Compare with a previously trusted policy checkpoint (not unverified local HEAD); refresh affected guidance if the checkpoint is changed, missing, or divergent. Retrieve register entries ([`docs/AI-ENFORCEMENT-REGISTER.md`](docs/AI-ENFORCEMENT-REGISTER.md)) relevant to proposed actions on-demand by guarantee ID/boundary. New agents orient to roles, authority, and unresolved gaps; returning agents reuse reliable unchanged context. Stricter compatible project rules apply, and incompatible requirements block dependent actions. On-demand loading must not hide required authorization, provider/identity limitations, or stricter rules. Do not demand full historical rereads or claim measured token savings.
-2. **Live dashboard & remote verification**: Inspect the automated repository dashboard in the dedicated machine-owned Issue (`gh issue list --search "[AI Dashboard]"`). The dashboard is a compact orientation entry point, not an infallible source. Underlying GitHub records (commits, PRs, Issues) remain authoritative. Independently verify task-critical remote identities mechanically (e.g. `gh api repos/Tiflit/DXVK-Companion/git/ref/heads/main --jq .object.sha` to query the remote default-branch SHA; distinguish remote default branch, PR head/base, and local workspace HEAD). A dashboard/local HEAD match alone is not remote verification. Static [docs/AI-CURRENT-STATE.md](docs/AI-CURRENT-STATE.md) provides curated orientation (roles, stable decisions, governance) and must not serve as an alternative for live identities.
-3. **Assigned task contract**: Inspect the assigned GitHub Issue (`gh issue view <number>`). Acceptance criteria and `### Allowed paths` are strictly authoritative. Issues carrying label `ai-observation` are unassigned observations, not authorized task contracts. Merely adding paths, changing a label, or reading an observation does not authorize implementation.
-4. **Latest relevant activity / evidence**: Read the latest session record in `docs/ai-journal/` or the PR review packet associated with the task. *(Historical pilot logs in `docs/AI-PILOT-LOG.md` are for selective reference only; do not read full historical archives for routine tasks).*
+## Roles and Authority
 
-Log your activity per the [activity-record policy](docs/AI-ACTIVITY-JOURNAL.md). Persist a concise session file under `docs/ai-journal/` when allowed. When publishing an attributed activity record directly to an assigned Issue or PR body, agents MUST use `scripts/ai-workflow/update_pr_body.py` (`--issue <number> --append-file <path>` or `--pr <number> --body-file <path>`). Manual or whole-body replacement of Issue bodies is forbidden; Issue updates must be strictly append-only, validated for single-record markers (`AI-REVIEW-RECORD`, `AI-POST-MERGE-RECORD`, or `AI-ASSIGNMENT-RECORD`), pass fail-closed privacy checks, and verify expected base hash. If operating in a connector-only environment lacking direct terminal/CLI execution access, agents MUST NOT perform manual or whole-body overwrites; follow the reduced-capability stop/handoff route by recording the proposed append block in the PR packet or session journal and handing off to a CLI-capable agent or coordinator. Note tool limits: client-side checks and local recovery backups protect against accidental loss and detect stale baselines, but cannot provide atomic distributed locking or prevent uncoordinated writes by outside clients bypassing the helper. Human transcription is fallback only. Checkpoint at material milestones and before stopping; shared index edits are optional and must be in scope.
+- Gemini / Antigravity implements, tests within approved profiles, repairs and contributes ideas.
+- ChatGPT coordinates, reviews behavior/integration/test effectiveness and arbitrates.
+- Gemini web may contribute selectively at feature-design forks; no extra model pass is mandatory for routine work.
+- Claude is reserved for consequential independent audits and difficult disagreements.
+- The human decides unsettled product/policy choices and performs final merges.
 
-## Model Role Allocation
+Peer agreement, passing CI, editable approval flags and general continuation do not expand delegation. Shared credentials provide cooperative attribution, not independent human authentication. Approval sources are direct authorized-human GitHub decisions or clearly attributed exact coordinator transcriptions.
 
-- **Gemini**: Primary implementation layer (repository code, test suites, local verification, focused revisions, bounded repairs).
-- **ChatGPT**: Verification, architecture, reproduction analysis, and arbitration layer.
-- **Claude**: Reserved for occasional independent audits and high-risk material decisions (quota-conserving).
-- **Human**: Retains final merge authority, policy governance, and architectural decisions.
+## Delegated Engineering and Stop Rules
 
-```text
-Gemini implementation -> CI -> ChatGPT verification & arbitration -> Human merge authority
-                                        ^
-                                        | (occasional audits / material risk)
-                                  Claude audit
-```
+Complete the approved task within its actions, resources and environment: implementation, meaningful regression coverage, authorized verification, routine CI repairs, constructive peer revisions and PR preparation. Do not seek permission for naming, helper extraction, test layout, wording or internal patterns within that scope. Record only assumptions needed to understand behavior or review.
 
-## Scope and Invariants
+**Withhold an undelegated action** involving:
+- destructive operations or data-loss risk: force pushes, history rewrites, removal of unique work/backups, deletion outside the declared task/test resources;
+- credentials/secrets, permission/sandbox changes, installation, paid APIs, personal-data publication or a new processing destination;
+- changes outside allowed paths, protected policy, dependencies/project files, CI permissions, or deployment/anti-cheat/restoration guarantees without explicit task approval;
+- unknown approval origin, conflicting authority, missing required execution protection, or uncertain sensitive transmission.
 
-- Make the smallest coherent change that satisfies the task contract.
-- Stay strictly within the assigned task's `### Allowed paths`. Changes outside allowed paths cause automated CI failure.
-- Never modify application code (`src/**`) or test suites (`tests/DXVKCompanion.PhaseA.Tests/**`) unless explicitly included in the task's allowed paths (e.g. an authorized application feature, bugfix, or integration-test task).
-- **Workflow Kernel, Specification Authority & Precedence**: The normative workflow kernel is [`docs/AI-WORKFLOW-KERNEL.md`](docs/AI-WORKFLOW-KERNEL.md) (v0.4), with deployment posture declared in [`docs/AI-ENFORCEMENT-REGISTER.md`](docs/AI-ENFORCEMENT-REGISTER.md). Configuration and project rules remain subject to the adopted kernel; project rules may add restrictions but cannot remove its guarantees. Stricter compatible project rules apply (e.g. human final merge authority, local test authorization gate, append-only issue helper). Incompatible requirements block dependent actions until an authorized human resolution is recorded. Failing scope CI detects violations on pull requests but is not currently configured as a required merge gate on `main`; human review remains the actual integration barrier. The canonical application specification is [`docs/spec/DXVK-COMPANION-SPEC.md`](docs/spec/DXVK-COMPANION-SPEC.md), with [`docs/spec/DXVK-Companion-PhaseA5-Safety-and-Identity-Design-FINAL.md`](docs/spec/DXVK-Companion-PhaseA5-Safety-and-Identity-Design-FINAL.md) as the normative safety and identity supplement.
-- **Precedence Order**: `Adopted Workflow Kernel (v0.4) / Stricter Project Invariants > Assigned Task Contract (Issue) > Canonical Specification > Safety Supplement`.
-- **Safety Invariant Protection**: Task Issues cannot silently override safety invariants without an explicit human decision.
-- **Local Test Execution Authorization Gate**: Before executing tests on the user's local system (including unit/integration suites, desktop/application runs, or device testing), agents MUST obtain explicit human authorization for the proposed scope. A disposable folder or local VM does NOT waive the gate.
-- **Encountered Out-of-Scope Findings**: Actionable out-of-scope problems encountered during assigned work must be recorded per the bounded observation policy ([observation workflow](docs/AI-DEVELOPMENT-WORKFLOW.md#bounded-observation-reporting-and-triage)). Check existing tracking with one targeted keyword search (link existing tracking first, otherwise file a supported Issue with label `ai-observation`); up to three routine observations per task ('none' is valid). Findings never expand implementation scope. Narrow safety exception: credible risks of loss of restoration/baseline guarantees, game directory data loss, or privacy/credentials leaks bypass the cap and escalate promptly. Scope guard: live GitHub API mode rejects task Issues carrying `ai-observation` before parsing allowed paths (a narrow automated guardrail, not human governance).
+**Queue a human decision** when the task has not settled a configuration/file-format change, new dependency, public interface, or choice between different product behaviors. State the exact question, recommendation and effect; pause only dependent work and continue independent approved work. An already approved bugfix/feature behavior does not need approval again. Implementation choices consistent with that behavior remain delegated.
 
-## Decision Governance and Policy Preflight
+Human holds are global unless explicitly scoped; only an authorized human lifts them. Missing evidence blocks the dependent acceptance, not independent preparation. Preserve work at a safe boundary; do not improvise bypasses.
 
-When a task involves an unresolved policy or architectural choice, the assigned Issue must contain a compact Decision Governance Block:
+Task authors should use relevant module/directory prefixes or `/**` and matching test paths where appropriate; exact files remain useful for narrow/sensitive tasks. No blanket test access or automatic out-of-module expansion. Changes to existing assertions must be explained and reviewed for weakened coverage. Protected scope is declared in the task, not a new denylist feature in the evaluator.
 
-```markdown
-### Decision Governance Block
-- **Decision required**: <Brief statement of architectural/policy choice required>
-- **Proposed option**: <Specific proposal / recommendation>
-- **Status**: `PENDING` | `DECIDED`
-- **Source of explicit human approval**: <Link to authentic human GitHub decision or clearly attributed coordinator transcription; None if pending>
-```
+Kernel/stricter project rules > assigned contract > [canonical specification](docs/spec/DXVK-COMPANION-SPEC.md) > [safety supplement](docs/spec/DXVK-Companion-PhaseA5-Safety-and-Identity-Design-FINAL.md). Contracts cannot silently override safety guarantees. Scope CI detects PR violations; required merge enforcement is not established.
 
-- **Preflight Rule**: Agents may conduct investigation, prepare decision briefs, and clarify options while approval is pending, but MUST block policy implementation until explicit human approval is recorded in the task Issue.
-- **Approval Disambiguation**:
-  - Agent recommendations (e.g. ChatGPT recommendations) are NOT human approval.
-  - Editable status text (e.g. `APPROVED_BY_HUMAN` or `DECIDED`) written by an agent is NOT proof of human approval.
-  - CI success, passing tests, and unrelated PR merges are NOT approval.
-  - Source of explicit human approval must be either: (1) a direct link to a human-authored GitHub comment or issue decision; or (2) a clearly attributed coordinator transcription citing the human developer's explicit instruction verbatim, explicitly noting that the transcription is not mechanically authenticated.
-  - Do not decide architectural or safety policies in preparatory or unrelated workflow tasks.
+## Local Execution Profiles
 
-## Local Test Execution Authorization Gate
+Before host builds/tests, harnesses, application/device runs or background processes, obtain authorization for the exact commands/suites, host, affected resources, disruption/resource limits, stopping and artifact retention/cleanup. A worktree or VM does not waive this requirement.
 
-Before executing tests on the user's local system (including local unit/integration suites, desktop/application runs, or device testing), agents MUST obtain explicit human authorization for the proposed scope. Using a disposable folder, isolated directory, or local virtual machine does NOT waive this gate.
+Approval may cover a reusable standing profile or a task-specific run. Tasks link the approved profile and its readiness condition; reuse its unchanged scope without another permission request. Respect the human's advance availability/notice requirement. Changed commands, hooks, effects, host or readiness invalidate reuse until resolved. Profiles do not authorize arbitrary shell commands, installs, desktop bridging, fault injection, force termination or destructive cleanup.
 
-- **Authorization Request Requirements**: The request must clearly specify:
-  1. *What will run*: exact test commands, suites, or executables;
-  2. *Where*: target host environment, explicitly identifying whether the user's active desktop/host or a separate environment is used (never silently substitute the user's host for unavailable isolated access);
-  3. *Affected resources*: target files, registry keys, settings, child processes, or devices;
-  4. *Potential disruption*: resource consumption, UI focus stealing, window activation, or process termination risks;
-  5. *Exit & cleanup intent*: termination method and post-test retention or cleanup so the human can secure ongoing work.
-- **Authorization Recording & Precedence**: Authorization must be recorded in the assigned Issue via:
-  1. A direct link to an authentic human GitHub comment or issue decision; or
-  2. A clearly attributed exact coordinator transcription citing the human's instruction verbatim, explicitly marked as not mechanically authenticated.
-  - An agent recommendation, task assignment, general "Continue", PR merge, green CI run, or editable approval flag is NOT permission to run local tests.
-  - Valid authorization applies to the specified scope and may be reused for that identical scope without repeated requests; materially broader suites or different host environments require fresh authorization.
-  - Preparation, source inspection, diff review, and documentation work may proceed while authorization is pending.
-- **Scope and Stop Boundaries Preserved**: Explicit authorization does NOT waive assigned scope or stop boundaries. Do not broaden into ad hoc desktop automation frameworks, fault injection, forceful process termination, environment changes, or disruptive cleanup to overcome a blocker unless specifically included in the authorized scope. Relying on built-in OS APIs or scripts (e.g. Win32 P/Invoke, `System.Windows.Automation`) does NOT authorize desktop bridging across to the interactive desktop without explicit scope and permission, nor does spawning a test-created process authorize forceful termination (`Stop-Process -Force`) without explicit permission. If a test cannot be observed within available capabilities, report `NOT RUN (blocked: capability/desktop limitation)` and hand off; never infer GUI success from process existence alone.
-- **Truthful Reporting & Step Preservation**: Unapproved or blocked local checks must be honestly recorded in test summaries—never silently omitted or claimed as `PASS`. Distinguish `NOT RUN (pending human authorization)` (unapproved scope) from `NOT RUN (blocked: capability/desktop limitation)` (authorized scope halted by environment/observability constraints). Preserve and report verified outcomes for steps already executed prior to encountering a blocker.
+No standing host profile is activated by this amendment. Existing scoped approvals remain valid only within their boundaries; CLI investigation #94 remains paused. Approved cloud CI and routine source/Git/metadata inspection continue without local-execution approval.
 
-## Tests and Evidence
+If authorized behavior cannot be observed, report `NOT RUN (blocked: capability/desktop limitation)`; unapproved execution is `NOT RUN (pending human authorization)`. Preserve completed step outcomes; process existence alone is not GUI validation.
 
-- A green CI run is evidence, not absolute proof that an invariant is satisfied.
-- Add regression coverage exercising real application orchestration rather than only mocked paths.
-- Review packets generated by `.github/workflows/ai-review-packet.yml` serve as the standardized entry point for verification, binding immutable commit SHAs, checkout provenance, and structured Visual Studio TRX test totals.
-- Unapproved or blocked local test checks must be honestly recorded in test summaries (distinguishing `NOT RUN (pending human authorization)` from `NOT RUN (blocked: capability/desktop limitation)`), while preserving verified outcomes for steps already executed prior to any blocker.
-- **Portable Evidence Links**: Use portable GitHub URLs (referencing inspected immutable commit SHAs, PRs, or Issue numbers where applicable) for durable source and evidence references so they resolve across both local environments and cloud agents. Generic repository-relative paths may appear separately. Never publish personal home paths (e.g., local user directories), raw transcripts, or secrets (`update_pr_body.py` enforces this with fail-closed privacy scanning before preview or PATCH).
+## Review and Delivery
 
-## Revision and Handoff Discipline
+Perform one grouped substantive review: contract, behavior, safety, integration and whether tests actually catch failures. Include useful in-scope improvements.
+- **Blocking:** unmet acceptance criterion, build/test failure, demonstrated regression, safety/privacy/scope violation, or missing/false evidence required for acceptance.
+- **Nonblocking:** style, editorial polish, optional refactoring and improvements outside the approved objective. Record or fix within scope without another human stop.
+- **Decision:** an unsettled behavior/authority choice listed above. Give the human a concrete recommendation.
 
-- One focused review-driven revision cycle is the normal limit.
-- **Session Continuity vs Reset**: Continue a reliable implementation session for focused revisions and bounded repairs; restart in a fresh session only when context window saturation, tool failure, or capability degradation requires it. Independent reviewer and auditor passes retain strict fresh-context discipline.
-- **Session Checkpoint Instructions**: Before stopping or handing off, record a concise session checkpoint containing:
-  1. Completed work
-  2. Changed and uncommitted files
-  3. Verified evidence and test results
-  4. Open findings and pending decisions
-  5. Exact next action and assigned owner
-  6. Out-of-scope findings: `none` / `links` / `pending persistence (reason and next owner)` (exposes omissions but cannot prove exhaustive discovery)
-  Record conclusions and rationale, not long transcripts.
-- Persistent material disagreements or unresolved risks escalate to the human rather than triggering unbounded revision loops.
-- Do not automatically merge PRs, enable branch protection, or dispatch paid APIs.
+Group blocking fixes into one normal repair cycle. Verify repaired items and affected context rather than restarting a full audit. Any post-review code change, including a suggested improvement, needs a focused delta check and applicable current CI before carrying acceptance forward. Editorial-only changes need an applicability check. New defects, relevant base/contract movement or contradictory evidence justify expanding review; persistent blocking disagreement goes to the human.
 
+Do not weaken tests to obtain green CI. Required evidence stays bound to reviewed head/base and actual checkout; distinguish executed, inspected, reported and unavailable. Self-review is labeled honestly. No test count or independent review is inferred from model agreement.
+
+## Records and Handoffs
+
+Use [activity policy](docs/AI-ACTIVITY-JOURNAL.md). At milestones/yield, record completed work, changed/uncommitted files, revision/evidence, open findings/decisions and next owner/action. Link evidence rather than duplicating transcripts. For the next product trial, record actual interruptions with trigger, affected action and whether prior delegation allowed continuation; classify justified/unnecessary/uncertain. Do not invent timing, token savings or unseen stops.
+
+Use `scripts/ai-workflow/update_pr_body.py` for existing PR-body updates and append-only Issue-body records: preserve history, expected baseline, privacy checks, recovery backups and readback. No manual whole-body Issue replacement or blind retry after uncertain writes. Connector-only agents use Conversation comments or hand off a prepared append to a capable environment. Client checks are not distributed locks.
+
+Generate a submission snapshot once; a final revision-bound coordinator comment may supply completed evidence without regenerating historical pending-CI prose. Query status at submission/completion/blocker boundaries, not in polling loops. Consumer agents are still human-activated; no automatic dispatch, merge, settings change or paid orchestration is delegated.
+
+Keep publications sanitized: repository-relative paths/approved aliases, no personal paths, secrets, raw transcripts or backup contents. Preserve recovery evidence outside disposable scratch areas. Encountered out-of-scope findings follow the [bounded observation policy](docs/AI-DEVELOPMENT-WORKFLOW.md#bounded-observation-reporting-and-triage): one deduplication search, up to three routine observations, no manufactured audits. Restoration/data-loss/privacy threats bypass the cap and stop affected unsafe work.
