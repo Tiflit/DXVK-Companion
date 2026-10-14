@@ -143,13 +143,14 @@ namespace DXVKCompanion.Storage
                 return SchemaAssessment.Compatible();
             }
 
-            if (schemaProp.Value.ValueKind != JsonValueKind.Number)
+            var valueElement = schemaProp.Value.Value;
+            if (valueElement.ValueKind != JsonValueKind.Number)
             {
                 // Non-integer, string, null, bool, array, object: not newer, malformed marker
                 return SchemaAssessment.Malformed();
             }
 
-            string rawText = schemaProp.Value.GetRawText().Trim();
+            string rawText = valueElement.GetRawText().Trim();
 
             // Must be an integer: reject decimals and scientific exponents
             if (rawText.Contains('.') || rawText.Contains('e') || rawText.Contains('E'))

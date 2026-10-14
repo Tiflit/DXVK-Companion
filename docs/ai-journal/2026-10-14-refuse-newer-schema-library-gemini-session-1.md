@@ -79,6 +79,17 @@ Under human approval in #106, Issue #107 establishes the contract to refuse star
 
 ---
 
+### Repair Batch: Cloud CI Compilation Feedback Resolution
+
+- **Trigger**: Cloud CI run `38651994365` reported compilation errors CS1061 in `src/DXVKCompanion/Storage/GameLibrarySchemaCompatibility.cs`:
+  - `'JsonProperty' does not contain a definition for 'ValueKind'`
+  - `'JsonProperty' does not contain a definition for 'GetRawText'`
+- **Root Cause & Inspection**: `schemaProp` was declared as nullable `JsonProperty?`. Accessing `schemaProp.Value` yielded the non-nullable `JsonProperty` struct rather than its contained `JsonElement` property (`prop.Value`).
+- **Resolution**: Extracted `var valueElement = schemaProp.Value.Value;` to query `valueElement.ValueKind` and `valueElement.GetRawText()`.
+- **Scope**: Confined strictly to `src/DXVKCompanion/Storage/GameLibrarySchemaCompatibility.cs` and this journal.
+
+---
+
 ### Retained Limitations & Gaps
 
 - Bounded storage compatibility guard: defends against Companion downgrade overwriting newer data; does not provide cross-process locking or multi-file transaction atomicity.
