@@ -3,6 +3,7 @@ using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Windows.Forms;
 using DXVKCompanion.Monitoring;
+using DXVKCompanion.Startup;
 using DXVKCompanion.Storage;
 using DXVKCompanion.DXVK;
 using DXVKCompanion.Safety;
@@ -16,6 +17,14 @@ namespace DXVKCompanion
         [STAThread]
         static void Main()
         {
+            var preflight = StartupCompatibility.Evaluate(GameLibraryPaths.GameLibraryFile);
+            if (preflight.ShouldRefuse)
+            {
+                ApplicationConfiguration.Initialize();
+                StartupCompatibility.PresentRefusal(preflight);
+                return;
+            }
+
             Paths.EnsureDirectories();
             Logger.Log("DXVK Companion started.");
 

@@ -445,5 +445,217 @@ namespace DXVKCompanion.PhaseA.Tests
             store.SaveAll();
             Assert.True(File.Exists(libraryFile));
         }
+
+        [Fact]
+        public void GameLibraryStore_InitialNewerSchemaLoad_MarksRefused_PreservesBytes_DoesNotCreateDirectoriesOrFiles()
+        {
+            using var testDir = new SyntheticTestDirectory();
+            string libraryFile = Path.Combine(testDir.RootPath, "game-library.json");
+            string absentBackupsDir = Path.Combine(testDir.RootPath, "absent-backups");
+
+            string newerJson = @"{
+  ""SchemaVersion"": 999,
+  ""Installations"": [
+    {
+      ""InstallationPath"": ""C:\\Games\\FutureGame"",
+      ""DisplayName"": ""Future Game""
+    }
+  ]
+}";
+            File.WriteAllText(libraryFile, newerJson);
+            byte[] expectedBytes = File.ReadAllBytes(libraryFile);
+
+            // Sentinel sibling files
+            string sentinelTmpFile = libraryFile + ".tmp";
+            byte[] sentinelTmpBytes = Encoding.UTF8.GetBytes("SENTINEL_TMP");
+            File.WriteAllBytes(sentinelTmpFile, sentinelTmpBytes);
+
+            string unrelatedTmpFile = libraryFile + ".tmp.unrelated_external";
+            byte[] unrelatedTmpBytes = Encoding.UTF8.GetBytes("UNRELATED_TMP");
+            File.WriteAllBytes(unrelatedTmpFile, unrelatedTmpBytes);
+
+            string sentinelRecoveryFile = libraryFile + ".recovery.sentinel.json";
+            byte[] sentinelRecoveryBytes = Encoding.UTF8.GetBytes("SENTINEL_RECOVERY");
+            File.WriteAllBytes(sentinelRecoveryFile, sentinelRecoveryBytes);
+
+            int tempWriterCalls = 0;
+            int commitReplaceCalls = 0;
+            int tempCleanerCalls = 0;
+
+            var store = new GameLibraryStore(libraryFile, absentBackupsDir)
+            {
+                CustomTempWriter = (_, _) => tempWriterCalls++,
+                CustomCommitReplace = (_, _) => commitReplaceCalls++,
+                CustomTempCleaner = _ => tempCleanerCalls++
+            };
+
+            // Refusal state
+            Assert.True(store.IsRefused);
+            Assert.Equal("999", store.RefusedSchemaVersionText);
+            Assert.Empty(store.GetAll());
+            Assert.Null(store.FindByInstallationPath(@"C:\Games\FutureGame"));
+
+            // Absent backups directory must NOT be created on refusal
+            Assert.False(Directory.Exists(absentBackupsDir), "Absent backups directory must not be created on refusal");
+
+            // Library file remains byte-for-byte intact
+            Assert.Equal(expectedBytes, File.ReadAllBytes(libraryFile));
+
+            // Sentinel siblings remain byte-for-byte intact
+            Assert.Equal(sentinelTmpBytes, File.ReadAllBytes(sentinelTmpFile));
+            Assert.Equal(unrelatedTmpBytes, File.ReadAllBytes(unrelatedTmpFile));
+            Assert.Equal(sentinelRecoveryBytes, File.ReadAllBytes(sentinelRecoveryFile));
+
+            // No recovery files created
+            var recoveryFiles = Directory.GetFiles(testDir.RootPath, "game-library.json.recovery.*.json");
+            Assert.Single(recoveryFiles); // only our sentinel
+
+            // Zero I/O seam invocations
+            Assert.Equal(0, tempWriterCalls);
+            Assert.Equal(0, commitReplaceCalls);
+            Assert.Equal(0, tempCleanerCalls);
+        }
+
+        [Fact]
+        public void GameLibraryStore_InitiallyRefused_AllFourMutationEntryPoints_ThrowIncompatibleLibrarySchemaException_AndMakeNoChanges()
+        {
+            using var testDir = new SyntheticTestDirectory();
+            string libraryFile = Path.Combine(testDir.RootPath, "game-library.json");
+            string backupsDir = Path.Combine(testDir.RootPath, "backups");
+
+            string newerJson = @"{ ""SchemaVersion"": 2, ""Installations"": [] }";
+            File.WriteAllText(libraryFile, newerJson);
+            byte[] expectedBytes = File.ReadAllBytes(libraryFile);
+
+            int writerCalls = 0;
+            var store = new GameLibraryStore(libraryFile, backupsDir)
+            {
+                CustomTempWriter = (_, _) => writerCalls++
+            };
+
+            Assert.True(store.IsRefused);
+
+            // Entry point 1: GetOrCreateInstallation
+            var ex1 = Assert.Throws<IncompatibleLibrarySchemaException>(() =>
+                store.GetOrCreateInstallation(@"C:\Games\BlockedGame", "Blocked Game"));
+            Assert.Equal("2", ex1.FoundSchemaVersionText);
+            Assert.Equal(GameLibrary.CurrentSchemaVersion, ex1.SupportedSchemaVersion);
+            Assert.Empty(store.GetAll());
+
+            // Entry point 2: Save
+            var testInstallation = new GameInstallation
+            {
+                InstallationPath = @"C:\Games\BlockedGame",
+                DisplayName = "Blocked Game"
+            };
+            var ex2 = Assert.Throws<IncompatibleLibrarySchemaException>(() =>
+                store.Save(testInstallation));
+            Assert.Equal("2", ex2.FoundSchemaVersionText);
+            Assert.Empty(store.GetAll());
+
+            // Entry point 3: SaveAll
+            var ex3 = Assert.Throws<IncompatibleLibrarySchemaException>(() =>
+                store.SaveAll());
+            Assert.Equal("2", ex3.FoundSchemaVersionText);
+
+            // Entry point 4: RecordDetectionSnapshot
+            var snapshot = new DetectionSnapshot
+            {
+                InstallationRoot = @"C:\Games\BlockedGame",
+                ExecutableRelativePath = "bin/game.exe",
+                ProcessName = "BlockedGame",
+                Classification = new ApiClassification
+                {
+                    PrimaryApi = GraphicsApi.DX11,
+                    Confidence = ApiDetectionConfidence.High,
+                    Architecture = "x64"
+                },
+                TimestampUtc = DateTime.UtcNow
+            };
+            var ex4 = Assert.Throws<IncompatibleLibrarySchemaException>(() =>
+                store.RecordDetectionSnapshot(snapshot));
+            Assert.Equal("2", ex4.FoundSchemaVersionText);
+            Assert.False(snapshot.HasApiChanged);
+            Assert.Empty(store.GetAll());
+
+            // Zero write seam calls and target byte-for-byte intact
+            Assert.Equal(0, writerCalls);
+            Assert.Equal(expectedBytes, File.ReadAllBytes(libraryFile));
+        }
+
+        [Fact]
+        public void GameLibraryStore_NewerDataAppearingAfterConstruction_TransitionsToRefused_GuardsAllMutations()
+        {
+            using var testDir = new SyntheticTestDirectory();
+            string libraryFile = Path.Combine(testDir.RootPath, "game-library.json");
+            string backupsDir = Path.Combine(testDir.RootPath, "backups");
+
+            // Initial supported store
+            var store = new GameLibraryStore(libraryFile, backupsDir);
+            Assert.False(store.IsRefused);
+
+            // External process writes newer schema file to disk
+            string newerContent = @"{ ""SchemaVersion"": 7, ""Installations"": [] }";
+            File.WriteAllText(libraryFile, newerContent);
+            byte[] expectedBytes = File.ReadAllBytes(libraryFile);
+
+            // Subsequent mutation attempts must detect on-disk newer schema, refuse, and throw
+            var ex = Assert.Throws<IncompatibleLibrarySchemaException>(() =>
+                store.GetOrCreateInstallation(@"C:\Games\ExternalRaceGame", "External Race"));
+
+            Assert.True(store.IsRefused);
+            Assert.Equal("7", store.RefusedSchemaVersionText);
+            Assert.Equal("7", ex.FoundSchemaVersionText);
+
+            // Additional mutations continue to be guarded
+            Assert.Throws<IncompatibleLibrarySchemaException>(() => store.SaveAll());
+            Assert.Throws<IncompatibleLibrarySchemaException>(() =>
+                store.Save(new GameInstallation { InstallationPath = @"C:\Games\ExternalRaceGame" }));
+
+            // Target file remains byte-for-byte unchanged
+            Assert.Equal(expectedBytes, File.ReadAllBytes(libraryFile));
+        }
+
+        [Fact]
+        public void GameLibraryStore_NewerSchemaWithUnknownFutureEnums_PreservedByteForByte_DoesNotCreateRecoveryCopy()
+        {
+            using var testDir = new SyntheticTestDirectory();
+            string libraryFile = Path.Combine(testDir.RootPath, "game-library.json");
+            string backupsDir = Path.Combine(testDir.RootPath, "backups");
+
+            string futureJsonWithUnknownEnums = @"{
+  ""SchemaVersion"": 5,
+  ""Installations"": [
+    {
+      ""InstallationPath"": ""C:\\Games\\SpaceGame"",
+      ""DisplayName"": ""Space Game"",
+      ""ManagementPolicy"": {
+        ""Mode"": ""FuturisticAutonomousMode999""
+      },
+      ""Executables"": [
+        {
+          ""RelativeExecutablePath"": ""bin/space.exe"",
+          ""LastKnownApi"": ""DirectX25Quantum""
+        }
+      ]
+    }
+  ]
+}";
+            File.WriteAllText(libraryFile, futureJsonWithUnknownEnums);
+            byte[] expectedBytes = File.ReadAllBytes(libraryFile);
+
+            var store = new GameLibraryStore(libraryFile, backupsDir);
+
+            Assert.True(store.IsRefused);
+            Assert.Equal("5", store.RefusedSchemaVersionText);
+            Assert.Empty(store.GetAll());
+
+            // Target file is byte-for-byte identical
+            Assert.Equal(expectedBytes, File.ReadAllBytes(libraryFile));
+
+            // No recovery files created in directory
+            var recoveryFiles = Directory.GetFiles(testDir.RootPath, "game-library.json.recovery.*.json");
+            Assert.Empty(recoveryFiles);
+        }
     }
 }
