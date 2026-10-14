@@ -21,7 +21,7 @@ namespace DXVKCompanion.PhaseA.Tests
             var store = new ProfileStore(profilesFile);
 
             var profile1 = store.GetOrCreate(@"C:\Games\GameA\game.exe");
-            profile1.Api = GraphicsApi.DirectX11;
+            profile1.Api = GraphicsApi.DX11;
             profile1.Architecture = "x64";
             profile1.DxvkEnabled = true;
             profile1.DxvkVersion = "2.3.1";
@@ -30,7 +30,7 @@ namespace DXVKCompanion.PhaseA.Tests
             store.Save(profile1);
 
             var profile2 = store.GetOrCreate(@"C:\Games\GameB\launcher.exe");
-            profile2.Api = GraphicsApi.DirectX9;
+            profile2.Api = GraphicsApi.DX9;
             profile2.Architecture = "x86";
             profile2.DxvkEnabled = false;
             profile2.DxvkVersion = null;
@@ -56,7 +56,7 @@ namespace DXVKCompanion.PhaseA.Tests
             var loaded1 = reloadedStore.GetOrCreate(@"C:\Games\GameA\game.exe");
             Assert.Equal(@"C:\Games\GameA\game.exe", loaded1.ExePath);
             Assert.Equal("game.exe", loaded1.ExeName);
-            Assert.Equal(GraphicsApi.DirectX11, loaded1.Api);
+            Assert.Equal(GraphicsApi.DX11, loaded1.Api);
             Assert.Equal("x64", loaded1.Architecture);
             Assert.True(loaded1.DxvkEnabled);
             Assert.Equal("2.3.1", loaded1.DxvkVersion);
@@ -66,7 +66,7 @@ namespace DXVKCompanion.PhaseA.Tests
             var loaded2 = reloadedStore.GetOrCreate(@"C:\Games\GameB\launcher.exe");
             Assert.Equal(@"C:\Games\GameB\launcher.exe", loaded2.ExePath);
             Assert.Equal("launcher.exe", loaded2.ExeName);
-            Assert.Equal(GraphicsApi.DirectX9, loaded2.Api);
+            Assert.Equal(GraphicsApi.DX9, loaded2.Api);
             Assert.Equal("x86", loaded2.Architecture);
             Assert.False(loaded2.DxvkEnabled);
             Assert.Null(loaded2.DxvkVersion);
@@ -82,12 +82,12 @@ namespace DXVKCompanion.PhaseA.Tests
 
             var store = new ProfileStore(profilesFile);
             var profile = store.GetOrCreate(@"C:\Games\Initial\game.exe");
-            profile.Api = GraphicsApi.DirectX9;
+            profile.Api = GraphicsApi.DX9;
             profile.DxvkEnabled = false;
             store.Save(profile);
 
             // Mutate and replacement save
-            profile.Api = GraphicsApi.DirectX11;
+            profile.Api = GraphicsApi.DX11;
             profile.DxvkEnabled = true;
             profile.DxvkVersion = "2.4";
             profile.HudEnabled = true;
@@ -97,7 +97,7 @@ namespace DXVKCompanion.PhaseA.Tests
             // Reload to verify replacement was committed to live target
             var reloaded = new ProfileStore(profilesFile);
             var loaded = reloaded.GetOrCreate(@"C:\Games\Initial\game.exe");
-            Assert.Equal(GraphicsApi.DirectX11, loaded.Api);
+            Assert.Equal(GraphicsApi.DX11, loaded.Api);
             Assert.True(loaded.DxvkEnabled);
             Assert.Equal("2.4", loaded.DxvkVersion);
             Assert.True(loaded.HudEnabled);
@@ -112,7 +112,7 @@ namespace DXVKCompanion.PhaseA.Tests
 
             var store = new ProfileStore(profilesFile);
             var initialProfile = store.GetOrCreate(@"C:\Games\Test\game.exe");
-            initialProfile.Api = GraphicsApi.DirectX9;
+            initialProfile.Api = GraphicsApi.DX9;
             store.Save(initialProfile);
 
             string originalTargetContent = File.ReadAllText(profilesFile);
@@ -139,7 +139,7 @@ namespace DXVKCompanion.PhaseA.Tests
                 File.Move(tempPath, targetPath, overwrite: true);
             };
 
-            initialProfile.Api = GraphicsApi.DirectX11;
+            initialProfile.Api = GraphicsApi.DX11;
             store.Save(initialProfile);
 
             Assert.NotNull(capturedTempPath);
@@ -154,7 +154,7 @@ namespace DXVKCompanion.PhaseA.Tests
 
             // Verified live target now reflects updated content
             var reloaded = new ProfileStore(profilesFile);
-            Assert.Equal(GraphicsApi.DirectX11, reloaded.GetOrCreate(@"C:\Games\Test\game.exe").Api);
+            Assert.Equal(GraphicsApi.DX11, reloaded.GetOrCreate(@"C:\Games\Test\game.exe").Api);
         }
 
         [Fact]
@@ -165,7 +165,7 @@ namespace DXVKCompanion.PhaseA.Tests
 
             var store = new ProfileStore(profilesFile);
             var initial = store.GetOrCreate(@"C:\Games\Existing\game.exe");
-            initial.Api = GraphicsApi.DirectX11;
+            initial.Api = GraphicsApi.DX11;
             initial.DxvkEnabled = true;
             initial.DxvkVersion = "2.3";
             store.Save(initial);
@@ -195,7 +195,7 @@ namespace DXVKCompanion.PhaseA.Tests
             var reloadedProfiles = reloaded.GetAll().ToList();
             Assert.Single(reloadedProfiles);
             Assert.Equal(@"C:\Games\Existing\game.exe", reloadedProfiles[0].ExePath);
-            Assert.Equal(GraphicsApi.DirectX11, reloadedProfiles[0].Api);
+            Assert.Equal(GraphicsApi.DX11, reloadedProfiles[0].Api);
 
             // Operation-owned temporary file must have been deleted by cleanup
             Assert.NotNull(observedTempPath);
@@ -219,7 +219,7 @@ namespace DXVKCompanion.PhaseA.Tests
                 throw new IOException("Simulated write failure on first save.");
             };
 
-            var profile = new GameProfile(@"C:\Games\First\game.exe") { Api = GraphicsApi.DirectX9 };
+            var profile = new GameProfile(@"C:\Games\First\game.exe") { Api = GraphicsApi.DX9 };
             var ex = Assert.Throws<IOException>(() => store.Save(profile));
             Assert.Contains("Simulated write failure", ex.Message);
 
@@ -239,7 +239,7 @@ namespace DXVKCompanion.PhaseA.Tests
 
             var store = new ProfileStore(profilesFile);
             var profile = store.GetOrCreate(@"C:\Games\Stable\game.exe");
-            profile.Api = GraphicsApi.DirectX11;
+            profile.Api = GraphicsApi.DX11;
             store.Save(profile);
 
             byte[] originalBytes = File.ReadAllBytes(profilesFile);
@@ -371,17 +371,17 @@ namespace DXVKCompanion.PhaseA.Tests
                 File.WriteAllText(tempPath, json);
             };
 
-            var p1 = store.GetOrCreate(@"C:\Games\A\game.exe");
+            var p1 = new GameProfile(@"C:\Games\A\game.exe");
             store.Save(p1);
 
-            var p2 = store.GetOrCreate(@"C:\Games\B\game.exe");
+            var p2 = new GameProfile(@"C:\Games\B\game.exe");
             store.Save(p2);
 
-            var p3 = store.GetOrCreate(@"C:\Games\C\game.exe");
+            var p3 = new GameProfile(@"C:\Games\C\game.exe");
             store.Save(p3);
 
             Assert.Equal(3, seenTempPaths.Count);
-            Assert.Equal(seenTempPaths.Count, seenTempPaths.Distinct(StringComparer.OrdinalIgnoreCase).Count());
+            Assert.Equal(3, seenTempPaths.Distinct(StringComparer.OrdinalIgnoreCase).Count());
         }
 
         [Fact]
