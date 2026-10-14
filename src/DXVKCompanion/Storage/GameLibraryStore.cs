@@ -33,7 +33,7 @@ namespace DXVKCompanion.Storage
         private bool _isRefused;
         private string? _refusedSchemaText;
 
-        public bool IsRefused
+        internal bool IsRefused
         {
             get
             {
@@ -44,7 +44,7 @@ namespace DXVKCompanion.Storage
             }
         }
 
-        public string? RefusedSchemaVersionText
+        internal string? RefusedSchemaVersionText
         {
             get
             {

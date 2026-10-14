@@ -4,13 +4,13 @@ using DXVKCompanion.Storage;
 
 namespace DXVKCompanion.Startup
 {
-    public enum StartupAction
+    internal enum StartupAction
     {
         Continue = 0,
         RefuseIncompatibleSchema = 1
     }
 
-    public sealed class StartupPreflightResult
+    internal sealed class StartupPreflightResult
     {
         public StartupAction Action { get; }
         public bool ShouldRefuse => Action == StartupAction.RefuseIncompatibleSchema;
@@ -36,7 +36,7 @@ namespace DXVKCompanion.Startup
             new(StartupAction.RefuseIncompatibleSchema, foundSchemaVersionText, supportedSchemaVersion, message);
     }
 
-    public static class StartupCompatibility
+    internal static class StartupCompatibility
     {
         internal static Action<string, string>? MessagePresenter { get; set; }
 

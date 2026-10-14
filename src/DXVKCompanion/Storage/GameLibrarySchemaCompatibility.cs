@@ -2,12 +2,13 @@ using System;
 using System.Globalization;
 using System.IO;
 using System.Numerics;
+using System.Text;
 using System.Text.Json;
 using DXVKCompanion.Models;
 
 namespace DXVKCompanion.Storage
 {
-    public enum SchemaCompatibilityStatus
+    internal enum SchemaCompatibilityStatus
     {
         Missing = 0,
         Compatible = 1,
@@ -15,7 +16,7 @@ namespace DXVKCompanion.Storage
         Malformed = 3
     }
 
-    public sealed class SchemaAssessment
+    internal sealed class SchemaAssessment
     {
         public SchemaCompatibilityStatus Status { get; }
         public string? FoundSchemaVersionText { get; }
@@ -36,7 +37,7 @@ namespace DXVKCompanion.Storage
         public static SchemaAssessment Malformed() => new(SchemaCompatibilityStatus.Malformed);
     }
 
-    public sealed class IncompatibleLibrarySchemaException : InvalidOperationException
+    internal sealed class IncompatibleLibrarySchemaException : InvalidOperationException
     {
         public string? FoundSchemaVersionText { get; }
         public int SupportedSchemaVersion { get; }
@@ -49,27 +50,27 @@ namespace DXVKCompanion.Storage
         }
     }
 
-    public static class GameLibrarySchemaCompatibility
+    internal static class GameLibrarySchemaCompatibility
     {
         public static SchemaAssessment AssessFile(string filePath)
         {
             if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
                 return SchemaAssessment.Missing();
 
-            byte[] bytes;
+            string text;
             try
             {
-                bytes = File.ReadAllBytes(filePath);
+                text = File.ReadAllText(filePath);
             }
             catch
             {
                 return SchemaAssessment.Malformed();
             }
 
-            if (bytes.Length == 0)
+            if (string.IsNullOrWhiteSpace(text))
                 return SchemaAssessment.Malformed();
 
-            return AssessJson(bytes);
+            return AssessJson(text);
         }
 
         public static SchemaAssessment AssessJson(string json)
@@ -86,8 +87,8 @@ namespace DXVKCompanion.Storage
             {
                 using var doc = JsonDocument.Parse(json, new JsonDocumentOptions
                 {
-                    CommentHandling = JsonCommentHandling.Skip,
-                    AllowTrailingCommas = true
+                    CommentHandling = JsonCommentHandling.Disallow,
+                    AllowTrailingCommas = false
                 });
 
                 return AssessJsonDocument(doc);
@@ -102,32 +103,19 @@ namespace DXVKCompanion.Storage
             }
         }
 
-        public static SchemaAssessment AssessJson(byte[] utf8Bytes)
+        public static SchemaAssessment AssessJson(byte[] bytes)
         {
-            if (utf8Bytes == null || utf8Bytes.Length == 0)
+            if (bytes == null || bytes.Length == 0)
                 return SchemaAssessment.Malformed();
-
-            ReadOnlyMemory<byte> memory = utf8Bytes;
-            if (memory.Length >= 3 && memory.Span[0] == 0xEF && memory.Span[1] == 0xBB && memory.Span[2] == 0xBF)
-            {
-                memory = memory.Slice(3);
-            }
 
             try
             {
-                using var doc = JsonDocument.Parse(memory, new JsonDocumentOptions
-                {
-                    CommentHandling = JsonCommentHandling.Skip,
-                    AllowTrailingCommas = true
-                });
-
-                return AssessJsonDocument(doc);
+                using var ms = new MemoryStream(bytes);
+                using var reader = new StreamReader(ms, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+                string text = reader.ReadToEnd();
+                return AssessJson(text);
             }
-            catch (JsonException)
-            {
-                return SchemaAssessment.Malformed();
-            }
-            catch (Exception)
+            catch
             {
                 return SchemaAssessment.Malformed();
             }
@@ -143,8 +131,9 @@ namespace DXVKCompanion.Storage
             {
                 if (string.Equals(prop.Name, nameof(GameLibrary.SchemaVersion), StringComparison.OrdinalIgnoreCase))
                 {
+                    // In System.Text.Json, typed deserialization applies the last matching property.
+                    // Match effective property handling by tracking the last occurrence.
                     schemaProp = prop;
-                    break;
                 }
             }
 

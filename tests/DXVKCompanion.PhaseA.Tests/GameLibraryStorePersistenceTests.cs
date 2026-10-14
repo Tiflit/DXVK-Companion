@@ -657,5 +657,331 @@ namespace DXVKCompanion.PhaseA.Tests
             var recoveryFiles = Directory.GetFiles(testDir.RootPath, "game-library.json.recovery.*.json");
             Assert.Empty(recoveryFiles);
         }
+
+        [Fact]
+        public void GameLibraryStore_ExistingBackupDirectoryWithSentinel_RefusedLoadAndMutations_LeavesBackupDirectoryAndContentsUntouched()
+        {
+            using var testDir = new SyntheticTestDirectory();
+            string libraryFile = Path.Combine(testDir.RootPath, "game-library.json");
+            string backupsDir = Path.Combine(testDir.RootPath, "backups");
+
+            // Create existing backup directory and seed sentinel files
+            Directory.CreateDirectory(backupsDir);
+            string sentinelBackupFile = Path.Combine(backupsDir, "backup-sentinel.json.bak");
+            byte[] sentinelBackupBytes = Encoding.UTF8.GetBytes("PREEXISTING_BACKUP_SENTINEL_DATA_12345");
+            File.WriteAllBytes(sentinelBackupFile, sentinelBackupBytes);
+
+            string unrelatedBackupFile = Path.Combine(backupsDir, "unrelated_archive.zip");
+            byte[] unrelatedBackupBytes = Encoding.UTF8.GetBytes("UNRELATED_ZIP_CONTENT_67890");
+            File.WriteAllBytes(unrelatedBackupFile, unrelatedBackupBytes);
+
+            // Record initial backup entries
+            var initialBackupEntries = Directory.GetFileSystemEntries(backupsDir).OrderBy(x => x).ToArray();
+
+            // Seed newer schema file
+            string newerJson = @"{ ""SchemaVersion"": 4, ""Installations"": [] }";
+            File.WriteAllText(libraryFile, newerJson);
+            byte[] expectedLibraryBytes = File.ReadAllBytes(libraryFile);
+
+            int writerCalls = 0;
+            int commitCalls = 0;
+            int cleanerCalls = 0;
+            var store = new GameLibraryStore(libraryFile, backupsDir)
+            {
+                CustomTempWriter = (_, _) => writerCalls++,
+                CustomCommitReplace = (_, _) => commitCalls++,
+                CustomTempCleaner = _ => cleanerCalls++
+            };
+
+            Assert.True(store.IsRefused);
+            Assert.Empty(store.GetAll());
+
+            // Attempt all 4 mutating entry points
+            Assert.Throws<IncompatibleLibrarySchemaException>(() =>
+                store.GetOrCreateInstallation(@"C:\Games\BlockedGame", "Blocked Game"));
+
+            Assert.Throws<IncompatibleLibrarySchemaException>(() =>
+                store.Save(new GameInstallation { InstallationPath = @"C:\Games\BlockedGame" }));
+
+            Assert.Throws<IncompatibleLibrarySchemaException>(() =>
+                store.SaveAll());
+
+            var snapshot = new DetectionSnapshot
+            {
+                InstallationRoot = @"C:\Games\BlockedGame",
+                ExecutableRelativePath = "bin/game.exe",
+                ProcessName = "BlockedGame",
+                Classification = new ApiClassificationResult
+                {
+                    PrimaryApi = GraphicsApi.DX11,
+                    Confidence = ApiDetectionConfidence.High,
+                    Architecture = "x64"
+                },
+                TimestampUtc = DateTime.UtcNow
+            };
+            Assert.Throws<IncompatibleLibrarySchemaException>(() =>
+                store.RecordDetectionSnapshot(snapshot));
+
+            // Verify backup directory entries and contents are completely unchanged
+            Assert.True(Directory.Exists(backupsDir));
+            var finalBackupEntries = Directory.GetFileSystemEntries(backupsDir).OrderBy(x => x).ToArray();
+            Assert.Equal(initialBackupEntries, finalBackupEntries);
+            Assert.Equal(sentinelBackupBytes, File.ReadAllBytes(sentinelBackupFile));
+            Assert.Equal(unrelatedBackupBytes, File.ReadAllBytes(unrelatedBackupFile));
+
+            // Verify library file is byte-for-byte unchanged
+            Assert.Equal(expectedLibraryBytes, File.ReadAllBytes(libraryFile));
+
+            // Verify zero writer/commit/cleaner calls and zero in-memory mutations
+            Assert.Equal(0, writerCalls);
+            Assert.Equal(0, commitCalls);
+            Assert.Equal(0, cleanerCalls);
+            Assert.Empty(store.GetAll());
+        }
+
+        [Fact]
+        public void GameLibraryStore_NewerDataAppearingAfterConstruction_GetOrCreateInstallation_FirstDetector_RefusesAndThrowsWithoutMutation()
+        {
+            using var testDir = new SyntheticTestDirectory();
+            string libraryFile = Path.Combine(testDir.RootPath, "game-library.json");
+            string backupsDir = Path.Combine(testDir.RootPath, "backups");
+
+            int writerCalls = 0;
+            int commitCalls = 0;
+            int cleanerCalls = 0;
+            var store = new GameLibraryStore(libraryFile, backupsDir)
+            {
+                CustomTempWriter = (_, _) => writerCalls++,
+                CustomCommitReplace = (_, _) => commitCalls++,
+                CustomTempCleaner = _ => cleanerCalls++
+            };
+            Assert.False(store.IsRefused);
+
+            // External process writes newer schema file to disk
+            string newerContent = @"{ ""SchemaVersion"": 9, ""Installations"": [] }";
+            File.WriteAllText(libraryFile, newerContent);
+            byte[] expectedBytes = File.ReadAllBytes(libraryFile);
+
+            // GetOrCreateInstallation is the first mutating call on this instance
+            var ex = Assert.Throws<IncompatibleLibrarySchemaException>(() =>
+                store.GetOrCreateInstallation(@"C:\Games\ExternalFirstGame", "External First Game"));
+
+            Assert.Equal("9", ex.FoundSchemaVersionText);
+            Assert.True(store.IsRefused);
+            Assert.Equal("9", store.RefusedSchemaVersionText);
+            Assert.Empty(store.GetAll());
+            Assert.Equal(0, writerCalls);
+            Assert.Equal(0, commitCalls);
+            Assert.Equal(0, cleanerCalls);
+            Assert.Equal(expectedBytes, File.ReadAllBytes(libraryFile));
+        }
+
+        [Fact]
+        public void GameLibraryStore_NewerDataAppearingAfterConstruction_Save_FirstDetector_RefusesAndThrowsWithoutMutation()
+        {
+            using var testDir = new SyntheticTestDirectory();
+            string libraryFile = Path.Combine(testDir.RootPath, "game-library.json");
+            string backupsDir = Path.Combine(testDir.RootPath, "backups");
+
+            int writerCalls = 0;
+            int commitCalls = 0;
+            int cleanerCalls = 0;
+            var store = new GameLibraryStore(libraryFile, backupsDir)
+            {
+                CustomTempWriter = (_, _) => writerCalls++,
+                CustomCommitReplace = (_, _) => commitCalls++,
+                CustomTempCleaner = _ => cleanerCalls++
+            };
+            Assert.False(store.IsRefused);
+
+            // External process writes newer schema file to disk
+            string newerContent = @"{ ""SchemaVersion"": 9, ""Installations"": [] }";
+            File.WriteAllText(libraryFile, newerContent);
+            byte[] expectedBytes = File.ReadAllBytes(libraryFile);
+
+            // Save is the first mutating call on this instance
+            var installation = new GameInstallation
+            {
+                InstallationPath = @"C:\Games\ExternalFirstGame",
+                DisplayName = "External First Game"
+            };
+            var ex = Assert.Throws<IncompatibleLibrarySchemaException>(() =>
+                store.Save(installation));
+
+            Assert.Equal("9", ex.FoundSchemaVersionText);
+            Assert.True(store.IsRefused);
+            Assert.Equal("9", store.RefusedSchemaVersionText);
+            Assert.Empty(store.GetAll());
+            Assert.Equal(0, writerCalls);
+            Assert.Equal(0, commitCalls);
+            Assert.Equal(0, cleanerCalls);
+            Assert.Equal(expectedBytes, File.ReadAllBytes(libraryFile));
+        }
+
+        [Fact]
+        public void GameLibraryStore_NewerDataAppearingAfterConstruction_SaveAll_FirstDetector_RefusesAndThrowsWithoutMutation()
+        {
+            using var testDir = new SyntheticTestDirectory();
+            string libraryFile = Path.Combine(testDir.RootPath, "game-library.json");
+            string backupsDir = Path.Combine(testDir.RootPath, "backups");
+
+            int writerCalls = 0;
+            int commitCalls = 0;
+            int cleanerCalls = 0;
+            var store = new GameLibraryStore(libraryFile, backupsDir)
+            {
+                CustomTempWriter = (_, _) => writerCalls++,
+                CustomCommitReplace = (_, _) => commitCalls++,
+                CustomTempCleaner = _ => cleanerCalls++
+            };
+            Assert.False(store.IsRefused);
+
+            // External process writes newer schema file to disk
+            string newerContent = @"{ ""SchemaVersion"": 9, ""Installations"": [] }";
+            File.WriteAllText(libraryFile, newerContent);
+            byte[] expectedBytes = File.ReadAllBytes(libraryFile);
+
+            // SaveAll is the first mutating call on this instance
+            var ex = Assert.Throws<IncompatibleLibrarySchemaException>(() =>
+                store.SaveAll());
+
+            Assert.Equal("9", ex.FoundSchemaVersionText);
+            Assert.True(store.IsRefused);
+            Assert.Equal("9", store.RefusedSchemaVersionText);
+            Assert.Empty(store.GetAll());
+            Assert.Equal(0, writerCalls);
+            Assert.Equal(0, commitCalls);
+            Assert.Equal(0, cleanerCalls);
+            Assert.Equal(expectedBytes, File.ReadAllBytes(libraryFile));
+        }
+
+        [Fact]
+        public void GameLibraryStore_NewerDataAppearingAfterConstruction_RecordDetectionSnapshot_FirstDetector_RefusesAndThrowsWithoutMutation()
+        {
+            using var testDir = new SyntheticTestDirectory();
+            string libraryFile = Path.Combine(testDir.RootPath, "game-library.json");
+            string backupsDir = Path.Combine(testDir.RootPath, "backups");
+
+            int writerCalls = 0;
+            int commitCalls = 0;
+            int cleanerCalls = 0;
+            var store = new GameLibraryStore(libraryFile, backupsDir)
+            {
+                CustomTempWriter = (_, _) => writerCalls++,
+                CustomCommitReplace = (_, _) => commitCalls++,
+                CustomTempCleaner = _ => cleanerCalls++
+            };
+            Assert.False(store.IsRefused);
+
+            // External process writes newer schema file to disk
+            string newerContent = @"{ ""SchemaVersion"": 9, ""Installations"": [] }";
+            File.WriteAllText(libraryFile, newerContent);
+            byte[] expectedBytes = File.ReadAllBytes(libraryFile);
+
+            // RecordDetectionSnapshot is the first mutating call on this instance
+            var snapshot = new DetectionSnapshot
+            {
+                InstallationRoot = @"C:\Games\ExternalFirstGame",
+                ExecutableRelativePath = "bin/game.exe",
+                ProcessName = "ExternalFirstGame",
+                Classification = new ApiClassificationResult
+                {
+                    PrimaryApi = GraphicsApi.DX11,
+                    Confidence = ApiDetectionConfidence.High,
+                    Architecture = "x64"
+                },
+                TimestampUtc = DateTime.UtcNow
+            };
+            var ex = Assert.Throws<IncompatibleLibrarySchemaException>(() =>
+                store.RecordDetectionSnapshot(snapshot));
+
+            Assert.Equal("9", ex.FoundSchemaVersionText);
+            Assert.False(snapshot.HasApiChanged);
+            Assert.True(store.IsRefused);
+            Assert.Equal("9", store.RefusedSchemaVersionText);
+            Assert.Empty(store.GetAll());
+            Assert.Equal(0, writerCalls);
+            Assert.Equal(0, commitCalls);
+            Assert.Equal(0, cleanerCalls);
+            Assert.Equal(expectedBytes, File.ReadAllBytes(libraryFile));
+        }
+
+        [Fact]
+        public void GameLibraryStore_Utf16BomNewerSchemaWithUnknownEnums_RefusedLoadAndSave_PreservedByteForByte()
+        {
+            using var testDir = new SyntheticTestDirectory();
+            string libraryFile = Path.Combine(testDir.RootPath, "game-library.json");
+            string backupsDir = Path.Combine(testDir.RootPath, "backups");
+
+            string futureJsonWithUnknownEnums = @"{
+  ""SchemaVersion"": 10,
+  ""Installations"": [
+    {
+      ""InstallationPath"": ""C:\\Games\\Utf16StoreGame"",
+      ""DisplayName"": ""UTF16 Store Game"",
+      ""ManagementPolicy"": {
+        ""Mode"": ""FuturisticAutonomousMode777""
+      }
+    }
+  ]
+}";
+            File.WriteAllText(libraryFile, futureJsonWithUnknownEnums, Encoding.Unicode);
+            byte[] expectedBytes = File.ReadAllBytes(libraryFile);
+
+            int writerCalls = 0;
+            int commitCalls = 0;
+            int cleanerCalls = 0;
+            var store = new GameLibraryStore(libraryFile, backupsDir)
+            {
+                CustomTempWriter = (_, _) => writerCalls++,
+                CustomCommitReplace = (_, _) => commitCalls++,
+                CustomTempCleaner = _ => cleanerCalls++
+            };
+
+            Assert.True(store.IsRefused);
+            Assert.Equal("10", store.RefusedSchemaVersionText);
+            Assert.Empty(store.GetAll());
+
+            Assert.Throws<IncompatibleLibrarySchemaException>(() => store.SaveAll());
+            Assert.Throws<IncompatibleLibrarySchemaException>(() =>
+                store.GetOrCreateInstallation(@"C:\Games\BlockedUtf16", "Blocked UTF16"));
+
+            // File on disk remains byte-for-byte identical
+            Assert.Equal(expectedBytes, File.ReadAllBytes(libraryFile));
+
+            // No recovery files created
+            var recoveryFiles = Directory.GetFiles(testDir.RootPath, "game-library.json.recovery.*.json");
+            Assert.Empty(recoveryFiles);
+
+            // Zero write calls
+            Assert.Equal(0, writerCalls);
+            Assert.Equal(0, commitCalls);
+            Assert.Equal(0, cleanerCalls);
+        }
+
+        [Fact]
+        public void GameLibraryStore_TrailingCommaInJson_IsTreatedAsMalformedAndTriggersRecovery_NotRefused()
+        {
+            using var testDir = new SyntheticTestDirectory();
+            string libraryFile = Path.Combine(testDir.RootPath, "game-library.json");
+            string backupsDir = Path.Combine(testDir.RootPath, "backups");
+
+            // Trailing comma in JSON: rejected by loader's JsonOptions
+            string jsonWithTrailingComma = @"{ ""SchemaVersion"": 2, ""Installations"": [], }";
+            File.WriteAllText(libraryFile, jsonWithTrailingComma);
+
+            var store = new GameLibraryStore(libraryFile, backupsDir);
+
+            // Must NOT be refused (preflight treats as Malformed, passing to loader recovery)
+            Assert.False(store.IsRefused);
+            Assert.Null(store.RefusedSchemaVersionText);
+
+            // Recovery file must be preserved
+            var recoveryFiles = Directory.GetFiles(testDir.RootPath, "game-library.json.recovery.*.json");
+            Assert.Single(recoveryFiles);
+
+            // Clean-slate in-memory initialization
+            Assert.Empty(store.GetAll());
+        }
     }
 }

@@ -223,5 +223,77 @@ namespace DXVKCompanion.PhaseA.Tests
             Assert.Equal(SchemaCompatibilityStatus.IncompatibleNewer, result.Status);
             Assert.Equal("2", result.FoundSchemaVersionText);
         }
+
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public void AssessFile_Utf16NewerSchemaWithUnknownEnumContent_IdentifiedAsIncompatibleNewer(bool littleEndian)
+        {
+            using var testDir = new SyntheticTestDirectory();
+            string file = Path.Combine(testDir.RootPath, "game-library.json");
+            Encoding encoding = littleEndian ? Encoding.Unicode : Encoding.BigEndianUnicode;
+
+            string futureJson = @"{
+  ""SchemaVersion"": 8,
+  ""Installations"": [
+    {
+      ""InstallationPath"": ""C:\\Games\\Utf16Game"",
+      ""DisplayName"": ""UTF16 Game"",
+      ""ManagementPolicy"": {
+        ""Mode"": ""FuturisticAutonomousMode777""
+      }
+    }
+  ]
+}";
+            File.WriteAllText(file, futureJson, encoding);
+
+            var result = GameLibrarySchemaCompatibility.AssessFile(file);
+
+            Assert.Equal(SchemaCompatibilityStatus.IncompatibleNewer, result.Status);
+            Assert.True(result.IsRefused);
+            Assert.Equal("8", result.FoundSchemaVersionText);
+        }
+
+        [Fact]
+        public void AssessJson_DuplicateSchemaVersionProperty_LastPropertyDeterminesEffectiveVersion()
+        {
+            // Case 1: First is supported (1), last is newer (999) -> effective is 999 (IncompatibleNewer)
+            string jsonNewerWins = @"{ ""SchemaVersion"": 1, ""schemaVersion"": 999, ""Installations"": [] }";
+            var result1 = GameLibrarySchemaCompatibility.AssessJson(jsonNewerWins);
+            Assert.Equal(SchemaCompatibilityStatus.IncompatibleNewer, result1.Status);
+            Assert.Equal("999", result1.FoundSchemaVersionText);
+
+            // Case 2: First is newer (999), last is supported (1) -> effective is 1 (Compatible)
+            string jsonSupportedWins = @"{ ""SchemaVersion"": 999, ""schemaVersion"": 1, ""Installations"": [] }";
+            var result2 = GameLibrarySchemaCompatibility.AssessJson(jsonSupportedWins);
+            Assert.Equal(SchemaCompatibilityStatus.Compatible, result2.Status);
+            Assert.Equal("1", result2.FoundSchemaVersionText);
+
+            // Case 3: First is newer (999), last is malformed string -> effective is malformed
+            string jsonMalformedWins = @"{ ""SchemaVersion"": 999, ""schemaVersion"": ""invalid"", ""Installations"": [] }";
+            var result3 = GameLibrarySchemaCompatibility.AssessJson(jsonMalformedWins);
+            Assert.Equal(SchemaCompatibilityStatus.Malformed, result3.Status);
+
+            // Case 4: First is malformed string, last is newer (999) -> effective is 999 (IncompatibleNewer)
+            string jsonNewerOverwritesMalformed = @"{ ""SchemaVersion"": ""invalid"", ""schemaVersion"": 999, ""Installations"": [] }";
+            var result4 = GameLibrarySchemaCompatibility.AssessJson(jsonNewerOverwritesMalformed);
+            Assert.Equal(SchemaCompatibilityStatus.IncompatibleNewer, result4.Status);
+            Assert.Equal("999", result4.FoundSchemaVersionText);
+        }
+
+        [Theory]
+        [InlineData(@"{ ""SchemaVersion"": 2, ""Installations"": [], }")]
+        [InlineData(@"{ /* comment */ ""SchemaVersion"": 2, ""Installations"": [] }")]
+        [InlineData(@"{ ""SchemaVersion"": 2 // inline comment
+, ""Installations"": [] }")]
+        public void AssessJson_TrailingCommasAndComments_TreatedAsMalformedConsistentWithLoader(string json)
+        {
+            // The unchanged loader uses default JsonOptions which disallows comments and trailing commas.
+            // Strict preflight ensures these are classified as Malformed rather than falsely refused.
+            var result = GameLibrarySchemaCompatibility.AssessJson(json);
+
+            Assert.Equal(SchemaCompatibilityStatus.Malformed, result.Status);
+            Assert.False(result.IsRefused);
+        }
     }
 }

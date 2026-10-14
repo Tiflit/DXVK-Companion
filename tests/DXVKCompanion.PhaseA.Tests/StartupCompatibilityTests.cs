@@ -130,5 +130,52 @@ namespace DXVKCompanion.PhaseA.Tests
                 StartupCompatibility.MessagePresenter = null;
             }
         }
+
+        [Fact]
+        public void Evaluate_Utf16NewerSchemaWithUnknownEnumContent_ReturnsRefuseWithSafeMessage()
+        {
+            using var testDir = new SyntheticTestDirectory();
+            string libraryPath = Path.Combine(testDir.RootPath, "game-library.json");
+            string futureJson = @"{
+  ""SchemaVersion"": 12,
+  ""Installations"": [
+    {
+      ""InstallationPath"": ""C:\\Games\\FutureUtf16"",
+      ""DisplayName"": ""Future UTF16"",
+      ""ManagementPolicy"": {
+        ""Mode"": ""FuturisticAutonomousMode""
+      }
+    }
+  ]
+}";
+            File.WriteAllText(libraryPath, futureJson, System.Text.Encoding.Unicode);
+
+            var result = StartupCompatibility.Evaluate(libraryPath);
+
+            Assert.Equal(StartupAction.RefuseIncompatibleSchema, result.Action);
+            Assert.True(result.ShouldRefuse);
+            Assert.Equal("12", result.FoundSchemaVersionText);
+            Assert.NotNull(result.Message);
+            Assert.Contains("12", result.Message);
+            Assert.Contains(GameLibrary.CurrentSchemaVersion.ToString(), result.Message);
+            Assert.DoesNotContain(libraryPath, result.Message);
+        }
+
+        [Theory]
+        [InlineData(@"{ ""SchemaVersion"": 2, ""Installations"": [], }")]
+        [InlineData(@"{ /* comment */ ""SchemaVersion"": 2, ""Installations"": [] }")]
+        public void Evaluate_TrailingCommaOrComment_ReturnsContinue_ToAllowStoreRecovery(string json)
+        {
+            using var testDir = new SyntheticTestDirectory();
+            string libraryPath = Path.Combine(testDir.RootPath, "game-library.json");
+            File.WriteAllText(libraryPath, json);
+
+            var result = StartupCompatibility.Evaluate(libraryPath);
+
+            // Startup continues so the store can perform standard recovery
+            Assert.Equal(StartupAction.Continue, result.Action);
+            Assert.False(result.ShouldRefuse);
+            Assert.Null(result.Message);
+        }
     }
 }
