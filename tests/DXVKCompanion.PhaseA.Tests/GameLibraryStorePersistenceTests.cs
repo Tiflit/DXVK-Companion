@@ -77,7 +77,7 @@ namespace DXVKCompanion.PhaseA.Tests
 
             var installation = store.GetOrCreateInstallation(@"C:\Games\RPGGame", "RPG Game");
             installation.LastSeenUtc = new DateTime(2026, 10, 14, 18, 0, 0, DateTimeKind.Utc);
-            installation.ManagementPolicy = ManagementPolicy.Pinned("2.3.1");
+            installation.ManagementPolicy = ManagementPolicy.PinVersion("2.3.1");
             installation.Configuration = new DxvkConfiguration
             {
                 HudEnabled = true,
@@ -93,12 +93,12 @@ namespace DXVKCompanion.PhaseA.Tests
             exe.LastSeenUtc = new DateTime(2026, 10, 14, 18, 5, 0, DateTimeKind.Utc);
 
             var managedFile = installation.GetOrAddManagedFile("bin/d3d11.dll");
-            managedFile.OriginalState = FileOriginalState.ExistedAtInstall;
+            managedFile.OriginalState = FileOriginalState.Existing;
             managedFile.BackupRelativePath = "backups/d3d11.dll.bak";
             managedFile.OriginalSha256 = "ORIGINAL_HASH_123456";
             managedFile.ExpectedManagedSha256 = "MANAGED_HASH_789012";
             managedFile.ManagedDxvkVersion = "2.3.1";
-            managedFile.CurrentState = ManagedFileState.Managed;
+            managedFile.CurrentState = ManagedFileState.Consistent;
             managedFile.LastVerifiedUtc = new DateTime(2026, 10, 14, 18, 10, 0, DateTimeKind.Utc);
 
             // First save
@@ -114,8 +114,8 @@ namespace DXVKCompanion.PhaseA.Tests
 
             // Verify ManagementPolicy
             Assert.NotNull(loaded.ManagementPolicy);
-            Assert.Equal(InstallationPolicyType.Pinned, loaded.ManagementPolicy.PolicyType);
-            Assert.Equal("2.3.1", loaded.ManagementPolicy.PinnedVersion);
+            Assert.Equal(ManagementMode.PinnedVersion, loaded.ManagementPolicy.Mode);
+            Assert.Equal("2.3.1", loaded.ManagementPolicy.PinnedDxvkVersion);
 
             // Verify DxvkConfiguration
             Assert.NotNull(loaded.Configuration);
@@ -137,12 +137,12 @@ namespace DXVKCompanion.PhaseA.Tests
             // Verify ManagedFileRecord
             var loadedFile = loaded.FindManagedFile("bin/d3d11.dll");
             Assert.NotNull(loadedFile);
-            Assert.Equal(FileOriginalState.ExistedAtInstall, loadedFile.OriginalState);
+            Assert.Equal(FileOriginalState.Existing, loadedFile.OriginalState);
             Assert.Equal("backups/d3d11.dll.bak", loadedFile.BackupRelativePath);
             Assert.Equal("ORIGINAL_HASH_123456", loadedFile.OriginalSha256);
             Assert.Equal("MANAGED_HASH_789012", loadedFile.ExpectedManagedSha256);
             Assert.Equal("2.3.1", loadedFile.ManagedDxvkVersion);
-            Assert.Equal(ManagedFileState.Managed, loadedFile.CurrentState);
+            Assert.Equal(ManagedFileState.Consistent, loadedFile.CurrentState);
             Assert.Equal(new DateTime(2026, 10, 14, 18, 10, 0, DateTimeKind.Utc), loadedFile.LastVerifiedUtc);
 
             // Replacement save with mutated configuration

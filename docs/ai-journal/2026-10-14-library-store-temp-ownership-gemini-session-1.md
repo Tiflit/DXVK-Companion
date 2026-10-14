@@ -77,6 +77,22 @@ Work strictly confined to the allowed paths:
 
 ---
 
+### Repair Batch: Cloud CI Compilation Feedback Resolution
+
+- **Trigger**: Cloud CI run `38647555389` reported compilation errors in `tests/DXVKCompanion.PhaseA.Tests/GameLibraryStorePersistenceTests.cs` (CS0117/CS1061):
+  - `'ManagementPolicy' does not contain a definition for 'Pinned'`
+  - `'FileOriginalState' does not contain a definition for 'ExistedAtInstall'`
+  - `'ManagedFileState' does not contain a definition for 'Managed'`
+  - `'ManagementPolicy' does not contain a definition for 'PinnedVersion'` / `'PolicyType'`
+- **Root Cause & Inspection**: Source model inspection revealed:
+  - `ManagementPolicy.PinVersion(string version)` constructs policy with `Mode = ManagementMode.PinnedVersion` and `PinnedDxvkVersion`.
+  - `FileOriginalState` enum values are `Unknown = 0, Missing = 1, Existing = 2`.
+  - `ManagedFileState` enum values are `Unknown = 0, Consistent = 1, ExternallyChanged = 2`.
+- **Resolution**: Updated `tests/DXVKCompanion.PhaseA.Tests/GameLibraryStorePersistenceTests.cs` to reference canonical model symbols (`ManagementPolicy.PinVersion("2.3.1")`, `ManagementMode.PinnedVersion`, `PinnedDxvkVersion`, `FileOriginalState.Existing`, `ManagedFileState.Consistent`).
+- **Scope**: Confined strictly to `tests/DXVKCompanion.PhaseA.Tests/GameLibraryStorePersistenceTests.cs` and this journal. Zero product code modifications.
+
+---
+
 ### Retained Limitations & Gaps
 
 - Bounded single-store staged save only; does not provide distributed cross-store transactions across `ProfileStore` and `GameLibraryStore`.
