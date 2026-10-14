@@ -14,6 +14,10 @@ namespace DXVKCompanion.Storage
         private readonly Dictionary<string, GameProfile> _profiles = new(StringComparer.OrdinalIgnoreCase);
         private readonly string _profilesFile;
 
+        internal Action<string, string>? CustomTempWriter { get; set; }
+        internal Action<string, string>? CustomCommitReplace { get; set; }
+        internal Action<string>? CustomTempCleaner { get; set; }
+
         public ProfileStore(string? profilesFile = null)
         {
             _profilesFile = profilesFile ?? Paths.ProfilesFile;
@@ -43,7 +47,7 @@ namespace DXVKCompanion.Storage
         private void Load()
         {
             var dir = Path.GetDirectoryName(_profilesFile);
-            if (!string.IsNullOrEmpty(dir))
+            if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
                 Directory.CreateDirectory(dir);
 
             if (!File.Exists(_profilesFile))
@@ -69,7 +73,7 @@ namespace DXVKCompanion.Storage
         private void WriteAll()
         {
             var dir = Path.GetDirectoryName(_profilesFile);
-            if (!string.IsNullOrEmpty(dir))
+            if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
                 Directory.CreateDirectory(dir);
 
             var list = new List<GameProfile>(_profiles.Values);
@@ -79,7 +83,59 @@ namespace DXVKCompanion.Storage
                 WriteIndented = true
             });
 
-            File.WriteAllText(_profilesFile, json);
+            string tempPath = _profilesFile + ".tmp." + Guid.NewGuid().ToString("N");
+            bool committed = false;
+            try
+            {
+                if (CustomTempWriter != null)
+                {
+                    CustomTempWriter(tempPath, json);
+                }
+                else
+                {
+                    File.WriteAllText(tempPath, json);
+                }
+
+                if (CustomCommitReplace != null)
+                {
+                    CustomCommitReplace(tempPath, _profilesFile);
+                }
+                else
+                {
+                    if (File.Exists(_profilesFile))
+                    {
+                        File.Move(tempPath, _profilesFile, overwrite: true);
+                    }
+                    else
+                    {
+                        File.Move(tempPath, _profilesFile);
+                    }
+                }
+
+                committed = true;
+            }
+            finally
+            {
+                if (!committed)
+                {
+                    try
+                    {
+                        if (CustomTempCleaner != null)
+                        {
+                            CustomTempCleaner(tempPath);
+                        }
+                        else if (File.Exists(tempPath))
+                        {
+                            File.Delete(tempPath);
+                        }
+                    }
+                    catch
+                    {
+                        // Clean only the temporary file owned by the current operation.
+                        // Cleanup failure must never mask the primary failure or reverse a commit.
+                    }
+                }
+            }
         }
     }
 }
