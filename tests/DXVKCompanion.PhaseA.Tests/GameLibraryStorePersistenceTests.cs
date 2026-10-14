@@ -564,7 +564,7 @@ namespace DXVKCompanion.PhaseA.Tests
                 InstallationRoot = @"C:\Games\BlockedGame",
                 ExecutableRelativePath = "bin/game.exe",
                 ProcessName = "BlockedGame",
-                Classification = new ApiClassification
+                Classification = new ApiClassificationResult
                 {
                     PrimaryApi = GraphicsApi.DX11,
                     Confidence = ApiDetectionConfidence.High,
