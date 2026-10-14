@@ -30,6 +30,31 @@ namespace DXVKCompanion.Storage
         private readonly string _libraryFilePath;
         private readonly string _backupsDirectoryPath;
 
+        private bool _isRefused;
+        private string? _refusedSchemaText;
+
+        internal bool IsRefused
+        {
+            get
+            {
+                lock (_sync)
+                {
+                    return _isRefused;
+                }
+            }
+        }
+
+        internal string? RefusedSchemaVersionText
+        {
+            get
+            {
+                lock (_sync)
+                {
+                    return _refusedSchemaText;
+                }
+            }
+        }
+
         public GameLibraryStore(
             string? libraryFilePath = null,
             string? backupsDirectoryPath = null,
@@ -100,6 +125,8 @@ namespace DXVKCompanion.Storage
 
             lock (_sync)
             {
+                EnsureNotRefusedLocked();
+
                 if (_installations.TryGetValue(normalized, out var existing))
                     return existing;
 
@@ -123,6 +150,8 @@ namespace DXVKCompanion.Storage
 
             lock (_sync)
             {
+                EnsureNotRefusedLocked();
+
                 var installation = GetOrCreateInstallation(snapshot.InstallationRoot, Path.GetFileName(snapshot.InstallationRoot));
                 var profile = installation.GetOrAddExecutable(snapshot.ExecutableRelativePath, snapshot.ProcessName);
 
@@ -153,6 +182,8 @@ namespace DXVKCompanion.Storage
 
             lock (_sync)
             {
+                EnsureNotRefusedLocked();
+
                 installation.InstallationPath =
                     GameInstallation.NormalizeInstallationPath(installation.InstallationPath);
 
@@ -168,17 +199,56 @@ namespace DXVKCompanion.Storage
         {
             lock (_sync)
             {
+                EnsureNotRefusedLocked();
                 WriteAllLocked();
+            }
+        }
+
+        private void EnsureNotRefusedLocked()
+        {
+            if (_isRefused)
+            {
+                throw new IncompatibleLibrarySchemaException(
+                    _refusedSchemaText,
+                    GameLibrary.CurrentSchemaVersion,
+                    $"Cannot modify game library: file on disk declares schema {_refusedSchemaText}, which is newer than supported schema {GameLibrary.CurrentSchemaVersion}.");
+            }
+
+            if (File.Exists(_libraryFilePath))
+            {
+                var assessment = GameLibrarySchemaCompatibility.AssessFile(_libraryFilePath);
+                if (assessment.IsRefused)
+                {
+                    _isRefused = true;
+                    _refusedSchemaText = assessment.FoundSchemaVersionText;
+                    throw new IncompatibleLibrarySchemaException(
+                        _refusedSchemaText,
+                        GameLibrary.CurrentSchemaVersion,
+                        $"Cannot modify game library: file on disk declares schema {_refusedSchemaText}, which is newer than supported schema {GameLibrary.CurrentSchemaVersion}.");
+                }
             }
         }
 
         private void Load()
         {
-            Paths.EnsureDirectories();
-            Directory.CreateDirectory(_backupsDirectoryPath);
-
             if (File.Exists(_libraryFilePath))
             {
+                var assessment = GameLibrarySchemaCompatibility.AssessFile(_libraryFilePath);
+                if (assessment.IsRefused)
+                {
+                    lock (_sync)
+                    {
+                        _isRefused = true;
+                        _refusedSchemaText = assessment.FoundSchemaVersionText;
+                    }
+                    // A refused library remains byte-for-byte unchanged.
+                    // No temporary file, recovery copy, backup creation/rotation or directory creation on that refusal path.
+                    return;
+                }
+
+                Paths.EnsureDirectories();
+                Directory.CreateDirectory(_backupsDirectoryPath);
+
                 var result = TryLoadCurrentFormat();
                 if (result == LoadResult.Success || result == LoadResult.FutureSchema)
                     return;
@@ -189,6 +259,9 @@ namespace DXVKCompanion.Storage
                 Log($"GameLibraryStore: current library could not be loaded. Preserved a recovery copy.");
                 return;
             }
+
+            Paths.EnsureDirectories();
+            Directory.CreateDirectory(_backupsDirectoryPath);
         }
 
         private LoadResult TryLoadCurrentFormat()
@@ -202,6 +275,11 @@ namespace DXVKCompanion.Storage
 
                 if (library.SchemaVersion > GameLibrary.CurrentSchemaVersion)
                 {
+                    lock (_sync)
+                    {
+                        _isRefused = true;
+                        _refusedSchemaText = library.SchemaVersion.ToString();
+                    }
                     Log($"GameLibraryStore: library schema {library.SchemaVersion} is newer than supported schema {GameLibrary.CurrentSchemaVersion}. No migration was attempted.");
                     return LoadResult.FutureSchema;
                 }
@@ -253,6 +331,8 @@ namespace DXVKCompanion.Storage
 
         private void WriteAllLocked()
         {
+            EnsureNotRefusedLocked();
+
             Paths.EnsureDirectories();
             Directory.CreateDirectory(_backupsDirectoryPath);
 

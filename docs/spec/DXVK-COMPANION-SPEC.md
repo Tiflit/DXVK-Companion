@@ -1419,6 +1419,19 @@ The user should be able to toggle:
 
 This is a Windows-native startup integration intended to support Automation.
 
+## 40.1 Library Schema Compatibility and Startup Refusal
+
+To prevent downgrade corruption and accidental replacement of libraries created by a newer version of DXVK Companion:
+
+1. **Root Schema Preflight**: On startup and prior to typed deserialization, DXVK Companion inspects the root `SchemaVersion` marker in `game-library.json`. A well-formed positive integer greater than `CurrentSchemaVersion` (including arbitrary-precision integers) is classified as an explicit newer schema.
+2. **Startup Refusal**: If an explicit newer schema is detected:
+   - Application startup is refused immediately before initializing application directories, log files, storage stores, process monitoring, DXVK release management, or tray interface components.
+   - A single clear modal warning is presented informing the user of the found schema version and the supported schema version, explaining that a compatible build of DXVK Companion is required.
+   - The application exits cleanly without starting background monitoring or management threads.
+3. **Storage Mutation Guards**: `GameLibraryStore` remembers refusal state and guards every mutating entry point (`GetOrCreateInstallation`, `Save`, `SaveAll`, `RecordDetectionSnapshot`). Calling any mutation API on a refused store throws `IncompatibleLibrarySchemaException`. Furthermore, the store re-checks on-disk schema before each mutation to defend against external writes occurring after store instantiation.
+4. **Non-Destructive File Preservation**: A refused library file is preserved byte-for-byte intact. No temporary files, backup rotations, recovery copies, or sibling cleanups are performed on the refusal path. Absent backup directories remain uncreated.
+5. **Malformed File Distinction**: Files with non-integer, negative, zero, non-numeric, or unparseable schema markers are treated as malformed or non-newer markers rather than explicit newer schemas, avoiding false refusal and preserving existing loader and recovery behavior without broadening recovery policy.
+
 ---
 
 # 41. Controller Support

@@ -197,6 +197,7 @@ namespace DXVKCompanion.PhaseA.Tests
             var store = new GameLibraryStore(libraryPath, backupsPath, legacyPath);
 
             // Assert: store is empty, future file preserved, legacy not imported
+            Assert.True(store.IsRefused);
             Assert.Empty(store.GetAll());
             Assert.True(File.Exists(libraryPath));
             Assert.Equal(futureJson, File.ReadAllText(libraryPath));
