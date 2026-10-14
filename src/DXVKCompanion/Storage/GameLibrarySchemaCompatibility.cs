@@ -77,6 +77,11 @@ namespace DXVKCompanion.Storage
             if (string.IsNullOrWhiteSpace(json))
                 return SchemaAssessment.Malformed();
 
+            if (json.Length > 0 && json[0] == '\uFEFF')
+            {
+                json = json.Substring(1);
+            }
+
             try
             {
                 using var doc = JsonDocument.Parse(json, new JsonDocumentOptions
@@ -102,9 +107,15 @@ namespace DXVKCompanion.Storage
             if (utf8Bytes == null || utf8Bytes.Length == 0)
                 return SchemaAssessment.Malformed();
 
+            ReadOnlyMemory<byte> memory = utf8Bytes;
+            if (memory.Length >= 3 && memory.Span[0] == 0xEF && memory.Span[1] == 0xBB && memory.Span[2] == 0xBF)
+            {
+                memory = memory.Slice(3);
+            }
+
             try
             {
-                using var doc = JsonDocument.Parse(utf8Bytes, new JsonDocumentOptions
+                using var doc = JsonDocument.Parse(memory, new JsonDocumentOptions
                 {
                     CommentHandling = JsonCommentHandling.Skip,
                     AllowTrailingCommas = true

@@ -90,6 +90,9 @@ Under human approval in #106, Issue #107 establishes the contract to refuse star
   - `The type or namespace name 'ApiClassification' could not be found`
 - **Root Cause & Inspection**: Canonical class name in `DXVKCompanion.Models` is `ApiClassificationResult`.
 - **Resolution**: Updated `GameLibraryStorePersistenceTests.cs` to instantiate `new ApiClassificationResult`.
+- **Trigger 3**: Cloud CI run `38652519540` reported test failure in `GameLibrarySchemaCompatibilityTests.AssessJson_Utf8BomAndLeadingWhitespace_IsHandledCleanly` (Expected: `IncompatibleNewer`, Actual: `Malformed`).
+- **Root Cause & Inspection**: `JsonDocument.Parse(ReadOnlyMemory<byte>)` does not automatically strip the 3-byte UTF-8 BOM preamble (`0xEF, 0xBB, 0xBF`), causing `JsonException` on raw byte buffers.
+- **Resolution**: Added explicit UTF-8 BOM detection and slicing in `AssessJson(byte[])` (`ReadOnlyMemory.Slice(3)`) and `AssessJson(string)` (`\uFEFF`).
 - **Scope**: Confined strictly to `src/DXVKCompanion/Storage/GameLibrarySchemaCompatibility.cs`, `tests/DXVKCompanion.PhaseA.Tests/GameLibraryStorePersistenceTests.cs`, and this journal. Zero public API changes.
 
 ---
