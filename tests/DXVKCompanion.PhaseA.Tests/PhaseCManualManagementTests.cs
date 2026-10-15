@@ -231,10 +231,12 @@ public sealed class PhaseCManualManagementTests
 
         // 2. Acceptance: If rollback/restore is attempted, the unrelated file is preserved and not deleted
         bool rollbackOk = await rollback.RestoreOriginalDllsAsync(profile);
-        Assert.False(rollbackOk); // Not managed, so restore returns false
+        Assert.True(rollbackOk); // Existing successful unmanaged no-op restore
         Assert.True(File.Exists(dxgiPath));
         Assert.Equal(unrelatedContent, File.ReadAllText(dxgiPath));
         Assert.True(File.Exists(d3d11Path));
+        Assert.Equal("official-dxvk-2.5-d3d11", File.ReadAllText(d3d11Path));
+        Assert.Null(store.FindByInstallationPath(gameDir.RootPath));
     }
 
     [Fact]
@@ -250,17 +252,22 @@ public sealed class PhaseCManualManagementTests
         File.WriteAllText(Path.Combine(releaseDir, "dxgi.dll"), "official-dxvk-2.5-dxgi");
 
         var exePath = gameDir.CreateFile("Game.exe", "synthetic-binary");
-        gameDir.CreateFile("d3d11.dll", "official-dxvk-2.5-d3d11");
+        string officialD3D11Content = "official-dxvk-2.5-d3d11";
+        gameDir.CreateFile("d3d11.dll", officialD3D11Content);
         string unrelatedContent = "unrelated-dxgi-third-party";
         gameDir.CreateFile("dxgi.dll", unrelatedContent);
 
-        var profileStore = new ProfileStore(Path.Combine(storageDir.RootPath, "profiles.json"));
+        string profilesPath = Path.Combine(storageDir.RootPath, "profiles.json");
+        string libraryPath = Path.Combine(storageDir.RootPath, "game-library.json");
+
+        var profileStore = new ProfileStore(profilesPath);
         var store = new GameLibraryStore(
-            Path.Combine(storageDir.RootPath, "game-library.json"),
+            libraryPath,
             Path.Combine(storageDir.RootPath, "backups"));
         var engine = new MultiFileTransactionEngine(Path.Combine(storageDir.RootPath, "backups"));
         using var http = new HttpClient();
-        var client = new DxvkGithubClient(http, sourceDir.RootPath);
+        var cacheStore = new CacheStore(Path.Combine(storageDir.RootPath, "cache.json"));
+        var client = new DxvkGithubClient(http, cacheStore);
         var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
         var rollback = new DxvkRollback(engine, store);
 
@@ -273,6 +280,9 @@ public sealed class PhaseCManualManagementTests
         };
         profileStore.Save(profile);
 
+        byte[] profileBytesBefore = File.ReadAllBytes(profilesPath);
+        bool libraryExistedBefore = File.Exists(libraryPath);
+
         // Exercise manager boundary
         bool ok = await manager.AdoptExistingAsync(profile);
 
@@ -281,16 +291,29 @@ public sealed class PhaseCManualManagementTests
         Assert.False(profile.DxvkEnabled);
         Assert.Null(profile.DxvkVersion);
 
-        // Profile on disk unchanged
-        var reloadedProfile = profileStore.GetByExePath(exePath);
+        // Profile on disk unchanged: verify using before/after file bytes and a newly constructed store with existing APIs
+        byte[] profileBytesAfter = File.ReadAllBytes(profilesPath);
+        Assert.Equal(profileBytesBefore, profileBytesAfter);
+
+        var reloadedProfileStore = new ProfileStore(profilesPath);
+        var reloadedProfile = reloadedProfileStore.GetAll().FirstOrDefault(p => string.Equals(p.ExePath, exePath, StringComparison.OrdinalIgnoreCase));
         Assert.NotNull(reloadedProfile);
         Assert.False(reloadedProfile!.DxvkEnabled);
         Assert.Null(reloadedProfile.DxvkVersion);
 
+        // Account for library-file absence if it was absent before refusal
+        if (!libraryExistedBefore)
+        {
+            Assert.False(File.Exists(libraryPath));
+        }
+
         // Files on disk unchanged
         string dxgiPath = Path.Combine(gameDir.RootPath, "dxgi.dll");
+        string d3d11Path = Path.Combine(gameDir.RootPath, "d3d11.dll");
         Assert.True(File.Exists(dxgiPath));
         Assert.Equal(unrelatedContent, File.ReadAllText(dxgiPath));
+        Assert.True(File.Exists(d3d11Path));
+        Assert.Equal(officialD3D11Content, File.ReadAllText(d3d11Path));
 
         // No ownership acquired in library store
         var inst = store.FindByInstallationPath(gameDir.RootPath);

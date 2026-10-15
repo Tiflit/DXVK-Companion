@@ -52,3 +52,13 @@ Address the mixed-DLL adoption defect identified in the external audit:
 
 - Verification route: Cloud CI on GitHub Actions (`build-and-test`, `ai-scope-check`, `ai-pr-hygiene`, `ai-workflow-tests`).
 - Local test execution: `NOT RUN (pending human authorization)`.
+
+---
+
+### 4. Review & Test Fixture Corrections (Session 2)
+
+Following review of head `f88fe02b643d8b64357d3033943c78028e8ac86f`:
+1. **`DxvkGithubClient` CacheStore usage**: In `PhaseCManualManagementTests.cs`, instantiated `CacheStore` with an isolated synthetic path in `storageDir.RootPath` and passed it to `DxvkGithubClient(http, cacheStore)`.
+2. **Profile and Library Persistence Verification**: Replaced nonexistent `profileStore.GetByExePath`. Captured `profiles.json` raw bytes before and after `manager.AdoptExistingAsync(profile)`, asserted byte equality, and verified via a newly constructed `ProfileStore` using `GetAll()`. Added check confirming `game-library.json` absence remains intact if it was absent prior to refusal.
+3. **Unmanaged Rollback Assertion**: Corrected assertion from `Assert.False(rollbackOk)` to `Assert.True(rollbackOk)` to match existing production no-op restore behavior for unmanaged installations, asserting that both DLLs retain their original content and no ownership was acquired.
+
