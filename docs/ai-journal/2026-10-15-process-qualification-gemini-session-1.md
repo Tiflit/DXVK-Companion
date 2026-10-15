@@ -30,7 +30,7 @@
 
 2. **R2 — Process Ownership and Real Exit Notification**:
    - Established explicit process instance ownership: processes attached to `ProcessExitHandler` are retained in `_attachedExitProcesses` and owned/disposed exclusively by `ProcessExitHandler` upon real process termination.
-   - Unattached process instances from polling enumeration are disposed immediately to prevent resource leakage.
+   - Unattached process instances created during production polling enumeration are disposed promptly via `DisposeIfOwned`, while externally injected enumerator processes (e.g. in test suites) retain external lifecycle ownership without premature disposal.
    - Enforced single-attachment per process instance, preventing duplicate attachments between pending-action checks and qualification events.
    - Verified exit notification end-to-end via `RaiseProcessExited` in unit tests.
 
