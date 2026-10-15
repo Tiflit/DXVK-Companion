@@ -182,6 +182,9 @@ public sealed class MultiFileTransactionEngineTests
         var a = game.CreateFile("d3d9.dll", "old-a");
         var b = game.CreateFile("d3d11.dll", "old-b");
         var c = game.CreateFile("dxgi.dll", "old-c");
+        var aIdentity = FileIdentity.Capture(a);
+        var bIdentity = FileIdentity.Capture(b);
+        var cIdentity = FileIdentity.Capture(c);
         var sa = game.CreateFile("src-a.dll", "new-a");
         var sb = game.CreateFile("src-b.dll", "new-b");
         var sc = game.CreateFile("src-c.dll", "new-c");
@@ -196,9 +199,9 @@ public sealed class MultiFileTransactionEngineTests
             Operation = TransactionOperation.Restore,
             Files = new[]
             {
-                RestoreFile("d3d9.dll", a, install.TransactionId, storage.RootPath),
-                RestoreFile("d3d11.dll", b, install.TransactionId, storage.RootPath),
-                RestoreFile("dxgi.dll", c, install.TransactionId, storage.RootPath)
+                RestoreFile("d3d9.dll", a, install.TransactionId, storage.RootPath, aIdentity.Sha256),
+                RestoreFile("d3d11.dll", b, install.TransactionId, storage.RootPath, bIdentity.Sha256),
+                RestoreFile("dxgi.dll", c, install.TransactionId, storage.RootPath, cIdentity.Sha256)
             }
         });
 
@@ -206,6 +209,69 @@ public sealed class MultiFileTransactionEngineTests
         Assert.Equal("old-a", File.ReadAllText(a));
         Assert.Equal("old-b", File.ReadAllText(b));
         Assert.Equal("old-c", File.ReadAllText(c));
+    }
+
+    [Fact]
+    public void Restore_MultiFile_InvalidLaterBackup_RefusesBeforeAnyApply_PreservesGameFilesAndBackups()
+    {
+        using var game = new SyntheticTestDirectory();
+        using var storage = new SyntheticTestDirectory();
+
+        // 1. Originally absent file (would be deleted on restore if applied)
+        var a = game.CreateFile("dxgi.dll", "deployed-dxgi");
+
+        // 2. File with valid backup
+        var b = game.CreateFile("d3d11.dll", "deployed-d3d11");
+        var bBackup = Path.Combine(storage.RootPath, "backups", "tx1", "d3d11.dll");
+        Directory.CreateDirectory(Path.GetDirectoryName(bBackup)!);
+        File.WriteAllText(bBackup, "valid-original-d3d11");
+        var bValidSha = FileIdentity.Capture(bBackup).Sha256;
+
+        // 3. File with invalid backup (corrupted on disk)
+        var c = game.CreateFile("dxvk.conf", "deployed-dxvk-conf");
+        var cBackup = Path.Combine(storage.RootPath, "backups", "tx1", "dxvk.conf");
+        File.WriteAllText(cBackup, "corrupted-conf-backup");
+        var cExpectedOriginalSha = new string('e', 64); // does not match backup
+
+        var engine = new MultiFileTransactionEngine(storage.RootPath);
+
+        var restoreResult = engine.Execute(new MultiFileTransactionRequest
+        {
+            InstallationRoot = game.RootPath,
+            Operation = TransactionOperation.Restore,
+            Files = new[]
+            {
+                new MultiFileTransactionFile
+                {
+                    RelativePath = "dxgi.dll",
+                    ExpectedTargetIdentity = FileIdentity.Capture(a),
+                    OriginalState = OriginalFileState.DidNotExist
+                },
+                new MultiFileTransactionFile
+                {
+                    RelativePath = "d3d11.dll",
+                    ExpectedTargetIdentity = FileIdentity.Capture(b),
+                    OriginalState = OriginalFileState.Existing,
+                    BackupRelativePath = Path.GetRelativePath(storage.RootPath, bBackup),
+                    ExpectedOriginalSha256 = bValidSha
+                },
+                new MultiFileTransactionFile
+                {
+                    RelativePath = "dxvk.conf",
+                    ExpectedTargetIdentity = FileIdentity.Capture(c),
+                    OriginalState = OriginalFileState.Existing,
+                    BackupRelativePath = Path.GetRelativePath(storage.RootPath, cBackup),
+                    ExpectedOriginalSha256 = cExpectedOriginalSha
+                }
+            }
+        });
+
+        Assert.Equal(TransactionOutcome.SafeFailure, restoreResult.Outcome);
+        Assert.Equal("deployed-dxgi", File.ReadAllText(a));
+        Assert.Equal("deployed-d3d11", File.ReadAllText(b));
+        Assert.Equal("deployed-dxvk-conf", File.ReadAllText(c));
+        Assert.Equal("valid-original-d3d11", File.ReadAllText(bBackup));
+        Assert.Equal("corrupted-conf-backup", File.ReadAllText(cBackup));
     }
 
     private static MultiFileTransactionRequest UpdateRequest(string root, params (string RelativePath, string? Target, string Source, OriginalFileState State, SafetyFileIdentity? ExpectedTarget)[] items)
@@ -223,7 +289,7 @@ public sealed class MultiFileTransactionEngineTests
             }).ToArray()
         };
 
-    private static MultiFileTransactionFile RestoreFile(string relativePath, string target, string transactionId, string storageRoot)
+    private static MultiFileTransactionFile RestoreFile(string relativePath, string target, string transactionId, string storageRoot, string? expectedOriginalSha256 = null)
     {
         var backup = Path.Combine(storageRoot, "backups", transactionId, relativePath);
         return new MultiFileTransactionFile
@@ -231,7 +297,8 @@ public sealed class MultiFileTransactionEngineTests
             RelativePath = relativePath,
             ExpectedTargetIdentity = FileIdentity.Capture(target),
             OriginalState = OriginalFileState.Existing,
-            BackupRelativePath = Path.GetRelativePath(storageRoot, backup)
+            BackupRelativePath = Path.GetRelativePath(storageRoot, backup),
+            ExpectedOriginalSha256 = expectedOriginalSha256
         };
     }
 }
