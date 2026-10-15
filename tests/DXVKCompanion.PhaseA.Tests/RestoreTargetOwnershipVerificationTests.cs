@@ -449,6 +449,21 @@ public sealed class RestoreTargetOwnershipVerificationTests
         Assert.NotNull(instTampered);
         Assert.Equal(RestorationState.AttentionRequired, instTampered!.RestorationState);
         Assert.Contains("Already restored installation has unexpected file present: dxgi.dll", instTampered.LastRefusalReason);
+
+        // 5. Remove the unexpected file in the synthetic fixture
+        File.Delete(dxgiPath);
+
+        // 6. Verify safe no-op restoration succeeds and clears the resolved attention reason
+        var resolvedRollbackOk = await rollback.RestoreOriginalDllsAsync(profile);
+        Assert.True(resolvedRollbackOk);
+        Assert.Equal(originalD3D11, File.ReadAllText(d3d11Path));
+        Assert.False(File.Exists(dxgiPath));
+
+        var instResolved = store.FindByInstallationPath(gameDir.RootPath);
+        Assert.NotNull(instResolved);
+        Assert.Equal(RestorationState.Restored, instResolved!.RestorationState);
+        Assert.Null(instResolved.LastRefusalReason);
+        Assert.Null(instResolved.ManagedDxvkVersion);
     }
 
     [Fact]
@@ -524,17 +539,19 @@ public sealed class RestoreTargetOwnershipVerificationTests
         using var http = new HttpClient();
         var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
         var rollback = new DxvkRollback(engine, store);
-        var profileStore = new ProfileStore(Path.Combine(storageDir.RootPath, "profiles.json"));
+        var profilePath = Path.Combine(storageDir.RootPath, "profiles.json");
+        var profileStore = new ProfileStore(profilePath);
 
         var profile = profileStore.GetOrCreate(exePath);
         profile.Api = GraphicsApi.DX11;
         profile.Architecture = "x64";
         profileStore.Save(profile);
 
-        var manager = new DxvkManager(installer, rollback, new DxvkGithubClient(http, new CacheStore()), profileStore, store);
-        var release = new ReleaseInfo { Version = "2.5", DownloadUrl = "" };
+        var cacheDir = Path.Combine(storageDir.RootPath, "cache");
+        var cacheStore = new CacheStore(cacheDir);
+        var manager = new DxvkManager(installer, rollback, new DxvkGithubClient(http, cacheStore), profileStore, store);
 
-        var installOk = await manager.EnableDxvkAsync(profile, release);
+        var installOk = await manager.EnableDxvkAsync(profile, "2.5");
         Assert.True(installOk);
         Assert.True(profile.DxvkEnabled);
         Assert.Equal("2.5", profile.DxvkVersion);
@@ -542,12 +559,19 @@ public sealed class RestoreTargetOwnershipVerificationTests
         // Tamper d3d11.dll
         File.WriteAllText(d3d11Path, "tampered-content");
 
+        // Capture profile-file bytes before failed disable
+        var profileBytesBefore = File.ReadAllBytes(profilePath);
+
         // Attempt disable via manager
         var disableOk = await manager.DisableDxvkAsync(profile);
         Assert.False(disableOk);
 
-        // Boundary check: profile remains enabled and version retained
-        var reloadedProfile = profileStore.GetOrCreate(exePath);
+        // Invariant: Persisted profile-file bytes are preserved exactly
+        Assert.Equal(profileBytesBefore, File.ReadAllBytes(profilePath));
+
+        // Invariant: Reload through a new ProfileStore confirms enabled state and version remain intact
+        var reloadedStore = new ProfileStore(profilePath);
+        var reloadedProfile = reloadedStore.GetAll().Single(p => string.Equals(p.ExePath, exePath, StringComparison.OrdinalIgnoreCase));
         Assert.True(reloadedProfile.DxvkEnabled);
         Assert.Equal("2.5", reloadedProfile.DxvkVersion);
     }
@@ -584,5 +608,38 @@ public sealed class RestoreTargetOwnershipVerificationTests
         // File on disk was NOT deleted
         Assert.True(File.Exists(target));
         Assert.Equal("tampered-target-content", File.ReadAllText(target));
+    }
+
+    [Fact]
+    public void Restore_MultiFileTransactionEngine_NullManagedHashEvidence_RefusesSafely()
+    {
+        using var game = new SyntheticTestDirectory();
+        using var storage = new SyntheticTestDirectory();
+
+        var target = game.CreateFile("d3d11.dll", "target-content");
+
+        var engine = new MultiFileTransactionEngine(storage.RootPath);
+        var result = engine.Execute(new MultiFileTransactionRequest
+        {
+            InstallationRoot = game.RootPath,
+            Operation = TransactionOperation.Restore,
+            Files = new[]
+            {
+                new MultiFileTransactionFile
+                {
+                    RelativePath = "d3d11.dll",
+                    OriginalState = OriginalFileState.DidNotExist,
+                    ExpectedManagedSha256 = null
+                }
+            }
+        });
+
+        Assert.Equal(TransactionState.FailedSafely, result.State);
+        Assert.Equal(TransactionOutcome.SafeFailure, result.Outcome);
+        Assert.Contains("Managed hash baseline is missing or malformed for restore: d3d11.dll", result.Message);
+
+        // File on disk was NOT deleted
+        Assert.True(File.Exists(target));
+        Assert.Equal("target-content", File.ReadAllText(target));
     }
 }

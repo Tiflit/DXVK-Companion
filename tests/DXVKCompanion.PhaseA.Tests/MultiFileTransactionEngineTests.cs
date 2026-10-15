@@ -245,7 +245,8 @@ public sealed class MultiFileTransactionEngineTests
                 {
                     RelativePath = "dxgi.dll",
                     ExpectedTargetIdentity = FileIdentity.Capture(a),
-                    OriginalState = OriginalFileState.DidNotExist
+                    OriginalState = OriginalFileState.DidNotExist,
+                    ExpectedManagedSha256 = FileIdentity.Capture(a).Sha256
                 },
                 new MultiFileTransactionFile
                 {
@@ -253,7 +254,8 @@ public sealed class MultiFileTransactionEngineTests
                     ExpectedTargetIdentity = FileIdentity.Capture(b),
                     OriginalState = OriginalFileState.Existing,
                     BackupRelativePath = Path.GetRelativePath(storage.RootPath, bBackup),
-                    ExpectedOriginalSha256 = bValidSha
+                    ExpectedOriginalSha256 = bValidSha,
+                    ExpectedManagedSha256 = FileIdentity.Capture(b).Sha256
                 },
                 new MultiFileTransactionFile
                 {
@@ -261,7 +263,8 @@ public sealed class MultiFileTransactionEngineTests
                     ExpectedTargetIdentity = FileIdentity.Capture(c),
                     OriginalState = OriginalFileState.Existing,
                     BackupRelativePath = Path.GetRelativePath(storage.RootPath, cBackup),
-                    ExpectedOriginalSha256 = cExpectedOriginalSha
+                    ExpectedOriginalSha256 = cExpectedOriginalSha,
+                    ExpectedManagedSha256 = FileIdentity.Capture(c).Sha256
                 }
             }
         });
@@ -272,6 +275,63 @@ public sealed class MultiFileTransactionEngineTests
         Assert.Equal("deployed-dxvk-conf", File.ReadAllText(c));
         Assert.Equal("valid-original-d3d11", File.ReadAllText(bBackup));
         Assert.Equal("corrupted-conf-backup", File.ReadAllText(cBackup));
+    }
+
+    [Fact]
+    public void Restore_NullManagedHashEvidence_RefusesSafely_CannotAuthorizeDeletionOrOverwrite()
+    {
+        using var game = new SyntheticTestDirectory();
+        using var storage = new SyntheticTestDirectory();
+
+        // 1. Originally absent file (would be deleted if restore was authorized)
+        var a = game.CreateFile("dxgi.dll", "deployed-dxgi");
+
+        // 2. File with valid original backup (would be overwritten if restore was authorized)
+        var b = game.CreateFile("d3d11.dll", "deployed-d3d11");
+        var bBackup = Path.Combine(storage.RootPath, "backups", "tx1", "d3d11.dll");
+        Directory.CreateDirectory(Path.GetDirectoryName(bBackup)!);
+        File.WriteAllText(bBackup, "valid-original-d3d11");
+        var bValidSha = FileIdentity.Capture(bBackup).Sha256;
+
+        var engine = new MultiFileTransactionEngine(storage.RootPath);
+
+        // Attempt restore with ExpectedManagedSha256 = null on both files
+        var restoreResult = engine.Execute(new MultiFileTransactionRequest
+        {
+            InstallationRoot = game.RootPath,
+            Operation = TransactionOperation.Restore,
+            Files = new[]
+            {
+                new MultiFileTransactionFile
+                {
+                    RelativePath = "dxgi.dll",
+                    ExpectedTargetIdentity = FileIdentity.Capture(a),
+                    OriginalState = OriginalFileState.DidNotExist,
+                    ExpectedManagedSha256 = null
+                },
+                new MultiFileTransactionFile
+                {
+                    RelativePath = "d3d11.dll",
+                    ExpectedTargetIdentity = FileIdentity.Capture(b),
+                    OriginalState = OriginalFileState.Existing,
+                    BackupRelativePath = Path.GetRelativePath(storage.RootPath, bBackup),
+                    ExpectedOriginalSha256 = bValidSha,
+                    ExpectedManagedSha256 = null
+                }
+            }
+        });
+
+        Assert.Equal(TransactionOutcome.SafeFailure, restoreResult.Outcome);
+        Assert.Contains("Managed hash baseline is missing or malformed for restore: dxgi.dll", restoreResult.Message);
+
+        // Invariant: null evidence cannot authorize deletion
+        Assert.True(File.Exists(a));
+        Assert.Equal("deployed-dxgi", File.ReadAllText(a));
+
+        // Invariant: null evidence cannot authorize overwrite
+        Assert.True(File.Exists(b));
+        Assert.Equal("deployed-d3d11", File.ReadAllText(b));
+        Assert.Equal("valid-original-d3d11", File.ReadAllText(bBackup));
     }
 
     private static MultiFileTransactionRequest UpdateRequest(string root, params (string RelativePath, string? Target, string Source, OriginalFileState State, SafetyFileIdentity? ExpectedTarget)[] items)
@@ -289,7 +349,7 @@ public sealed class MultiFileTransactionEngineTests
             }).ToArray()
         };
 
-    private static MultiFileTransactionFile RestoreFile(string relativePath, string target, string transactionId, string storageRoot, string? expectedOriginalSha256 = null)
+    private static MultiFileTransactionFile RestoreFile(string relativePath, string target, string transactionId, string storageRoot, string? expectedOriginalSha256 = null, string? expectedManagedSha256 = null)
     {
         var backup = Path.Combine(storageRoot, "backups", transactionId, relativePath);
         return new MultiFileTransactionFile
@@ -298,7 +358,8 @@ public sealed class MultiFileTransactionEngineTests
             ExpectedTargetIdentity = FileIdentity.Capture(target),
             OriginalState = OriginalFileState.Existing,
             BackupRelativePath = Path.GetRelativePath(storageRoot, backup),
-            ExpectedOriginalSha256 = expectedOriginalSha256
+            ExpectedOriginalSha256 = expectedOriginalSha256,
+            ExpectedManagedSha256 = expectedManagedSha256 ?? FileIdentity.Capture(target).Sha256
         };
     }
 }

@@ -55,7 +55,10 @@ namespace DXVKCompanion.DXVK
 
                         if (installation != null && installation.ManagedFiles.Count > 0)
                         {
-                            if (installation.RestorationState == RestorationState.Restored)
+                            bool isAlreadyRestoredCandidate = installation.RestorationState == RestorationState.Restored
+                                || string.IsNullOrWhiteSpace(installation.ManagedDxvkVersion);
+
+                            if (isAlreadyRestoredCandidate)
                             {
                                 foreach (var mf in installation.ManagedFiles)
                                 {
@@ -93,6 +96,10 @@ namespace DXVKCompanion.DXVK
                                     }
                                 }
 
+                                installation.RestorationState = RestorationState.Restored;
+                                installation.LastRefusalReason = null;
+                                installation.LastSeenUtc = DateTime.UtcNow;
+                                _gameLibraryStore.Save(installation);
                                 return true;
                             }
 

@@ -103,17 +103,14 @@ public sealed class MultiFileTransactionEngine
                 }
                 else if (request.Operation == TransactionOperation.Restore)
                 {
-                    if (file.ExpectedManagedSha256 is not null)
-                    {
-                        if (!IsValidSha256(file.ExpectedManagedSha256))
-                            return SafeFailure(transactionId, request.Operation, affected, $"Managed hash baseline is missing or malformed for restore: {file.RelativePath}");
+                    if (!IsValidSha256(file.ExpectedManagedSha256))
+                        return SafeFailure(transactionId, request.Operation, affected, $"Managed hash baseline is missing or malformed for restore: {file.RelativePath}");
 
-                        if (currentState != OriginalFileState.Existing || currentIdentity is null)
-                            return SafeFailure(transactionId, request.Operation, affected, $"Managed target file is missing for restore: {file.RelativePath}");
+                    if (currentState != OriginalFileState.Existing || currentIdentity is null)
+                        return SafeFailure(transactionId, request.Operation, affected, $"Managed target file is missing for restore: {file.RelativePath}");
 
-                        if (!string.Equals(currentIdentity.Sha256, file.ExpectedManagedSha256, StringComparison.OrdinalIgnoreCase))
-                            return SafeFailure(transactionId, request.Operation, affected, $"Managed target hash mismatch for restore: {file.RelativePath} (expected managed {file.ExpectedManagedSha256}, actual {currentIdentity.Sha256})");
-                    }
+                    if (!string.Equals(currentIdentity.Sha256, file.ExpectedManagedSha256, StringComparison.OrdinalIgnoreCase))
+                        return SafeFailure(transactionId, request.Operation, affected, $"Managed target hash mismatch for restore: {file.RelativePath} (expected managed {file.ExpectedManagedSha256}, actual {currentIdentity.Sha256})");
 
                     if (file.OriginalState == OriginalFileState.Existing)
                     {
