@@ -92,3 +92,34 @@ Addressed the four review repairs identified during coordinator review:
    - In `DisposeIfOwned`, updated condition to `if (_processEnumerator != null && !TreatProcessesAsOwnedForTesting) return; if (!IsCurrentInstanceAttached(proc)) proc.Dispose();`. Attached live candidates are protected from premature disposal across async consumer yields (`await Task.Yield()`).
    - Added regression test `AttachExitHandler_ProductionConsumerLifetime_PreservesProcessAcrossAsyncYield` and updated setup failure / synchronous exit test assertions to verify zero qualified events are emitted.
 
+---
+
+### 5. Session 3: Focused Repair Verification (R1 - R4)
+
+**Date**: 2026-10-15  
+**Review Reference**: PR #122 Review Comment `6198933185`  
+
+Addressed the focused review repairs identified during coordinator verification:
+
+1. **R1 (Single Setup Unwinding Cleanup Owner)**:
+   - In `ProcessExitHandler.AttachCore`, eliminated duplicate explicit calls to `UnsubscribeProcessExit` prior to calling `CancelRegistration`. Consolidated unwinding through `CancelRegistration` as the sole cleanup owner, which claims delivery/cancellation once and detaches any installed handler.
+   - In `SetupFailure_BeforeSubscription_ReleasesRegistrationAndFiresNoEvents`, updated assertion: `Assert.Equal(1, handler.UnsubscriptionsCount);`. Defensive unsubscription is safely attempted by the unified cancellation path even when setup fails before hooking, guaranteeing zero retained registrations, zero exit events, and zero process disposals.
+
+2. **R2 (Process Fixtures & Real Callback Invocations)**:
+   - In `ExitWatcher_TwoSameExecutableInstances_ExitingInOppositeOrder_RemovesCorrectRegistrations`, removed host process inspection (`Process.GetProcesses()`) and `if (proc2 == null) return;`. Added `ProcessIdResolver` seam on `ProcessMonitor` wired to `_exitHandler`, using stable synthetic PIDs (`pid1 = 1001`, `pid2 = 1002`). Replaced post-exit `proc2.Id` inspection with stable `pid2` calls to `monitor.TryGetQualifiedSnapshot(pid2, out _)`.
+   - In `AttachExitHandler_SynchronousExitDuringSetup_CleansUpWithoutPhantomLiveAttachment`, captured `int pid = currentProc.Id` before polling to avoid reading properties on the disposed wrapper.
+   - In `SuccessfulExit`, `MissingPathExit`, and `Cancellation` lifecycle tests, captured the installed delegate (`handler.LastRegisteredHandler`) prior to delivery/cancellation and invoked the captured delegate directly afterward, proving that duplicate/delayed calls do not fire second events, re-execute unsubscriptions, or re-dispose processes.
+   - Supplied synthetic executable paths across all setup-failure fixtures.
+
+3. **R3 (Existing Watcher Admission & Retained Process Wrapper)**:
+   - Introduced `EnsureExitHandlerAttached` returning `AttachmentStatus` (`NewlyAttached`, `AlreadyAttached`, `SetupFailed`, `SynchronouslyExited`) alongside the retained `Process` wrapper.
+   - When an active watcher already exists for the instance and is registered with `_exitHandler.HasRegistration(...)`, graphics qualification is admitted without re-registering, preserving exactly one registration and passing the retained wrapper (`existing.Process`) to `OnQualifiedGameDetected`.
+   - Added positive controls:
+     (a) `AttachExitHandler_KnownPendingAction_FollowedByRecognizedApiQualification_PreservesSingleRegistration`: validates pending action watcher attachment followed by recognized graphics qualification on the same instance without rejection.
+     (b) `AttachExitHandler_DelayedQualification_WithDifferentProcessWrapper_UsesRetainedWrapper`: validates delayed qualification across polls with a different process wrapper, ensuring exactly one registration is preserved and the retained wrapper is passed to consumers while the temporary enumerator wrapper is disposed.
+
+4. **R4 (Deterministic Async Lifetime Regression)**:
+   - Refactored `AttachExitHandler_ProductionConsumerLifetime_PreservesProcessAcrossAsyncYield` to use explicit `TaskCompletionSource` synchronization (`pollCompletedTcs`, `consumerFinishedTcs`) rather than `Task.Delay(50)`.
+   - Consumer continuation suspends until `PollProcessesOnce` returns and executes `DisposeIfOwned`, then resumes and asserts process validity without race conditions.
+
+

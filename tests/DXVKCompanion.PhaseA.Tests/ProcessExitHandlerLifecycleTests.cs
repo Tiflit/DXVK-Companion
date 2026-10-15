@@ -77,7 +77,12 @@ public sealed class ProcessExitHandlerLifecycleTests
     [Fact]
     public void SetupFailure_BeforeSubscription_ReleasesRegistrationAndFiresNoEvents()
     {
-        var handler = new TestableProcessExitHandler { FailBeforeSubscription = true };
+        string expectedPath = @"C:\Games\FailBeforeSub\Game.exe";
+        var handler = new TestableProcessExitHandler
+        {
+            SyntheticExePath = expectedPath,
+            FailBeforeSubscription = true
+        };
         using var dummyProc = Process.GetCurrentProcess();
 
         int exitedCount = 0;
@@ -90,17 +95,24 @@ public sealed class ProcessExitHandlerLifecycleTests
 
         Assert.Equal(Guid.Empty, resultToken);
         Assert.Equal(0, handler.SubscriptionsCount);
-        Assert.Equal(0, handler.UnsubscriptionsCount);
+        // Consolidated cancellation path safely and defensively attempts unsubscription of the handler closure
+        Assert.Equal(1, handler.UnsubscriptionsCount);
         Assert.Equal(0, handler.ActiveRegistrationCount);
         Assert.False(handler.HasRegistration(token));
         Assert.Equal(0, exitedCount);
         Assert.Equal(0, instanceExitedCount);
+        Assert.Equal(0, handler.DisposalsCount);
     }
 
     [Fact]
     public void SetupFailure_InsideSubscriptionAfterHook_UnwindsSubscriptionAndReleasesRegistration()
     {
-        var handler = new TestableProcessExitHandler { FailInsideSubscriptionAfterHook = true };
+        string expectedPath = @"C:\Games\FailInsideSub\Game.exe";
+        var handler = new TestableProcessExitHandler
+        {
+            SyntheticExePath = expectedPath,
+            FailInsideSubscriptionAfterHook = true
+        };
         using var dummyProc = Process.GetCurrentProcess();
 
         int exitedCount = 0;
@@ -113,15 +125,11 @@ public sealed class ProcessExitHandlerLifecycleTests
 
         Assert.Equal(Guid.Empty, resultToken);
         Assert.Equal(1, handler.SubscriptionsCount);
+        // Consolidated cancellation path performs exactly one unsubscription
         Assert.Equal(1, handler.UnsubscriptionsCount);
         Assert.Null(handler.LastRegisteredHandler);
         Assert.Equal(0, handler.ActiveRegistrationCount);
         Assert.False(handler.HasRegistration(token));
-        Assert.Equal(0, exitedCount);
-        Assert.Equal(0, instanceExitedCount);
-
-        // Stale callback must not deliver false exit notification or dispose process
-        handler.TriggerExitCallback();
         Assert.Equal(0, exitedCount);
         Assert.Equal(0, instanceExitedCount);
         Assert.Equal(0, handler.DisposalsCount);
@@ -130,7 +138,12 @@ public sealed class ProcessExitHandlerLifecycleTests
     [Fact]
     public void SetupFailure_AfterPartialSubscription_UnwindsSubscriptionAndReleasesRegistration()
     {
-        var handler = new TestableProcessExitHandler { FailAfterSubscription = true };
+        string expectedPath = @"C:\Games\FailAfterSub\Game.exe";
+        var handler = new TestableProcessExitHandler
+        {
+            SyntheticExePath = expectedPath,
+            FailAfterSubscription = true
+        };
         using var dummyProc = Process.GetCurrentProcess();
 
         int exitedCount = 0;
@@ -143,12 +156,14 @@ public sealed class ProcessExitHandlerLifecycleTests
 
         Assert.Equal(Guid.Empty, resultToken);
         Assert.Equal(1, handler.SubscriptionsCount);
+        // Consolidated cancellation path performs exactly one unsubscription
         Assert.Equal(1, handler.UnsubscriptionsCount);
         Assert.Null(handler.LastRegisteredHandler);
         Assert.Equal(0, handler.ActiveRegistrationCount);
         Assert.False(handler.HasRegistration(token));
         Assert.Equal(0, exitedCount);
         Assert.Equal(0, instanceExitedCount);
+        Assert.Equal(0, handler.DisposalsCount);
     }
 
     [Fact]
@@ -170,8 +185,11 @@ public sealed class ProcessExitHandlerLifecycleTests
         Assert.True(handler.HasRegistration(token));
         Assert.Equal(1, handler.SubscriptionsCount);
 
+        var callback = handler.LastRegisteredHandler;
+        Assert.NotNull(callback);
+
         // Trigger exit callback
-        handler.TriggerExitCallback();
+        callback.Invoke(this, EventArgs.Empty);
 
         // Registration bookkeeping is released
         Assert.Equal(0, handler.ActiveRegistrationCount);
@@ -206,8 +224,11 @@ public sealed class ProcessExitHandlerLifecycleTests
         Assert.Equal(token, resultToken);
         Assert.Equal(1, handler.ActiveRegistrationCount);
 
-        // Trigger exit
-        handler.TriggerExitCallback();
+        var callback = handler.LastRegisteredHandler;
+        Assert.NotNull(callback);
+
+        // Trigger exit via captured delegate
+        callback.Invoke(this, EventArgs.Empty);
 
         // Delivered exactly once and released
         Assert.Single(deliveredPaths);
@@ -219,11 +240,12 @@ public sealed class ProcessExitHandlerLifecycleTests
         Assert.Equal(1, handler.UnsubscriptionsCount);
         Assert.Equal(1, handler.DisposalsCount);
 
-        // Duplicate callback does not deliver again and does not re-execute disposal
-        handler.TriggerExitCallback();
+        // Duplicate callback on the captured delegate does not deliver again and does not re-execute unsubscription or disposal
+        callback.Invoke(this, EventArgs.Empty);
         Assert.Single(deliveredPaths);
         Assert.Single(deliveredTokens);
         Assert.Equal(0, handler.ActiveRegistrationCount);
+        Assert.Equal(1, handler.UnsubscriptionsCount);
         Assert.Equal(1, handler.DisposalsCount);
     }
 
@@ -243,6 +265,9 @@ public sealed class ProcessExitHandlerLifecycleTests
         Assert.Equal(1, handler.ActiveRegistrationCount);
         Assert.True(handler.HasRegistration(token));
 
+        var callback = handler.LastRegisteredHandler;
+        Assert.NotNull(callback);
+
         // Cancel registration
         handler.CancelRegistration(token);
         Assert.Equal(0, handler.ActiveRegistrationCount);
@@ -250,10 +275,12 @@ public sealed class ProcessExitHandlerLifecycleTests
         Assert.Equal(1, handler.UnsubscriptionsCount);
         Assert.Equal(0, handler.DisposalsCount); // Cancellation does not dispose process
 
-        // Delayed exit delivery occurs after cancellation: must not reacquire cleanup or fire events
-        handler.TriggerExitCallback();
+        // Delayed exit delivery on the captured callback occurs after cancellation:
+        // must not deliver events, must not reacquire cleanup, and must not re-execute unsubscription or disposal
+        callback.Invoke(this, EventArgs.Empty);
         Assert.Equal(0, exitedCount);
         Assert.Equal(0, handler.ActiveRegistrationCount);
+        Assert.Equal(1, handler.UnsubscriptionsCount);
         Assert.Equal(0, handler.DisposalsCount);
     }
 

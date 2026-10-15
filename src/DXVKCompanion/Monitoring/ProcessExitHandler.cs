@@ -114,14 +114,6 @@ namespace DXVKCompanion.Monitoring
             }
             catch
             {
-                try
-                {
-                    UnsubscribeProcessExit(process, handler);
-                }
-                catch
-                {
-                }
-
                 CancelRegistration(registrationToken);
                 return Guid.Empty;
             }
@@ -135,14 +127,6 @@ namespace DXVKCompanion.Monitoring
             catch
             {
                 // Process check failed after subscription: unwind subscription and cancel registration
-                try
-                {
-                    UnsubscribeProcessExit(process, handler);
-                }
-                catch
-                {
-                }
-
                 CancelRegistration(registrationToken);
                 return Guid.Empty;
             }
