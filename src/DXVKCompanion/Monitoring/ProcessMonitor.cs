@@ -139,7 +139,13 @@ namespace DXVKCompanion.Monitoring
                 }
 
                 var processList = processes.ToList();
-                var currentPids = processList.Select(p => p.Id).ToHashSet();
+                var currentPids = processList
+                    .Select(p =>
+                    {
+                        try { return p.Id; } catch { return -1; }
+                    })
+                    .Where(id => id > 0)
+                    .ToHashSet();
 
                 // Clean up transient state for exited or missing processes across all collections
                 var staleNonGames = _nonGamePids.Keys.Where(p => !currentPids.Contains(p)).ToList();
@@ -154,9 +160,15 @@ namespace DXVKCompanion.Monitoring
                 var staleAttached = _attachedExitProcesses.Where(kv => !currentPids.Contains(kv.Key)).ToList();
                 foreach (var (pid, item) in staleAttached)
                 {
-                    if (item.Process.HasExited)
+                    bool hasExited = false;
+                    try { hasExited = item.Process.HasExited; } catch { hasExited = true; }
+                    if (hasExited)
                     {
                         _attachedExitProcesses.Remove(pid);
+                        if (_processEnumerator == null)
+                        {
+                            try { item.Process.Dispose(); } catch { }
+                        }
                     }
                 }
 
@@ -166,7 +178,18 @@ namespace DXVKCompanion.Monitoring
                 {
                     if (_disposed)
                     {
-                        if (!IsCurrentInstanceAttached(proc)) proc.Dispose();
+                        DisposeIfOwned(proc);
+                        continue;
+                    }
+
+                    int pid;
+                    try
+                    {
+                        pid = proc.Id;
+                    }
+                    catch
+                    {
+                        DisposeIfOwned(proc);
                         continue;
                     }
 
@@ -187,16 +210,16 @@ namespace DXVKCompanion.Monitoring
                         }
 
                         // R5: Process-instance-aware non-game filtering with start-time identity
-                        if (_nonGamePids.TryGetValue(proc.Id, out var cachedStart))
+                        if (_nonGamePids.TryGetValue(pid, out var cachedStart))
                         {
                             if (startTime != DateTime.MinValue && cachedStart != DateTime.MinValue && startTime != cachedStart)
                             {
                                 // PID was reused by a new process instance! Reset cached state
-                                _nonGamePids.Remove(proc.Id);
+                                _nonGamePids.Remove(pid);
                             }
                             else if (startTime == cachedStart && startTime != DateTime.MinValue)
                             {
-                                if (!IsCurrentInstanceAttached(proc)) proc.Dispose();
+                                DisposeIfOwned(proc);
                                 continue;
                             }
                         }
@@ -204,8 +227,8 @@ namespace DXVKCompanion.Monitoring
                         bool isGame = GameProcessFilter?.Invoke(proc) ?? _detector.IsGameProcess(proc);
                         if (!isGame)
                         {
-                            _nonGamePids[proc.Id] = startTime;
-                            if (!IsCurrentInstanceAttached(proc)) proc.Dispose();
+                            _nonGamePids[pid] = startTime;
+                            DisposeIfOwned(proc);
                             continue;
                         }
 
@@ -213,7 +236,7 @@ namespace DXVKCompanion.Monitoring
                         bool hasWindow = WindowFilter?.Invoke(proc) ?? _detector.HasWindow(proc);
                         if (!hasWindow)
                         {
-                            if (_windowRetries.TryGetValue(proc.Id, out var retryEntry))
+                            if (_windowRetries.TryGetValue(pid, out var retryEntry))
                             {
                                 if (startTime != DateTime.MinValue && retryEntry.StartTime != DateTime.MinValue && startTime != retryEntry.StartTime)
                                 {
@@ -228,45 +251,45 @@ namespace DXVKCompanion.Monitoring
                             int newRetries = retryEntry.RetryCount + 1;
                             if (newRetries > MaxWindowWaitTicks)
                             {
-                                _nonGamePids[proc.Id] = startTime;
-                                _windowRetries.Remove(proc.Id);
+                                _nonGamePids[pid] = startTime;
+                                _windowRetries.Remove(pid);
                             }
                             else
                             {
-                                _windowRetries[proc.Id] = (startTime, newRetries);
+                                _windowRetries[pid] = (startTime, newRetries);
                             }
 
-                            if (!IsCurrentInstanceAttached(proc)) proc.Dispose();
+                            DisposeIfOwned(proc);
                             continue;
                         }
 
-                        _windowRetries.Remove(proc.Id);
+                        _windowRetries.Remove(pid);
 
                         // Candidate process with window: track qualification state
-                        if (_candidates.TryGetValue(proc.Id, out var candidate))
+                        if (_candidates.TryGetValue(pid, out var candidate))
                         {
                             if (startTime != DateTime.MinValue && candidate.ProcessStartTime != DateTime.MinValue && startTime != candidate.ProcessStartTime)
                             {
                                 // PID reused by OS: reset candidate state
-                                candidate = new CandidateProcessState(proc.Id, startTime, now);
-                                _candidates[proc.Id] = candidate;
+                                candidate = new CandidateProcessState(pid, startTime, now);
+                                _candidates[pid] = candidate;
                             }
                         }
                         else
                         {
-                            candidate = new CandidateProcessState(proc.Id, startTime, now);
-                            _candidates[proc.Id] = candidate;
+                            candidate = new CandidateProcessState(pid, startTime, now);
+                            _candidates[pid] = candidate;
                         }
 
                         if (candidate.IsQualified || candidate.IsExpired)
                         {
-                            if (!IsCurrentInstanceAttached(proc)) proc.Dispose();
+                            DisposeIfOwned(proc);
                             continue;
                         }
 
                         if (!candidate.IsAssessmentDue(now))
                         {
-                            if (!IsCurrentInstanceAttached(proc)) proc.Dispose();
+                            DisposeIfOwned(proc);
                             continue;
                         }
 
@@ -279,7 +302,7 @@ namespace DXVKCompanion.Monitoring
                         catch (Exception ex)
                         {
                             candidate.LastInspectionHadFailure = true;
-                            Logger.Log($"ProcessMonitor: snapshot assessment failed for PID {proc.Id}: {ex.GetType().Name}");
+                            Logger.Log($"ProcessMonitor: snapshot assessment failed for PID {pid}: {ex.GetType().Name}");
                         }
 
                         bool qualifies = snapshot != null && ProcessQualification.IsRecognizedGraphicsApi(snapshot.Classification.PrimaryApi);
@@ -316,26 +339,20 @@ namespace DXVKCompanion.Monitoring
                                 string safeName = GetSafeProcessName(proc);
                                 if (candidate.LastInspectionHadFailure)
                                 {
-                                    Logger.Log($"Candidate process PID {proc.Id} ({safeName}) qualification budget expired: inspection unresolved.");
+                                    Logger.Log($"Candidate process PID {pid} ({safeName}) qualification budget expired: inspection unresolved.");
                                 }
                                 else
                                 {
-                                    Logger.Log($"Candidate process PID {proc.Id} ({safeName}) qualification budget expired: no recognized graphics API evidence observed.");
+                                    Logger.Log($"Candidate process PID {pid} ({safeName}) qualification budget expired: no recognized graphics API evidence observed.");
                                 }
                             }
                         }
 
-                        if (!IsCurrentInstanceAttached(proc))
-                        {
-                            proc.Dispose();
-                        }
+                        DisposeIfOwned(proc);
                     }
                     catch
                     {
-                        if (!IsCurrentInstanceAttached(proc))
-                        {
-                            proc.Dispose();
-                        }
+                        DisposeIfOwned(proc);
                     }
                 }
             }
@@ -345,30 +362,65 @@ namespace DXVKCompanion.Monitoring
             }
         }
 
-        private bool AttachExitHandlerOnce(Process proc, DateTime startTime, string exePath)
+        private void DisposeIfOwned(Process proc)
         {
-            if (_attachedExitProcesses.TryGetValue(proc.Id, out var existing))
+            if (_processEnumerator != null) return;
+            if (!IsCurrentInstanceAttached(proc))
             {
-                if (startTime != DateTime.MinValue && existing.StartTime != DateTime.MinValue)
+                try
                 {
-                    if (startTime == existing.StartTime) return false;
+                    proc.Dispose();
                 }
-                else if (!existing.Process.HasExited && string.Equals(existing.ExePath, exePath, StringComparison.OrdinalIgnoreCase))
+                catch
                 {
-                    return false;
                 }
             }
+        }
 
-            _attachedExitProcesses[proc.Id] = (proc, startTime, exePath);
-            _exitHandler.Attach(proc);
-            return true;
+        private bool AttachExitHandlerOnce(Process proc, DateTime startTime, string exePath)
+        {
+            try
+            {
+                int pid = proc.Id;
+                if (_attachedExitProcesses.TryGetValue(pid, out var existing))
+                {
+                    if (startTime != DateTime.MinValue && existing.StartTime != DateTime.MinValue)
+                    {
+                        if (startTime == existing.StartTime) return false;
+                    }
+                    else
+                    {
+                        bool hasExited = false;
+                        try { hasExited = existing.Process.HasExited; } catch { hasExited = true; }
+                        if (!hasExited && string.Equals(existing.ExePath, exePath, StringComparison.OrdinalIgnoreCase))
+                        {
+                            return false;
+                        }
+                    }
+                }
+
+                _attachedExitProcesses[pid] = (proc, startTime, exePath);
+                _exitHandler.Attach(proc);
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         private bool IsCurrentInstanceAttached(Process proc)
         {
-            if (_attachedExitProcesses.TryGetValue(proc.Id, out var existing))
+            try
             {
-                return ReferenceEquals(existing.Process, proc);
+                if (_attachedExitProcesses.TryGetValue(proc.Id, out var existing))
+                {
+                    return ReferenceEquals(existing.Process, proc);
+                }
+            }
+            catch
+            {
+                return false;
             }
             return false;
         }
