@@ -50,6 +50,7 @@ namespace DXVKCompanion.DXVK
                 string? version = FindMatchingOfficialVersion(dll, identity.Sha256, architecture);
                 if (version != null)
                 {
+                    anyDxvkSignature = true;
                     evidence.Add($"{dll}: matches official release {version} (SHA-256: {identity.Sha256[..8]}...)");
                     if (matchedVersion == null)
                     {
@@ -62,9 +63,9 @@ namespace DXVKCompanion.DXVK
                 }
                 else
                 {
+                    matchedAllToOfficial = false;
                     if (isDxvkMetadata)
                     {
-                        matchedAllToOfficial = false; // DXVK, but unknown build/hash
                         evidence.Add($"{dll}: DXVK signature present, but hash does not match an official release");
                     }
                     else

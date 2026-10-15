@@ -147,6 +147,206 @@ public sealed class PhaseCManualManagementTests
     }
 
     [Fact]
+    public void ExistingDxvkDetector_MatchingD3D11AlongsideUnrelatedDxgi_NotAdoptable()
+    {
+        using var gameDir = new SyntheticTestDirectory();
+        using var sourceDir = new SyntheticTestDirectory();
+
+        // Release 2.5 has d3d11 and dxgi
+        var releaseDir = Path.Combine(sourceDir.RootPath, "2.5", "x64");
+        Directory.CreateDirectory(releaseDir);
+        File.WriteAllText(Path.Combine(releaseDir, "d3d11.dll"), "official-dxvk-2.5-d3d11");
+        File.WriteAllText(Path.Combine(releaseDir, "dxgi.dll"), "official-dxvk-2.5-dxgi");
+
+        // Game folder has matching d3d11.dll, but dxgi.dll is unrelated third-party/native (no DXVK metadata)
+        gameDir.CreateFile("Game.exe", "synthetic-binary");
+        gameDir.CreateFile("d3d11.dll", "official-dxvk-2.5-d3d11");
+        gameDir.CreateFile("dxgi.dll", "unrelated-third-party-dxgi");
+
+        var detector = new ExistingDxvkDetector(sourceDir.RootPath);
+        var assessment = detector.AssessDirectory(gameDir.RootPath, "x64");
+
+        // Acceptance: A matching d3d11.dll alongside an unrelated dxgi.dll is not adoptable
+        Assert.NotEqual(ExistingDxvkStatus.OfficialRelease, assessment.Status);
+        Assert.Equal(ExistingDxvkStatus.RecognizedUnknownVersion, assessment.Status);
+        Assert.Null(assessment.MatchedVersion);
+        Assert.False(assessment.CanBeAdopted);
+        Assert.Contains("d3d11.dll", assessment.DetectedDlls);
+        Assert.Contains("dxgi.dll", assessment.DetectedDlls);
+        Assert.Contains(assessment.Evidence, e => e.Contains("dxgi.dll: standard native or third-party DLL"));
+    }
+
+    [Fact]
+    public async Task DxvkInstaller_AdoptExisting_MixedDlls_RefusesAdoption_LeavesFilesAndOwnershipUnchanged_AndRollbackPreservesUnrelatedFile()
+    {
+        using var gameDir = new SyntheticTestDirectory();
+        using var storageDir = new SyntheticTestDirectory();
+        using var sourceDir = new SyntheticTestDirectory();
+
+        var releaseDir = Path.Combine(sourceDir.RootPath, "2.5", "x64");
+        Directory.CreateDirectory(releaseDir);
+        File.WriteAllText(Path.Combine(releaseDir, "d3d11.dll"), "official-dxvk-2.5-d3d11");
+        File.WriteAllText(Path.Combine(releaseDir, "dxgi.dll"), "official-dxvk-2.5-dxgi");
+
+        var exePath = gameDir.CreateFile("Game.exe", "synthetic-binary");
+        gameDir.CreateFile("d3d11.dll", "official-dxvk-2.5-d3d11");
+        string unrelatedContent = "unrelated-original-dxgi-content-must-not-be-deleted";
+        gameDir.CreateFile("dxgi.dll", unrelatedContent);
+
+        var store = new GameLibraryStore(
+            Path.Combine(storageDir.RootPath, "game-library.json"),
+            Path.Combine(storageDir.RootPath, "backups"));
+        var engine = new MultiFileTransactionEngine(Path.Combine(storageDir.RootPath, "backups"));
+        using var http = new HttpClient();
+        var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
+        var rollback = new DxvkRollback(engine, store);
+
+        var profile = new GameProfile(exePath)
+        {
+            Api = GraphicsApi.DX11,
+            Architecture = "x64"
+        };
+
+        // Exercise detection and the adoption boundary together
+        var detector = new ExistingDxvkDetector(sourceDir.RootPath);
+        var assessment = detector.AssessDirectory(gameDir.RootPath, "x64");
+
+        Assert.False(assessment.CanBeAdopted);
+
+        // 1. Attempt adoption directly via DxvkInstaller boundary
+        bool adoptOk = installer.AdoptExisting(profile, assessment);
+        Assert.False(adoptOk);
+
+        // Acceptance: Refused adoption leaves files, ownership records, and enabled/version state unchanged
+        Assert.False(profile.DxvkEnabled);
+        Assert.Null(profile.DxvkVersion);
+        var installation = store.FindByInstallationPath(gameDir.RootPath);
+        Assert.Null(installation); // No ownership record created
+
+        string dxgiPath = Path.Combine(gameDir.RootPath, "dxgi.dll");
+        string d3d11Path = Path.Combine(gameDir.RootPath, "d3d11.dll");
+        Assert.True(File.Exists(dxgiPath));
+        Assert.Equal(unrelatedContent, File.ReadAllText(dxgiPath));
+        Assert.True(File.Exists(d3d11Path));
+
+        // 2. Acceptance: If rollback/restore is attempted, the unrelated file is preserved and not deleted
+        bool rollbackOk = await rollback.RestoreOriginalDllsAsync(profile);
+        Assert.True(rollbackOk); // Existing successful unmanaged no-op restore
+        Assert.True(File.Exists(dxgiPath));
+        Assert.Equal(unrelatedContent, File.ReadAllText(dxgiPath));
+        Assert.True(File.Exists(d3d11Path));
+        Assert.Equal("official-dxvk-2.5-d3d11", File.ReadAllText(d3d11Path));
+        Assert.Null(store.FindByInstallationPath(gameDir.RootPath));
+    }
+
+    [Fact]
+    public async Task DxvkManager_AdoptExistingAsync_MixedDlls_RefusesAdoption_LeavesFilesAndProfileUnchanged()
+    {
+        using var gameDir = new SyntheticTestDirectory();
+        using var storageDir = new SyntheticTestDirectory();
+        using var sourceDir = new SyntheticTestDirectory();
+
+        var releaseDir = Path.Combine(sourceDir.RootPath, "2.5", "x64");
+        Directory.CreateDirectory(releaseDir);
+        File.WriteAllText(Path.Combine(releaseDir, "d3d11.dll"), "official-dxvk-2.5-d3d11");
+        File.WriteAllText(Path.Combine(releaseDir, "dxgi.dll"), "official-dxvk-2.5-dxgi");
+
+        var exePath = gameDir.CreateFile("Game.exe", "synthetic-binary");
+        string officialD3D11Content = "official-dxvk-2.5-d3d11";
+        gameDir.CreateFile("d3d11.dll", officialD3D11Content);
+        string unrelatedContent = "unrelated-dxgi-third-party";
+        gameDir.CreateFile("dxgi.dll", unrelatedContent);
+
+        string profilesPath = Path.Combine(storageDir.RootPath, "profiles.json");
+        string libraryPath = Path.Combine(storageDir.RootPath, "game-library.json");
+
+        var profileStore = new ProfileStore(profilesPath);
+        var store = new GameLibraryStore(
+            libraryPath,
+            Path.Combine(storageDir.RootPath, "backups"));
+        var engine = new MultiFileTransactionEngine(Path.Combine(storageDir.RootPath, "backups"));
+        using var http = new HttpClient();
+        var cacheStore = new CacheStore(Path.Combine(storageDir.RootPath, "cache.json"));
+        var client = new DxvkGithubClient(http, cacheStore);
+        var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
+        var rollback = new DxvkRollback(engine, store);
+
+        var manager = new DxvkManager(installer, rollback, client, profileStore, store);
+
+        var profile = new GameProfile(exePath)
+        {
+            Api = GraphicsApi.DX11,
+            Architecture = "x64"
+        };
+        profileStore.Save(profile);
+
+        byte[] profileBytesBefore = File.ReadAllBytes(profilesPath);
+        bool libraryExistedBefore = File.Exists(libraryPath);
+
+        // Exercise manager boundary
+        bool ok = await manager.AdoptExistingAsync(profile);
+
+        Assert.False(ok);
+        Assert.NotNull(manager.LastRefusalReason);
+        Assert.False(profile.DxvkEnabled);
+        Assert.Null(profile.DxvkVersion);
+
+        // Profile on disk unchanged: verify using before/after file bytes and a newly constructed store with existing APIs
+        byte[] profileBytesAfter = File.ReadAllBytes(profilesPath);
+        Assert.Equal(profileBytesBefore, profileBytesAfter);
+
+        var reloadedProfileStore = new ProfileStore(profilesPath);
+        var reloadedProfile = reloadedProfileStore.GetAll().FirstOrDefault(p => string.Equals(p.ExePath, exePath, StringComparison.OrdinalIgnoreCase));
+        Assert.NotNull(reloadedProfile);
+        Assert.False(reloadedProfile!.DxvkEnabled);
+        Assert.Null(reloadedProfile.DxvkVersion);
+
+        // Account for library-file absence if it was absent before refusal
+        if (!libraryExistedBefore)
+        {
+            Assert.False(File.Exists(libraryPath));
+        }
+
+        // Files on disk unchanged
+        string dxgiPath = Path.Combine(gameDir.RootPath, "dxgi.dll");
+        string d3d11Path = Path.Combine(gameDir.RootPath, "d3d11.dll");
+        Assert.True(File.Exists(dxgiPath));
+        Assert.Equal(unrelatedContent, File.ReadAllText(dxgiPath));
+        Assert.True(File.Exists(d3d11Path));
+        Assert.Equal(officialD3D11Content, File.ReadAllText(d3d11Path));
+
+        // No ownership acquired in library store
+        var inst = store.FindByInstallationPath(gameDir.RootPath);
+        Assert.Null(inst);
+    }
+
+    [Fact]
+    public void ExistingDxvkDetector_OfficialRelease_SingleD3D11Dll_RecognizesAndCanBeAdopted()
+    {
+        using var gameDir = new SyntheticTestDirectory();
+        using var sourceDir = new SyntheticTestDirectory();
+
+        var releaseDir = Path.Combine(sourceDir.RootPath, "2.5", "x64");
+        Directory.CreateDirectory(releaseDir);
+        File.WriteAllText(Path.Combine(releaseDir, "d3d11.dll"), "official-dxvk-2.5-d3d11");
+        File.WriteAllText(Path.Combine(releaseDir, "dxgi.dll"), "official-dxvk-2.5-dxgi");
+
+        // Game folder only has d3d11.dll (no dxgi.dll present at all)
+        gameDir.CreateFile("Game.exe", "synthetic-binary");
+        gameDir.CreateFile("d3d11.dll", "official-dxvk-2.5-d3d11");
+
+        var detector = new ExistingDxvkDetector(sourceDir.RootPath);
+        var assessment = detector.AssessDirectory(gameDir.RootPath, "x64");
+
+        // Acceptance: Existing supported, consistently matched adoption still works
+        Assert.Equal(ExistingDxvkStatus.OfficialRelease, assessment.Status);
+        Assert.Equal("2.5", assessment.MatchedVersion);
+        Assert.True(assessment.CanBeAdopted);
+        Assert.Single(assessment.DetectedDlls);
+        Assert.Equal("d3d11.dll", assessment.DetectedDlls[0]);
+    }
+
+    [Fact]
     public async Task DxvkInstaller_DxvkConf_Invariant_NoConfigCreatedWhenDisabled()
     {
         using var gameDir = new SyntheticTestDirectory();
