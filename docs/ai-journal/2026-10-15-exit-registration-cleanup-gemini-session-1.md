@@ -122,4 +122,28 @@ Addressed the focused review repairs identified during coordinator verification:
    - Refactored `AttachExitHandler_ProductionConsumerLifetime_PreservesProcessAcrossAsyncYield` to use explicit `TaskCompletionSource` synchronization (`pollCompletedTcs`, `consumerFinishedTcs`) rather than `Task.Delay(50)`.
    - Consumer continuation suspends until `PollProcessesOnce` returns and executes `DisposeIfOwned`, then resumes and asserts process validity without race conditions.
 
+---
+
+### 6. Session 4: Fixture & Monotonic Schedule Corrections
+
+**Date**: 2026-10-15  
+**Review Reference**: PR #122 Review Comment `6199208576`  
+
+Addressed the focused fixture corrections identified during coordinator review:
+
+1. **Declared Enum Member Resolution (CS0117)**:
+   - In `ProcessMonitorQualificationTests.cs` (`AttachExitHandler_DelayedQualification_WithDifferentProcessWrapper_UsesRetainedWrapper`), replaced nonexistent `ApiDetectionConfidence.None` with declared enum member `ApiDetectionConfidence.Unknown`.
+
+2. **Delayed Qualification Clock Progression & Ownership Assertion**:
+   - In `AttachExitHandler_DelayedQualification_WithDifferentProcessWrapper_UsesRetainedWrapper`, replaced static zero-time clock with a controllable monotonic clock closure (`clock: () => currentClock`).
+   - Advanced the monotonic clock from `TimeSpan.Zero` at Poll 1 to `TimeSpan.FromSeconds(2)` at Poll 2, satisfying the candidate assessment schedule.
+   - Asserted that assessment scan count advanced from 1 to 2 (`Assert.Equal(2, scanCount)`).
+   - Set `monitor.TreatProcessesAsOwnedForTesting = true;` to exercise production disposal on unattached wrappers.
+   - Asserted that temporary wrapper `proc2` was disposed (`Assert.Throws<InvalidOperationException>(() => proc2.Handle)`), while the retained wrapper `proc1` remained alive and usable (`Assert.False(proc1.HasExited); Assert.NotEqual(IntPtr.Zero, proc1.Handle)`).
+
+3. **Synthetic Identity & Token Exit Delivery**:
+   - In `FakeProcessExitHandler.SimulateInstanceExit(int pid, string exePath)`, resolved PID via `GetProcessId(r.Process) == pid` instead of direct `r.Process.Id`, ensuring consistent lookup under synthetic PID resolution.
+   - In `ExitWatcher_TwoSameExecutableInstances_ExitingInOppositeOrder_RemovesCorrectRegistrations`, captured exact registration tokens (`token1`, `token2`) before simulated exits and delivered exits via `SimulateInstanceExit(token, pid, exePath)`.
+   - Verified that registration 2 was released while registration 1 remained active, then both registrations were released after instance 1 exited.
+
 

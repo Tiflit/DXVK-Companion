@@ -55,7 +55,7 @@ public sealed class ProcessMonitorQualificationTests
         {
             var match = AttachedRegistrations.LastOrDefault(r =>
             {
-                try { return r.Process.Id == pid; } catch { return false; }
+                try { return GetProcessId(r.Process) == pid; } catch { return false; }
             });
             RaiseProcessInstanceExited(match.Token, pid, exePath);
         }
@@ -856,22 +856,37 @@ public sealed class ProcessMonitorQualificationTests
         // Poll: both qualify and attach
         monitor.PollProcessesOnce();
         Assert.Equal(2, exitHandler.AttachedProcesses.Count);
+        Assert.Equal(2, exitHandler.AttachedRegistrations.Count);
+
+        var reg1 = exitHandler.AttachedRegistrations.First(r => ReferenceEquals(r.Process, proc1));
+        var reg2 = exitHandler.AttachedRegistrations.First(r => ReferenceEquals(r.Process, proc2));
+        var token1 = reg1.Token;
+        var token2 = reg2.Token;
+        Assert.True(exitHandler.HasRegistration(token1));
+        Assert.True(exitHandler.HasRegistration(token2));
 
         var exits = new List<string>();
         monitor.OnGameExited += path => exits.Add(path);
 
         // Instance 2 exits first (opposite order)
-        exitHandler.SimulateInstanceExit(pid2, exePath);
+        exitHandler.SimulateInstanceExit(token2, pid2, exePath);
         Assert.Single(exits);
 
-        // Verify proc1 is still qualified in monitor, while proc2 was removed
+        // Verify registration for instance 2 is released while instance 1 remains
+        Assert.True(exitHandler.HasRegistration(token1));
+        Assert.False(exitHandler.HasRegistration(token2));
         Assert.True(monitor.TryGetQualifiedSnapshot(pid1, out _));
         Assert.False(monitor.TryGetQualifiedSnapshot(pid2, out _));
+        Assert.True(monitor.IsExitWatcherAttached(pid1));
+        Assert.False(monitor.IsExitWatcherAttached(pid2));
 
         // Instance 1 exits
-        exitHandler.SimulateInstanceExit(pid1, exePath);
+        exitHandler.SimulateInstanceExit(token1, pid1, exePath);
         Assert.Equal(2, exits.Count);
+        Assert.False(exitHandler.HasRegistration(token1));
+        Assert.False(exitHandler.HasRegistration(token2));
         Assert.False(monitor.TryGetQualifiedSnapshot(pid1, out _));
+        Assert.False(monitor.IsExitWatcherAttached(pid1));
     }
 
     [Fact]
@@ -2003,7 +2018,7 @@ public sealed class ProcessMonitorQualificationTests
             Classification = new ApiClassificationResult
             {
                 PrimaryApi = GraphicsApi.Unknown,
-                Confidence = ApiDetectionConfidence.None,
+                Confidence = ApiDetectionConfidence.Unknown,
                 Architecture = "x64",
                 Evidence = Array.Empty<string>()
             },
@@ -2016,12 +2031,13 @@ public sealed class ProcessMonitorQualificationTests
         libraryStore.Save(inst);
 
         Process currentEnumProcess = proc1;
+        TimeSpan currentClock = TimeSpan.Zero;
         using var monitor = new ProcessMonitor(
             new GameDetector(),
             exitHandler,
             classifier,
             libraryStore,
-            clock: () => TimeSpan.Zero,
+            clock: () => currentClock,
             processEnumerator: () => new[] { currentEnumProcess },
             startTimer: false);
         monitor.ProcessIdResolver = _ => pid;
@@ -2029,6 +2045,7 @@ public sealed class ProcessMonitorQualificationTests
         monitor.WindowFilter = _ => true;
         monitor.StartTimeResolver = _ => startTime;
         monitor.ExePathResolver = _ => exePath;
+        monitor.TreatProcessesAsOwnedForTesting = true;
 
         Process? consumerReceivedProc = null;
         int qualifiedEvents = 0;
@@ -2041,20 +2058,28 @@ public sealed class ProcessMonitorQualificationTests
         // Poll 1: proc1 is enumerated; pending action attaches exit watcher; graphics scan incomplete so not qualified
         monitor.PollProcessesOnce();
         Assert.Equal(0, qualifiedEvents);
+        Assert.Equal(1, scanCount);
         Assert.Single(exitHandler.AttachedRegistrations);
         Assert.True(ReferenceEquals(proc1, exitHandler.AttachedRegistrations[0].Process));
 
-        // Poll 2: proc2 (different wrapper) is enumerated; now qualifies!
+        // Poll 2: Advance clock to 2 seconds so second assessment is due; proc2 (different wrapper) is enumerated; now qualifies!
+        currentClock = TimeSpan.FromSeconds(2);
         currentEnumProcess = proc2;
         monitor.PollProcessesOnce();
 
         // Assert: Qualification succeeded, exactly one registration preserved, retained wrapper (proc1) passed to consumer
+        Assert.Equal(2, scanCount);
         Assert.Equal(1, qualifiedEvents);
         Assert.Single(exitHandler.AttachedRegistrations);
         Assert.NotNull(consumerReceivedProc);
         Assert.True(ReferenceEquals(proc1, consumerReceivedProc));
         Assert.True(monitor.IsExitWatcherAttached(pid));
         Assert.True(monitor.TryGetQualifiedSnapshot(pid, out _));
+
+        // Assert ownership: retained wrapper (proc1) remains alive and usable, temporary wrapper (proc2) was disposed
+        Assert.False(proc1.HasExited);
+        Assert.NotEqual(IntPtr.Zero, proc1.Handle);
+        Assert.Throws<InvalidOperationException>(() => proc2.Handle);
     }
 
     [Fact]
