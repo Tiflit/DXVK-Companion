@@ -61,3 +61,34 @@ Resolve the remaining exit-registration resource-cleanup edge recorded as nonblo
 - **Executed Evidence**:
   - Cloud CI (GitHub Actions) on Windows runners.
   - Local builds/tests/runs: **NOT RUN** per profile instructions (`NOT RUN (pending human authorization)`).
+
+---
+
+### 4. Session 2: Grouped Review Repairs (R1 - R4)
+
+**Date**: 2026-10-15  
+**Review Reference**: PR #122 Review Comment `6198484707`  
+
+Addressed the four review repairs identified during coordinator review:
+
+1. **R1 (Deterministic Fake Identity Seams)**:
+   - Added `ExePathResolver` and `ProcessIdResolver` properties on `ProcessExitHandler` with virtual fallback methods `GetProcessExecutablePath(process)` and `GetProcessId(process)`.
+   - Wired `ProcessMonitor.ExePathResolver` to automatically forward into `_exitHandler.ExePathResolver`.
+   - Passed `exePath` from `AttachExitHandlerOnce` directly into `AttachCore(process, token, knownExePath)`.
+   - Updated `FakeProcessExitHandler` and test lifecycle fakes to use synthetic path resolvers instead of accessing `process.MainModule?.FileName`, completely eliminating test-host (`testhost.exe`) leakage.
+
+2. **R2 (Subscription Unwinding & Cleanup Idempotence)**:
+   - Isolated `SubscribeProcessExit` in its own `try ... catch` block in `AttachCore`. If hooking throws, explicitly unhooks (`UnsubscribeProcessExit`), cancels the token (`CancelRegistration`), and returns `Guid.Empty`.
+   - Enclosed `DisposeProcess` in `finally` only within `CompleteExit` after `TryClaimDelivery()` succeeds. Duplicate callbacks or cancelled registrations never re-execute process disposal or unhooking.
+   - Updated `CancelRegistration` to explicitly unhook `UnsubscribeProcessExit(reg.Process, reg.Handler)` upon claiming cancellation, preventing delayed callbacks from firing.
+
+3. **R3 (Exception Propagation vs Setup Failure Separation)**:
+   - Separated the synchronous exit inspection/delivery from setup `try ... catch`.
+   - If a synchronous exit subscriber throws an exception, it propagates directly out of `AttachCore` rather than being suppressed and converted into `Guid.Empty`, while still guaranteeing `DisposeProcess` execution in `finally`.
+   - Added regression test `SynchronousExit_SubscriberException_PropagatesOutAndCleansUp` validating exception propagation alongside disposal.
+
+4. **R4 (Candidate Qualification & Consumer Process Lifetime)**:
+   - In `ProcessMonitor.PollProcesses`, added `if (!attached || !IsCurrentInstanceAttached(proc))` check immediately following `AttachExitHandlerOnce`. If attachment failed or synchronous exit occurred, resets `candidate.IsQualified = false`, marks inspection failure, and skips emitting the candidate to async consumers (`OnQualifiedGameDetected`).
+   - In `DisposeIfOwned`, updated condition to `if (_processEnumerator != null && !TreatProcessesAsOwnedForTesting) return; if (!IsCurrentInstanceAttached(proc)) proc.Dispose();`. Attached live candidates are protected from premature disposal across async consumer yields (`await Task.Yield()`).
+   - Added regression test `AttachExitHandler_ProductionConsumerLifetime_PreservesProcessAcrossAsyncYield` and updated setup failure / synchronous exit test assertions to verify zero qualified events are emitted.
+

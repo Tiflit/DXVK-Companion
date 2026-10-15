@@ -45,11 +45,24 @@ namespace DXVKCompanion.Monitoring
         internal event Action<Process, DetectionSnapshot>? OnQualifiedGameDetected;
         internal ProfileStore? ProfileStore { get; set; }
 
-        internal Func<Process, string?>? ExePathResolver { get; set; }
+        private Func<Process, string?>? _exePathResolver;
+        internal Func<Process, string?>? ExePathResolver
+        {
+            get => _exePathResolver;
+            set
+            {
+                _exePathResolver = value;
+                if (_exitHandler != null && _exitHandler.ExePathResolver == null)
+                {
+                    _exitHandler.ExePathResolver = value;
+                }
+            }
+        }
         internal Func<Process, DateTime>? StartTimeResolver { get; set; }
         internal Func<Process, bool>? GameProcessFilter { get; set; }
         internal Func<Process, bool>? WindowFilter { get; set; }
         internal Func<Process, string, AntiCheatAssessment>? AntiCheatAssessor { get; set; }
+        internal bool TreatProcessesAsOwnedForTesting { get; set; }
 
         public ProcessMonitor(
             GameDetector detector,
@@ -71,6 +84,10 @@ namespace DXVKCompanion.Monitoring
         {
             _detector = detector ?? throw new ArgumentNullException(nameof(detector));
             _exitHandler = exitHandler ?? throw new ArgumentNullException(nameof(exitHandler));
+            if (_exePathResolver != null && _exitHandler.ExePathResolver == null)
+            {
+                _exitHandler.ExePathResolver = _exePathResolver;
+            }
             _classifier = classifier ?? new ApiClassifier(new ModuleScanner(), new PeParser());
             _libraryStore = libraryStore;
             _clock = clock ?? DefaultClock;
@@ -425,16 +442,30 @@ namespace DXVKCompanion.Monitoring
                                     break;
                                 }
 
-                                candidate.IsQualified = true;
-                                candidate.QualifiedSnapshot = snapshot;
-
-                                AttachExitHandlerOnce(proc, startTime, snapshot.ExecutablePath);
+                                bool attached = AttachExitHandlerOnce(proc, startTime, snapshot.ExecutablePath);
 
                                 if (_disposed)
                                 {
                                     DisposeIfOwned(proc);
                                     break;
                                 }
+
+                                if (!attached || !IsCurrentInstanceAttached(proc))
+                                {
+                                    // R4: Attachment setup failed or process finished/exited synchronously during setup.
+                                    // Do NOT pass an already finished/disposed or unmonitored candidate to async consumer.
+                                    // If setup failed, record inspection failure and advance candidate.
+                                    candidate.IsQualified = false;
+                                    candidate.QualifiedSnapshot = null;
+                                    candidate.LastInspectionHadFailure = true;
+                                    candidate.AdvanceAfterAssessment(now);
+
+                                    DisposeIfOwned(proc);
+                                    continue;
+                                }
+
+                                candidate.IsQualified = true;
+                                candidate.QualifiedSnapshot = snapshot;
 
                                 if (_libraryStore != null)
                                 {
@@ -500,7 +531,7 @@ namespace DXVKCompanion.Monitoring
 
         private void DisposeIfOwned(Process proc)
         {
-            if (_processEnumerator != null) return;
+            if (_processEnumerator != null && !TreatProcessesAsOwnedForTesting) return;
             if (!IsCurrentInstanceAttached(proc))
             {
                 try
@@ -541,7 +572,7 @@ namespace DXVKCompanion.Monitoring
                 Guid establishedToken;
                 try
                 {
-                    establishedToken = _exitHandler.AttachCore(proc, token);
+                    establishedToken = _exitHandler.AttachCore(proc, token, exePath);
                 }
                 catch
                 {

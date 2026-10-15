@@ -11,14 +11,22 @@ public sealed class ProcessExitHandlerLifecycleTests
     private sealed class TestableProcessExitHandler : ProcessExitHandler
     {
         public bool FailBeforeSubscription { get; set; }
+        public bool FailInsideSubscriptionAfterHook { get; set; }
         public bool FailAfterSubscription { get; set; }
         public bool SimulateSynchronousExit { get; set; }
         public bool ForceEmptyPath { get; set; }
+        public string? SyntheticExePath { get; set; }
 
         public int SubscriptionsCount { get; private set; }
         public int UnsubscriptionsCount { get; private set; }
         public int DisposalsCount { get; private set; }
         public EventHandler? LastRegisteredHandler { get; private set; }
+
+        internal override string? GetProcessExecutablePath(Process process)
+        {
+            if (ForceEmptyPath) return null;
+            return SyntheticExePath ?? base.GetProcessExecutablePath(process);
+        }
 
         internal override void SubscribeProcessExit(Process process, EventHandler handler)
         {
@@ -29,6 +37,11 @@ public sealed class ProcessExitHandlerLifecycleTests
 
             SubscriptionsCount++;
             LastRegisteredHandler = handler;
+
+            if (FailInsideSubscriptionAfterHook)
+            {
+                throw new InvalidOperationException("Simulated failure inside SubscribeProcessExit after hooking handler");
+            }
         }
 
         internal override void UnsubscribeProcessExit(Process process, EventHandler handler)
@@ -85,6 +98,36 @@ public sealed class ProcessExitHandlerLifecycleTests
     }
 
     [Fact]
+    public void SetupFailure_InsideSubscriptionAfterHook_UnwindsSubscriptionAndReleasesRegistration()
+    {
+        var handler = new TestableProcessExitHandler { FailInsideSubscriptionAfterHook = true };
+        using var dummyProc = Process.GetCurrentProcess();
+
+        int exitedCount = 0;
+        int instanceExitedCount = 0;
+        handler.ProcessExited += _ => exitedCount++;
+        handler.ProcessInstanceExited += (_, _, _) => instanceExitedCount++;
+
+        var token = Guid.NewGuid();
+        var resultToken = handler.AttachCore(dummyProc, token);
+
+        Assert.Equal(Guid.Empty, resultToken);
+        Assert.Equal(1, handler.SubscriptionsCount);
+        Assert.Equal(1, handler.UnsubscriptionsCount);
+        Assert.Null(handler.LastRegisteredHandler);
+        Assert.Equal(0, handler.ActiveRegistrationCount);
+        Assert.False(handler.HasRegistration(token));
+        Assert.Equal(0, exitedCount);
+        Assert.Equal(0, instanceExitedCount);
+
+        // Stale callback must not deliver false exit notification or dispose process
+        handler.TriggerExitCallback();
+        Assert.Equal(0, exitedCount);
+        Assert.Equal(0, instanceExitedCount);
+        Assert.Equal(0, handler.DisposalsCount);
+    }
+
+    [Fact]
     public void SetupFailure_AfterPartialSubscription_UnwindsSubscriptionAndReleasesRegistration()
     {
         var handler = new TestableProcessExitHandler { FailAfterSubscription = true };
@@ -111,7 +154,7 @@ public sealed class ProcessExitHandlerLifecycleTests
     [Fact]
     public void MissingPathExit_ReleasesRegistrationAndCleansUpWithoutRaisingMisleadingEvents()
     {
-        var handler = new TestableProcessExitHandler();
+        var handler = new TestableProcessExitHandler { ForceEmptyPath = true };
         using var dummyProc = Process.GetCurrentProcess();
 
         int exitedCount = 0;
@@ -120,18 +163,12 @@ public sealed class ProcessExitHandlerLifecycleTests
         handler.ProcessInstanceExited += (_, _, _) => instanceExitedCount++;
 
         var token = Guid.NewGuid();
-        // Register token with null exePath
-        handler.RegisterToken(token, dummyProc.Id, null);
+        var resultToken = handler.AttachCore(dummyProc, token);
+
+        Assert.Equal(token, resultToken);
         Assert.Equal(1, handler.ActiveRegistrationCount);
         Assert.True(handler.HasRegistration(token));
-
-        // Setup watcher manually through AttachCore with empty/null path
-        var resultToken = handler.AttachCore(dummyProc, token);
-        Assert.Equal(token, resultToken);
         Assert.Equal(1, handler.SubscriptionsCount);
-
-        // Overwrite registration with null path to simulate unreportable/unavailable path
-        handler.RegisterToken(token, dummyProc.Id, null);
 
         // Trigger exit callback
         handler.TriggerExitCallback();
@@ -140,18 +177,22 @@ public sealed class ProcessExitHandlerLifecycleTests
         Assert.Equal(0, handler.ActiveRegistrationCount);
         Assert.False(handler.HasRegistration(token));
 
+        // Subscription is detached
+        Assert.Equal(1, handler.UnsubscriptionsCount);
+
         // No misleading path-bearing events are raised
         Assert.Equal(0, exitedCount);
         Assert.Equal(0, instanceExitedCount);
 
-        // Owned cleanup is performed
+        // Owned cleanup is performed exactly once
         Assert.Equal(1, handler.DisposalsCount);
     }
 
     [Fact]
     public void SuccessfulExit_DeliversExactlyOnce_AndReleasesRegistration()
     {
-        var handler = new TestableProcessExitHandler();
+        string expectedPath = @"C:\Games\ValidGame\Game.exe";
+        var handler = new TestableProcessExitHandler { SyntheticExePath = expectedPath };
         using var dummyProc = Process.GetCurrentProcess();
 
         var deliveredPaths = new List<string>();
@@ -160,11 +201,8 @@ public sealed class ProcessExitHandlerLifecycleTests
         handler.ProcessInstanceExited += (tok, _, _) => deliveredTokens.Add(tok);
 
         var token = Guid.NewGuid();
-        string expectedPath = @"C:\Games\ValidGame\Game.exe";
-        handler.RegisterToken(token, dummyProc.Id, expectedPath);
-
-        // Attach with this token
         var resultToken = handler.AttachCore(dummyProc, token);
+
         Assert.Equal(token, resultToken);
         Assert.Equal(1, handler.ActiveRegistrationCount);
 
@@ -178,27 +216,28 @@ public sealed class ProcessExitHandlerLifecycleTests
         Assert.Equal(token, deliveredTokens[0]);
         Assert.Equal(0, handler.ActiveRegistrationCount);
         Assert.False(handler.HasRegistration(token));
+        Assert.Equal(1, handler.UnsubscriptionsCount);
         Assert.Equal(1, handler.DisposalsCount);
 
-        // Duplicate callback does not deliver again
+        // Duplicate callback does not deliver again and does not re-execute disposal
         handler.TriggerExitCallback();
         Assert.Single(deliveredPaths);
         Assert.Single(deliveredTokens);
         Assert.Equal(0, handler.ActiveRegistrationCount);
+        Assert.Equal(1, handler.DisposalsCount);
     }
 
     [Fact]
     public void Cancellation_ReleasesRegistration_AndSuppressesFutureExitDelivery()
     {
-        var handler = new TestableProcessExitHandler();
+        string expectedPath = @"C:\Games\Game\Game.exe";
+        var handler = new TestableProcessExitHandler { SyntheticExePath = expectedPath };
         using var dummyProc = Process.GetCurrentProcess();
 
         int exitedCount = 0;
         handler.ProcessExited += _ => exitedCount++;
 
         var token = Guid.NewGuid();
-        string expectedPath = @"C:\Games\Game\Game.exe";
-        handler.RegisterToken(token, dummyProc.Id, expectedPath);
         handler.AttachCore(dummyProc, token);
 
         Assert.Equal(1, handler.ActiveRegistrationCount);
@@ -208,56 +247,95 @@ public sealed class ProcessExitHandlerLifecycleTests
         handler.CancelRegistration(token);
         Assert.Equal(0, handler.ActiveRegistrationCount);
         Assert.False(handler.HasRegistration(token));
+        Assert.Equal(1, handler.UnsubscriptionsCount);
+        Assert.Equal(0, handler.DisposalsCount); // Cancellation does not dispose process
 
-        // Delayed exit delivery occurs after cancellation
+        // Delayed exit delivery occurs after cancellation: must not reacquire cleanup or fire events
         handler.TriggerExitCallback();
         Assert.Equal(0, exitedCount);
         Assert.Equal(0, handler.ActiveRegistrationCount);
+        Assert.Equal(0, handler.DisposalsCount);
     }
 
     [Fact]
-    public void SubscriberException_DoesNotSkipResourceCleanupOrProcessDisposal()
+    public void AsynchronousSubscriberException_DoesNotSkipResourceCleanupOrProcessDisposal()
     {
-        var handler = new TestableProcessExitHandler();
+        string expectedPath = @"C:\Games\CrashyAsync\Game.exe";
+        var handler = new TestableProcessExitHandler { SyntheticExePath = expectedPath };
         using var dummyProc = Process.GetCurrentProcess();
 
         var token = Guid.NewGuid();
-        string expectedPath = @"C:\Games\CrashySubscriber\Game.exe";
-        handler.RegisterToken(token, dummyProc.Id, expectedPath);
         handler.AttachCore(dummyProc, token);
 
-        handler.ProcessExited += _ => throw new InvalidOperationException("Subscriber blew up!");
+        handler.ProcessExited += _ => throw new InvalidOperationException("Async subscriber crash");
 
         // Trigger exit callback — subscriber exception is rethrown, not silently swallowed
         var ex = Assert.Throws<InvalidOperationException>(() => handler.TriggerExitCallback());
-        Assert.Equal("Subscriber blew up!", ex.Message);
+        Assert.Equal("Async subscriber crash", ex.Message);
 
-        // Resource release and disposal must have occurred in finally
+        // Resource release, unsubscription, and disposal must have occurred in finally
         Assert.Equal(0, handler.ActiveRegistrationCount);
         Assert.False(handler.HasRegistration(token));
+        Assert.Equal(1, handler.UnsubscriptionsCount);
+        Assert.Equal(1, handler.DisposalsCount);
+    }
+
+    [Fact]
+    public void SynchronousSubscriberException_PropagatesWithoutBeingSwallowed_AndCompletesDisposal()
+    {
+        string expectedPath = @"C:\Games\CrashySync\Game.exe";
+        var handler = new TestableProcessExitHandler
+        {
+            SyntheticExePath = expectedPath,
+            SimulateSynchronousExit = true
+        };
+        using var dummyProc = Process.GetCurrentProcess();
+
+        handler.ProcessExited += _ => throw new InvalidOperationException("Sync subscriber crash");
+
+        var token = Guid.NewGuid();
+
+        // R3: Synchronous subscriber exception must propagate out of AttachCore, NOT get converted to Guid.Empty
+        var ex = Assert.Throws<InvalidOperationException>(() => handler.AttachCore(dummyProc, token));
+        Assert.Equal("Sync subscriber crash", ex.Message);
+
+        // Owned cleanup ran in finally inside CompleteExit
+        Assert.Equal(0, handler.ActiveRegistrationCount);
+        Assert.False(handler.HasRegistration(token));
+        Assert.Equal(1, handler.UnsubscriptionsCount);
         Assert.Equal(1, handler.DisposalsCount);
     }
 
     [Fact]
     public void SynchronousExit_DeliversAndCleansUpDuringSetup()
     {
-        var handler = new TestableProcessExitHandler { SimulateSynchronousExit = true };
+        string expectedPath = @"C:\Games\SyncExitGame\Game.exe";
+        var handler = new TestableProcessExitHandler
+        {
+            SyntheticExePath = expectedPath,
+            SimulateSynchronousExit = true
+        };
         using var dummyProc = Process.GetCurrentProcess();
 
         var deliveredTokens = new List<Guid>();
-        handler.ProcessInstanceExited += (tok, _, _) => deliveredTokens.Add(tok);
+        var deliveredPaths = new List<string>();
+        handler.ProcessInstanceExited += (tok, _, path) =>
+        {
+            deliveredTokens.Add(tok);
+            deliveredPaths.Add(path);
+        };
 
         var token = Guid.NewGuid();
-        string expectedPath = @"C:\Games\SyncExitGame\Game.exe";
-        handler.RegisterToken(token, dummyProc.Id, expectedPath);
-
         var resultToken = handler.AttachCore(dummyProc, token);
 
-        // Setup succeeded and delivered exit during AttachCore
+        // Setup succeeded and delivered exit synchronously during AttachCore
         Assert.Equal(token, resultToken);
         Assert.Single(deliveredTokens);
         Assert.Equal(token, deliveredTokens[0]);
+        Assert.Single(deliveredPaths);
+        Assert.Equal(expectedPath, deliveredPaths[0]);
         Assert.Equal(0, handler.ActiveRegistrationCount);
+        Assert.Equal(1, handler.UnsubscriptionsCount);
         Assert.Equal(1, handler.DisposalsCount);
     }
 }

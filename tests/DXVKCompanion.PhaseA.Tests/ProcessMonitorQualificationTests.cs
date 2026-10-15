@@ -24,7 +24,7 @@ public sealed class ProcessMonitorQualificationTests
         public bool FailSetup { get; set; }
         public bool SynchronousExit { get; set; }
 
-        internal override Guid AttachCore(Process process, Guid registrationToken = default)
+        internal override Guid AttachCore(Process process, Guid registrationToken = default, string? knownExePath = null)
         {
             if (FailSetup)
             {
@@ -34,10 +34,9 @@ public sealed class ProcessMonitorQualificationTests
             if (registrationToken == default) registrationToken = Guid.NewGuid();
             AttachedProcesses.Add(process);
             AttachedRegistrations.Add((registrationToken, process));
-            int pid = 0;
-            string? exePath = null;
-            try { pid = process.Id; exePath = process.MainModule?.FileName; } catch { }
-            RegisterToken(registrationToken, pid, exePath);
+            int pid = GetProcessId(process);
+            string? exePath = knownExePath ?? GetProcessExecutablePath(process);
+            RegisterToken(registrationToken, pid, exePath, process);
 
             if (SynchronousExit)
             {
@@ -1838,10 +1837,9 @@ public sealed class ProcessMonitorQualificationTests
         // Act: poll should qualify candidate, but watcher setup fails
         monitor.PollProcessesOnce();
 
-        // Assert: Qualification occurred
-        Assert.Equal(1, qualifiedEvents);
-        Assert.True(monitor.TryGetQualifiedSnapshot(currentProc.Id, out var snapshot));
-        Assert.NotNull(snapshot);
+        // Assert: Candidate was NOT emitted as qualified due to failed watcher setup
+        Assert.Equal(0, qualifiedEvents);
+        Assert.False(monitor.TryGetQualifiedSnapshot(currentProc.Id, out _));
 
         // Crucial: Attachment was unwound upon setup failure — not retained as phantom live watcher
         Assert.False(monitor.IsExitWatcherAttached(currentProc.Id));
@@ -1878,18 +1876,81 @@ public sealed class ProcessMonitorQualificationTests
         monitor.StartTimeResolver = _ => startTime;
         monitor.ExePathResolver = _ => exePath;
 
+        int qualifiedEvents = 0;
+        monitor.OnQualifiedGameDetected += (_, _) => qualifiedEvents++;
+
         var exitedGames = new List<string>();
         monitor.OnGameExited += path => exitedGames.Add(path);
 
         // Act: Poll qualifies candidate and attempts attachment, triggering synchronous exit
         monitor.PollProcessesOnce();
 
-        // Assert: Exit was delivered synchronously
+        // Assert: Exit was delivered synchronously and candidate was not emitted to async consumers
         Assert.Single(exitedGames);
         Assert.Equal(exePath, exitedGames[0]);
+        Assert.Equal(0, qualifiedEvents);
 
         // Crucial: Attachment state was removed by HandleExit and NOT overwritten with a phantom live attachment
         Assert.False(monitor.IsExitWatcherAttached(currentProc.Id));
         Assert.False(monitor.TryGetQualifiedSnapshot(currentProc.Id, out _));
+    }
+
+    [Fact]
+    public async Task AttachExitHandler_ProductionConsumerLifetime_PreservesProcessAcrossAsyncYield()
+    {
+        using var tempDir = new SyntheticTestDirectory();
+        var libraryStore = new GameLibraryStore(
+            Path.Combine(tempDir.RootPath, "game-library.json"),
+            Path.Combine(tempDir.RootPath, "backups"));
+        var exitHandler = new FakeProcessExitHandler();
+        var scanner = new DynamicModuleScanner(_ => ModuleScanResult.Complete(new HashSet<string> { "d3d11.dll" }));
+        var classifier = new ApiClassifier(scanner, new FakePeParser());
+
+        using var currentProc = Process.GetCurrentProcess();
+        string exePath = @"C:\Games\YieldGame\Game.exe";
+        var startTime = new DateTime(2026, 10, 15, 12, 0, 0, DateTimeKind.Utc);
+
+        var monitor = new ProcessMonitor(
+            new GameDetector(),
+            exitHandler,
+            classifier,
+            libraryStore,
+            clock: () => TimeSpan.Zero,
+            processEnumerator: () => new[] { currentProc },
+            startTimer: false);
+        monitor.TreatProcessesAsOwnedForTesting = true;
+        monitor.GameProcessFilter = _ => true;
+        monitor.WindowFilter = _ => true;
+        monitor.StartTimeResolver = _ => startTime;
+        monitor.ExePathResolver = _ => exePath;
+
+        bool consumerCompletedWithoutDisposedException = false;
+        int consumerObservedPid = 0;
+
+        monitor.OnQualifiedGameDetected += async (proc, _) =>
+        {
+            await Task.Yield();
+            try
+            {
+                consumerObservedPid = proc.Id;
+                Assert.False(proc.HasExited);
+                consumerCompletedWithoutDisposedException = true;
+            }
+            catch (ObjectDisposedException)
+            {
+                consumerCompletedWithoutDisposedException = false;
+            }
+        };
+
+        // Act
+        monitor.PollProcessesOnce();
+
+        // Allow async consumer to resume after Task.Yield
+        await Task.Delay(50);
+
+        // Assert: Live attached process was preserved across async yield and not prematurely disposed
+        Assert.True(consumerCompletedWithoutDisposedException);
+        Assert.Equal(currentProc.Id, consumerObservedPid);
+        Assert.True(monitor.IsExitWatcherAttached(currentProc.Id));
     }
 }
