@@ -36,13 +36,13 @@ namespace DXVKCompanion.DXVK
                     return cached.Release;
                 }
 
-                var request = new HttpRequestMessage(HttpMethod.Get, ApiUrl);
+                using var request = new HttpRequestMessage(HttpMethod.Get, ApiUrl);
 
                 if (cached != null && !string.IsNullOrWhiteSpace(cached.ETag))
                     request.Headers.IfNoneMatch.Add(new EntityTagHeaderValue(cached.ETag));
 
                 using var cts = new CancellationTokenSource(RequestTimeout);
-                var response = await _httpClient.SendAsync(request, cts.Token);
+                using var response = await _httpClient.SendAsync(request, cts.Token);
 
                 if (response.StatusCode == System.Net.HttpStatusCode.NotModified && cached != null)
                 {
