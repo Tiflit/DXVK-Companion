@@ -9,7 +9,7 @@
 - **Current Repository Priority**: Validating a reliable, low-overhead multi-agent workflow centered on GitHub ([workflow purpose](AI-DEVELOPMENT-WORKFLOW.md#purpose)); broader application feature work and release testing follow separately under human direction.
 - **Repository Status Snapshot**: Published periodically by GitHub Actions in dashboard [**Issue #27**](https://github.com/Tiflit/DXVK-Companion/issues/27) (`[AI Dashboard] Current Repository State & Handoff Orientation`) for latest observed default-branch SHA, open PRs, and active CI runs.
 - **Active Task & PR Tracking**: Task assignments and open PR inventories are tracked dynamically through GitHub queries (`gh issue list`, `gh pr list`) and reflected in the dashboard snapshot. This curated document provides stable architecture, role allocation, and governance protocols; it does not maintain a second live inventory by hand.
-- **Optional Template Extraction**: DXVK's read-only preflight check (`scripts/ai-workflow/preflight_check.py`) and role handoff preview (`scripts/ai-workflow/preview_role_handoff.py`) utilities were extracted into a stack-neutral offline toolkit in candidate repository [`Tiflit/Agent-Workflow`](https://github.com/Tiflit/Agent-Workflow) ([`tooling/offline/README.md`](https://github.com/Tiflit/Agent-Workflow/blob/b283a23620a7ade163577da1d12d8ed461f18181/tooling/offline/README.md) at pinned main `b283a23620a7ade163577da1d12d8ed461f18181`). Source extraction is pinned to DXVK base `1ce8b28f983ceb9b610c5e495fac02dac5c5a72f`. Both repositories maintain separate copies with no automatic synchronization or adopted upstream version policy. Agent-Workflow remains an unadopted candidate template and does not replace DXVK's adopted kernel v0.4 or enforcement register.
+- **Optional Template Extraction**: DXVK's read-only preflight check (`scripts/ai-workflow/preflight_check.py`) and role handoff preview (`scripts/ai-workflow/preview_role_handoff.py`) utilities were extracted into a stack-neutral offline toolkit in candidate repository [`Tiflit/Agent-Workflow`](https://github.com/Tiflit/Agent-Workflow) ([`tooling/offline/README.md`](https://github.com/Tiflit/Agent-Workflow/blob/b283a23620a7ade163577da1d12d8ed461f18181/tooling/offline/README.md)). Historical extraction is pinned to DXVK base `1ce8b28f983ceb9b610c5e495fac02dac5c5a72f` and template extraction pin `b283a23620a7ade163577da1d12d8ed461f18181`, distinguishing it from current candidate main (`7f6d7a8800777ca96229a4a1220dad3c00283d13`). Both repositories maintain separate copies with no automatic synchronization or adopted upstream version policy. Agent-Workflow remains an unadopted candidate template and does not replace DXVK's adopted kernel v0.4 or enforcement register.
 
 ---
 
@@ -36,20 +36,18 @@ Major foundational pilot features, bugfixes, and CI harnesses merged into `main`
 
 ## 2. Active Work Governance & Decision Prerequisites
 
-- **Active Priority**: Validating a reliable, low-overhead multi-agent workflow centered on GitHub ([workflow purpose](AI-DEVELOPMENT-WORKFLOW.md#purpose)). Broader application revisions and release testing follow separately under human direction.
-
-Active task assignments, in-flight work, and open PR inventories are derived dynamically from GitHub (see dashboard snapshot [Issue #27](https://github.com/Tiflit/DXVK-Companion/issues/27) and `gh issue list` / `gh pr list`). Static documentation maintains stable governance rules, architecture, and role allocation without duplicating a secondary live task inventory.
+- **Active Priority**: Validating a reliable, low-overhead multi-agent workflow on GitHub ([workflow purpose](AI-DEVELOPMENT-WORKFLOW.md#purpose)); broader feature work follows under human direction. Task assignments and PR inventories are derived dynamically via GitHub CLI and dashboard snapshot ([Issue #27](https://github.com/Tiflit/DXVK-Companion/issues/27)); static docs maintain stable governance rather than a duplicate live inventory.
 
 ### Decision Governance Rules
-- **Decision Governance Block**: Tasks requiring architectural or policy choices must contain a structured Decision Governance Block in the GitHub Issue description (`Decision required`, `Proposed option`, `Status`, `Source of explicit human approval`).
-- **Human Approval Routes & Provenance**: Direct verified human decisions and clearly attributed coordinator transcriptions are permitted existing approval routes; transcriptions and shared credentials remain cooperative, not independently authenticated human authorship. Agent recommendations, flags, passing CI checks, unrelated merges, and generic continuation do not grant new permissions.
-- **Human Design & Merge Authority**: The human developer retains exclusive design preference, policy governance, and final merge authority. Policy changes to production code or canonical specifications must not be implemented or merged without recorded approval.
-- **Investigation Allowed**: Preparatory investigation, options analysis, and decision briefs may proceed while decisions are pending, but policy changes to production code or canonical specifications must not be implemented or merged without recorded approval.
+- **Decision Governance Block**: Tasks requiring architectural or policy choices must specify a Decision Governance Block in the Issue description (`Decision required`, `Proposed option`, `Status`, `Source of explicit human approval`).
+- **Autonomous Routine Repairs vs. Consequential Choices**: Routine in-scope implementation, compilation repairs, and grouped review repairs proceed autonomously without stopping. Consequential choices (architectural direction, product policy changes, contract changes, major scope expansion) require recorded human approval.
+- **Approval Routes & Provenance**: Permitted approval routes are direct human decisions and clearly attributed coordinator transcriptions (cooperative, not independently authenticated). Recommendations, passing CI, or generic continuation do not grant new authority.
+- **Human Authority & Pending Decisions**: The human developer retains exclusive design policy and final merge authority. Preparatory investigation and decision briefs may proceed while decisions are pending, but unapproved production policy changes must not be implemented or merged.
 
 ### Local Test Execution Authorization Gate
-- **Human Authorization Required**: Executing tests on the user's local system (unit/integration suites, desktop/application runs, device testing) requires explicit human authorization recorded in the task Issue before execution begins ([AGENTS.md](../AGENTS.md)). A disposable folder, separate directory, or local VM does not waive the gate.
-- **Reporting & Boundaries**: Built-in OS scripts and test-created processes do not authorize desktop bridging or forced termination without explicit scope and permission. Distinguish `NOT RUN (pending human authorization)` from `NOT RUN (blocked: capability/desktop limitation)`, while preserving verified results for steps already executed.
-- **Safe Preparation & CI**: GitHub-hosted CI runs and read-only source/evidence retrieval do not require approval prompts.
+- **Human Authorization Required**: Executing tests on the user's host (unit/integration suites, desktop/application runs, device testing) requires explicit human authorization recorded in the task Issue ([AGENTS.md](../AGENTS.md)); disposable folders or local VMs do not waive the gate. CI runs and read-only source/evidence retrieval do not require prompts.
+- **Approved Profile Reuse**: When the human explicitly approves a local execution profile in an Issue (such as [Issue #100](https://github.com/Tiflit/DXVK-Companion/issues/100) approval [comment 6177558065](https://github.com/Tiflit/DXVK-Companion/issues/100#issuecomment-6177558065), disposition [comment 6177757634](https://github.com/Tiflit/DXVK-Companion/issues/100#issuecomment-6177757634)), that approval establishes standing authorization for that specific scope. Reusing an approved profile requires satisfying all standing conditions: (1) approved command scope remains unchanged; (2) prerequisite tools (.NET 8 SDK) and repository preparation (clean worktree / synced checkout) are available on the host; and (3) session readiness and advance notice requirements are satisfied under #100 and [AGENTS.md](../AGENTS.md) (advance notice naming profile and task, with human availability acknowledgment). Standing profile approval does not guarantee host capability, nor do prerequisite tools alone satisfy session readiness.
+- **Reporting & Boundaries**: Built-in OS scripts and test processes do not authorize desktop bridging or forced process termination. Honestly record unexecuted tests as `NOT RUN (pending human authorization)` or `NOT RUN (blocked: capability/desktop limitation)` rather than claiming passes.
 
 ---
 
@@ -74,12 +72,12 @@ Active task assignments, in-flight work, and open PR inventories are derived dyn
    - When authorized for local execution:
      - Application changes: `dotnet test tests/DXVKCompanion.PhaseA.Tests/DXVKCompanion.PhaseA.Tests.csproj`.
      - Workflow automation changes: `python -m unittest discover -s tests/ai-workflow -v`.
-6. Push your branch, open a PR with required headings (`Primary Issue`, `Summary`, `Scope`, `Verification`, `Documentation`) and initial generated durable handoff snapshot. Check submission state once via GitHub CLI/API without polling. If CI checks are running, yield honestly with `Implementation complete — CI pending` (no sleep/check loops or waiting narration); final coordinator acceptance still requires matching-revision CI and provenance. Once CI completes, refresh the durable pre-merge handoff snapshot in the PR description via the guarded helper before human merge.
+6. Push your branch, open a PR with required headings (`Primary Issue`, `Summary`, `Scope`, `Verification`, `Documentation`) and one initial durable submission handoff snapshot generated via `scripts/ai-workflow/generate_handoff.py`. Check submission state once via GitHub CLI/API at the boundary without busy sleep/status polling. If CI checks are pending at submission, report status and yield honestly without polling loops or regenerating snapshots solely to refresh state. The final coordinator review comment supplies matching-revision CI evidence, test totals, and synthetic merge provenance without requiring a PR-body snapshot refresh. Routine in-scope implementation, compilation repairs, and grouped review repairs proceed autonomously.
 7. Record a factual session entry in `docs/ai-journal/<YYYY-MM-DD>-<issue>-gemini-session-<n>.md`. Do not edit out-of-scope files.
 
 #### For ChatGPT (Verifier / Arbitrator)
 1. Inspect the PR and its generated review packet artifact (`review_packet.md` + `full-diff.diff`).
-2. Verify tested checkout provenance, TRX test counts, and boundary compliance against the Issue contract.
+2. Verify tested checkout provenance, TRX test counts, and boundary compliance against the Issue contract. Supply verified matching-revision CI evidence, test counts, and synthetic merge provenance in a final revision-bound coordinator review/acceptance comment.
 3. If an unresolved defect is identified, formulate an exact reproducer and request a single bounded repair cycle.
 4. Distinguish blocking defects from non-blocking follow-up items.
 
@@ -99,7 +97,7 @@ Active task assignments, in-flight work, and open PR inventories are derived dyn
   - Journal entry word count.
   - Whether a blocker required an additional session.
 - **Unmeasured attributes**: Provider token/quota consumption and elapsed human clock time are recorded as `"not measured"` unless directly available from observable tooling.
-- **Review cadence**: After three completed task handoffs, the coordinator reviews available journal entries to identify recurring friction points.
+- **Review cadence**: After three completed task handoffs, the coordinator reviews available journal entries to identify recurring friction points. (The first post-#99 autonomy trial comprising PRs #102, #105, and #108 is concluded in [`docs/ai-journal/2026-10-14-post-99-autonomy-trial-closeout.md`](ai-journal/2026-10-14-post-99-autonomy-trial-closeout.md)).
 
 ### Verification Limitations & Release Readiness
 - **Cleared Backlog != Release Readiness**: Successful task backlog clearance and headless test passes establish bounded component safety and workflow continuity, but do not constitute broader release readiness.
@@ -111,18 +109,19 @@ Active task assignments, in-flight work, and open PR inventories are derived dyn
 ## 5. Architectural & Governance Decisions
 
 ### Unresolved Decisions
-- **None currently pending**: All specifically tracked Phase A architectural and safety policy decisions (#12, #14, #15, #16, #18) are resolved and implemented. Policy implementation for future tasks remains blocked until explicit human approval (direct verified decision or clearly attributed coordinator transcription) is recorded in the respective GitHub Issue.
+- **None currently pending**: All specifically tracked Phase A architectural and safety policy decisions (#12, #14, #15, #16, #18, #106) are resolved and implemented. Future policy implementation remains blocked until explicit human approval is recorded in the respective Issue.
 
 ### Preserved Approved Decisions
-- **Issue #14 (Shared-Directory Multi-Executable Policy)**: Approved installation-wide compatibility refusal across shared directories, with Restore and RestoreAll operations preserved ([Issue #14](https://github.com/Tiflit/DXVK-Companion/issues/14), [PR #35](https://github.com/Tiflit/DXVK-Companion/pull/35)).
-- **Issue #15 (API Reassessment before Queued Execution)**: Implemented pre-execution API reassessment, conservative conflict handling, and executable-path identity alignment ([Issue #15](https://github.com/Tiflit/DXVK-Companion/issues/15), [PR #36](https://github.com/Tiflit/DXVK-Companion/pull/36)).
-- **Issue #16 (Lifecycle for Incompatible Pending Actions)**: Implemented terminal cancellation for compatibility-refused pending actions, durable cancellation context, and automatic non-revival until fresh deliberate user intent ([Issue #16](https://github.com/Tiflit/DXVK-Companion/issues/16), [PR #37](https://github.com/Tiflit/DXVK-Companion/pull/37)).
-- **Issue #32 (Clean-Slate V1 Legacy-Import Removal)**: Implemented clean-slate V1 legacy profile import removal following Issue #18 ([Issue #32](https://github.com/Tiflit/DXVK-Companion/issues/32), [PR #34](https://github.com/Tiflit/DXVK-Companion/pull/34)).
+- **Issue #106 / #107 (Library Schema Compatibility & Startup Refusal)**: Refuse startup cleanly on newer schemas (`SchemaVersion > CurrentSchemaVersion`), guard storage mutations with `IncompatibleLibrarySchemaException`, and preserve newer data and backups byte-for-byte intact ([Issue #106](https://github.com/Tiflit/DXVK-Companion/issues/106)/[Issue #107](https://github.com/Tiflit/DXVK-Companion/issues/107), [PR #108](https://github.com/Tiflit/DXVK-Companion/pull/108)).
+- **Issue #101 / #103 / #104 (Storage Staged-Save Persistence)**: Same-directory temporary staging followed by single-file replacement in `ProfileStore` ([PR #102](https://github.com/Tiflit/DXVK-Companion/pull/102)) and operation-owned GUID staging in `GameLibraryStore` ([PR #105](https://github.com/Tiflit/DXVK-Companion/pull/105)).
+- **Issue #14 (Shared-Directory Multi-Executable Policy)**: Installation-wide compatibility refusal across shared directories, preserving Restore and RestoreAll ([Issue #14](https://github.com/Tiflit/DXVK-Companion/issues/14), [PR #35](https://github.com/Tiflit/DXVK-Companion/pull/35)).
+- **Issue #15 (API Reassessment before Queued Execution)**: Pre-execution API reassessment, conservative conflict handling, and executable-path identity alignment ([Issue #15](https://github.com/Tiflit/DXVK-Companion/issues/15), [PR #36](https://github.com/Tiflit/DXVK-Companion/pull/36)).
+- **Issue #16 (Lifecycle for Incompatible Pending Actions)**: Terminal cancellation for compatibility-refused pending actions, durable cancellation context, and no automatic revival without fresh intent ([Issue #16](https://github.com/Tiflit/DXVK-Companion/issues/16), [PR #37](https://github.com/Tiflit/DXVK-Companion/pull/37)).
+- **Issue #32 (Clean-Slate V1 Legacy-Import Removal)**: Clean-slate V1 legacy profile import removal following Issue #18 ([Issue #32](https://github.com/Tiflit/DXVK-Companion/issues/32), [PR #34](https://github.com/Tiflit/DXVK-Companion/pull/34)).
 - **Normative Specification Authority (Issue #12)**: Canonical specification is [`docs/spec/DXVK-COMPANION-SPEC.md`](../docs/spec/DXVK-COMPANION-SPEC.md), with [`docs/spec/DXVK-Companion-PhaseA5-Safety-and-Identity-Design-FINAL.md`](../docs/spec/DXVK-Companion-PhaseA5-Safety-and-Identity-Design-FINAL.md) as normative safety supplement.
-- **Clean-Slate V1 Policy**: No legacy configuration import; modern clean-slate setup.
-- **Deployment Guards**: Refuse DXVK deployment for DX12 and Vulkan executables, while preserving restore operations.
-- **Local Test Execution Authorization Gate (Issue #56)**: Required explicit human authorization before executing local unit/integration test suites, desktop/application runs, or device tests on the user's host system ([Issue #56](https://github.com/Tiflit/DXVK-Companion/issues/56)).
-- **Repository Protection Rulesets**: GitHub Actions workflows (`ai-scope-check`, `ai-pr-hygiene`, `build-and-test`) currently run as status checks. Enabling mandatory branch protection rulesets remains a human administrative choice.
+- **Deployment Guards (Issue #6)**: Refuse DXVK deployment for DX12 and Vulkan executables while preserving restore operations.
+- **Local Test Execution Authorization Gate (Issue #56)**: Explicit human authorization required before executing local unit/integration tests or application runs on the host ([Issue #56](https://github.com/Tiflit/DXVK-Companion/issues/56)).
+- **Repository Protection Rulesets**: Status checks run in CI; mandatory branch protection rulesets remain a human administrative choice.
 
 
 ---
