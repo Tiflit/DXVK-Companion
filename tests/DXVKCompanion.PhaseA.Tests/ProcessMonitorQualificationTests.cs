@@ -8,6 +8,7 @@ using DXVKCompanion.DXVK;
 using DXVKCompanion.Models;
 using DXVKCompanion.Monitoring;
 using DXVKCompanion.Storage;
+using DXVKCompanion.Safety;
 using DXVKCompanion.UI;
 using DXVKCompanion.Utils;
 using Xunit;
@@ -596,7 +597,6 @@ public sealed class ProcessMonitorQualificationTests
 
         string targetExe = @"C:\Games\PendingGame\Game.exe";
         string installDir = @"C:\Games\PendingGame";
-        string relExe = "Game.exe";
 
         var inst = libraryStore.GetOrCreateInstallation(installDir, "PendingGame");
         inst.PendingAction = PendingAction.Install("2.5", "Queued headless install");

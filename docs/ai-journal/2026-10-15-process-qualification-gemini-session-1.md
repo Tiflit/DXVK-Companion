@@ -57,6 +57,7 @@
    - Reverted `ModuleScanResult`, `ProcessQualification`, and `ScanLoadedGraphicsModules` to `internal` accessibility, strictly adhering to the architectural boundary.
    - Preserved non-virtual public methods on `GameDetector` and `ProcessExitHandler`, providing `internal virtual` core seams for test fakes.
    - Guarded against recursive override loops in `ModuleScanner` when derived classes override `GetLoadedGraphicsModules`.
+   - Repaired test compilation references (`DXVKCompanion.Safety` namespace import and unused variable cleanup in `ProcessMonitorQualificationTests`).
 
 ---
 
