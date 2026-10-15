@@ -323,10 +323,20 @@ namespace DXVKCompanion.Monitoring
                                 bool isSameInstance;
                                 if (candidate.IsQualified || candidate.IsExpired)
                                 {
-                                    // Terminal candidate state: require positive matching known start times
-                                    isSameInstance = (startTime != DateTime.MinValue &&
-                                                      candidate.ProcessStartTime != DateTime.MinValue &&
-                                                      startTime == candidate.ProcessStartTime);
+                                    if (startTime != DateTime.MinValue && candidate.ProcessStartTime != DateTime.MinValue)
+                                    {
+                                        isSameInstance = (startTime == candidate.ProcessStartTime);
+                                    }
+                                    else if (candidate.ProcessStartTime == DateTime.MinValue && startTime == DateTime.MinValue)
+                                    {
+                                        // Both unresolved: preserve terminal candidate state (exhausted budget remains without restart)
+                                        isSameInstance = true;
+                                    }
+                                    else
+                                    {
+                                        // Identity resolution transition (MinValue -> known) or known -> MinValue
+                                        isSameInstance = false;
+                                    }
                                 }
                                 else
                                 {
@@ -348,7 +358,7 @@ namespace DXVKCompanion.Monitoring
 
                                 if (!isSameInstance)
                                 {
-                                    // PID reused by OS: reset candidate state
+                                    // PID reused by OS or identity resolved: reset candidate state
                                     candidate = new CandidateProcessState(pid, startTime, now);
                                     _candidates[pid] = candidate;
                                 }
@@ -618,9 +628,10 @@ namespace DXVKCompanion.Monitoring
 
                 _timer?.Dispose();
 
-                if (_processEnumerator == null)
+                foreach (var item in _attachedExitProcesses.Values)
                 {
-                    foreach (var item in _attachedExitProcesses.Values)
+                    _exitHandler.CancelRegistration(item.RegistrationToken);
+                    if (_processEnumerator == null)
                     {
                         try { item.Process.Dispose(); } catch { }
                     }

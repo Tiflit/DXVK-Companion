@@ -4,6 +4,23 @@ using System.Diagnostics;
 
 namespace DXVKCompanion.Monitoring
 {
+    internal sealed class ProcessExitRegistration
+    {
+        public Guid Token { get; }
+        public int ProcessId { get; }
+        public string? ExePath { get; }
+        private int _delivered;
+
+        public ProcessExitRegistration(Guid token, int processId, string? exePath)
+        {
+            Token = token;
+            ProcessId = processId;
+            ExePath = exePath;
+        }
+
+        public bool TryClaimDelivery() => Interlocked.Exchange(ref _delivered, 1) == 0;
+    }
+
     public class ProcessExitHandler
     {
         // Raised when a process we attached to exits, with its exe path — lets subscribers
@@ -13,9 +30,9 @@ namespace DXVKCompanion.Monitoring
         internal event Action<Guid, int, string>? ProcessInstanceExited;
 
         private readonly object _exitLock = new();
-        private readonly HashSet<Guid> _notifiedTokens = new();
+        private readonly Dictionary<Guid, ProcessExitRegistration> _registrations = new();
 
-        public Guid Attach(Process process) => AttachCore(process, Guid.NewGuid());
+        public void Attach(Process process) => AttachCore(process, Guid.NewGuid());
 
         internal virtual Guid AttachCore(Process process, Guid registrationToken = default)
         {
@@ -35,6 +52,8 @@ namespace DXVKCompanion.Monitoring
             {
                 // Access denied — we still attach below, we just won't be able to report the path.
             }
+
+            RegisterToken(registrationToken, pid, exePath);
 
             try
             {
@@ -59,6 +78,26 @@ namespace DXVKCompanion.Monitoring
             return registrationToken;
         }
 
+        internal Guid RegisterToken(Guid registrationToken, int pid, string? exePath)
+        {
+            if (registrationToken == default) registrationToken = Guid.NewGuid();
+            var reg = new ProcessExitRegistration(registrationToken, pid, exePath);
+            lock (_exitLock)
+            {
+                _registrations[registrationToken] = reg;
+            }
+            return registrationToken;
+        }
+
+        internal void CancelRegistration(Guid registrationToken)
+        {
+            if (registrationToken == Guid.Empty) return;
+            lock (_exitLock)
+            {
+                _registrations.Remove(registrationToken);
+            }
+        }
+
         internal void RaiseProcessExited(string exePath)
         {
             NotifyExit(Guid.Empty, 0, exePath);
@@ -72,13 +111,24 @@ namespace DXVKCompanion.Monitoring
         private void NotifyExit(Guid registrationToken, int pid, string? exePath)
         {
             if (string.IsNullOrEmpty(exePath)) return;
-            lock (_exitLock)
+
+            if (registrationToken != Guid.Empty)
             {
-                if (registrationToken != Guid.Empty && !_notifiedTokens.Add(registrationToken))
+                ProcessExitRegistration? reg = null;
+                lock (_exitLock)
                 {
-                    return; // Exactly-once delivery per registration token
+                    if (_registrations.TryGetValue(registrationToken, out reg))
+                    {
+                        _registrations.Remove(registrationToken);
+                    }
+                }
+
+                if (reg == null || !reg.TryClaimDelivery())
+                {
+                    return; // Already delivered or unregistered (released upon completion/cancellation)
                 }
             }
+
             ProcessInstanceExited?.Invoke(registrationToken, pid, exePath);
             ProcessExited?.Invoke(exePath);
         }

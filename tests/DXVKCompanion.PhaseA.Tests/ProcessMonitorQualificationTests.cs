@@ -27,6 +27,9 @@ public sealed class ProcessMonitorQualificationTests
             if (registrationToken == default) registrationToken = Guid.NewGuid();
             AttachedProcesses.Add(process);
             AttachedRegistrations.Add((registrationToken, process));
+            int pid = 0;
+            try { pid = process.Id; } catch { }
+            RegisterToken(registrationToken, pid, null);
             return registrationToken;
         }
 
@@ -1687,5 +1690,103 @@ public sealed class ProcessMonitorQualificationTests
         Assert.NotNull(candidate2);
         Assert.True(candidate2!.IsQualified);
         Assert.Equal(currentStart, candidate2.ProcessStartTime);
+    }
+
+    [Fact]
+    public void CandidateLifecycle_PersistentUnresolvedIdentity_PreservesExhaustedBudgetWithoutRestart()
+    {
+        using var tempDir = new SyntheticTestDirectory();
+        var libraryStore = new GameLibraryStore(
+            Path.Combine(tempDir.RootPath, "game-library.json"),
+            Path.Combine(tempDir.RootPath, "backups"));
+        var exitHandler = new FakeProcessExitHandler();
+        int scanCount = 0;
+        var scanner = new DynamicModuleScanner(_ =>
+        {
+            scanCount++;
+            return ModuleScanResult.Complete(new HashSet<string>());
+        });
+        var classifier = new ApiClassifier(scanner, new FakePeParser());
+
+        using var currentProc = Process.GetCurrentProcess();
+        string exePath = @"C:\Games\PersistentUnknown\Game.exe";
+        TimeSpan currentClock = TimeSpan.Zero;
+        DateTime currentStart = DateTime.MinValue; // Persistent unresolved identity
+
+        var monitor = new ProcessMonitor(
+            new GameDetector(),
+            exitHandler,
+            classifier,
+            libraryStore,
+            clock: () => currentClock,
+            processEnumerator: () => new[] { currentProc },
+            startTimer: false);
+        monitor.GameProcessFilter = _ => true;
+        monitor.WindowFilter = _ => true;
+        monitor.StartTimeResolver = _ => currentStart;
+        monitor.ExePathResolver = _ => exePath;
+
+        int qualifiedEvents = 0;
+        monitor.OnQualifiedGameDetected += (_, _) => qualifiedEvents++;
+        monitor.OnGameDetected += _ => qualifiedEvents++;
+
+        // Step 1: Exhaust all 12 due observations with unresolved identity (DateTime.MinValue)
+        for (int i = 0; i < ProcessQualification.ScheduledOffsetsSeconds.Length; i++)
+        {
+            currentClock = TimeSpan.FromSeconds(ProcessQualification.ScheduledOffsetsSeconds[i]);
+            monitor.PollProcessesOnce();
+        }
+
+        var candidate = monitor.GetCandidateState(currentProc.Id);
+        Assert.NotNull(candidate);
+        Assert.True(candidate!.IsExpired);
+        Assert.Equal(12, candidate.AssessmentsConductedCount);
+        Assert.Equal(12, scanCount);
+        Assert.Equal(0, qualifiedEvents);
+
+        // Step 2: Keep PID, unresolved start time (DateTime.MinValue) and candidate presence unchanged.
+        // Advance through multiple later ticks and observation windows.
+        int[] postExpiryTimes = new[] { 130, 150, 180, 240, 300, 360, 600 };
+        foreach (int seconds in postExpiryTimes)
+        {
+            currentClock = TimeSpan.FromSeconds(seconds);
+            monitor.PollProcessesOnce();
+
+            var postCandidate = monitor.GetCandidateState(currentProc.Id);
+            Assert.NotNull(postCandidate);
+            Assert.Same(candidate, postCandidate); // Candidate instance preserved
+            Assert.True(postCandidate!.IsExpired); // Remains expired
+            Assert.Equal(12, postCandidate.AssessmentsConductedCount); // Budget not restarted
+        }
+
+        // Assert strictly zero additional scans and zero admissions across all post-expiry windows
+        Assert.Equal(12, scanCount);
+        Assert.Equal(0, qualifiedEvents);
+
+        // Step 3: Positive control 1 - Identity resolution transition resets candidate for resolved instance
+        currentClock = TimeSpan.FromSeconds(605);
+        currentStart = new DateTime(2026, 10, 15, 12, 10, 0, DateTimeKind.Utc);
+        monitor.PollProcessesOnce();
+
+        var resolvedCandidate = monitor.GetCandidateState(currentProc.Id);
+        Assert.NotNull(resolvedCandidate);
+        Assert.NotSame(candidate, resolvedCandidate);
+        Assert.False(resolvedCandidate!.IsExpired);
+        Assert.Equal(currentStart, resolvedCandidate.ProcessStartTime);
+        Assert.Equal(1, resolvedCandidate.AssessmentsConductedCount);
+        Assert.Equal(13, scanCount);
+
+        // Step 4: Positive control 2 - Known start-time reuse resets candidate
+        currentClock = TimeSpan.FromSeconds(610);
+        currentStart = new DateTime(2026, 10, 15, 12, 20, 0, DateTimeKind.Utc);
+        monitor.PollProcessesOnce();
+
+        var reusedCandidate = monitor.GetCandidateState(currentProc.Id);
+        Assert.NotNull(reusedCandidate);
+        Assert.NotSame(resolvedCandidate, reusedCandidate);
+        Assert.False(reusedCandidate!.IsExpired);
+        Assert.Equal(currentStart, reusedCandidate.ProcessStartTime);
+        Assert.Equal(1, reusedCandidate.AssessmentsConductedCount);
+        Assert.Equal(14, scanCount);
     }
 }

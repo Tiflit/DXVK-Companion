@@ -73,6 +73,13 @@
    - Prevented silent inheritance of terminal candidate states (`IsQualified` / `IsExpired`) when start times are unresolved or when PIDs are reused with unresolved identity.
    - Added deterministic unit tests for stale exit delivery survival on reused PID, terminal candidate reset with unresolved identity, and admission withholding until resolution.
 
+10. **R10 — Persistent Unknown Budget Preservation & Registration Lifecycle Release (Comment 6196335528)**:
+    - Preserved exhausted observation budget for persistent unresolved process identities: when PID, unresolved start time (`DateTime.MinValue`), and candidate presence remain unchanged after 120s expiry, candidate instance and expired state are retained without restarting candidate state or granting fresh observation budgets on subsequent ticks. Admission continues to be withheld.
+    - Retained positive controls: identity resolution transition (from `DateTime.MinValue` to a resolved known timestamp) and known PID reuse reset candidate state and begin assessment for the resolved instance.
+    - Restored public method signature `public void Attach(Process process)` on `ProcessExitHandler`, keeping internal token routing on `AttachCore` without altering the public API boundary.
+    - Replaced unbounded token accumulation (`HashSet<Guid> _notifiedTokens`) with a registration-owned completion/cancellation lifecycle (`ProcessExitRegistration` with `TryClaimDelivery()` latch, removed from `_registrations` on exit delivery or explicit monitor `Dispose` cancellation).
+    - Added deterministic unit test `CandidateLifecycle_PersistentUnresolvedIdentity_PreservesExhaustedBudgetWithoutRestart` verifying zero additional scans, zero admissions, candidate instance preservation across post-expiry windows, and positive controls for resolution and reuse.
+
 ---
 
 ### 3. Inspected vs. Executed Evidence
