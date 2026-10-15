@@ -1068,7 +1068,7 @@ public sealed class ProcessMonitorQualificationTests
     }
 
     [Fact]
-    public void Polling_ConcurrentCalls_ExcludeOverlappingPasses()
+    public async Task Polling_ConcurrentCalls_ExcludeOverlappingPasses()
     {
         using var tempDir = new SyntheticTestDirectory();
         var libraryStore = new GameLibraryStore(
@@ -1112,7 +1112,7 @@ public sealed class ProcessMonitorQualificationTests
         monitor.PollProcessesOnce();
 
         releaseFirst.Set();
-        task1.Wait();
+        await task1;
 
         // Exactly one scan occurred; second concurrent poll was excluded by Monitor.TryEnter
         Assert.Equal(1, totalScans);
@@ -1249,9 +1249,9 @@ public sealed class ProcessMonitorQualificationTests
         monitor.ExePathResolver = _ => exePath;
 
         // Conduct all 12 assessments until expired
-        for (int i = 0; i < ProcessQualification.AssessmentScheduleSeconds.Length; i++)
+        for (int i = 0; i < ProcessQualification.ScheduledOffsetsSeconds.Length; i++)
         {
-            currentClock = TimeSpan.FromSeconds(ProcessQualification.AssessmentScheduleSeconds[i]);
+            currentClock = TimeSpan.FromSeconds(ProcessQualification.ScheduledOffsetsSeconds[i]);
             monitor.PollProcessesOnce();
         }
 
