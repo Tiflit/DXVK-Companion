@@ -211,6 +211,69 @@ public sealed class MultiFileTransactionEngineTests
         Assert.Equal("old-c", File.ReadAllText(c));
     }
 
+    [Fact]
+    public void Restore_MultiFile_InvalidLaterBackup_RefusesBeforeAnyApply_PreservesGameFilesAndBackups()
+    {
+        using var game = new SyntheticTestDirectory();
+        using var storage = new SyntheticTestDirectory();
+
+        // 1. Originally absent file (would be deleted on restore if applied)
+        var a = game.CreateFile("dxgi.dll", "deployed-dxgi");
+
+        // 2. File with valid backup
+        var b = game.CreateFile("d3d11.dll", "deployed-d3d11");
+        var bBackup = Path.Combine(storage.RootPath, "backups", "tx1", "d3d11.dll");
+        Directory.CreateDirectory(Path.GetDirectoryName(bBackup)!);
+        File.WriteAllText(bBackup, "valid-original-d3d11");
+        var bValidSha = FileIdentity.Capture(bBackup).Sha256;
+
+        // 3. File with invalid backup (corrupted on disk)
+        var c = game.CreateFile("dxvk.conf", "deployed-dxvk-conf");
+        var cBackup = Path.Combine(storage.RootPath, "backups", "tx1", "dxvk.conf");
+        File.WriteAllText(cBackup, "corrupted-conf-backup");
+        var cExpectedOriginalSha = new string('e', 64); // does not match backup
+
+        var engine = new MultiFileTransactionEngine(storage.RootPath);
+
+        var restoreResult = engine.Execute(new MultiFileTransactionRequest
+        {
+            InstallationRoot = game.RootPath,
+            Operation = TransactionOperation.Restore,
+            Files = new[]
+            {
+                new MultiFileTransactionFile
+                {
+                    RelativePath = "dxgi.dll",
+                    ExpectedTargetIdentity = FileIdentity.Capture(a),
+                    OriginalState = OriginalFileState.DidNotExist
+                },
+                new MultiFileTransactionFile
+                {
+                    RelativePath = "d3d11.dll",
+                    ExpectedTargetIdentity = FileIdentity.Capture(b),
+                    OriginalState = OriginalFileState.Existing,
+                    BackupRelativePath = Path.GetRelativePath(storage.RootPath, bBackup),
+                    ExpectedOriginalSha256 = bValidSha
+                },
+                new MultiFileTransactionFile
+                {
+                    RelativePath = "dxvk.conf",
+                    ExpectedTargetIdentity = FileIdentity.Capture(c),
+                    OriginalState = OriginalFileState.Existing,
+                    BackupRelativePath = Path.GetRelativePath(storage.RootPath, cBackup),
+                    ExpectedOriginalSha256 = cExpectedOriginalSha
+                }
+            }
+        });
+
+        Assert.Equal(TransactionOutcome.SafeFailure, restoreResult.Outcome);
+        Assert.Equal("deployed-dxgi", File.ReadAllText(a));
+        Assert.Equal("deployed-d3d11", File.ReadAllText(b));
+        Assert.Equal("deployed-dxvk-conf", File.ReadAllText(c));
+        Assert.Equal("valid-original-d3d11", File.ReadAllText(bBackup));
+        Assert.Equal("corrupted-conf-backup", File.ReadAllText(cBackup));
+    }
+
     private static MultiFileTransactionRequest UpdateRequest(string root, params (string RelativePath, string? Target, string Source, OriginalFileState State, SafetyFileIdentity? ExpectedTarget)[] items)
         => new()
         {

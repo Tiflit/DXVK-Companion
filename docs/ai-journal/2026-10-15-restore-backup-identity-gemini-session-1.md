@@ -60,3 +60,28 @@ Investigate and implement a focused repair for original-backup identity verifica
 
 - Verification route: Cloud CI on GitHub Actions (`build-and-test`, `ai-scope-check`, `ai-pr-hygiene`, `ai-workflow-tests`).
 - Local host test execution: `NOT RUN (pending human authorization)`.
+
+---
+
+### 4. Session 2 Repairs
+
+**Review Feedback on Head `a4e1bf27f92ac0d2eae29557c1aa2a1184ae13a4`:**
+1. Complete DX11 release fixtures in modified-backup, missing-backup, missing/malformed-hash, and reload tests to supply both required DLLs (`d3d11.dll` and `dxgi.dll`) and assert installation succeeds.
+2. Update reload test to verify expected managed-file records (`d3d11.dll` and `dxgi.dll`) and retained metadata explicitly, replacing `Assert.Single`.
+3. Repair multi-file regression so restore inputs are explicitly ordered: an originally absent file that would be deleted, a file with a valid original backup, then a file with an invalid backup. Assert that all game-file bytes and existing backups remain unchanged after refusal.
+4. Include empty-string and 64-character non-hex hash cases alongside null and incorrect-length cases for complete missing/malformed-baseline coverage.
+
+**Changes Applied:**
+1. **`tests/DXVKCompanion.PhaseA.Tests/RestoreBackupIdentityVerificationTests.cs`**:
+   - Updated `Restore_BackupModifiedAfterInstallation_RefusesBeforeGameFileMutation`, `Restore_MissingBackup_RefusesSafely`, `Restore_MissingOrMalformedRecordedHash_RefusesSafely`, and `Restore_FailureStateAndManagementInfo_SurviveReloadingLibrary` to supply both `d3d11.dll` and `dxgi.dll` in the DX11 release directory, verifying successful initial installation before testing restore refusal.
+   - In `Restore_MissingOrMalformedRecordedHash_RefusesSafely`, added test cases covering `null`, `string.Empty`, whitespace, short length, 63-character, 65-character, 64-character non-hex (`new string('z', 64)`), and non-hex char in 64-length string. Verified that each case refuses restore, preserves game files, and records `AttentionRequired`.
+   - In `Restore_MultiFile_InvalidLaterBackup_LeavesEarlierFilesAndOriginallyAbsentFileUntouched`, explicitly ordered restore inputs:
+     1. Originally absent file that would be deleted (`dxgi.dll`, `OriginalState = Missing`)
+     2. File with valid original backup (`d3d11.dll`, `OriginalState = Existing`, backup intact, valid SHA256)
+     3. File with invalid backup (`dxvk.conf`, `OriginalState = Existing`, backup corrupted, SHA256 mismatch)
+     Asserted that all 3 game files on disk and both backup files remain untouched after refusal.
+   - In `Restore_FailureStateAndManagementInfo_SurviveReloadingLibrary`, asserted `reloadedInst.ManagedFiles.Count == 2`, with explicit assertions for `d3d11.dll` (`Existing`, valid backup path & SHA256) and `dxgi.dll` (`Missing`, null backup path).
+2. **`tests/DXVKCompanion.PhaseA.Tests/MultiFileTransactionEngineTests.cs`**:
+   - Added engine-level test `Restore_MultiFile_InvalidLaterBackup_RefusesBeforeAnyApply_PreservesGameFilesAndBackups` verifying that `MultiFileTransactionEngine.Execute` with `TransactionOperation.Restore` validates all backups and halts before applying any changes when a later file's backup hash does not match.
+3. **`tests/DXVKCompanion.PhaseA.Tests/SharedDirectoryCompatibilityTests.cs`**:
+   - In `SharedDirectory_Restore_SucceedsEvenWhenSiblingIncompatible`, populated `managedRecord.OriginalSha256` matching the test's mock backup to satisfy the original backup identity requirement during restore.

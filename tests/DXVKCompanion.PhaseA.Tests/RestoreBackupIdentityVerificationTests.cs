@@ -22,10 +22,12 @@ public sealed class RestoreBackupIdentityVerificationTests
         var dxvkArchDir = Path.Combine(sourceDir.RootPath, "2.5", "x64");
         Directory.CreateDirectory(dxvkArchDir);
         File.WriteAllText(Path.Combine(dxvkArchDir, "d3d11.dll"), "dxvk-2.5-d3d11-content");
+        File.WriteAllText(Path.Combine(dxvkArchDir, "dxgi.dll"), "dxvk-2.5-dxgi-content");
 
         var exePath = gameDir.CreateFile("Game.exe", "synthetic-binary");
         var originalContent = "original-native-d3d11-content";
         var d3d11Path = gameDir.CreateFile("d3d11.dll", originalContent);
+        var dxgiPath = Path.Combine(gameDir.RootPath, "dxgi.dll");
 
         var store = new GameLibraryStore(
             Path.Combine(storageDir.RootPath, "game-library.json"),
@@ -46,6 +48,8 @@ public sealed class RestoreBackupIdentityVerificationTests
         var installOk = await installer.ApplyToGameAsync(profile, release);
         Assert.True(installOk);
         Assert.Equal("dxvk-2.5-d3d11-content", File.ReadAllText(d3d11Path));
+        Assert.True(File.Exists(dxgiPath));
+        Assert.Equal("dxvk-2.5-dxgi-content", File.ReadAllText(dxgiPath));
 
         var installation = store.FindByInstallationPath(gameDir.RootPath);
         Assert.NotNull(installation);
@@ -62,8 +66,10 @@ public sealed class RestoreBackupIdentityVerificationTests
         var rollbackOk = await rollback.RestoreOriginalDllsAsync(profile);
         Assert.False(rollbackOk);
 
-        // Invariant: Game file was NOT modified/restored with corrupted content
+        // Invariant: Game files were NOT modified/restored with corrupted content
         Assert.Equal("dxvk-2.5-d3d11-content", File.ReadAllText(d3d11Path));
+        Assert.True(File.Exists(dxgiPath));
+        Assert.Equal("dxvk-2.5-dxgi-content", File.ReadAllText(dxgiPath));
         // Invariant: Corrupted backup was preserved
         Assert.Equal("corrupted-or-modified-backup-content", File.ReadAllText(backupPath));
 
@@ -86,9 +92,11 @@ public sealed class RestoreBackupIdentityVerificationTests
         var dxvkArchDir = Path.Combine(sourceDir.RootPath, "2.5", "x64");
         Directory.CreateDirectory(dxvkArchDir);
         File.WriteAllText(Path.Combine(dxvkArchDir, "d3d11.dll"), "dxvk-2.5-d3d11");
+        File.WriteAllText(Path.Combine(dxvkArchDir, "dxgi.dll"), "dxvk-2.5-dxgi");
 
         var exePath = gameDir.CreateFile("Game.exe", "synthetic-binary");
         var d3d11Path = gameDir.CreateFile("d3d11.dll", "original-d3d11");
+        var dxgiPath = Path.Combine(gameDir.RootPath, "dxgi.dll");
 
         var store = new GameLibraryStore(
             Path.Combine(storageDir.RootPath, "game-library.json"),
@@ -103,6 +111,9 @@ public sealed class RestoreBackupIdentityVerificationTests
 
         var installOk = await installer.ApplyToGameAsync(profile, release);
         Assert.True(installOk);
+        Assert.Equal("dxvk-2.5-d3d11", File.ReadAllText(d3d11Path));
+        Assert.True(File.Exists(dxgiPath));
+        Assert.Equal("dxvk-2.5-dxgi", File.ReadAllText(dxgiPath));
 
         var installation = store.FindByInstallationPath(gameDir.RootPath);
         var record = installation!.FindManagedFile("d3d11.dll");
@@ -113,6 +124,8 @@ public sealed class RestoreBackupIdentityVerificationTests
         var rollbackOk = await rollback.RestoreOriginalDllsAsync(profile);
         Assert.False(rollbackOk);
         Assert.Equal("dxvk-2.5-d3d11", File.ReadAllText(d3d11Path));
+        Assert.True(File.Exists(dxgiPath));
+        Assert.Equal("dxvk-2.5-dxgi", File.ReadAllText(dxgiPath));
 
         var currentInst = store.FindByInstallationPath(gameDir.RootPath);
         Assert.Equal(RestorationState.AttentionRequired, currentInst!.RestorationState);
@@ -131,9 +144,11 @@ public sealed class RestoreBackupIdentityVerificationTests
         var dxvkArchDir = Path.Combine(sourceDir.RootPath, "2.5", "x64");
         Directory.CreateDirectory(dxvkArchDir);
         File.WriteAllText(Path.Combine(dxvkArchDir, "d3d11.dll"), "dxvk-2.5-d3d11");
+        File.WriteAllText(Path.Combine(dxvkArchDir, "dxgi.dll"), "dxvk-2.5-dxgi");
 
         var exePath = gameDir.CreateFile("Game.exe", "synthetic-binary");
         var d3d11Path = gameDir.CreateFile("d3d11.dll", "original-d3d11");
+        var dxgiPath = Path.Combine(gameDir.RootPath, "dxgi.dll");
 
         var store = new GameLibraryStore(
             Path.Combine(storageDir.RootPath, "game-library.json"),
@@ -146,35 +161,51 @@ public sealed class RestoreBackupIdentityVerificationTests
         var profile = new GameProfile(exePath) { Api = GraphicsApi.DX11, Architecture = "x64" };
         var release = new ReleaseInfo { Version = "2.5", DownloadUrl = "" };
 
-        // Test with missing hash (null/empty)
         var installOk = await installer.ApplyToGameAsync(profile, release);
         Assert.True(installOk);
+        Assert.Equal("dxvk-2.5-d3d11", File.ReadAllText(d3d11Path));
+        Assert.True(File.Exists(dxgiPath));
+        Assert.Equal("dxvk-2.5-dxgi", File.ReadAllText(dxgiPath));
 
         var installation = store.FindByInstallationPath(gameDir.RootPath);
+        Assert.NotNull(installation);
         var record = installation!.FindManagedFile("d3d11.dll");
-        record!.OriginalSha256 = null; // simulate missing hash baseline
-        store.Save(installation);
+        Assert.NotNull(record);
 
-        var rollbackOkNull = await rollback.RestoreOriginalDllsAsync(profile);
-        Assert.False(rollbackOkNull);
-        Assert.Equal("dxvk-2.5-d3d11", File.ReadAllText(d3d11Path));
+        // Test with missing hash (null, empty-string, whitespace) and malformed hash (incorrect length, 64-char non-hex)
+        var malformedTestCases = new (string? Hash, string Description)[]
+        {
+            (null, "null baseline hash"),
+            (string.Empty, "empty-string baseline hash"),
+            ("   ", "whitespace-only baseline hash"),
+            ("not-64-hex", "short non-64 length baseline hash"),
+            (new string('a', 63), "63-character baseline hash"),
+            (new string('a', 65), "65-character baseline hash"),
+            (new string('z', 64), "64-character non-hex baseline hash"),
+            ("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdeg", "64-character containing non-hex character")
+        };
 
-        var instAfterNull = store.FindByInstallationPath(gameDir.RootPath);
-        Assert.Equal(RestorationState.AttentionRequired, instAfterNull!.RestorationState);
-        Assert.Contains("missing or malformed", instAfterNull.LastRefusalReason, StringComparison.OrdinalIgnoreCase);
+        foreach (var (testHash, description) in malformedTestCases)
+        {
+            record!.OriginalSha256 = testHash;
+            store.Save(installation);
 
-        // Test with malformed hash (invalid hex/length)
-        record.OriginalSha256 = "invalid-not-64-hex";
-        store.Save(installation);
+            var rollbackOk = await rollback.RestoreOriginalDllsAsync(profile);
+            Assert.False(rollbackOk, $"Expected restore to refuse for {description}");
 
-        var rollbackOkMalformed = await rollback.RestoreOriginalDllsAsync(profile);
-        Assert.False(rollbackOkMalformed);
-        Assert.Equal("dxvk-2.5-d3d11", File.ReadAllText(d3d11Path));
+            // Invariant: Game files remain untouched
+            Assert.Equal("dxvk-2.5-d3d11", File.ReadAllText(d3d11Path));
+            Assert.True(File.Exists(dxgiPath));
+            Assert.Equal("dxvk-2.5-dxgi", File.ReadAllText(dxgiPath));
 
-        var instAfterMalformed = store.FindByInstallationPath(gameDir.RootPath);
-        Assert.Equal(RestorationState.AttentionRequired, instAfterMalformed!.RestorationState);
-        Assert.Contains("missing or malformed", instAfterMalformed.LastRefusalReason, StringComparison.OrdinalIgnoreCase);
-        Assert.Equal("2.5", instAfterMalformed.ManagedDxvkVersion);
+            // Invariant: Attention required and failure recorded
+            var current = store.FindByInstallationPath(gameDir.RootPath);
+            Assert.NotNull(current);
+            Assert.Equal(RestorationState.AttentionRequired, current!.RestorationState);
+            Assert.NotNull(current.LastRefusalReason);
+            Assert.Contains("missing or malformed", current.LastRefusalReason, StringComparison.OrdinalIgnoreCase);
+            Assert.Equal("2.5", current.ManagedDxvkVersion);
+        }
     }
 
     [Fact]
@@ -182,62 +213,116 @@ public sealed class RestoreBackupIdentityVerificationTests
     {
         using var gameDir = new SyntheticTestDirectory();
         using var storageDir = new SyntheticTestDirectory();
-        using var sourceDir = new SyntheticTestDirectory();
 
-        var dxvkArchDir = Path.Combine(sourceDir.RootPath, "2.5", "x64");
-        Directory.CreateDirectory(dxvkArchDir);
-        File.WriteAllText(Path.Combine(dxvkArchDir, "d3d11.dll"), "dxvk-2.5-d3d11");
-        File.WriteAllText(Path.Combine(dxvkArchDir, "dxgi.dll"), "dxvk-2.5-dxgi");
+        var libraryJsonPath = Path.Combine(storageDir.RootPath, "game-library.json");
+        var backupsDir = Path.Combine(storageDir.RootPath, "backups");
 
-        var exePath = gameDir.CreateFile("Game.exe", "synthetic-binary");
-        // Game originally has native d3d11.dll, but dxgi.dll was absent
-        var d3d11Path = gameDir.CreateFile("d3d11.dll", "original-native-d3d11");
-        string dxgiPath = Path.Combine(gameDir.RootPath, "dxgi.dll");
-
-        var store = new GameLibraryStore(
-            Path.Combine(storageDir.RootPath, "game-library.json"),
-            Path.Combine(storageDir.RootPath, "backups"));
-        var engine = new MultiFileTransactionEngine(Path.Combine(storageDir.RootPath, "backups"));
-        using var http = new HttpClient();
-        var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
+        var store = new GameLibraryStore(libraryJsonPath, backupsDir);
+        var engine = new MultiFileTransactionEngine(backupsDir);
         var rollback = new DxvkRollback(engine, store);
 
+        var exePath = gameDir.CreateFile("Game.exe", "synthetic-binary");
         var profile = new GameProfile(exePath) { Api = GraphicsApi.DX11, Architecture = "x64" };
-        var release = new ReleaseInfo { Version = "2.5", DownloadUrl = "" };
 
-        var installOk = await installer.ApplyToGameAsync(profile, release);
-        Assert.True(installOk);
+        // 1. File 1: An originally absent file that was deployed and would be deleted during restore
+        var dxgiDeployedBytes = "deployed-dxgi-content"u8.ToArray();
+        var dxgiPath = gameDir.CreateFile("dxgi.dll", dxgiDeployedBytes);
 
-        // Verify deployed state: dxgi.dll was deployed (originally absent), d3d11.dll deployed
-        Assert.True(File.Exists(dxgiPath));
-        Assert.Equal("dxvk-2.5-dxgi", File.ReadAllText(dxgiPath));
-        Assert.Equal("dxvk-2.5-d3d11", File.ReadAllText(d3d11Path));
+        // 2. File 2: A file with a valid original backup
+        var d3d11OriginalBytes = "original-native-d3d11-content"u8.ToArray();
+        var d3d11DeployedBytes = "deployed-dxvk-d3d11-content"u8.ToArray();
+        var d3d11Path = gameDir.CreateFile("d3d11.dll", d3d11DeployedBytes);
+        var d3d11BackupRel = Path.Combine("Game", "d3d11.dll.bak");
+        var d3d11BackupFull = Path.Combine(backupsDir, d3d11BackupRel);
+        Directory.CreateDirectory(Path.GetDirectoryName(d3d11BackupFull)!);
+        File.WriteAllBytes(d3d11BackupFull, d3d11OriginalBytes);
+        var d3d11ValidSha = FileIdentity.Capture(d3d11BackupFull).Sha256;
 
-        var installation = store.FindByInstallationPath(gameDir.RootPath);
-        Assert.NotNull(installation);
-        var d3d11Record = installation!.FindManagedFile("d3d11.dll");
-        var dxgiRecord = installation.FindManagedFile("dxgi.dll");
-        Assert.Equal(FileOriginalState.Existing, d3d11Record!.OriginalState);
-        Assert.Equal(FileOriginalState.Missing, dxgiRecord!.OriginalState);
+        // 3. File 3: A later file with an invalid backup (corrupted on disk)
+        var confExpectedOriginalBytes = "expected-original-conf-content"u8.ToArray();
+        var confDeployedBytes = "deployed-dxvk-conf-content"u8.ToArray();
+        var confCorruptedBackupBytes = "corrupted-conf-backup-content"u8.ToArray();
+        var confPath = gameDir.CreateFile("dxvk.conf", confDeployedBytes);
+        var confBackupRel = Path.Combine("Game", "dxvk.conf.bak");
+        var confBackupFull = Path.Combine(backupsDir, confBackupRel);
+        File.WriteAllBytes(confBackupFull, confCorruptedBackupBytes);
 
-        // Corrupt the backup of d3d11.dll
-        var d3d11Backup = Path.Combine(storageDir.RootPath, "backups", d3d11Record.BackupRelativePath!);
-        File.WriteAllText(d3d11Backup, "corrupted-d3d11-backup");
+        var tempRefFile = gameDir.CreateFile("temp_conf_ref", confExpectedOriginalBytes);
+        var confExpectedSha = FileIdentity.Capture(tempRefFile).Sha256;
+        File.Delete(tempRefFile);
+
+        // Set up the GameInstallation in store
+        var installation = store.GetOrCreateInstallation(gameDir.RootPath, "Game");
+        installation.RestorationState = RestorationState.Managed;
+        installation.ManagedDxvkVersion = "2.5";
+        installation.ManagedDxvkArchitecture = "x64";
+        var exeRecord = installation.GetOrAddExecutable("Game.exe", "Game.exe");
+        exeRecord.LastKnownApi = GraphicsApi.DX11;
+        exeRecord.LastKnownArchitecture = "x64";
+
+        // Restore inputs are explicitly ordered:
+        // 1. An originally absent file that would be deleted (dxgi.dll)
+        // 2. A file with a valid original backup (d3d11.dll)
+        // 3. A file with an invalid backup (dxvk.conf)
+        installation.ManagedFiles.Clear();
+        installation.ManagedFiles.Add(new ManagedFileRecord
+        {
+            RelativePath = "dxgi.dll",
+            OriginalState = FileOriginalState.Missing,
+            BackupRelativePath = null,
+            OriginalSha256 = null,
+            ManagedDxvkVersion = "2.5"
+        });
+        installation.ManagedFiles.Add(new ManagedFileRecord
+        {
+            RelativePath = "d3d11.dll",
+            OriginalState = FileOriginalState.Existing,
+            BackupRelativePath = d3d11BackupRel,
+            OriginalSha256 = d3d11ValidSha,
+            ManagedDxvkVersion = "2.5"
+        });
+        installation.ManagedFiles.Add(new ManagedFileRecord
+        {
+            RelativePath = "dxvk.conf",
+            OriginalState = FileOriginalState.Existing,
+            BackupRelativePath = confBackupRel,
+            OriginalSha256 = confExpectedSha,
+            ManagedDxvkVersion = "2.5"
+        });
+        store.Save(installation);
+
+        // Capture exact state before restore attempt
+        var dxgiBeforeBytes = File.ReadAllBytes(dxgiPath);
+        var d3d11BeforeBytes = File.ReadAllBytes(d3d11Path);
+        var confBeforeBytes = File.ReadAllBytes(confPath);
+        var d3d11BackupBeforeBytes = File.ReadAllBytes(d3d11BackupFull);
+        var confBackupBeforeBytes = File.ReadAllBytes(confBackupFull);
 
         // Attempt restore
         var rollbackOk = await rollback.RestoreOriginalDllsAsync(profile);
         Assert.False(rollbackOk);
 
-        // Invariant: dxgi.dll (originally absent, which would otherwise be deleted during restore) remains untouched!
+        // Invariant: ALL game-file bytes remain unchanged after refusal
+        // dxgi.dll (originally absent, which would otherwise be deleted during restore) remains untouched
         Assert.True(File.Exists(dxgiPath));
-        Assert.Equal("dxvk-2.5-dxgi", File.ReadAllText(dxgiPath));
+        Assert.Equal(dxgiBeforeBytes, File.ReadAllBytes(dxgiPath));
+        // d3d11.dll (valid backup) remains untouched
+        Assert.True(File.Exists(d3d11Path));
+        Assert.Equal(d3d11BeforeBytes, File.ReadAllBytes(d3d11Path));
+        // dxvk.conf (invalid backup) remains untouched
+        Assert.True(File.Exists(confPath));
+        Assert.Equal(confBeforeBytes, File.ReadAllBytes(confPath));
 
-        // Invariant: d3d11.dll remains untouched
-        Assert.Equal("dxvk-2.5-d3d11", File.ReadAllText(d3d11Path));
+        // Invariant: ALL existing backups remain unchanged after refusal
+        Assert.Equal(d3d11BackupBeforeBytes, File.ReadAllBytes(d3d11BackupFull));
+        Assert.Equal(confBackupBeforeBytes, File.ReadAllBytes(confBackupFull));
 
         // Invariant: state is AttentionRequired and management info retained
         var instAfter = store.FindByInstallationPath(gameDir.RootPath);
+        Assert.NotNull(instAfter);
         Assert.Equal(RestorationState.AttentionRequired, instAfter!.RestorationState);
+        Assert.NotNull(instAfter.LastRefusalReason);
+        Assert.Contains("Original backup hash mismatch", instAfter.LastRefusalReason);
         Assert.Equal("2.5", instAfter.ManagedDxvkVersion);
     }
 
@@ -303,6 +388,7 @@ public sealed class RestoreBackupIdentityVerificationTests
         var dxvkArchDir = Path.Combine(sourceDir.RootPath, "2.5", "x64");
         Directory.CreateDirectory(dxvkArchDir);
         File.WriteAllText(Path.Combine(dxvkArchDir, "d3d11.dll"), "dxvk-2.5-d3d11");
+        File.WriteAllText(Path.Combine(dxvkArchDir, "dxgi.dll"), "dxvk-2.5-dxgi");
 
         var exePath = gameDir.CreateFile("Game.exe", "synthetic-binary");
         gameDir.CreateFile("d3d11.dll", "original-d3d11");
@@ -337,6 +423,21 @@ public sealed class RestoreBackupIdentityVerificationTests
         Assert.Contains("Original backup hash mismatch", reloadedInst.LastRefusalReason);
         Assert.Equal("2.5", reloadedInst.ManagedDxvkVersion);
         Assert.Equal("x64", reloadedInst.ManagedDxvkArchitecture);
-        Assert.Single(reloadedInst.ManagedFiles);
+
+        // Explicitly verify expected managed-file records and retained metadata
+        Assert.Equal(2, reloadedInst.ManagedFiles.Count);
+
+        var reloadedD3D11 = reloadedInst.FindManagedFile("d3d11.dll");
+        Assert.NotNull(reloadedD3D11);
+        Assert.Equal(FileOriginalState.Existing, reloadedD3D11!.OriginalState);
+        Assert.NotNull(reloadedD3D11.BackupRelativePath);
+        Assert.NotNull(reloadedD3D11.OriginalSha256);
+        Assert.Equal("2.5", reloadedD3D11.ManagedDxvkVersion);
+
+        var reloadedDxgi = reloadedInst.FindManagedFile("dxgi.dll");
+        Assert.NotNull(reloadedDxgi);
+        Assert.Equal(FileOriginalState.Missing, reloadedDxgi!.OriginalState);
+        Assert.Null(reloadedDxgi.BackupRelativePath);
+        Assert.Equal("2.5", reloadedDxgi.ManagedDxvkVersion);
     }
 }
