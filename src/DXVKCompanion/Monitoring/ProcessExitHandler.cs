@@ -9,7 +9,9 @@ namespace DXVKCompanion.Monitoring
         // act on it without holding a live Process reference around.
         public event Action<string>? ProcessExited;
 
-        public virtual void Attach(Process process)
+        public void Attach(Process process) => AttachCore(process);
+
+        internal virtual void AttachCore(Process process)
         {
             string? exePath = null;
             try
@@ -27,7 +29,7 @@ namespace DXVKCompanion.Monitoring
                 process.Exited += (_, _) =>
                 {
                     if (exePath != null)
-                        ProcessExited?.Invoke(exePath);
+                        RaiseProcessExited(exePath);
 
                     process.Dispose();
                 };
@@ -36,6 +38,11 @@ namespace DXVKCompanion.Monitoring
             {
                 // Ignore failures (e.g. process already exited before we could subscribe)
             }
+        }
+
+        internal void RaiseProcessExited(string exePath)
+        {
+            ProcessExited?.Invoke(exePath);
         }
     }
 }

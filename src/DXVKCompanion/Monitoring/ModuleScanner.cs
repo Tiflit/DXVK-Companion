@@ -10,7 +10,7 @@ namespace DXVKCompanion.Monitoring
     /// that each independently re-enumerated process.Modules (a real syscall, not a free
     /// property read) whenever ApiClassifier called more than one of them per process.
     /// </summary>
-    public class ModuleScanResult
+    internal class ModuleScanResult
     {
         public HashSet<string> Modules { get; }
         public bool IsComplete { get; }
@@ -43,17 +43,41 @@ namespace DXVKCompanion.Monitoring
             "dxgi.dll", "vulkan-1.dll", "opengl32.dll", "ddraw.dll", "dgvoodoo.dll"
         };
 
-        public virtual ModuleScanResult ScanLoadedGraphicsModules(Process process)
+        [ThreadStatic]
+        private static bool _inOverriddenGetModules;
+
+        internal virtual ModuleScanResult ScanLoadedGraphicsModules(Process process)
         {
             // If a derived type overrode GetLoadedGraphicsModules (such as existing test fakes),
-            // defer to GetLoadedGraphicsModules to preserve existing test seams.
-            var method = GetType().GetMethod(nameof(GetLoadedGraphicsModules), new[] { typeof(Process) });
-            if (method != null && method.DeclaringType != typeof(ModuleScanner))
+            // call GetLoadedGraphicsModules safely without recursion.
+            if (!_inOverriddenGetModules && GetType() != typeof(ModuleScanner))
             {
-                var overriddenModules = GetLoadedGraphicsModules(process);
-                return ModuleScanResult.Complete(overriddenModules);
+                var method = GetType().GetMethod(nameof(GetLoadedGraphicsModules), new[] { typeof(Process) });
+                if (method != null && method.DeclaringType != typeof(ModuleScanner))
+                {
+                    try
+                    {
+                        _inOverriddenGetModules = true;
+                        var overriddenModules = GetLoadedGraphicsModules(process);
+                        return ModuleScanResult.Complete(overriddenModules);
+                    }
+                    finally
+                    {
+                        _inOverriddenGetModules = false;
+                    }
+                }
             }
 
+            return ScanCore(process);
+        }
+
+        public virtual HashSet<string> GetLoadedGraphicsModules(Process process)
+        {
+            return ScanCore(process).Modules;
+        }
+
+        private ModuleScanResult ScanCore(Process process)
+        {
             var found = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
             try
@@ -74,11 +98,6 @@ namespace DXVKCompanion.Monitoring
                 // Access denied or enumeration failure — return whatever was found before the failure, marked incomplete
                 return ModuleScanResult.Incomplete(found, ex.GetType().Name);
             }
-        }
-
-        public virtual HashSet<string> GetLoadedGraphicsModules(Process process)
-        {
-            return ScanLoadedGraphicsModules(process).Modules;
         }
 
         // Games loading more than one graphics API at once is unusual and can indicate a

@@ -31,7 +31,6 @@ namespace DXVKCompanion.UI
         private readonly SynchronizationContext _syncContext;
 
         private string? _pendingUpdateUrl;
-        private int _lastHandledPid = -1;
 
         public TrayApp(
             ProcessMonitor monitor,
@@ -83,20 +82,8 @@ namespace DXVKCompanion.UI
             };
 
             _monitor.OnQualifiedGameDetected += (process, snapshot) => HandleGameDetected(process, snapshot);
-            _monitor.OnGameDetected += process =>
-            {
-                if (_monitor.TryGetQualifiedSnapshot(process.Id, out var snapshot))
-                {
-                    HandleGameDetected(process, snapshot);
-                }
-                else
-                {
-                    HandleGameDetected(process, null);
-                }
-            };
             _monitor.OnGameExited += async exePath =>
             {
-                _lastHandledPid = -1;
                 _syncContext.Post(_ => _menu.ClearActiveGame(), null);
                 bool applied = await _dxvk.ApplyPendingAsync(exePath);
                 if (applied)
@@ -174,105 +161,100 @@ namespace DXVKCompanion.UI
             }
         }
 
-        private async void HandleGameDetected(Process process, DetectionSnapshot? snapshot = null)
+        internal static async Task<bool> ProcessGameAdmissionAsync(
+            DetectionSnapshot snapshot,
+            Process? process,
+            ProfileStore profiles,
+            GameLibraryStore gameLibraryStore,
+            DxvkManager dxvk,
+            ManagedFileInspector inspector,
+            SettingsStore settings,
+            Action<Process?, GameProfile, string>? onNotification = null)
         {
-            if (process.Id == _lastHandledPid) return;
-
-            string? exePath;
-            try
+            if (snapshot == null || !ProcessQualification.IsRecognizedGraphicsApi(snapshot.Classification.PrimaryApi))
             {
-                exePath = snapshot?.ExecutablePath ?? process.MainModule?.FileName;
-                if (string.IsNullOrEmpty(exePath)) return;
-            }
-            catch (Exception ex)
-            {
-                Logger.Log($"TrayApp: failed to read MainModule.FileName: {ex.GetType().Name} - {ex.Message}");
-                return;
+                return false;
             }
 
+            string exePath = snapshot.ExecutablePath;
+            if (string.IsNullOrEmpty(exePath)) return false;
+
+            var profile = profiles.GetOrCreate(exePath);
+            profile.Api = snapshot.Classification.PrimaryApi;
+            profile.Architecture = snapshot.Classification.Architecture;
+
+            string gameDir = snapshot.InstallationRoot;
+            var antiCheatAssessment = snapshot.AntiCheat;
+            bool antiCheat = antiCheatAssessment.Risk != AntiCheatRisk.None;
+
+            if (!string.IsNullOrWhiteSpace(gameDir))
+            {
+                gameLibraryStore.RecordDetectionSnapshot(snapshot);
+            }
+
+            var latest = await dxvk.GetLatestReleaseAsync();
+            string localVersion = string.IsNullOrWhiteSpace(profile.DxvkVersion) ? "None" : profile.DxvkVersion;
+
+            var installation = gameLibraryStore.FindInstallationForExecutable(exePath)
+                ?? (!string.IsNullOrWhiteSpace(gameDir) ? gameLibraryStore.FindByInstallationPath(gameDir) : null);
+
+            bool dxvkCompatible = DxvkCompatibility.IsInstallationSupported(installation, profile.Api, profile.ExeName, out var refusalReason);
+            bool updateAvailable = latest != null && profile.DxvkEnabled && dxvk.UpdateAvailable(profile, latest);
+
+            bool externalChange = false;
+            if (installation != null)
+            {
+                externalChange = inspector.InspectInstallation(installation);
+            }
+
+            var effectivePolicy = installation?.ManagementPolicy ?? ManagementPolicy.UseGlobal();
+            bool isAutomated = effectivePolicy.IsAutomated(settings.GlobalPolicy);
+            bool canAutoDeploy = dxvk.CanAutomaticallyDeploy(installation);
+
+            if (isAutomated && canAutoDeploy &&
+                dxvkCompatible && !antiCheat && !profile.DxvkEnabled &&
+                string.IsNullOrWhiteSpace(profile.DxvkVersion) && process != null)
+            {
+                await dxvk.RequestEnableAsync(profile, process);
+            }
+            else if (isAutomated && canAutoDeploy && dxvkCompatible && externalChange && !antiCheat && profile.DxvkEnabled && process != null)
+            {
+                await dxvk.RequestReapplyAsync(profile, process, updateBaseline: true);
+            }
+
+            profiles.Save(profile);
+
+            string message = BuildNotificationMessage(process, profile, antiCheat, latest, localVersion, dxvkCompatible, refusalReason, updateAvailable, externalChange);
+            onNotification?.Invoke(process, profile, message);
+
+            return true;
+        }
+
+        private async void HandleGameDetected(Process process, DetectionSnapshot snapshot)
+        {
             try
             {
-                if (snapshot == null)
-                {
-                    _monitor.TryGetQualifiedSnapshot(process.Id, out snapshot);
-                }
-
-                var classification = snapshot?.Classification ?? _classifier.ClassifyDetailed(process, exePath);
-                if (!ProcessQualification.IsRecognizedGraphicsApi(classification.PrimaryApi))
-                {
-                    return;
-                }
-
-                _lastHandledPid = process.Id;
-
-                var profile = _profiles.GetOrCreate(exePath);
-                profile.Api = classification.PrimaryApi;
-                profile.Architecture = classification.Architecture;
-
-                string gameDir = snapshot?.InstallationRoot ?? (Path.GetDirectoryName(exePath) ?? string.Empty);
-                var antiCheatAssessment = snapshot?.AntiCheat ?? _detector.AssessAntiCheatRisk(process, gameDir);
-                bool antiCheat = antiCheatAssessment.Risk != AntiCheatRisk.None;
-
-                // Record detection snapshot into modern GameLibraryStore
-                if (!string.IsNullOrWhiteSpace(gameDir))
-                {
-                    string relExe = snapshot?.ExecutableRelativePath ?? Path.GetRelativePath(gameDir, exePath);
-                    var recordSnapshot = snapshot ?? new DetectionSnapshot
+                await ProcessGameAdmissionAsync(
+                    snapshot,
+                    process,
+                    _profiles,
+                    _gameLibraryStore,
+                    _dxvk,
+                    _inspector,
+                    _settings,
+                    (proc, prof, message) =>
                     {
-                        ProcessId = process.Id,
-                        ProcessName = process.ProcessName,
-                        ExecutablePath = exePath,
-                        InstallationRoot = gameDir,
-                        ExecutableRelativePath = relExe,
-                        Classification = classification,
-                        AntiCheat = antiCheatAssessment,
-                        TimestampUtc = DateTime.UtcNow
-                    };
-                    _gameLibraryStore.RecordDetectionSnapshot(recordSnapshot);
-                }
-
-                var latest = await _dxvk.GetLatestReleaseAsync();
-
-                string localVersion = string.IsNullOrWhiteSpace(profile.DxvkVersion) ? "None" : profile.DxvkVersion;
-
-                var installation = _gameLibraryStore.FindInstallationForExecutable(exePath)
-                    ?? (!string.IsNullOrWhiteSpace(gameDir) ? _gameLibraryStore.FindByInstallationPath(gameDir) : null);
-
-                bool dxvkCompatible = DxvkCompatibility.IsInstallationSupported(installation, profile.Api, profile.ExeName, out var refusalReason);
-
-                bool updateAvailable = latest != null && profile.DxvkEnabled && _dxvk.UpdateAvailable(profile, latest);
-
-                bool externalChange = false;
-                if (installation != null)
-                {
-                    externalChange = _inspector.InspectInstallation(installation);
-                }
-
-                var effectivePolicy = installation?.ManagementPolicy ?? ManagementPolicy.UseGlobal();
-                bool isAutomated = effectivePolicy.IsAutomated(_settings.GlobalPolicy);
-                bool canAutoDeploy = _dxvk.CanAutomaticallyDeploy(installation);
-
-                if (isAutomated && canAutoDeploy &&
-                    dxvkCompatible && !antiCheat && !profile.DxvkEnabled &&
-                    string.IsNullOrWhiteSpace(profile.DxvkVersion))
-                {
-                    await _dxvk.RequestEnableAsync(profile, process);
-                }
-                else if (isAutomated && canAutoDeploy && dxvkCompatible && externalChange && !antiCheat && profile.DxvkEnabled)
-                {
-                    await _dxvk.RequestReapplyAsync(profile, process, updateBaseline: true);
-                }
-
-                _profiles.Save(profile);
-
-                string message = BuildNotificationMessage(process, profile, antiCheat, latest, localVersion, dxvkCompatible, refusalReason, updateAvailable, externalChange);
-
-                _syncContext.Post(_ =>
-                {
-                    _trayIcon.ShowBalloonTip(5000, "Game Detected", message,
-                        antiCheat || externalChange ? ToolTipIcon.Warning : ToolTipIcon.Info);
-                    _menu.SetActiveGame(process, profile);
-                }, null);
+                        bool antiCheat = snapshot.AntiCheat.Risk != AntiCheatRisk.None;
+                        _syncContext.Post(_ =>
+                        {
+                            _trayIcon.ShowBalloonTip(5000, "Game Detected", message,
+                                antiCheat ? ToolTipIcon.Warning : ToolTipIcon.Info);
+                            if (proc != null)
+                            {
+                                _menu.SetActiveGame(proc, prof);
+                            }
+                        }, null);
+                    });
             }
             catch (Exception ex)
             {
@@ -280,11 +262,12 @@ namespace DXVKCompanion.UI
             }
         }
 
-        private string BuildNotificationMessage(
-            Process process, GameProfile profile, bool antiCheat, ReleaseInfo? latest,
+        internal static string BuildNotificationMessage(
+            Process? process, GameProfile profile, bool antiCheat, ReleaseInfo? latest,
             string localVersion, bool dxvkCompatible, string? refusalReason, bool updateAvailable, bool externalChange)
         {
-            var msg = $"{process.ProcessName} is running.\n" +
+            string procName = process?.ProcessName ?? Path.GetFileNameWithoutExtension(profile.ExePath);
+            var msg = $"{procName} is running.\n" +
                       $"API: {profile.Api} ({profile.Architecture})\n" +
                       $"DXVK enabled: {profile.DxvkEnabled}\n" +
                       $"Local DXVK version: {localVersion}\n";

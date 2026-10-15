@@ -3,7 +3,7 @@ using DXVKCompanion.Models;
 
 namespace DXVKCompanion.Monitoring
 {
-    public static class ProcessQualification
+    internal static class ProcessQualification
     {
         public static readonly int[] ScheduledOffsetsSeconds = { 0, 2, 4, 6, 8, 10, 20, 30, 44, 60, 90, 120 };
         public const int MaxAssessments = 12;

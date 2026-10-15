@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using DXVKCompanion.Models;
 using DXVKCompanion.Monitoring;
+using DXVKCompanion.Utils;
 using Xunit;
 
 namespace DXVKCompanion.PhaseATests;
@@ -21,6 +22,16 @@ public sealed class ProcessQualificationTests
         public override HashSet<string> GetLoadedGraphicsModules(Process process) => _modules;
     }
 
+    private sealed class DelegatingModuleScanner : ModuleScanner
+    {
+        public override HashSet<string> GetLoadedGraphicsModules(Process process)
+        {
+            var baseMods = base.GetLoadedGraphicsModules(process);
+            baseMods.Add("d3d11.dll");
+            return baseMods;
+        }
+    }
+
     private sealed class DirectResultModuleScanner : ModuleScanner
     {
         private readonly ModuleScanResult _result;
@@ -30,7 +41,7 @@ public sealed class ProcessQualificationTests
             _result = result;
         }
 
-        public override ModuleScanResult ScanLoadedGraphicsModules(Process process) => _result;
+        internal override ModuleScanResult ScanLoadedGraphicsModules(Process process) => _result;
     }
 
     private sealed class FakePeParser : PeParser
@@ -38,9 +49,9 @@ public sealed class ProcessQualificationTests
         private readonly IEnumerable<string> _imports;
         private readonly string _arch;
 
-        public FakePeParser(IEnumerable<string> imports, string arch = "x64")
+        public FakePeParser(IEnumerable<string>? imports = null, string arch = "x64")
         {
-            _imports = imports;
+            _imports = imports ?? Array.Empty<string>();
             _arch = arch;
         }
 
@@ -49,9 +60,9 @@ public sealed class ProcessQualificationTests
     }
 
     [Fact]
-    public void ModuleScanner_WhenOverridden_DelegatesToOverriddenMethod()
+    public void ModuleScanner_WhenOverridden_DelegatesWithoutRecursion()
     {
-        var scanner = new OverriddenFakeModuleScanner("d3d11.dll");
+        var scanner = new DelegatingModuleScanner();
         using var proc = Process.GetCurrentProcess();
 
         var result = scanner.ScanLoadedGraphicsModules(proc);
@@ -62,11 +73,25 @@ public sealed class ProcessQualificationTests
     }
 
     [Fact]
+    public void ModuleScanner_WhenOverriddenDirectly_ReturnsCompleteOverriddenModules()
+    {
+        var scanner = new OverriddenFakeModuleScanner("d3d11.dll", "dxgi.dll");
+        using var proc = Process.GetCurrentProcess();
+
+        var result = scanner.ScanLoadedGraphicsModules(proc);
+
+        Assert.True(result.IsComplete);
+        Assert.False(result.HasFailed);
+        Assert.Contains("d3d11.dll", result.Modules);
+        Assert.Contains("dxgi.dll", result.Modules);
+    }
+
+    [Fact]
     public void ApiClassifier_RuntimeComplete_NoGraphicsModules_AndNoStaticImports_ReturnsUnknownWithEvidenceSourceNone()
     {
         var scanResult = ModuleScanResult.Complete(new HashSet<string>());
         var scanner = new DirectResultModuleScanner(scanResult);
-        var parser = new FakePeParser(Array.Empty<string>());
+        var parser = new FakePeParser();
         var classifier = new ApiClassifier(scanner, parser);
 
         using var proc = Process.GetCurrentProcess();
@@ -82,7 +107,7 @@ public sealed class ProcessQualificationTests
     {
         var scanResult = ModuleScanResult.Incomplete(new HashSet<string>(), "Win32Exception");
         var scanner = new DirectResultModuleScanner(scanResult);
-        var parser = new FakePeParser(Array.Empty<string>());
+        var parser = new FakePeParser();
         var classifier = new ApiClassifier(scanner, parser);
 
         using var proc = Process.GetCurrentProcess();
@@ -91,12 +116,13 @@ public sealed class ProcessQualificationTests
         Assert.Equal(GraphicsApi.Unknown, result.PrimaryApi);
         Assert.Equal(ApiDetectionConfidence.Unknown, result.Confidence);
         Assert.Equal("RuntimeIncomplete", result.EvidenceSource);
+        Assert.Contains(result.Evidence, e => e.Contains("Win32Exception"));
     }
 
     [Fact]
-    public void ApiClassifier_RuntimeIncomplete_ScanFailed_WithStaticImports_ReturnsStaticPEImportsWithMediumConfidence()
+    public void ApiClassifier_RuntimeIncomplete_ScanFailed_WithStaticImports_ReturnsStaticPEImportsWithMediumConfidence_AndCarriesIncompleteNotice()
     {
-        var scanResult = ModuleScanResult.Incomplete(new HashSet<string>(), "Win32Exception");
+        var scanResult = ModuleScanResult.Incomplete(new HashSet<string>(), "AccessDenied");
         var scanner = new DirectResultModuleScanner(scanResult);
         var parser = new FakePeParser(new[] { "d3d9.dll" });
         var classifier = new ApiClassifier(scanner, parser);
@@ -110,6 +136,27 @@ public sealed class ProcessQualificationTests
         Assert.Equal(GraphicsApi.DX9, result.PrimaryApi);
         Assert.Equal(ApiDetectionConfidence.Medium, result.Confidence);
         Assert.Equal("StaticPEImports", result.EvidenceSource);
+        Assert.Contains(result.Evidence, e => e.Contains("AccessDenied"));
+        Assert.Contains(result.Evidence, e => e.Contains("d3d9.dll"));
+    }
+
+    [Fact]
+    public void ApiClassifier_PartialRecognizedModules_WithFailedScan_ReturnsRuntimeIncompleteAndMediumConfidence()
+    {
+        var partialModules = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "d3d11.dll" };
+        var scanResult = ModuleScanResult.Incomplete(partialModules, "EnumerationAborted");
+        var scanner = new DirectResultModuleScanner(scanResult);
+        var parser = new FakePeParser();
+        var classifier = new ApiClassifier(scanner, parser);
+
+        using var proc = Process.GetCurrentProcess();
+        var result = classifier.ClassifyDetailed(proc);
+
+        Assert.Equal(GraphicsApi.DX11, result.PrimaryApi);
+        Assert.Equal(ApiDetectionConfidence.Medium, result.Confidence);
+        Assert.Equal("RuntimeIncomplete", result.EvidenceSource);
+        Assert.Contains(result.Evidence, e => e.Contains("EnumerationAborted"));
+        Assert.Contains(result.Evidence, e => e.Contains("d3d11.dll"));
     }
 
     [Theory]

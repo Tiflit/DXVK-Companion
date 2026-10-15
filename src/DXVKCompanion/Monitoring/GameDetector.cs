@@ -40,7 +40,8 @@ namespace DXVKCompanion.Monitoring
         /// <summary>
         /// Permanent exclusion filter (system processes, launchers).
         /// </summary>
-        public virtual bool IsGameProcess(Process process)
+        public bool IsGameProcess(Process process) => IsGameProcessCore(process);
+        internal virtual bool IsGameProcessCore(Process process)
         {
             try
             {
@@ -56,7 +57,8 @@ namespace DXVKCompanion.Monitoring
             }
         }
 
-        public virtual bool HasWindow(Process process)
+        public bool HasWindow(Process process) => HasWindowCore(process);
+        internal virtual bool HasWindowCore(Process process)
         {
             try
             {
@@ -68,7 +70,8 @@ namespace DXVKCompanion.Monitoring
             }
         }
 
-        public virtual AntiCheatAssessment AssessAntiCheatRisk(Process process, string? exeDirectory = null)
+        public AntiCheatAssessment AssessAntiCheatRisk(Process process, string? exeDirectory = null) => AssessAntiCheatRiskCore(process, exeDirectory);
+        internal virtual AntiCheatAssessment AssessAntiCheatRiskCore(Process process, string? exeDirectory = null)
         {
             var evidence = new List<string>();
 

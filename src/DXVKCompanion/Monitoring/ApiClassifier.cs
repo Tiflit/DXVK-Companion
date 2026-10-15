@@ -72,6 +72,11 @@ namespace DXVKCompanion.Monitoring
                 var observed = new List<GraphicsApi>();
                 var evidence = new List<string>();
 
+                if (scanResult.HasFailed)
+                {
+                    evidence.Add($"Runtime module scan incomplete: {scanResult.FailureReason}");
+                }
+
                 if (runtimeModules.Contains("d3d12.dll"))
                 {
                     observed.Add(GraphicsApi.DX12);
@@ -108,10 +113,10 @@ namespace DXVKCompanion.Monitoring
                     {
                         PrimaryApi = observed[0],
                         ObservedApis = observed,
-                        Confidence = ApiDetectionConfidence.High,
+                        Confidence = scanResult.HasFailed ? ApiDetectionConfidence.Medium : ApiDetectionConfidence.High,
                         Architecture = architecture,
                         Evidence = evidence,
-                        EvidenceSource = "RuntimeModules"
+                        EvidenceSource = scanResult.HasFailed ? "RuntimeIncomplete" : "RuntimeModules"
                     };
                 }
             }
@@ -124,6 +129,11 @@ namespace DXVKCompanion.Monitoring
                     var imports = _parser.GetImports(resolvedExePath).ToList();
                     var observed = new List<GraphicsApi>();
                     var evidence = new List<string>();
+
+                    if (scanResult.HasFailed)
+                    {
+                        evidence.Add($"Runtime module scan incomplete: {scanResult.FailureReason}");
+                    }
 
                     if (imports.Contains("d3d12.dll", StringComparer.OrdinalIgnoreCase))
                     {
@@ -175,13 +185,19 @@ namespace DXVKCompanion.Monitoring
                 }
             }
 
+            var finalEvidence = new List<string>();
+            if (scanResult.HasFailed)
+            {
+                finalEvidence.Add($"Runtime module scan incomplete: {scanResult.FailureReason}");
+            }
+
             return new ApiClassificationResult
             {
                 PrimaryApi = GraphicsApi.Unknown,
                 ObservedApis = Array.Empty<GraphicsApi>(),
                 Confidence = ApiDetectionConfidence.Unknown,
                 Architecture = architecture,
-                Evidence = Array.Empty<string>(),
+                Evidence = finalEvidence,
                 EvidenceSource = scanResult.HasFailed ? "RuntimeIncomplete" : "None"
             };
         }

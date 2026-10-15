@@ -1,5 +1,5 @@
 using System;
-using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
@@ -21,9 +21,14 @@ namespace DXVKCompanion.Monitoring
             return TimeSpan.FromSeconds((double)elapsed / Stopwatch.Frequency);
         }
 
-        private readonly ConcurrentDictionary<int, byte> _nonGamePids = new();
-        private readonly ConcurrentDictionary<int, CandidateProcessState> _candidates = new();
-        private readonly ConcurrentDictionary<int, int> _windowRetryCounts = new();
+        private readonly object _pollLock = new();
+        private volatile bool _disposed;
+
+        private readonly Dictionary<int, DateTime> _nonGamePids = new();
+        private readonly Dictionary<int, CandidateProcessState> _candidates = new();
+        private readonly Dictionary<int, (DateTime StartTime, int RetryCount)> _windowRetries = new();
+        private readonly Dictionary<int, (Process Process, DateTime StartTime, string ExePath)> _attachedExitProcesses = new();
+
         private readonly System.Threading.Timer? _timer;
         private readonly GameDetector _detector;
         private readonly ProcessExitHandler _exitHandler;
@@ -38,6 +43,12 @@ namespace DXVKCompanion.Monitoring
 
         internal event Action<Process, DetectionSnapshot>? OnQualifiedGameDetected;
         internal ProfileStore? ProfileStore { get; set; }
+
+        internal Func<Process, string?>? ExePathResolver { get; set; }
+        internal Func<Process, DateTime>? StartTimeResolver { get; set; }
+        internal Func<Process, bool>? GameProcessFilter { get; set; }
+        internal Func<Process, bool>? WindowFilter { get; set; }
+        internal Func<Process, string, AntiCheatAssessment>? AntiCheatAssessor { get; set; }
 
         public ProcessMonitor(
             GameDetector detector,
@@ -64,7 +75,18 @@ namespace DXVKCompanion.Monitoring
             _clock = clock ?? DefaultClock;
             _processEnumerator = processEnumerator;
 
-            _exitHandler.ProcessExited += exePath => OnGameExited?.Invoke(exePath);
+            _exitHandler.ProcessExited += exePath =>
+            {
+                lock (_pollLock)
+                {
+                    var match = _attachedExitProcesses.FirstOrDefault(kv => string.Equals(kv.Value.ExePath, exePath, StringComparison.OrdinalIgnoreCase));
+                    if (match.Key != 0)
+                    {
+                        _attachedExitProcesses.Remove(match.Key);
+                    }
+                }
+                OnGameExited?.Invoke(exePath);
+            };
 
             if (startTimer)
             {
@@ -74,169 +96,293 @@ namespace DXVKCompanion.Monitoring
 
         internal bool TryGetQualifiedSnapshot(int processId, out DetectionSnapshot? snapshot)
         {
-            if (_candidates.TryGetValue(processId, out var state) && state.IsQualified && state.QualifiedSnapshot != null)
+            lock (_pollLock)
             {
-                snapshot = state.QualifiedSnapshot;
-                return true;
+                if (_candidates.TryGetValue(processId, out var state) && state.IsQualified && state.QualifiedSnapshot != null)
+                {
+                    snapshot = state.QualifiedSnapshot;
+                    return true;
+                }
             }
 
             snapshot = null;
             return false;
         }
 
-        internal CandidateProcessState? GetCandidateState(int processId) =>
-            _candidates.TryGetValue(processId, out var state) ? state : null;
+        internal CandidateProcessState? GetCandidateState(int processId)
+        {
+            lock (_pollLock)
+            {
+                return _candidates.TryGetValue(processId, out var state) ? state : null;
+            }
+        }
 
         internal void PollProcessesOnce() => PollProcesses(null);
 
         private void PollProcesses(object? state)
         {
-            IEnumerable<Process> processes;
+            if (_disposed) return;
+            if (!Monitor.TryEnter(_pollLock)) return;
 
             try
             {
-                processes = _processEnumerator?.Invoke() ?? Process.GetProcesses();
-            }
-            catch
-            {
-                return;
-            }
+                if (_disposed) return;
 
-            var processList = processes.ToList();
-            var currentPids = processList.Select(p => p.Id).ToHashSet();
-
-            // Clean up transient state for exited or missing processes
-            foreach (var pid in _nonGamePids.Keys)
-            {
-                if (!currentPids.Contains(pid))
-                {
-                    _nonGamePids.TryRemove(pid, out _);
-                }
-            }
-
-            foreach (var pid in _candidates.Keys)
-            {
-                if (!currentPids.Contains(pid))
-                {
-                    _candidates.TryRemove(pid, out _);
-                    _windowRetryCounts.TryRemove(pid, out _);
-                }
-            }
-
-            var now = _clock();
-
-            foreach (var proc in processList)
-            {
+                IEnumerable<Process> processes;
                 try
                 {
-                    if (_nonGamePids.ContainsKey(proc.Id))
-                    {
-                        proc.Dispose();
-                        continue;
-                    }
-
-                    if (!_detector.IsGameProcess(proc))
-                    {
-                        _nonGamePids[proc.Id] = 1;
-                        proc.Dispose();
-                        continue;
-                    }
-
-                    if (!_detector.HasWindow(proc))
-                    {
-                        int retries = _windowRetryCounts.AddOrUpdate(proc.Id, 1, (_, count) => count + 1);
-                        if (retries > MaxWindowWaitTicks)
-                        {
-                            _nonGamePids[proc.Id] = 1;
-                            _windowRetryCounts.TryRemove(proc.Id, out _);
-                        }
-                        proc.Dispose();
-                        continue;
-                    }
-
-                    _windowRetryCounts.TryRemove(proc.Id, out _);
-
-                    // Candidate process with window: track qualification state
-                    DateTime startTime = DateTime.MinValue;
-                    try { startTime = proc.StartTime; } catch { }
-
-                    var candidate = _candidates.GetOrAdd(proc.Id, id => new CandidateProcessState(id, startTime, now));
-                    if (candidate.ProcessStartTime != DateTime.MinValue && startTime != DateTime.MinValue && candidate.ProcessStartTime != startTime)
-                    {
-                        // PID was reused by OS for a new process: reset assessment history
-                        candidate = new CandidateProcessState(proc.Id, startTime, now);
-                        _candidates[proc.Id] = candidate;
-                    }
-
-                    if (candidate.IsQualified || candidate.IsExpired)
-                    {
-                        proc.Dispose();
-                        continue;
-                    }
-
-                    if (!candidate.IsAssessmentDue(now))
-                    {
-                        proc.Dispose();
-                        continue;
-                    }
-
-                    // Assessment is due on the monotonic schedule
-                    var snapshot = CreateSnapshot(proc);
-                    bool qualifies = snapshot != null && ProcessQualification.IsRecognizedGraphicsApi(snapshot.Classification.PrimaryApi);
-
-                    // Preserve exit tracking for known installations with pending actions
-                    string? exePath = snapshot?.ExecutablePath;
-                    if (!string.IsNullOrEmpty(exePath))
-                    {
-                        var knownInstallation = _libraryStore?.FindInstallationForExecutable(exePath);
-                        if (knownInstallation?.PendingAction != null)
-                        {
-                            _exitHandler.Attach(proc);
-                        }
-                    }
-
-                    if (qualifies && snapshot != null)
-                    {
-                        candidate.IsQualified = true;
-                        candidate.QualifiedSnapshot = snapshot;
-
-                        _exitHandler.Attach(proc);
-
-                        if (_libraryStore != null)
-                        {
-                            _libraryStore.RecordDetectionSnapshot(snapshot);
-                        }
-
-                        OnSnapshotDetected?.Invoke(snapshot);
-                        OnQualifiedGameDetected?.Invoke(proc, snapshot);
-                        OnGameDetected?.Invoke(proc);
-                    }
-                    else
-                    {
-                        candidate.LastInspectionHadFailure = (snapshot?.Classification.EvidenceSource == "RuntimeIncomplete");
-                        candidate.AdvanceAfterAssessment(now);
-
-                        if (candidate.IsExpired)
-                        {
-                            string safeName = GetSafeProcessName(proc);
-                            if (candidate.LastInspectionHadFailure)
-                            {
-                                Logger.Log($"Candidate process PID {proc.Id} ({safeName}) qualification budget expired: inspection unresolved.");
-                            }
-                            else
-                            {
-                                Logger.Log($"Candidate process PID {proc.Id} ({safeName}) qualification budget expired: no recognized graphics API evidence observed.");
-                            }
-                        }
-                    }
-
-                    proc.Dispose();
+                    processes = _processEnumerator?.Invoke() ?? Process.GetProcesses();
                 }
                 catch
                 {
-                    proc.Dispose();
+                    return;
+                }
+
+                var processList = processes.ToList();
+                var currentPids = processList.Select(p => p.Id).ToHashSet();
+
+                // Clean up transient state for exited or missing processes across all collections
+                var staleNonGames = _nonGamePids.Keys.Where(p => !currentPids.Contains(p)).ToList();
+                foreach (var p in staleNonGames) _nonGamePids.Remove(p);
+
+                var staleRetries = _windowRetries.Keys.Where(p => !currentPids.Contains(p)).ToList();
+                foreach (var p in staleRetries) _windowRetries.Remove(p);
+
+                var staleCandidates = _candidates.Keys.Where(p => !currentPids.Contains(p)).ToList();
+                foreach (var p in staleCandidates) _candidates.Remove(p);
+
+                var staleAttached = _attachedExitProcesses.Where(kv => !currentPids.Contains(kv.Key)).ToList();
+                foreach (var (pid, item) in staleAttached)
+                {
+                    if (item.Process.HasExited)
+                    {
+                        _attachedExitProcesses.Remove(pid);
+                    }
+                }
+
+                var now = _clock();
+
+                foreach (var proc in processList)
+                {
+                    if (_disposed)
+                    {
+                        if (!IsCurrentInstanceAttached(proc)) proc.Dispose();
+                        continue;
+                    }
+
+                    try
+                    {
+                        DateTime startTime = TryGetStartTime(proc);
+                        string? exePath = TryGetExecutablePath(proc);
+
+                        // R5: Preserve exit tracking for known installations with pending actions,
+                        // even before checking window presence or game classification.
+                        if (!string.IsNullOrEmpty(exePath) && _libraryStore != null)
+                        {
+                            var knownInst = _libraryStore.FindInstallationForExecutable(exePath);
+                            if (knownInst?.PendingAction != null)
+                            {
+                                AttachExitHandlerOnce(proc, startTime, exePath);
+                            }
+                        }
+
+                        // R5: Process-instance-aware non-game filtering with start-time identity
+                        if (_nonGamePids.TryGetValue(proc.Id, out var cachedStart))
+                        {
+                            if (startTime != DateTime.MinValue && cachedStart != DateTime.MinValue && startTime != cachedStart)
+                            {
+                                // PID was reused by a new process instance! Reset cached state
+                                _nonGamePids.Remove(proc.Id);
+                            }
+                            else if (startTime == cachedStart && startTime != DateTime.MinValue)
+                            {
+                                if (!IsCurrentInstanceAttached(proc)) proc.Dispose();
+                                continue;
+                            }
+                        }
+
+                        bool isGame = GameProcessFilter?.Invoke(proc) ?? _detector.IsGameProcess(proc);
+                        if (!isGame)
+                        {
+                            _nonGamePids[proc.Id] = startTime;
+                            if (!IsCurrentInstanceAttached(proc)) proc.Dispose();
+                            continue;
+                        }
+
+                        // R5: Window check with instance-aware retries and retirement
+                        bool hasWindow = WindowFilter?.Invoke(proc) ?? _detector.HasWindow(proc);
+                        if (!hasWindow)
+                        {
+                            if (_windowRetries.TryGetValue(proc.Id, out var retryEntry))
+                            {
+                                if (startTime != DateTime.MinValue && retryEntry.StartTime != DateTime.MinValue && startTime != retryEntry.StartTime)
+                                {
+                                    retryEntry = (startTime, 0);
+                                }
+                            }
+                            else
+                            {
+                                retryEntry = (startTime, 0);
+                            }
+
+                            int newRetries = retryEntry.RetryCount + 1;
+                            if (newRetries > MaxWindowWaitTicks)
+                            {
+                                _nonGamePids[proc.Id] = startTime;
+                                _windowRetries.Remove(proc.Id);
+                            }
+                            else
+                            {
+                                _windowRetries[proc.Id] = (startTime, newRetries);
+                            }
+
+                            if (!IsCurrentInstanceAttached(proc)) proc.Dispose();
+                            continue;
+                        }
+
+                        _windowRetries.Remove(proc.Id);
+
+                        // Candidate process with window: track qualification state
+                        if (_candidates.TryGetValue(proc.Id, out var candidate))
+                        {
+                            if (startTime != DateTime.MinValue && candidate.ProcessStartTime != DateTime.MinValue && startTime != candidate.ProcessStartTime)
+                            {
+                                // PID reused by OS: reset candidate state
+                                candidate = new CandidateProcessState(proc.Id, startTime, now);
+                                _candidates[proc.Id] = candidate;
+                            }
+                        }
+                        else
+                        {
+                            candidate = new CandidateProcessState(proc.Id, startTime, now);
+                            _candidates[proc.Id] = candidate;
+                        }
+
+                        if (candidate.IsQualified || candidate.IsExpired)
+                        {
+                            if (!IsCurrentInstanceAttached(proc)) proc.Dispose();
+                            continue;
+                        }
+
+                        if (!candidate.IsAssessmentDue(now))
+                        {
+                            if (!IsCurrentInstanceAttached(proc)) proc.Dispose();
+                            continue;
+                        }
+
+                        // Assessment is due on monotonic schedule
+                        DetectionSnapshot? snapshot = null;
+                        try
+                        {
+                            snapshot = CreateSnapshot(proc);
+                        }
+                        catch (Exception ex)
+                        {
+                            candidate.LastInspectionHadFailure = true;
+                            Logger.Log($"ProcessMonitor: snapshot assessment failed for PID {proc.Id}: {ex.GetType().Name}");
+                        }
+
+                        bool qualifies = snapshot != null && ProcessQualification.IsRecognizedGraphicsApi(snapshot.Classification.PrimaryApi);
+
+                        if (qualifies && snapshot != null)
+                        {
+                            candidate.IsQualified = true;
+                            candidate.QualifiedSnapshot = snapshot;
+
+                            AttachExitHandlerOnce(proc, startTime, snapshot.ExecutablePath);
+
+                            if (_libraryStore != null)
+                            {
+                                _libraryStore.RecordDetectionSnapshot(snapshot);
+                            }
+
+                            if (!_disposed)
+                            {
+                                OnSnapshotDetected?.Invoke(snapshot);
+                                OnQualifiedGameDetected?.Invoke(proc, snapshot);
+                                OnGameDetected?.Invoke(proc);
+                            }
+                        }
+                        else
+                        {
+                            candidate.LastInspectionHadFailure = (snapshot == null) ||
+                                (snapshot.Classification.EvidenceSource == "RuntimeIncomplete") ||
+                                (snapshot.Classification.Evidence.Any(e => e.Contains("scan incomplete", StringComparison.OrdinalIgnoreCase)));
+
+                            candidate.AdvanceAfterAssessment(now);
+
+                            if (candidate.IsExpired)
+                            {
+                                string safeName = GetSafeProcessName(proc);
+                                if (candidate.LastInspectionHadFailure)
+                                {
+                                    Logger.Log($"Candidate process PID {proc.Id} ({safeName}) qualification budget expired: inspection unresolved.");
+                                }
+                                else
+                                {
+                                    Logger.Log($"Candidate process PID {proc.Id} ({safeName}) qualification budget expired: no recognized graphics API evidence observed.");
+                                }
+                            }
+                        }
+
+                        if (!IsCurrentInstanceAttached(proc))
+                        {
+                            proc.Dispose();
+                        }
+                    }
+                    catch
+                    {
+                        if (!IsCurrentInstanceAttached(proc))
+                        {
+                            proc.Dispose();
+                        }
+                    }
                 }
             }
+            finally
+            {
+                Monitor.Exit(_pollLock);
+            }
+        }
+
+        private bool AttachExitHandlerOnce(Process proc, DateTime startTime, string exePath)
+        {
+            if (_attachedExitProcesses.TryGetValue(proc.Id, out var existing))
+            {
+                if (startTime != DateTime.MinValue && existing.StartTime != DateTime.MinValue)
+                {
+                    if (startTime == existing.StartTime) return false;
+                }
+                else if (!existing.Process.HasExited && string.Equals(existing.ExePath, exePath, StringComparison.OrdinalIgnoreCase))
+                {
+                    return false;
+                }
+            }
+
+            _attachedExitProcesses[proc.Id] = (proc, startTime, exePath);
+            _exitHandler.Attach(proc);
+            return true;
+        }
+
+        private bool IsCurrentInstanceAttached(Process proc)
+        {
+            if (_attachedExitProcesses.TryGetValue(proc.Id, out var existing))
+            {
+                return ReferenceEquals(existing.Process, proc);
+            }
+            return false;
+        }
+
+        private string? TryGetExecutablePath(Process proc)
+        {
+            if (ExePathResolver != null) return ExePathResolver(proc);
+            try { return proc.MainModule?.FileName; } catch { return null; }
+        }
+
+        private DateTime TryGetStartTime(Process proc)
+        {
+            if (StartTimeResolver != null) return StartTimeResolver(proc);
+            try { return proc.StartTime; } catch { return DateTime.MinValue; }
         }
 
         private static string GetSafeProcessName(Process proc)
@@ -253,16 +399,7 @@ namespace DXVKCompanion.Monitoring
 
         public DetectionSnapshot? CreateSnapshot(Process process)
         {
-            string? exePath = null;
-            try
-            {
-                exePath = process.MainModule?.FileName;
-            }
-            catch (Exception ex)
-            {
-                Logger.Log($"ProcessMonitor: could not read MainModule for PID {process.Id}: {ex.GetType().Name}");
-            }
-
+            string? exePath = TryGetExecutablePath(process);
             if (string.IsNullOrEmpty(exePath))
             {
                 return null;
@@ -284,12 +421,12 @@ namespace DXVKCompanion.Monitoring
             }
 
             var classification = _classifier.ClassifyDetailed(process, exePath);
-            var antiCheat = _detector.AssessAntiCheatRisk(process, installationRoot);
+            var antiCheat = AntiCheatAssessor?.Invoke(process, installationRoot) ?? _detector.AssessAntiCheatRisk(process, installationRoot);
 
             return new DetectionSnapshot
             {
                 ProcessId = process.Id,
-                ProcessName = process.ProcessName,
+                ProcessName = GetSafeProcessName(process),
                 ExecutablePath = exePath,
                 InstallationRoot = installationRoot,
                 ExecutableRelativePath = relativePath,
@@ -301,10 +438,18 @@ namespace DXVKCompanion.Monitoring
 
         public void Dispose()
         {
+            if (_disposed) return;
+            _disposed = true;
+
             _timer?.Dispose();
-            _candidates.Clear();
-            _nonGamePids.Clear();
-            _windowRetryCounts.Clear();
+
+            lock (_pollLock)
+            {
+                _candidates.Clear();
+                _nonGamePids.Clear();
+                _windowRetries.Clear();
+                _attachedExitProcesses.Clear();
+            }
         }
     }
 }
