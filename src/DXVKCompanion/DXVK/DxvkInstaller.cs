@@ -735,6 +735,7 @@ namespace DXVKCompanion.DXVK
 
                 if (!assessment.CanBeAdopted || string.IsNullOrEmpty(assessment.MatchedVersion))
                 {
+                    LastRefusalReason = $"Existing DLLs cannot be adopted (status: {assessment.Status}).";
                     Logger.Log($"DxvkInstaller: cannot adopt existing DXVK for {profile.ExeName}; status is {assessment.Status}.");
                     return false;
                 }

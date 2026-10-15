@@ -684,7 +684,10 @@ namespace DXVKCompanion.DXVK
             var detector = new ExistingDxvkDetector(_installer.DxvkSourceDir);
             var assessment = detector.AssessDirectory(gameDir, profile.Architecture);
             if (!assessment.CanBeAdopted)
+            {
+                LastRefusalReason = $"Existing DLLs cannot be adopted (status: {assessment.Status}).";
                 return false;
+            }
 
             bool ok = _installer.AdoptExisting(profile, assessment);
             if (ok)
