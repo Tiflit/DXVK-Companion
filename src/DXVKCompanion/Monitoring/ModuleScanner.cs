@@ -10,6 +10,31 @@ namespace DXVKCompanion.Monitoring
     /// that each independently re-enumerated process.Modules (a real syscall, not a free
     /// property read) whenever ApiClassifier called more than one of them per process.
     /// </summary>
+    internal class ModuleScanResult
+    {
+        public HashSet<string> Modules { get; }
+        public bool IsComplete { get; }
+        public bool HasFailed { get; }
+        public string? FailureReason { get; }
+
+        public ModuleScanResult(HashSet<string> modules, bool isComplete, bool hasFailed = false, string? failureReason = null)
+        {
+            Modules = modules ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            IsComplete = isComplete;
+            HasFailed = hasFailed;
+            FailureReason = failureReason;
+        }
+
+        public static ModuleScanResult Complete(HashSet<string> modules) => new(modules, true);
+        public static ModuleScanResult Incomplete(HashSet<string> modules, string? failureReason = null) => new(modules, false, true, failureReason);
+    }
+
+    /// <summary>
+    /// Enumerates a process's loaded modules ONCE per call and checks every tracked
+    /// graphics-API DLL against that single snapshot — replacing six near-identical methods
+    /// that each independently re-enumerated process.Modules (a real syscall, not a free
+    /// property read) whenever ApiClassifier called more than one of them per process.
+    /// </summary>
     public class ModuleScanner
     {
         private static readonly string[] TrackedModules =
@@ -18,26 +43,77 @@ namespace DXVKCompanion.Monitoring
             "dxgi.dll", "vulkan-1.dll", "opengl32.dll", "ddraw.dll", "dgvoodoo.dll"
         };
 
+        [ThreadStatic]
+        private static bool _inOverriddenGetModules;
+
+        internal Func<Process, IEnumerable<string>>? RawModuleEnumerator { get; set; }
+
+        internal virtual ModuleScanResult ScanLoadedGraphicsModules(Process process)
+        {
+            // If a derived type overrode GetLoadedGraphicsModules (such as existing test fakes),
+            // call GetLoadedGraphicsModules safely without recursion.
+            if (!_inOverriddenGetModules && GetType() != typeof(ModuleScanner))
+            {
+                var method = GetType().GetMethod(nameof(GetLoadedGraphicsModules), new[] { typeof(Process) });
+                if (method != null && method.DeclaringType != typeof(ModuleScanner))
+                {
+                    try
+                    {
+                        _inOverriddenGetModules = true;
+                        var overriddenModules = GetLoadedGraphicsModules(process);
+                        return ModuleScanResult.Complete(overriddenModules);
+                    }
+                    finally
+                    {
+                        _inOverriddenGetModules = false;
+                    }
+                }
+            }
+
+            return ScanCore(process);
+        }
+
         public virtual HashSet<string> GetLoadedGraphicsModules(Process process)
+        {
+            return ScanCore(process).Modules;
+        }
+
+        private ModuleScanResult ScanCore(Process process)
         {
             var found = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
             try
             {
+                if (RawModuleEnumerator != null)
+                {
+                    foreach (string rawName in RawModuleEnumerator(process))
+                    {
+                        string name = rawName.ToLowerInvariant();
+                        foreach (var tracked in TrackedModules)
+                        {
+                            if (name.Contains(tracked))
+                                found.Add(tracked);
+                        }
+                    }
+                    return ModuleScanResult.Complete(found);
+                }
+
                 foreach (ProcessModule module in process.Modules)
                 {
                     string name = module.ModuleName.ToLowerInvariant();
                     foreach (var tracked in TrackedModules)
+                    {
                         if (name.Contains(tracked))
                             found.Add(tracked);
+                    }
                 }
+                return ModuleScanResult.Complete(found);
             }
-            catch
+            catch (Exception ex)
             {
-                // Access denied — return whatever was found before the failure (often nothing).
+                // Access denied or enumeration failure — return whatever was found before the failure, marked incomplete
+                return ModuleScanResult.Incomplete(found, ex.GetType().Name);
             }
-
-            return found;
         }
 
         // Games loading more than one graphics API at once is unusual and can indicate a

@@ -65,11 +65,17 @@ namespace DXVKCompanion.Monitoring
                 architecture = Environment.Is64BitOperatingSystem && !Is32BitProcess(process) ? "x64" : "x32";
             }
 
-            var runtimeModules = _scanner.GetLoadedGraphicsModules(process);
+            var scanResult = _scanner.ScanLoadedGraphicsModules(process);
+            var runtimeModules = scanResult.Modules;
             if (runtimeModules.Count > 0)
             {
                 var observed = new List<GraphicsApi>();
                 var evidence = new List<string>();
+
+                if (scanResult.HasFailed)
+                {
+                    evidence.Add($"Runtime module scan incomplete: {scanResult.FailureReason}");
+                }
 
                 if (runtimeModules.Contains("d3d12.dll"))
                 {
@@ -107,10 +113,10 @@ namespace DXVKCompanion.Monitoring
                     {
                         PrimaryApi = observed[0],
                         ObservedApis = observed,
-                        Confidence = ApiDetectionConfidence.High,
+                        Confidence = scanResult.HasFailed ? ApiDetectionConfidence.Medium : ApiDetectionConfidence.High,
                         Architecture = architecture,
                         Evidence = evidence,
-                        EvidenceSource = "RuntimeModules"
+                        EvidenceSource = scanResult.HasFailed ? "RuntimeIncomplete" : "RuntimeModules"
                     };
                 }
             }
@@ -123,6 +129,11 @@ namespace DXVKCompanion.Monitoring
                     var imports = _parser.GetImports(resolvedExePath).ToList();
                     var observed = new List<GraphicsApi>();
                     var evidence = new List<string>();
+
+                    if (scanResult.HasFailed)
+                    {
+                        evidence.Add($"Runtime module scan incomplete: {scanResult.FailureReason}");
+                    }
 
                     if (imports.Contains("d3d12.dll", StringComparer.OrdinalIgnoreCase))
                     {
@@ -170,8 +181,14 @@ namespace DXVKCompanion.Monitoring
                 }
                 catch (Exception ex)
                 {
-                    Logger.Log($"ApiClassifier: PE import inspection failed for {resolvedExePath}: {ex.Message}");
+                    Logger.Log($"ApiClassifier: PE import inspection failed ({ex.GetType().Name}).");
                 }
+            }
+
+            var finalEvidence = new List<string>();
+            if (scanResult.HasFailed)
+            {
+                finalEvidence.Add($"Runtime module scan incomplete: {scanResult.FailureReason}");
             }
 
             return new ApiClassificationResult
@@ -180,8 +197,8 @@ namespace DXVKCompanion.Monitoring
                 ObservedApis = Array.Empty<GraphicsApi>(),
                 Confidence = ApiDetectionConfidence.Unknown,
                 Architecture = architecture,
-                Evidence = Array.Empty<string>(),
-                EvidenceSource = "None"
+                Evidence = finalEvidence,
+                EvidenceSource = scanResult.HasFailed ? "RuntimeIncomplete" : "None"
             };
         }
 
