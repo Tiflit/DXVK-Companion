@@ -181,6 +181,14 @@ namespace DXVKCompanion.Monitoring
             }
         }
 
+        internal bool IsExitWatcherAttached(int processId)
+        {
+            lock (_pollLock)
+            {
+                return _attachedExitProcesses.ContainsKey(processId);
+            }
+        }
+
         internal void PollProcessesOnce() => PollProcesses(null);
 
         private void PollProcesses(object? state)
@@ -529,7 +537,27 @@ namespace DXVKCompanion.Monitoring
 
                 var token = Guid.NewGuid();
                 _attachedExitProcesses[pid] = (proc, startTime, exePath, token);
-                _exitHandler.AttachCore(proc, token);
+
+                Guid establishedToken;
+                try
+                {
+                    establishedToken = _exitHandler.AttachCore(proc, token);
+                }
+                catch
+                {
+                    establishedToken = Guid.Empty;
+                }
+
+                if (establishedToken == Guid.Empty || establishedToken != token)
+                {
+                    // Setup failed: unwind only this failed token
+                    if (_attachedExitProcesses.TryGetValue(pid, out var current) && current.RegistrationToken == token)
+                    {
+                        _attachedExitProcesses.Remove(pid);
+                    }
+                    return false;
+                }
+
                 return true;
             }
             catch

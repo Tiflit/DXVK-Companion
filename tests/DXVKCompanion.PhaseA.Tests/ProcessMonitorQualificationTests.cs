@@ -21,15 +21,29 @@ public sealed class ProcessMonitorQualificationTests
     {
         public List<Process> AttachedProcesses { get; } = new();
         public List<(Guid Token, Process Process)> AttachedRegistrations { get; } = new();
+        public bool FailSetup { get; set; }
+        public bool SynchronousExit { get; set; }
 
         internal override Guid AttachCore(Process process, Guid registrationToken = default)
         {
+            if (FailSetup)
+            {
+                return Guid.Empty;
+            }
+
             if (registrationToken == default) registrationToken = Guid.NewGuid();
             AttachedProcesses.Add(process);
             AttachedRegistrations.Add((registrationToken, process));
             int pid = 0;
-            try { pid = process.Id; } catch { }
-            RegisterToken(registrationToken, pid, null);
+            string? exePath = null;
+            try { pid = process.Id; exePath = process.MainModule?.FileName; } catch { }
+            RegisterToken(registrationToken, pid, exePath);
+
+            if (SynchronousExit)
+            {
+                RaiseProcessInstanceExited(registrationToken, pid, exePath ?? "Dummy.exe");
+            }
+
             return registrationToken;
         }
 
@@ -1788,5 +1802,94 @@ public sealed class ProcessMonitorQualificationTests
         Assert.Equal(currentStart, reusedCandidate.ProcessStartTime);
         Assert.Equal(1, reusedCandidate.AssessmentsConductedCount);
         Assert.Equal(14, scanCount);
+    }
+
+    [Fact]
+    public void AttachExitHandler_SetupFailure_UnwindsAttachmentAndPreservesExternalOwnership()
+    {
+        using var tempDir = new SyntheticTestDirectory();
+        var libraryStore = new GameLibraryStore(
+            Path.Combine(tempDir.RootPath, "game-library.json"),
+            Path.Combine(tempDir.RootPath, "backups"));
+        var exitHandler = new FakeProcessExitHandler { FailSetup = true };
+        var scanner = new DynamicModuleScanner(_ => ModuleScanResult.Complete(new HashSet<string> { "d3d11.dll" }));
+        var classifier = new ApiClassifier(scanner, new FakePeParser());
+
+        using var currentProc = Process.GetCurrentProcess();
+        string exePath = @"C:\Games\Game11\Game.exe";
+        var startTime = new DateTime(2026, 10, 15, 12, 0, 0, DateTimeKind.Utc);
+
+        var monitor = new ProcessMonitor(
+            new GameDetector(),
+            exitHandler,
+            classifier,
+            libraryStore,
+            clock: () => TimeSpan.Zero,
+            processEnumerator: () => new[] { currentProc },
+            startTimer: false);
+        monitor.GameProcessFilter = _ => true;
+        monitor.WindowFilter = _ => true;
+        monitor.StartTimeResolver = _ => startTime;
+        monitor.ExePathResolver = _ => exePath;
+
+        int qualifiedEvents = 0;
+        monitor.OnQualifiedGameDetected += (_, _) => qualifiedEvents++;
+
+        // Act: poll should qualify candidate, but watcher setup fails
+        monitor.PollProcessesOnce();
+
+        // Assert: Qualification occurred
+        Assert.Equal(1, qualifiedEvents);
+        Assert.True(monitor.TryGetQualifiedSnapshot(currentProc.Id, out var snapshot));
+        Assert.NotNull(snapshot);
+
+        // Crucial: Attachment was unwound upon setup failure — not retained as phantom live watcher
+        Assert.False(monitor.IsExitWatcherAttached(currentProc.Id));
+
+        // External process ownership was respected — not disposed
+        Assert.False(currentProc.HasExited);
+    }
+
+    [Fact]
+    public void AttachExitHandler_SynchronousExitDuringSetup_CleansUpWithoutPhantomLiveAttachment()
+    {
+        using var tempDir = new SyntheticTestDirectory();
+        var libraryStore = new GameLibraryStore(
+            Path.Combine(tempDir.RootPath, "game-library.json"),
+            Path.Combine(tempDir.RootPath, "backups"));
+        var exitHandler = new FakeProcessExitHandler { SynchronousExit = true };
+        var scanner = new DynamicModuleScanner(_ => ModuleScanResult.Complete(new HashSet<string> { "d3d11.dll" }));
+        var classifier = new ApiClassifier(scanner, new FakePeParser());
+
+        using var currentProc = Process.GetCurrentProcess();
+        string exePath = @"C:\Games\SyncExitGame\Game.exe";
+        var startTime = new DateTime(2026, 10, 15, 12, 0, 0, DateTimeKind.Utc);
+
+        var monitor = new ProcessMonitor(
+            new GameDetector(),
+            exitHandler,
+            classifier,
+            libraryStore,
+            clock: () => TimeSpan.Zero,
+            processEnumerator: () => new[] { currentProc },
+            startTimer: false);
+        monitor.GameProcessFilter = _ => true;
+        monitor.WindowFilter = _ => true;
+        monitor.StartTimeResolver = _ => startTime;
+        monitor.ExePathResolver = _ => exePath;
+
+        var exitedGames = new List<string>();
+        monitor.OnGameExited += path => exitedGames.Add(path);
+
+        // Act: Poll qualifies candidate and attempts attachment, triggering synchronous exit
+        monitor.PollProcessesOnce();
+
+        // Assert: Exit was delivered synchronously
+        Assert.Single(exitedGames);
+        Assert.Equal(exePath, exitedGames[0]);
+
+        // Crucial: Attachment state was removed by HandleExit and NOT overwritten with a phantom live attachment
+        Assert.False(monitor.IsExitWatcherAttached(currentProc.Id));
+        Assert.False(monitor.TryGetQualifiedSnapshot(currentProc.Id, out _));
     }
 }

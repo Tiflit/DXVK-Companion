@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Threading;
 
 namespace DXVKCompanion.Monitoring
 {
@@ -32,6 +33,26 @@ namespace DXVKCompanion.Monitoring
         private readonly object _exitLock = new();
         private readonly Dictionary<Guid, ProcessExitRegistration> _registrations = new();
 
+        internal int ActiveRegistrationCount
+        {
+            get
+            {
+                lock (_exitLock)
+                {
+                    return _registrations.Count;
+                }
+            }
+        }
+
+        internal bool HasRegistration(Guid registrationToken)
+        {
+            if (registrationToken == Guid.Empty) return false;
+            lock (_exitLock)
+            {
+                return _registrations.ContainsKey(registrationToken);
+            }
+        }
+
         public void Attach(Process process) => AttachCore(process, Guid.NewGuid());
 
         internal virtual Guid AttachCore(Process process, Guid registrationToken = default)
@@ -55,27 +76,72 @@ namespace DXVKCompanion.Monitoring
 
             RegisterToken(registrationToken, pid, exePath);
 
+            EventHandler? handler = null;
+            bool subscribed = false;
             try
             {
-                process.EnableRaisingEvents = true;
-                process.Exited += (_, _) =>
+                handler = (_, _) =>
                 {
-                    NotifyExit(registrationToken, pid, exePath);
-                    DisposeProcess(process);
+                    try
+                    {
+                        NotifyExit(registrationToken, pid, exePath);
+                    }
+                    finally
+                    {
+                        DisposeProcess(process);
+                    }
                 };
 
-                if (process.HasExited)
+                SubscribeProcessExit(process, handler);
+                subscribed = true;
+
+                if (CheckProcessHasExited(process))
                 {
-                    NotifyExit(registrationToken, pid, exePath);
-                    DisposeProcess(process);
+                    try
+                    {
+                        NotifyExit(registrationToken, pid, exePath);
+                    }
+                    finally
+                    {
+                        DisposeProcess(process);
+                    }
                 }
+
+                return registrationToken;
             }
             catch
             {
-                // Ignore failures (e.g. process already exited before we could subscribe)
-            }
+                // Setup failed (e.g. Access Denied on EnableRaisingEvents, process already exited/invalid)
+                if (subscribed && handler != null)
+                {
+                    UnsubscribeProcessExit(process, handler);
+                }
 
-            return registrationToken;
+                CancelRegistration(registrationToken);
+                return Guid.Empty;
+            }
+        }
+
+        internal virtual void SubscribeProcessExit(Process process, EventHandler handler)
+        {
+            process.EnableRaisingEvents = true;
+            process.Exited += handler;
+        }
+
+        internal virtual void UnsubscribeProcessExit(Process process, EventHandler handler)
+        {
+            try
+            {
+                process.Exited -= handler;
+            }
+            catch
+            {
+            }
+        }
+
+        internal virtual bool CheckProcessHasExited(Process process)
+        {
+            return process.HasExited;
         }
 
         internal Guid RegisterToken(Guid registrationToken, int pid, string? exePath)
@@ -110,8 +176,6 @@ namespace DXVKCompanion.Monitoring
 
         private void NotifyExit(Guid registrationToken, int pid, string? exePath)
         {
-            if (string.IsNullOrEmpty(exePath)) return;
-
             if (registrationToken != Guid.Empty)
             {
                 ProcessExitRegistration? reg = null;
@@ -129,11 +193,16 @@ namespace DXVKCompanion.Monitoring
                 }
             }
 
+            if (string.IsNullOrEmpty(exePath))
+            {
+                return;
+            }
+
             ProcessInstanceExited?.Invoke(registrationToken, pid, exePath);
             ProcessExited?.Invoke(exePath);
         }
 
-        private void DisposeProcess(Process process)
+        internal virtual void DisposeProcess(Process process)
         {
             try { process.Dispose(); } catch { }
         }
