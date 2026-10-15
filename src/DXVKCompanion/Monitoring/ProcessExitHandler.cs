@@ -10,28 +10,26 @@ namespace DXVKCompanion.Monitoring
         // act on it without holding a live Process reference around.
         public event Action<string>? ProcessExited;
 
-        internal event Action<int, string>? ProcessInstanceExited;
+        internal event Action<Guid, int, string>? ProcessInstanceExited;
 
         private readonly object _exitLock = new();
-        private readonly HashSet<int> _notifiedPids = new();
+        private readonly HashSet<Guid> _notifiedTokens = new();
 
-        public void Attach(Process process) => AttachCore(process);
+        public Guid Attach(Process process) => AttachCore(process, Guid.NewGuid());
 
-        internal virtual void AttachCore(Process process)
+        internal virtual Guid AttachCore(Process process, Guid registrationToken = default)
         {
+            if (registrationToken == default)
+            {
+                registrationToken = Guid.NewGuid();
+            }
+
             string? exePath = null;
             int pid = 0;
             try
             {
                 pid = process.Id;
                 exePath = process.MainModule?.FileName;
-                lock (_exitLock)
-                {
-                    if (pid > 0)
-                    {
-                        _notifiedPids.Remove(pid);
-                    }
-                }
             }
             catch
             {
@@ -43,13 +41,13 @@ namespace DXVKCompanion.Monitoring
                 process.EnableRaisingEvents = true;
                 process.Exited += (_, _) =>
                 {
-                    NotifyExit(pid, exePath);
+                    NotifyExit(registrationToken, pid, exePath);
                     DisposeProcess(process);
                 };
 
                 if (process.HasExited)
                 {
-                    NotifyExit(pid, exePath);
+                    NotifyExit(registrationToken, pid, exePath);
                     DisposeProcess(process);
                 }
             }
@@ -57,29 +55,31 @@ namespace DXVKCompanion.Monitoring
             {
                 // Ignore failures (e.g. process already exited before we could subscribe)
             }
+
+            return registrationToken;
         }
 
         internal void RaiseProcessExited(string exePath)
         {
-            NotifyExit(0, exePath);
+            NotifyExit(Guid.Empty, 0, exePath);
         }
 
-        internal void RaiseProcessInstanceExited(int pid, string exePath)
+        internal void RaiseProcessInstanceExited(Guid registrationToken, int pid, string exePath)
         {
-            NotifyExit(pid, exePath);
+            NotifyExit(registrationToken, pid, exePath);
         }
 
-        private void NotifyExit(int pid, string? exePath)
+        private void NotifyExit(Guid registrationToken, int pid, string? exePath)
         {
             if (string.IsNullOrEmpty(exePath)) return;
             lock (_exitLock)
             {
-                if (pid > 0 && !_notifiedPids.Add(pid))
+                if (registrationToken != Guid.Empty && !_notifiedTokens.Add(registrationToken))
                 {
-                    return; // Exactly-once delivery per PID instance
+                    return; // Exactly-once delivery per registration token
                 }
             }
-            ProcessInstanceExited?.Invoke(pid, exePath);
+            ProcessInstanceExited?.Invoke(registrationToken, pid, exePath);
             ProcessExited?.Invoke(exePath);
         }
 

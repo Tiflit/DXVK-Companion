@@ -20,10 +20,14 @@ public sealed class ProcessMonitorQualificationTests
     private sealed class FakeProcessExitHandler : ProcessExitHandler
     {
         public List<Process> AttachedProcesses { get; } = new();
+        public List<(Guid Token, Process Process)> AttachedRegistrations { get; } = new();
 
-        internal override void AttachCore(Process process)
+        internal override Guid AttachCore(Process process, Guid registrationToken = default)
         {
+            if (registrationToken == default) registrationToken = Guid.NewGuid();
             AttachedProcesses.Add(process);
+            AttachedRegistrations.Add((registrationToken, process));
+            return registrationToken;
         }
 
         public void SimulateExit(string exePath)
@@ -33,7 +37,16 @@ public sealed class ProcessMonitorQualificationTests
 
         public void SimulateInstanceExit(int pid, string exePath)
         {
-            RaiseProcessInstanceExited(pid, exePath);
+            var match = AttachedRegistrations.LastOrDefault(r =>
+            {
+                try { return r.Process.Id == pid; } catch { return false; }
+            });
+            RaiseProcessInstanceExited(match.Token, pid, exePath);
+        }
+
+        public void SimulateInstanceExit(Guid registrationToken, int pid, string exePath)
+        {
+            RaiseProcessInstanceExited(registrationToken, pid, exePath);
         }
     }
 
@@ -1468,5 +1481,211 @@ public sealed class ProcessMonitorQualificationTests
         bool deploySupportedVk = DxvkCompatibility.IsInstallationSupported(instVk, GraphicsApi.Vulkan, "Game.exe", out var refusalReasonVk);
         Assert.False(deploySupportedVk);
         Assert.NotNull(refusalReasonVk);
+    }
+
+    [Fact]
+    public void ExitWatcher_SamePidReusedBeforeExitDelivery_StaleDeliveryDoesNotRemoveNewRegistration()
+    {
+        using var tempDir = new SyntheticTestDirectory();
+        var libraryStore = new GameLibraryStore(
+            Path.Combine(tempDir.RootPath, "game-library.json"),
+            Path.Combine(tempDir.RootPath, "backups"));
+        var exitHandler = new FakeProcessExitHandler();
+        var scanner = new DynamicModuleScanner(_ => ModuleScanResult.Complete(new HashSet<string> { "d3d11.dll" }));
+        var classifier = new ApiClassifier(scanner, new FakePeParser());
+
+        using var procA = Process.GetCurrentProcess();
+        int sharedPid = procA.Id;
+        string pathA = @"C:\Games\GameA\GameA.exe";
+        string pathB = @"C:\Games\GameB\GameB.exe";
+
+        DateTime startA = new DateTime(2026, 10, 15, 12, 0, 0, DateTimeKind.Utc);
+        DateTime startB = new DateTime(2026, 10, 15, 12, 5, 0, DateTimeKind.Utc);
+
+        DateTime currentStart = startA;
+        string currentPath = pathA;
+
+        var monitor = new ProcessMonitor(
+            new GameDetector(),
+            exitHandler,
+            classifier,
+            libraryStore,
+            clock: () => TimeSpan.Zero,
+            processEnumerator: () => new[] { procA },
+            startTimer: false);
+        monitor.GameProcessFilter = _ => true;
+        monitor.WindowFilter = _ => true;
+        monitor.StartTimeResolver = _ => currentStart;
+        monitor.ExePathResolver = _ => currentPath;
+
+        // Step 1: Attach instance A
+        monitor.PollProcessesOnce();
+        Assert.Single(exitHandler.AttachedRegistrations);
+        var regA = exitHandler.AttachedRegistrations[0];
+        Assert.Equal(sharedPid, regA.Process.Id);
+        Assert.True(monitor.TryGetQualifiedSnapshot(sharedPid, out var snapA));
+        Assert.Equal(pathA, snapA!.ExecutablePath);
+
+        // Step 2: PID is reused for instance B with different start time before A's exit is delivered
+        currentStart = startB;
+        currentPath = pathB;
+        monitor.PollProcessesOnce();
+
+        Assert.Equal(2, exitHandler.AttachedRegistrations.Count);
+        var regB = exitHandler.AttachedRegistrations[1];
+        Assert.NotEqual(regA.Token, regB.Token);
+
+        // Verify B is now the active qualified snapshot for this PID
+        Assert.True(monitor.TryGetQualifiedSnapshot(sharedPid, out var snapB));
+        Assert.Equal(pathB, snapB!.ExecutablePath);
+
+        var deliveredExits = new List<string>();
+        monitor.OnGameExited += path => deliveredExits.Add(path);
+
+        // Step 3: Stale exit for instance A arrives now
+        exitHandler.SimulateInstanceExit(regA.Token, sharedPid, pathA);
+
+        // A's exit was delivered
+        Assert.Single(deliveredExits);
+        Assert.Equal(pathA, deliveredExits[0]);
+
+        // CRITICAL: B's registration and candidate state SURVIVED! It was not evicted by A's stale exit
+        Assert.True(monitor.TryGetQualifiedSnapshot(sharedPid, out var snapBAfterAExit));
+        Assert.Equal(pathB, snapBAfterAExit!.ExecutablePath);
+
+        // Step 4: Now deliver B's exit
+        exitHandler.SimulateInstanceExit(regB.Token, sharedPid, pathB);
+
+        // B's exit delivered exactly once
+        Assert.Equal(2, deliveredExits.Count);
+        Assert.Equal(pathB, deliveredExits[1]);
+
+        // B's candidate state is now removed
+        Assert.False(monitor.TryGetQualifiedSnapshot(sharedPid, out _));
+    }
+
+    [Fact]
+    public void CandidateLifecycle_TerminalCandidateWithUnresolvedIdentity_ResetsOnResolutionOrReuse()
+    {
+        using var tempDir = new SyntheticTestDirectory();
+        var libraryStore = new GameLibraryStore(
+            Path.Combine(tempDir.RootPath, "game-library.json"),
+            Path.Combine(tempDir.RootPath, "backups"));
+        var exitHandler = new FakeProcessExitHandler();
+        var scanner = new DynamicModuleScanner(_ => ModuleScanResult.Complete(new HashSet<string>()));
+        var classifier = new ApiClassifier(scanner, new FakePeParser());
+
+        using var currentProc = Process.GetCurrentProcess();
+        string exePath = @"C:\Games\UnknownApp\App.exe";
+        TimeSpan currentClock = TimeSpan.Zero;
+        DateTime currentStart = DateTime.MinValue; // Unresolved identity
+
+        var monitor = new ProcessMonitor(
+            new GameDetector(),
+            exitHandler,
+            classifier,
+            libraryStore,
+            clock: () => currentClock,
+            processEnumerator: () => new[] { currentProc },
+            startTimer: false);
+        monitor.GameProcessFilter = _ => true;
+        monitor.WindowFilter = _ => true;
+        monitor.StartTimeResolver = _ => currentStart;
+        monitor.ExePathResolver = _ => exePath;
+
+        // Conduct all 12 assessments with unresolved identity (DateTime.MinValue) until expired
+        for (int i = 0; i < ProcessQualification.ScheduledOffsetsSeconds.Length; i++)
+        {
+            currentClock = TimeSpan.FromSeconds(ProcessQualification.ScheduledOffsetsSeconds[i]);
+            monitor.PollProcessesOnce();
+        }
+
+        var candidate1 = monitor.GetCandidateState(currentProc.Id);
+        Assert.NotNull(candidate1);
+        Assert.True(candidate1!.IsExpired);
+        Assert.Equal(DateTime.MinValue, candidate1.ProcessStartTime);
+
+        // Case 1: Subsequent tick where start time resolves to a known timestamp
+        currentStart = new DateTime(2026, 10, 15, 12, 10, 0, DateTimeKind.Utc);
+        monitor.PollProcessesOnce();
+
+        var candidate2 = monitor.GetCandidateState(currentProc.Id);
+        Assert.NotNull(candidate2);
+        // Expired state must NOT be inherited; state resets for the resolved identity
+        Assert.False(candidate2!.IsExpired);
+        Assert.Equal(currentStart, candidate2.ProcessStartTime);
+        Assert.Equal(1, candidate2.AssessmentsConductedCount);
+
+        // Case 2: Expire it again with unresolved identity on PID reuse
+        for (int i = 0; i < ProcessQualification.ScheduledOffsetsSeconds.Length; i++)
+        {
+            currentClock = TimeSpan.FromSeconds(ProcessQualification.ScheduledOffsetsSeconds[i] + 200);
+            monitor.PollProcessesOnce();
+        }
+        Assert.True(candidate2.IsExpired);
+
+        // Reuse PID with unresolved identity (DateTime.MinValue)
+        currentStart = DateTime.MinValue;
+        monitor.PollProcessesOnce();
+
+        var candidate3 = monitor.GetCandidateState(currentProc.Id);
+        Assert.NotNull(candidate3);
+        // Terminal state is not inherited even across unresolved identities
+        Assert.False(candidate3!.IsExpired);
+        Assert.Equal(1, candidate3.AssessmentsConductedCount);
+    }
+
+    [Fact]
+    public void CandidateLifecycle_UnresolvedIdentity_WithholdsAdmissionUntilResolved()
+    {
+        using var tempDir = new SyntheticTestDirectory();
+        var libraryStore = new GameLibraryStore(
+            Path.Combine(tempDir.RootPath, "game-library.json"),
+            Path.Combine(tempDir.RootPath, "backups"));
+        var exitHandler = new FakeProcessExitHandler();
+        var scanner = new DynamicModuleScanner(_ => ModuleScanResult.Complete(new HashSet<string> { "d3d11.dll" }));
+        var classifier = new ApiClassifier(scanner, new FakePeParser());
+
+        using var currentProc = Process.GetCurrentProcess();
+        string exePath = @"C:\Games\Game11\Game.exe";
+        TimeSpan currentClock = TimeSpan.Zero;
+        DateTime currentStart = DateTime.MinValue; // Unresolved identity
+
+        var monitor = new ProcessMonitor(
+            new GameDetector(),
+            exitHandler,
+            classifier,
+            libraryStore,
+            clock: () => currentClock,
+            processEnumerator: () => new[] { currentProc },
+            startTimer: false);
+        monitor.GameProcessFilter = _ => true;
+        monitor.WindowFilter = _ => true;
+        monitor.StartTimeResolver = _ => currentStart;
+        monitor.ExePathResolver = _ => exePath;
+
+        int qualifiedEvents = 0;
+        monitor.OnQualifiedGameDetected += (_, _) => qualifiedEvents++;
+
+        // Poll at t=0s: D3D11 is present, but identity is unresolved (MinValue) -> withhold admission
+        monitor.PollProcessesOnce();
+        Assert.Equal(0, qualifiedEvents);
+        var candidate1 = monitor.GetCandidateState(currentProc.Id);
+        Assert.NotNull(candidate1);
+        Assert.False(candidate1!.IsQualified);
+        Assert.Equal(1, candidate1.AssessmentsConductedCount);
+        Assert.True(candidate1.LastInspectionHadFailure);
+
+        // At t=2s: Start time is resolved
+        currentClock = TimeSpan.FromSeconds(2);
+        currentStart = new DateTime(2026, 10, 15, 12, 0, 0, DateTimeKind.Utc);
+        monitor.PollProcessesOnce();
+
+        // Now identity is resolved: admission succeeds
+        Assert.Equal(1, qualifiedEvents);
+        var candidate2 = monitor.GetCandidateState(currentProc.Id);
+        Assert.NotNull(candidate2);
+        Assert.True(candidate2!.IsQualified);
+        Assert.Equal(currentStart, candidate2.ProcessStartTime);
     }
 }

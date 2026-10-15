@@ -66,6 +66,13 @@
    - **Section D**: Introduced `FakeHttpMessageHandler` for `HttpClient` in `DxvkGithubClient` and `DxvkInstaller` to completely eliminate live network requests during headless testing. Added test seams `autoEnableDispatcher` and `autoReapplyDispatcher` to `TrayApp.ProcessGameAdmissionAsync` to verify single-dispatch on DX11 and zero-dispatch on Unknown/DX12/Vulkan without live installer execution. Provided synthetic `RawModuleEnumerator` seam in `ModuleScanner` to avoid live host module enumeration.
    - Added 12 new deterministic tests and modernized headless admission orchestration test covering all requested scenarios in `tests/DXVKCompanion.PhaseA.Tests/ProcessMonitorQualificationTests.cs`.
 
+9. **R9 — Immutable Registration Token Binding & Unresolved Identity Isolation (Comment 6196151368)**:
+   - Bound an immutable `Guid registrationToken` to each exit watcher attachment in `ProcessExitHandler` with token-based deduplication (`_notifiedTokens`), eliminating cross-instance suppression when PIDs are reused.
+   - Updated `ProcessMonitor.HandleExit` to verify matching registration token against `_attachedExitProcesses[pid]`, ensuring stale delayed exit deliveries from an older process instance cannot evict a newer instance's attachment or candidate state.
+   - Guarded candidate qualification and admission against unresolved start times (`startTime != DateTime.MinValue`), withholding qualification until identity is established while advancing failure/backoff budgets.
+   - Prevented silent inheritance of terminal candidate states (`IsQualified` / `IsExpired`) when start times are unresolved or when PIDs are reused with unresolved identity.
+   - Added deterministic unit tests for stale exit delivery survival on reused PID, terminal candidate reset with unresolved identity, and admission withholding until resolution.
+
 ---
 
 ### 3. Inspected vs. Executed Evidence

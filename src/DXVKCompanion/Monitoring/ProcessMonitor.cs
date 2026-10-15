@@ -28,7 +28,7 @@ namespace DXVKCompanion.Monitoring
         private readonly Dictionary<int, DateTime> _nonGamePids = new();
         private readonly Dictionary<int, CandidateProcessState> _candidates = new();
         private readonly Dictionary<int, (DateTime StartTime, int RetryCount)> _windowRetries = new();
-        private readonly Dictionary<int, (Process Process, DateTime StartTime, string ExePath)> _attachedExitProcesses = new();
+        private readonly Dictionary<int, (Process Process, DateTime StartTime, string ExePath, Guid RegistrationToken)> _attachedExitProcesses = new();
 
         private readonly System.Threading.Timer? _timer;
         private readonly GameDetector _detector;
@@ -84,9 +84,9 @@ namespace DXVKCompanion.Monitoring
             }
         }
 
-        private void OnProcessInstanceExited(int pid, string exePath) => HandleExit(pid, exePath);
+        private void OnProcessInstanceExited(Guid token, int pid, string exePath) => HandleExit(token, pid, exePath);
 
-        private void HandleExit(int pid, string exePath)
+        private void HandleExit(Guid token, int pid, string exePath)
         {
             if (_disposed) return;
 
@@ -95,13 +95,44 @@ namespace DXVKCompanion.Monitoring
             {
                 if (_disposed) return;
 
-                if (pid > 0)
+                if (token != Guid.Empty && pid > 0)
                 {
-                    _attachedExitProcesses.Remove(pid);
-                    _candidates.Remove(pid);
-                    _windowRetries.Remove(pid);
-                    _nonGamePids.Remove(pid);
-                    shouldFire = true;
+                    if (_attachedExitProcesses.TryGetValue(pid, out var existing))
+                    {
+                        if (existing.RegistrationToken == token)
+                        {
+                            // Active registration matching this exit delivery: remove current state
+                            _attachedExitProcesses.Remove(pid);
+                            _candidates.Remove(pid);
+                            _windowRetries.Remove(pid);
+                            _nonGamePids.Remove(pid);
+                            shouldFire = true;
+                        }
+                        else
+                        {
+                            // Stale exit delivery from an earlier instance: do not remove newer registration or candidate
+                            shouldFire = true;
+                        }
+                    }
+                    else
+                    {
+                        shouldFire = true;
+                    }
+                }
+                else if (pid > 0)
+                {
+                    if (_attachedExitProcesses.TryGetValue(pid, out var existing))
+                    {
+                        _attachedExitProcesses.Remove(pid);
+                        _candidates.Remove(pid);
+                        _windowRetries.Remove(pid);
+                        _nonGamePids.Remove(pid);
+                        shouldFire = true;
+                    }
+                    else
+                    {
+                        shouldFire = true;
+                    }
                 }
                 else
                 {
@@ -290,29 +321,29 @@ namespace DXVKCompanion.Monitoring
                             if (_candidates.TryGetValue(pid, out var candidate))
                             {
                                 bool isSameInstance;
-                                if (startTime != DateTime.MinValue && candidate.ProcessStartTime != DateTime.MinValue)
+                                if (candidate.IsQualified || candidate.IsExpired)
                                 {
-                                    isSameInstance = (startTime == candidate.ProcessStartTime);
+                                    // Terminal candidate state: require positive matching known start times
+                                    isSameInstance = (startTime != DateTime.MinValue &&
+                                                      candidate.ProcessStartTime != DateTime.MinValue &&
+                                                      startTime == candidate.ProcessStartTime);
                                 }
-                                else if (startTime != candidate.ProcessStartTime)
+                                else
                                 {
-                                    // Transition between unresolved (MinValue) and known start time:
-                                    if (candidate.IsQualified || candidate.IsExpired)
+                                    // In-progress candidate:
+                                    if (startTime != DateTime.MinValue && candidate.ProcessStartTime != DateTime.MinValue)
                                     {
-                                        isSameInstance = false;
+                                        isSameInstance = (startTime == candidate.ProcessStartTime);
                                     }
                                     else
                                     {
-                                        if (startTime != DateTime.MinValue)
+                                        // At least one start time is unresolved (MinValue):
+                                        if (candidate.ProcessStartTime == DateTime.MinValue && startTime != DateTime.MinValue)
                                         {
                                             candidate.ProcessStartTime = startTime;
                                         }
                                         isSameInstance = true;
                                     }
-                                }
-                                else
-                                {
-                                    isSameInstance = true;
                                 }
 
                                 if (!isSameInstance)
@@ -364,7 +395,9 @@ namespace DXVKCompanion.Monitoring
                                 break;
                             }
 
-                            bool qualifies = snapshot != null && ProcessQualification.IsRecognizedGraphicsApi(snapshot.Classification.PrimaryApi);
+                            bool qualifies = snapshot != null &&
+                                             startTime != DateTime.MinValue &&
+                                             ProcessQualification.IsRecognizedGraphicsApi(snapshot.Classification.PrimaryApi);
 
                             if (qualifies && snapshot != null)
                             {
@@ -408,6 +441,7 @@ namespace DXVKCompanion.Monitoring
                             else
                             {
                                 candidate.LastInspectionHadFailure = (snapshot == null) ||
+                                    (startTime == DateTime.MinValue) ||
                                     (snapshot.Classification.EvidenceSource == "RuntimeIncomplete") ||
                                     (snapshot.Classification.Evidence.Any(e => e.Contains("scan incomplete", StringComparison.OrdinalIgnoreCase)));
 
@@ -483,8 +517,9 @@ namespace DXVKCompanion.Monitoring
                     }
                 }
 
-                _attachedExitProcesses[pid] = (proc, startTime, exePath);
-                _exitHandler.Attach(proc);
+                var token = Guid.NewGuid();
+                _attachedExitProcesses[pid] = (proc, startTime, exePath, token);
+                _exitHandler.AttachCore(proc, token);
                 return true;
             }
             catch
