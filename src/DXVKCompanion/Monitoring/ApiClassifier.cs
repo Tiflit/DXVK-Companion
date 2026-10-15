@@ -65,7 +65,8 @@ namespace DXVKCompanion.Monitoring
                 architecture = Environment.Is64BitOperatingSystem && !Is32BitProcess(process) ? "x64" : "x32";
             }
 
-            var runtimeModules = _scanner.GetLoadedGraphicsModules(process);
+            var scanResult = _scanner.ScanLoadedGraphicsModules(process);
+            var runtimeModules = scanResult.Modules;
             if (runtimeModules.Count > 0)
             {
                 var observed = new List<GraphicsApi>();
@@ -170,7 +171,7 @@ namespace DXVKCompanion.Monitoring
                 }
                 catch (Exception ex)
                 {
-                    Logger.Log($"ApiClassifier: PE import inspection failed for {resolvedExePath}: {ex.Message}");
+                    Logger.Log($"ApiClassifier: PE import inspection failed ({ex.GetType().Name}).");
                 }
             }
 
@@ -181,7 +182,7 @@ namespace DXVKCompanion.Monitoring
                 Confidence = ApiDetectionConfidence.Unknown,
                 Architecture = architecture,
                 Evidence = Array.Empty<string>(),
-                EvidenceSource = "None"
+                EvidenceSource = scanResult.HasFailed ? "RuntimeIncomplete" : "None"
             };
         }
 

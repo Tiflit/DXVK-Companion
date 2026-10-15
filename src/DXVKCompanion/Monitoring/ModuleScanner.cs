@@ -10,6 +10,31 @@ namespace DXVKCompanion.Monitoring
     /// that each independently re-enumerated process.Modules (a real syscall, not a free
     /// property read) whenever ApiClassifier called more than one of them per process.
     /// </summary>
+    public class ModuleScanResult
+    {
+        public HashSet<string> Modules { get; }
+        public bool IsComplete { get; }
+        public bool HasFailed { get; }
+        public string? FailureReason { get; }
+
+        public ModuleScanResult(HashSet<string> modules, bool isComplete, bool hasFailed = false, string? failureReason = null)
+        {
+            Modules = modules ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            IsComplete = isComplete;
+            HasFailed = hasFailed;
+            FailureReason = failureReason;
+        }
+
+        public static ModuleScanResult Complete(HashSet<string> modules) => new(modules, true);
+        public static ModuleScanResult Incomplete(HashSet<string> modules, string? failureReason = null) => new(modules, false, true, failureReason);
+    }
+
+    /// <summary>
+    /// Enumerates a process's loaded modules ONCE per call and checks every tracked
+    /// graphics-API DLL against that single snapshot — replacing six near-identical methods
+    /// that each independently re-enumerated process.Modules (a real syscall, not a free
+    /// property read) whenever ApiClassifier called more than one of them per process.
+    /// </summary>
     public class ModuleScanner
     {
         private static readonly string[] TrackedModules =
@@ -18,8 +43,17 @@ namespace DXVKCompanion.Monitoring
             "dxgi.dll", "vulkan-1.dll", "opengl32.dll", "ddraw.dll", "dgvoodoo.dll"
         };
 
-        public virtual HashSet<string> GetLoadedGraphicsModules(Process process)
+        public virtual ModuleScanResult ScanLoadedGraphicsModules(Process process)
         {
+            // If a derived type overrode GetLoadedGraphicsModules (such as existing test fakes),
+            // defer to GetLoadedGraphicsModules to preserve existing test seams.
+            var method = GetType().GetMethod(nameof(GetLoadedGraphicsModules), new[] { typeof(Process) });
+            if (method != null && method.DeclaringType != typeof(ModuleScanner))
+            {
+                var overriddenModules = GetLoadedGraphicsModules(process);
+                return ModuleScanResult.Complete(overriddenModules);
+            }
+
             var found = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
             try
@@ -28,16 +62,23 @@ namespace DXVKCompanion.Monitoring
                 {
                     string name = module.ModuleName.ToLowerInvariant();
                     foreach (var tracked in TrackedModules)
+                    {
                         if (name.Contains(tracked))
                             found.Add(tracked);
+                    }
                 }
+                return ModuleScanResult.Complete(found);
             }
-            catch
+            catch (Exception ex)
             {
-                // Access denied — return whatever was found before the failure (often nothing).
+                // Access denied or enumeration failure — return whatever was found before the failure, marked incomplete
+                return ModuleScanResult.Incomplete(found, ex.GetType().Name);
             }
+        }
 
-            return found;
+        public virtual HashSet<string> GetLoadedGraphicsModules(Process process)
+        {
+            return ScanLoadedGraphicsModules(process).Modules;
         }
 
         // Games loading more than one graphics API at once is unusual and can indicate a

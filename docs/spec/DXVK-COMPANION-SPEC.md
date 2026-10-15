@@ -315,13 +315,24 @@ Obvious system processes and known launchers should be filtered where practical.
 
 A process should not become a tracked game merely because it has a window.
 
-## 6.2 Initialization window
+## 6.2 Initialization window and Process Qualification Gate
 
-Games may take time to initialize their rendering API.
+Games may take time to initialize their rendering API. Companion does not discard a process permanently merely because graphics modules are not visible immediately after process creation. Conversely, window presence alone is never sufficient to admit a process as a game: windowed processes must present concrete graphics evidence (Direct3D 9, 10, 11, 12, or Vulkan) via runtime modules or static PE imports before creating persistent profile/library records, selecting active games, emitting detection notifications, or triggering deployment actions.
 
-Companion should not discard a process permanently just because the graphics modules are not visible immediately after process creation.
+### 6.2.1 Bounded Assessment Backoff Schedule
+To observe initialization without continuous runtime polling or infinite budgets, candidate processes with a window are assessed according to a bounded, non-linear backoff schedule consisting of at most 12 assessments at defined elapsed-second offsets:
+```text
+0s, 2s, 4s, 6s, 8s, 10s, 20s, 30s, 44s, 60s, 90s, 120s
+```
+- **Monotonic Clock**: Assessment due times are evaluated against a monotonic clock (`Stopwatch.GetElapsedTime`) relative to the candidate's first windowed observation.
+- **Catch-Up Burst Prevention**: In the event of system suspend, heavy scheduling latency, or delayed timer ticks, elapsed time is checked once per tick. If multiple scheduled offsets have elapsed, exactly one assessment is performed for that tick, and the schedule index advances past all elapsed deadlines to avoid catch-up bursts.
+- **Retirement & PID Reuse**: When a candidate process exits or disappears from enumeration, candidate tracking state is immediately retired. If a PID is reused by the operating system (detected via differing process start times), assessment state is reset cleanly with a fresh budget.
+- **Budget Expiration**: If a candidate reaches the end of the 120-second window (12 assessments) without presenting recognized graphics evidence, tracking expires and the candidate is dropped without mutating library or profile stores. A single bounded diagnostic log is recorded, distinguishing unresolved inspection from completed no-evidence observation, without logging raw paths or private exception details.
 
-A lightweight, short-lived detection session should allow the application to observe initialization.
+### 6.2.2 Coherent Assessment and Store Invariants
+- **Unified Snapshot**: Qualification performed by `ProcessMonitor` produces an authoritative `DetectionSnapshot` reused by `TrayApp` to prevent divergent or race-conditioned reassessments.
+- **Known-Record Protection**: Non-qualifying observations (Unknown or failed scans) must never overwrite, mutate, or degrade existing library or profile records.
+- **Pending-Action Exit Attachment**: If an existing installation record has a queued `PendingAction`, the exit handler attaches to the running process regardless of qualification status, ensuring safe deferred execution when the game exits.
 
 ## 6.3 Parent and child processes
 
@@ -429,6 +440,9 @@ Companion's API classification operates within clear observational boundaries:
 1. **Snapshot-Based Observation**: Detection reflects the modules loaded and visible during the initial qualification window following process creation, supplemented by static PE import parsing.
 2. **Dynamic / Late-Loading Module Limitation**: Games or anti-cheat wrappers that dynamically load graphics modules late during execution (e.g. via delayed `LoadLibrary` calls during level loads or engine switches) cannot be detected without continuous runtime monitoring or late injection hooks.
 3. **Scope Boundary**: Continuous background module polling, late injection hooks, and active runtime interception are explicitly out of scope. The classification and pre-execution reassessment provide high-confidence safeguards against known and recorded configurations, not universal coverage of late runtime dynamic engine shifts.
+4. **Inspection Uncertainty and Provenance Tracking**: Runtime module enumeration explicitly distinguishes between completed scans yielding no recognized graphics modules (`EvidenceSource: "None"`) and failed or incomplete enumerations (e.g., due to access denial, anti-cheat protection, or process isolation, recorded as `EvidenceSource: "RuntimeIncomplete"` with sanitized exception reasons). Static PE fallback provides secondary evidence with `Medium` confidence (`EvidenceSource: "StaticPEImports"`).
+5. **Modern Native API Boundaries**: Qualification of Direct3D 12 and Vulkan processes enables informational observation and library tracking only; DXVK translation layer deployment remains strictly refused for modern APIs.
+6. **Qualification Boundary**: Non-game windowed applications (browsers, text editors, utilities) that do not load recognized graphics APIs or import graphics runtime libraries are dropped at the qualification gate, preventing pollution of game libraries and accidental injection.
 
 ---
 

@@ -9,7 +9,7 @@ namespace DXVKCompanion.Monitoring
         // act on it without holding a live Process reference around.
         public event Action<string>? ProcessExited;
 
-        public void Attach(Process process)
+        public virtual void Attach(Process process)
         {
             string? exePath = null;
             try

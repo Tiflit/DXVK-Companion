@@ -31,6 +31,7 @@ namespace DXVKCompanion.UI
         private readonly SynchronizationContext _syncContext;
 
         private string? _pendingUpdateUrl;
+        private int _lastHandledPid = -1;
 
         public TrayApp(
             ProcessMonitor monitor,
@@ -81,9 +82,21 @@ namespace DXVKCompanion.UI
                 }, null);
             };
 
-            _monitor.OnGameDetected += HandleGameDetected;
+            _monitor.OnQualifiedGameDetected += (process, snapshot) => HandleGameDetected(process, snapshot);
+            _monitor.OnGameDetected += process =>
+            {
+                if (_monitor.TryGetQualifiedSnapshot(process.Id, out var snapshot))
+                {
+                    HandleGameDetected(process, snapshot);
+                }
+                else
+                {
+                    HandleGameDetected(process, null);
+                }
+            };
             _monitor.OnGameExited += async exePath =>
             {
+                _lastHandledPid = -1;
                 _syncContext.Post(_ => _menu.ClearActiveGame(), null);
                 bool applied = await _dxvk.ApplyPendingAsync(exePath);
                 if (applied)
@@ -161,12 +174,14 @@ namespace DXVKCompanion.UI
             }
         }
 
-        private async void HandleGameDetected(Process process)
+        private async void HandleGameDetected(Process process, DetectionSnapshot? snapshot = null)
         {
+            if (process.Id == _lastHandledPid) return;
+
             string? exePath;
             try
             {
-                exePath = process.MainModule?.FileName;
+                exePath = snapshot?.ExecutablePath ?? process.MainModule?.FileName;
                 if (string.IsNullOrEmpty(exePath)) return;
             }
             catch (Exception ex)
@@ -177,21 +192,32 @@ namespace DXVKCompanion.UI
 
             try
             {
-                var profile = _profiles.GetOrCreate(exePath);
+                if (snapshot == null)
+                {
+                    _monitor.TryGetQualifiedSnapshot(process.Id, out snapshot);
+                }
 
-                var classification = _classifier.ClassifyDetailed(process, exePath);
+                var classification = snapshot?.Classification ?? _classifier.ClassifyDetailed(process, exePath);
+                if (!ProcessQualification.IsRecognizedGraphicsApi(classification.PrimaryApi))
+                {
+                    return;
+                }
+
+                _lastHandledPid = process.Id;
+
+                var profile = _profiles.GetOrCreate(exePath);
                 profile.Api = classification.PrimaryApi;
                 profile.Architecture = classification.Architecture;
 
-                string gameDir = Path.GetDirectoryName(exePath) ?? string.Empty;
-                var antiCheatAssessment = _detector.AssessAntiCheatRisk(process, gameDir);
+                string gameDir = snapshot?.InstallationRoot ?? (Path.GetDirectoryName(exePath) ?? string.Empty);
+                var antiCheatAssessment = snapshot?.AntiCheat ?? _detector.AssessAntiCheatRisk(process, gameDir);
                 bool antiCheat = antiCheatAssessment.Risk != AntiCheatRisk.None;
 
                 // Record detection snapshot into modern GameLibraryStore
                 if (!string.IsNullOrWhiteSpace(gameDir))
                 {
-                    string relExe = Path.GetRelativePath(gameDir, exePath);
-                    var snapshot = new DetectionSnapshot
+                    string relExe = snapshot?.ExecutableRelativePath ?? Path.GetRelativePath(gameDir, exePath);
+                    var recordSnapshot = snapshot ?? new DetectionSnapshot
                     {
                         ProcessId = process.Id,
                         ProcessName = process.ProcessName,
@@ -202,7 +228,7 @@ namespace DXVKCompanion.UI
                         AntiCheat = antiCheatAssessment,
                         TimestampUtc = DateTime.UtcNow
                     };
-                    _gameLibraryStore.RecordDetectionSnapshot(snapshot);
+                    _gameLibraryStore.RecordDetectionSnapshot(recordSnapshot);
                 }
 
                 var latest = await _dxvk.GetLatestReleaseAsync();
@@ -250,7 +276,7 @@ namespace DXVKCompanion.UI
             }
             catch (Exception ex)
             {
-                Logger.Log($"TrayApp.HandleGameDetected failed for {exePath}: {ex.GetType().Name} - {ex.Message}");
+                Logger.Log($"TrayApp.HandleGameDetected failed: {ex.GetType().Name} - {ex.Message}");
             }
         }
 
