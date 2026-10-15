@@ -21,15 +21,28 @@ public sealed class ProcessMonitorQualificationTests
     {
         public List<Process> AttachedProcesses { get; } = new();
         public List<(Guid Token, Process Process)> AttachedRegistrations { get; } = new();
+        public bool FailSetup { get; set; }
+        public bool SynchronousExit { get; set; }
 
-        internal override Guid AttachCore(Process process, Guid registrationToken = default)
+        internal override Guid AttachCore(Process process, Guid registrationToken = default, string? knownExePath = null)
         {
+            if (FailSetup)
+            {
+                return Guid.Empty;
+            }
+
             if (registrationToken == default) registrationToken = Guid.NewGuid();
             AttachedProcesses.Add(process);
             AttachedRegistrations.Add((registrationToken, process));
-            int pid = 0;
-            try { pid = process.Id; } catch { }
-            RegisterToken(registrationToken, pid, null);
+            int pid = GetProcessId(process);
+            string? exePath = knownExePath ?? GetProcessExecutablePath(process);
+            RegisterToken(registrationToken, pid, exePath, process);
+
+            if (SynchronousExit)
+            {
+                RaiseProcessInstanceExited(registrationToken, pid, exePath ?? "Dummy.exe");
+            }
+
             return registrationToken;
         }
 
@@ -42,7 +55,7 @@ public sealed class ProcessMonitorQualificationTests
         {
             var match = AttachedRegistrations.LastOrDefault(r =>
             {
-                try { return r.Process.Id == pid; } catch { return false; }
+                try { return GetProcessId(r.Process) == pid; } catch { return false; }
             });
             RaiseProcessInstanceExited(match.Token, pid, exePath);
         }
@@ -818,8 +831,9 @@ public sealed class ProcessMonitorQualificationTests
         var classifier = new ApiClassifier(scanner, new FakePeParser());
 
         using var proc1 = Process.GetCurrentProcess();
-        using var proc2 = Process.GetProcesses().FirstOrDefault(p => p.Id > 0 && p.Id != proc1.Id);
-        if (proc2 == null) return; // Safeguard if environment has single process
+        using var proc2 = Process.GetCurrentProcess();
+        int pid1 = 1001;
+        int pid2 = 1002;
 
         string exePath = @"C:\Games\MultiInstance\Game.exe";
 
@@ -831,9 +845,10 @@ public sealed class ProcessMonitorQualificationTests
             clock: () => TimeSpan.Zero,
             processEnumerator: () => new[] { proc1, proc2 },
             startTimer: false);
+        monitor.ProcessIdResolver = p => ReferenceEquals(p, proc1) ? pid1 : pid2;
         monitor.GameProcessFilter = _ => true;
         monitor.WindowFilter = _ => true;
-        monitor.StartTimeResolver = p => p.Id == proc1.Id
+        monitor.StartTimeResolver = p => ReferenceEquals(p, proc1)
             ? new DateTime(2026, 10, 15, 12, 0, 0, DateTimeKind.Utc)
             : new DateTime(2026, 10, 15, 12, 1, 0, DateTimeKind.Utc);
         monitor.ExePathResolver = _ => exePath;
@@ -841,22 +856,37 @@ public sealed class ProcessMonitorQualificationTests
         // Poll: both qualify and attach
         monitor.PollProcessesOnce();
         Assert.Equal(2, exitHandler.AttachedProcesses.Count);
+        Assert.Equal(2, exitHandler.AttachedRegistrations.Count);
+
+        var reg1 = exitHandler.AttachedRegistrations.First(r => ReferenceEquals(r.Process, proc1));
+        var reg2 = exitHandler.AttachedRegistrations.First(r => ReferenceEquals(r.Process, proc2));
+        var token1 = reg1.Token;
+        var token2 = reg2.Token;
+        Assert.True(exitHandler.HasRegistration(token1));
+        Assert.True(exitHandler.HasRegistration(token2));
 
         var exits = new List<string>();
         monitor.OnGameExited += path => exits.Add(path);
 
         // Instance 2 exits first (opposite order)
-        exitHandler.SimulateInstanceExit(proc2.Id, exePath);
+        exitHandler.SimulateInstanceExit(token2, pid2, exePath);
         Assert.Single(exits);
 
-        // Verify proc1 is still qualified in monitor, while proc2 was removed
-        Assert.True(monitor.TryGetQualifiedSnapshot(proc1.Id, out _));
-        Assert.False(monitor.TryGetQualifiedSnapshot(proc2.Id, out _));
+        // Verify registration for instance 2 is released while instance 1 remains
+        Assert.True(exitHandler.HasRegistration(token1));
+        Assert.False(exitHandler.HasRegistration(token2));
+        Assert.True(monitor.TryGetQualifiedSnapshot(pid1, out _));
+        Assert.False(monitor.TryGetQualifiedSnapshot(pid2, out _));
+        Assert.True(monitor.IsExitWatcherAttached(pid1));
+        Assert.False(monitor.IsExitWatcherAttached(pid2));
 
         // Instance 1 exits
-        exitHandler.SimulateInstanceExit(proc1.Id, exePath);
+        exitHandler.SimulateInstanceExit(token1, pid1, exePath);
         Assert.Equal(2, exits.Count);
-        Assert.False(monitor.TryGetQualifiedSnapshot(proc1.Id, out _));
+        Assert.False(exitHandler.HasRegistration(token1));
+        Assert.False(exitHandler.HasRegistration(token2));
+        Assert.False(monitor.TryGetQualifiedSnapshot(pid1, out _));
+        Assert.False(monitor.IsExitWatcherAttached(pid1));
     }
 
     [Fact]
@@ -1788,5 +1818,331 @@ public sealed class ProcessMonitorQualificationTests
         Assert.Equal(currentStart, reusedCandidate.ProcessStartTime);
         Assert.Equal(1, reusedCandidate.AssessmentsConductedCount);
         Assert.Equal(14, scanCount);
+    }
+
+    [Fact]
+    public void AttachExitHandler_SetupFailure_UnwindsAttachmentAndPreservesExternalOwnership()
+    {
+        using var tempDir = new SyntheticTestDirectory();
+        var libraryStore = new GameLibraryStore(
+            Path.Combine(tempDir.RootPath, "game-library.json"),
+            Path.Combine(tempDir.RootPath, "backups"));
+        var exitHandler = new FakeProcessExitHandler { FailSetup = true };
+        var scanner = new DynamicModuleScanner(_ => ModuleScanResult.Complete(new HashSet<string> { "d3d11.dll" }));
+        var classifier = new ApiClassifier(scanner, new FakePeParser());
+
+        using var currentProc = Process.GetCurrentProcess();
+        string exePath = @"C:\Games\Game11\Game.exe";
+        var startTime = new DateTime(2026, 10, 15, 12, 0, 0, DateTimeKind.Utc);
+
+        var monitor = new ProcessMonitor(
+            new GameDetector(),
+            exitHandler,
+            classifier,
+            libraryStore,
+            clock: () => TimeSpan.Zero,
+            processEnumerator: () => new[] { currentProc },
+            startTimer: false);
+        monitor.GameProcessFilter = _ => true;
+        monitor.WindowFilter = _ => true;
+        monitor.StartTimeResolver = _ => startTime;
+        monitor.ExePathResolver = _ => exePath;
+
+        int qualifiedEvents = 0;
+        monitor.OnQualifiedGameDetected += (_, _) => qualifiedEvents++;
+
+        // Act: poll should qualify candidate, but watcher setup fails
+        monitor.PollProcessesOnce();
+
+        // Assert: Candidate was NOT emitted as qualified due to failed watcher setup
+        Assert.Equal(0, qualifiedEvents);
+        Assert.False(monitor.TryGetQualifiedSnapshot(currentProc.Id, out _));
+
+        // Crucial: Attachment was unwound upon setup failure — not retained as phantom live watcher
+        Assert.False(monitor.IsExitWatcherAttached(currentProc.Id));
+
+        // External process ownership was respected — not disposed
+        Assert.False(currentProc.HasExited);
+    }
+
+    [Fact]
+    public void AttachExitHandler_SynchronousExitDuringSetup_CleansUpWithoutPhantomLiveAttachment()
+    {
+        using var tempDir = new SyntheticTestDirectory();
+        var libraryStore = new GameLibraryStore(
+            Path.Combine(tempDir.RootPath, "game-library.json"),
+            Path.Combine(tempDir.RootPath, "backups"));
+        var exitHandler = new FakeProcessExitHandler { SynchronousExit = true };
+        var scanner = new DynamicModuleScanner(_ => ModuleScanResult.Complete(new HashSet<string> { "d3d11.dll" }));
+        var classifier = new ApiClassifier(scanner, new FakePeParser());
+
+        using var currentProc = Process.GetCurrentProcess();
+        int pid = currentProc.Id;
+        string exePath = @"C:\Games\SyncExitGame\Game.exe";
+        var startTime = new DateTime(2026, 10, 15, 12, 0, 0, DateTimeKind.Utc);
+
+        var monitor = new ProcessMonitor(
+            new GameDetector(),
+            exitHandler,
+            classifier,
+            libraryStore,
+            clock: () => TimeSpan.Zero,
+            processEnumerator: () => new[] { currentProc },
+            startTimer: false);
+        monitor.GameProcessFilter = _ => true;
+        monitor.WindowFilter = _ => true;
+        monitor.StartTimeResolver = _ => startTime;
+        monitor.ExePathResolver = _ => exePath;
+
+        int qualifiedEvents = 0;
+        monitor.OnQualifiedGameDetected += (_, _) => qualifiedEvents++;
+
+        var exitedGames = new List<string>();
+        monitor.OnGameExited += path => exitedGames.Add(path);
+
+        // Act: Poll qualifies candidate and attempts attachment, triggering synchronous exit
+        monitor.PollProcessesOnce();
+
+        // Assert: Exit was delivered synchronously and candidate was not emitted to async consumers
+        Assert.Single(exitedGames);
+        Assert.Equal(exePath, exitedGames[0]);
+        Assert.Equal(0, qualifiedEvents);
+
+        // Crucial: Attachment state was removed by HandleExit and NOT overwritten with a phantom live attachment
+        // Assert using captured pid to avoid reading disposed process wrapper
+        Assert.False(monitor.IsExitWatcherAttached(pid));
+        Assert.False(monitor.TryGetQualifiedSnapshot(pid, out _));
+    }
+
+    [Fact]
+    public void AttachExitHandler_KnownPendingAction_FollowedByRecognizedApiQualification_PreservesSingleRegistration()
+    {
+        using var tempDir = new SyntheticTestDirectory();
+        var libraryStore = new GameLibraryStore(
+            Path.Combine(tempDir.RootPath, "game-library.json"),
+            Path.Combine(tempDir.RootPath, "backups"));
+        var exitHandler = new FakeProcessExitHandler();
+        var scanner = new DynamicModuleScanner(_ => ModuleScanResult.Complete(new HashSet<string> { "d3d11.dll" }));
+        var classifier = new ApiClassifier(scanner, new FakePeParser());
+
+        using var currentProc = Process.GetCurrentProcess();
+        int pid = currentProc.Id;
+        string exePath = @"C:\Games\PendingGame\Game.exe";
+        string installDir = @"C:\Games\PendingGame";
+        var startTime = new DateTime(2026, 10, 15, 12, 0, 0, DateTimeKind.Utc);
+
+        // Seed library with existing installation and pending action
+        var initialSnapshot = new DetectionSnapshot
+        {
+            ProcessId = pid,
+            ProcessName = "Game",
+            ExecutablePath = exePath,
+            InstallationRoot = installDir,
+            ExecutableRelativePath = "Game.exe",
+            Classification = new ApiClassificationResult
+            {
+                PrimaryApi = GraphicsApi.DX11,
+                Confidence = ApiDetectionConfidence.High,
+                Architecture = "x64",
+                Evidence = new[] { "Loaded runtime module: d3d11.dll" }
+            },
+            TimestampUtc = DateTime.UtcNow
+        };
+        libraryStore.RecordDetectionSnapshot(initialSnapshot);
+        var inst = libraryStore.FindByInstallationPath(installDir);
+        Assert.NotNull(inst);
+        inst!.PendingAction = PendingAction.Install("2.5", "Queued action");
+        libraryStore.Save(inst);
+
+        using var monitor = new ProcessMonitor(
+            new GameDetector(),
+            exitHandler,
+            classifier,
+            libraryStore,
+            clock: () => TimeSpan.Zero,
+            processEnumerator: () => new[] { currentProc },
+            startTimer: false);
+        monitor.GameProcessFilter = _ => true;
+        monitor.WindowFilter = _ => true;
+        monitor.StartTimeResolver = _ => startTime;
+        monitor.ExePathResolver = _ => exePath;
+
+        int qualifiedEvents = 0;
+        monitor.OnQualifiedGameDetected += (_, _) => qualifiedEvents++;
+
+        // Act: Poll processes. Pending action watcher attaches first, then qualification succeeds on same instance.
+        monitor.PollProcessesOnce();
+
+        // Assert: Qualification occurred, preserving exactly one registration
+        Assert.Equal(1, qualifiedEvents);
+        Assert.Single(exitHandler.AttachedRegistrations);
+        Assert.True(monitor.IsExitWatcherAttached(pid));
+        Assert.True(monitor.TryGetQualifiedSnapshot(pid, out var snapshot));
+        Assert.NotNull(snapshot);
+    }
+
+    [Fact]
+    public void AttachExitHandler_DelayedQualification_WithDifferentProcessWrapper_UsesRetainedWrapper()
+    {
+        using var tempDir = new SyntheticTestDirectory();
+        var libraryStore = new GameLibraryStore(
+            Path.Combine(tempDir.RootPath, "game-library.json"),
+            Path.Combine(tempDir.RootPath, "backups"));
+        var exitHandler = new FakeProcessExitHandler();
+
+        int scanCount = 0;
+        var scanner = new DynamicModuleScanner(_ =>
+        {
+            scanCount++;
+            return scanCount == 1
+                ? ModuleScanResult.Complete(new HashSet<string>())
+                : ModuleScanResult.Complete(new HashSet<string> { "d3d11.dll" });
+        });
+        var classifier = new ApiClassifier(scanner, new FakePeParser());
+
+        using var proc1 = Process.GetCurrentProcess();
+        using var proc2 = Process.GetCurrentProcess();
+        int pid = 3001;
+        string exePath = @"C:\Games\DelayedGame\Game.exe";
+        string installDir = @"C:\Games\DelayedGame";
+        var startTime = new DateTime(2026, 10, 15, 12, 0, 0, DateTimeKind.Utc);
+
+        // Seed library with existing installation and pending action so watcher attaches on proc1 during poll 1
+        var initialSnapshot = new DetectionSnapshot
+        {
+            ProcessId = pid,
+            ProcessName = "Game",
+            ExecutablePath = exePath,
+            InstallationRoot = installDir,
+            ExecutableRelativePath = "Game.exe",
+            Classification = new ApiClassificationResult
+            {
+                PrimaryApi = GraphicsApi.Unknown,
+                Confidence = ApiDetectionConfidence.Unknown,
+                Architecture = "x64",
+                Evidence = Array.Empty<string>()
+            },
+            TimestampUtc = DateTime.UtcNow
+        };
+        libraryStore.RecordDetectionSnapshot(initialSnapshot);
+        var inst = libraryStore.FindByInstallationPath(installDir);
+        Assert.NotNull(inst);
+        inst!.PendingAction = PendingAction.Install("2.5", "Queued action");
+        libraryStore.Save(inst);
+
+        Process currentEnumProcess = proc1;
+        TimeSpan currentClock = TimeSpan.Zero;
+        using var monitor = new ProcessMonitor(
+            new GameDetector(),
+            exitHandler,
+            classifier,
+            libraryStore,
+            clock: () => currentClock,
+            processEnumerator: () => new[] { currentEnumProcess },
+            startTimer: false);
+        monitor.ProcessIdResolver = _ => pid;
+        monitor.GameProcessFilter = _ => true;
+        monitor.WindowFilter = _ => true;
+        monitor.StartTimeResolver = _ => startTime;
+        monitor.ExePathResolver = _ => exePath;
+        monitor.TreatProcessesAsOwnedForTesting = true;
+
+        Process? consumerReceivedProc = null;
+        int qualifiedEvents = 0;
+        monitor.OnQualifiedGameDetected += (proc, _) =>
+        {
+            consumerReceivedProc = proc;
+            qualifiedEvents++;
+        };
+
+        // Poll 1: proc1 is enumerated; pending action attaches exit watcher; graphics scan incomplete so not qualified
+        monitor.PollProcessesOnce();
+        Assert.Equal(0, qualifiedEvents);
+        Assert.Equal(1, scanCount);
+        Assert.Single(exitHandler.AttachedRegistrations);
+        Assert.True(ReferenceEquals(proc1, exitHandler.AttachedRegistrations[0].Process));
+
+        // Poll 2: Advance clock to 2 seconds so second assessment is due; proc2 (different wrapper) is enumerated; now qualifies!
+        currentClock = TimeSpan.FromSeconds(2);
+        currentEnumProcess = proc2;
+        monitor.PollProcessesOnce();
+
+        // Assert: Qualification succeeded, exactly one registration preserved, retained wrapper (proc1) passed to consumer
+        Assert.Equal(2, scanCount);
+        Assert.Equal(1, qualifiedEvents);
+        Assert.Single(exitHandler.AttachedRegistrations);
+        Assert.NotNull(consumerReceivedProc);
+        Assert.True(ReferenceEquals(proc1, consumerReceivedProc));
+        Assert.True(monitor.IsExitWatcherAttached(pid));
+        Assert.True(monitor.TryGetQualifiedSnapshot(pid, out _));
+
+        // Assert ownership: retained wrapper (proc1) remains alive and usable, temporary wrapper (proc2) was disposed
+        Assert.False(proc1.HasExited);
+        Assert.NotEqual(IntPtr.Zero, proc1.Handle);
+        Assert.Throws<InvalidOperationException>(() => proc2.Handle);
+    }
+
+    [Fact]
+    public async Task AttachExitHandler_ProductionConsumerLifetime_PreservesProcessAcrossAsyncYield()
+    {
+        using var tempDir = new SyntheticTestDirectory();
+        var libraryStore = new GameLibraryStore(
+            Path.Combine(tempDir.RootPath, "game-library.json"),
+            Path.Combine(tempDir.RootPath, "backups"));
+        var exitHandler = new FakeProcessExitHandler();
+        var scanner = new DynamicModuleScanner(_ => ModuleScanResult.Complete(new HashSet<string> { "d3d11.dll" }));
+        var classifier = new ApiClassifier(scanner, new FakePeParser());
+
+        using var currentProc = Process.GetCurrentProcess();
+        int expectedPid = currentProc.Id;
+        string exePath = @"C:\Games\YieldGame\Game.exe";
+        var startTime = new DateTime(2026, 10, 15, 12, 0, 0, DateTimeKind.Utc);
+
+        using var monitor = new ProcessMonitor(
+            new GameDetector(),
+            exitHandler,
+            classifier,
+            libraryStore,
+            clock: () => TimeSpan.Zero,
+            processEnumerator: () => new[] { currentProc },
+            startTimer: false);
+        monitor.TreatProcessesAsOwnedForTesting = true;
+        monitor.GameProcessFilter = _ => true;
+        monitor.WindowFilter = _ => true;
+        monitor.StartTimeResolver = _ => startTime;
+        monitor.ExePathResolver = _ => exePath;
+
+        var pollCompletedTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var consumerFinishedTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        monitor.OnQualifiedGameDetected += async (proc, _) =>
+        {
+            try
+            {
+                // Suspend consumer continuation until PollProcessesOnce has completely returned
+                await pollCompletedTcs.Task;
+
+                // Exercise properties on the retained process wrapper
+                Assert.Equal(expectedPid, proc.Id);
+                Assert.False(proc.HasExited);
+                consumerFinishedTcs.SetResult(true);
+            }
+            catch (Exception ex)
+            {
+                consumerFinishedTcs.SetException(ex);
+            }
+        };
+
+        // Act: runs poll and calls DisposeIfOwned(proc) before returning
+        monitor.PollProcessesOnce();
+
+        // Release the consumer continuation
+        pollCompletedTcs.SetResult(true);
+
+        // Await consumer completion, surfacing any failure/exception directly
+        await consumerFinishedTcs.Task;
+
+        // Assert: Live attached process was preserved across async yield and not prematurely disposed
+        Assert.True(monitor.IsExitWatcherAttached(expectedPid));
     }
 }

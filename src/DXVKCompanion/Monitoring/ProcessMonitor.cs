@@ -45,11 +45,44 @@ namespace DXVKCompanion.Monitoring
         internal event Action<Process, DetectionSnapshot>? OnQualifiedGameDetected;
         internal ProfileStore? ProfileStore { get; set; }
 
-        internal Func<Process, string?>? ExePathResolver { get; set; }
+        private Func<Process, string?>? _exePathResolver;
+        internal Func<Process, string?>? ExePathResolver
+        {
+            get => _exePathResolver;
+            set
+            {
+                _exePathResolver = value;
+                if (_exitHandler != null && _exitHandler.ExePathResolver == null)
+                {
+                    _exitHandler.ExePathResolver = value;
+                }
+            }
+        }
+        private Func<Process, int>? _processIdResolver;
+        internal Func<Process, int>? ProcessIdResolver
+        {
+            get => _processIdResolver;
+            set
+            {
+                _processIdResolver = value;
+                if (_exitHandler != null && _exitHandler.ProcessIdResolver == null)
+                {
+                    _exitHandler.ProcessIdResolver = value;
+                }
+            }
+        }
+
+        internal int GetProcessId(Process proc)
+        {
+            if (_processIdResolver != null) return _processIdResolver(proc);
+            try { return proc.Id; } catch { return 0; }
+        }
+
         internal Func<Process, DateTime>? StartTimeResolver { get; set; }
         internal Func<Process, bool>? GameProcessFilter { get; set; }
         internal Func<Process, bool>? WindowFilter { get; set; }
         internal Func<Process, string, AntiCheatAssessment>? AntiCheatAssessor { get; set; }
+        internal bool TreatProcessesAsOwnedForTesting { get; set; }
 
         public ProcessMonitor(
             GameDetector detector,
@@ -71,6 +104,14 @@ namespace DXVKCompanion.Monitoring
         {
             _detector = detector ?? throw new ArgumentNullException(nameof(detector));
             _exitHandler = exitHandler ?? throw new ArgumentNullException(nameof(exitHandler));
+            if (_exePathResolver != null && _exitHandler.ExePathResolver == null)
+            {
+                _exitHandler.ExePathResolver = _exePathResolver;
+            }
+            if (_processIdResolver != null && _exitHandler.ProcessIdResolver == null)
+            {
+                _exitHandler.ProcessIdResolver = _processIdResolver;
+            }
             _classifier = classifier ?? new ApiClassifier(new ModuleScanner(), new PeParser());
             _libraryStore = libraryStore;
             _clock = clock ?? DefaultClock;
@@ -181,6 +222,14 @@ namespace DXVKCompanion.Monitoring
             }
         }
 
+        internal bool IsExitWatcherAttached(int processId)
+        {
+            lock (_pollLock)
+            {
+                return _attachedExitProcesses.ContainsKey(processId);
+            }
+        }
+
         internal void PollProcessesOnce() => PollProcesses(null);
 
         private void PollProcesses(object? state)
@@ -209,7 +258,7 @@ namespace DXVKCompanion.Monitoring
                     var currentPids = processList
                         .Select(p =>
                         {
-                            try { return p.Id; } catch { return -1; }
+                            try { return GetProcessId(p); } catch { return -1; }
                         })
                         .Where(id => id > 0)
                         .ToHashSet();
@@ -237,7 +286,7 @@ namespace DXVKCompanion.Monitoring
                         int pid;
                         try
                         {
-                            pid = proc.Id;
+                            pid = GetProcessId(proc);
                         }
                         catch
                         {
@@ -417,16 +466,30 @@ namespace DXVKCompanion.Monitoring
                                     break;
                                 }
 
-                                candidate.IsQualified = true;
-                                candidate.QualifiedSnapshot = snapshot;
-
-                                AttachExitHandlerOnce(proc, startTime, snapshot.ExecutablePath);
+                                var (status, retainedProc) = EnsureExitHandlerAttached(proc, startTime, snapshot.ExecutablePath);
 
                                 if (_disposed)
                                 {
                                     DisposeIfOwned(proc);
                                     break;
                                 }
+
+                                if ((status != AttachmentStatus.NewlyAttached && status != AttachmentStatus.AlreadyAttached) || retainedProc == null)
+                                {
+                                    // Attachment setup failed or process finished/exited synchronously during setup.
+                                    // Do NOT pass an already finished/disposed or unmonitored candidate to async consumer.
+                                    // If setup failed, record inspection failure and advance candidate.
+                                    candidate.IsQualified = false;
+                                    candidate.QualifiedSnapshot = null;
+                                    candidate.LastInspectionHadFailure = true;
+                                    candidate.AdvanceAfterAssessment(now);
+
+                                    DisposeIfOwned(proc);
+                                    continue;
+                                }
+
+                                candidate.IsQualified = true;
+                                candidate.QualifiedSnapshot = snapshot;
 
                                 if (_libraryStore != null)
                                 {
@@ -440,12 +503,12 @@ namespace DXVKCompanion.Monitoring
 
                                 if (!_disposed)
                                 {
-                                    OnQualifiedGameDetected?.Invoke(proc, snapshot);
+                                    OnQualifiedGameDetected?.Invoke(retainedProc, snapshot);
                                 }
 
                                 if (!_disposed)
                                 {
-                                    OnGameDetected?.Invoke(proc);
+                                    OnGameDetected?.Invoke(retainedProc);
                                 }
                             }
                             else
@@ -492,7 +555,7 @@ namespace DXVKCompanion.Monitoring
 
         private void DisposeIfOwned(Process proc)
         {
-            if (_processEnumerator != null) return;
+            if (_processEnumerator != null && !TreatProcessesAsOwnedForTesting) return;
             if (!IsCurrentInstanceAttached(proc))
             {
                 try
@@ -505,44 +568,91 @@ namespace DXVKCompanion.Monitoring
             }
         }
 
-        private bool AttachExitHandlerOnce(Process proc, DateTime startTime, string exePath)
+        private enum AttachmentStatus
+        {
+            NewlyAttached,
+            AlreadyAttached,
+            SetupFailed,
+            SynchronouslyExited
+        }
+
+        private (AttachmentStatus Status, Process? RetainedProcess) EnsureExitHandlerAttached(Process proc, DateTime startTime, string exePath)
         {
             try
             {
-                int pid = proc.Id;
+                int pid = GetProcessId(proc);
                 if (_attachedExitProcesses.TryGetValue(pid, out var existing))
                 {
+                    bool isSameInstance;
                     if (startTime != DateTime.MinValue && existing.StartTime != DateTime.MinValue)
                     {
-                        if (startTime == existing.StartTime) return false;
+                        isSameInstance = (startTime == existing.StartTime);
                     }
                     else
                     {
                         bool hasExited = false;
                         try { hasExited = existing.Process.HasExited; } catch { hasExited = true; }
-                        if (!hasExited && string.Equals(existing.ExePath, exePath, StringComparison.OrdinalIgnoreCase))
-                        {
-                            return false;
-                        }
+                        isSameInstance = !hasExited && string.Equals(existing.ExePath, exePath, StringComparison.OrdinalIgnoreCase);
                     }
+
+                    if (isSameInstance && _exitHandler.HasRegistration(existing.RegistrationToken))
+                    {
+                        return (AttachmentStatus.AlreadyAttached, existing.Process);
+                    }
+
+                    // Stale attachment (different process instance or registration already completed/cancelled)
+                    _attachedExitProcesses.Remove(pid);
                 }
 
                 var token = Guid.NewGuid();
                 _attachedExitProcesses[pid] = (proc, startTime, exePath, token);
-                _exitHandler.AttachCore(proc, token);
-                return true;
+
+                Guid establishedToken;
+                try
+                {
+                    establishedToken = _exitHandler.AttachCore(proc, token, exePath);
+                }
+                catch
+                {
+                    establishedToken = Guid.Empty;
+                }
+
+                if (establishedToken == Guid.Empty || establishedToken != token)
+                {
+                    // Setup failed: unwind only this failed token
+                    if (_attachedExitProcesses.TryGetValue(pid, out var current) && current.RegistrationToken == token)
+                    {
+                        _attachedExitProcesses.Remove(pid);
+                    }
+                    return (AttachmentStatus.SetupFailed, null);
+                }
+
+                // If synchronous exit occurred during AttachCore, CompleteExit will have removed it from registrations
+                if (!_exitHandler.HasRegistration(token) || !_attachedExitProcesses.ContainsKey(pid))
+                {
+                    return (AttachmentStatus.SynchronouslyExited, null);
+                }
+
+                return (AttachmentStatus.NewlyAttached, proc);
             }
             catch
             {
-                return false;
+                return (AttachmentStatus.SetupFailed, null);
             }
+        }
+
+        private bool AttachExitHandlerOnce(Process proc, DateTime startTime, string exePath)
+        {
+            var (status, _) = EnsureExitHandlerAttached(proc, startTime, exePath);
+            return status == AttachmentStatus.NewlyAttached || status == AttachmentStatus.AlreadyAttached;
         }
 
         private bool IsCurrentInstanceAttached(Process proc)
         {
             try
             {
-                if (_attachedExitProcesses.TryGetValue(proc.Id, out var existing))
+                int pid = GetProcessId(proc);
+                if (_attachedExitProcesses.TryGetValue(pid, out var existing))
                 {
                     return ReferenceEquals(existing.Process, proc);
                 }
@@ -606,7 +716,7 @@ namespace DXVKCompanion.Monitoring
 
             return new DetectionSnapshot
             {
-                ProcessId = process.Id,
+                ProcessId = GetProcessId(process),
                 ProcessName = GetSafeProcessName(process),
                 ExecutablePath = exePath,
                 InstallationRoot = installationRoot,
