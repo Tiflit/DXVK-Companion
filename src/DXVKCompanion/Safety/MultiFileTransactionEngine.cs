@@ -17,6 +17,7 @@ public sealed record MultiFileTransactionFile
     public SafetyFileIdentity? ExpectedSourceIdentity { get; init; }
     public OriginalFileState OriginalState { get; init; } = OriginalFileState.Unknown;
     public string? BackupRelativePath { get; init; }
+    public string? ExpectedOriginalSha256 { get; init; }
 }
 
 public sealed record MultiFileTransactionTestHooks
@@ -101,10 +102,16 @@ public sealed class MultiFileTransactionEngine
                 }
                 else if (request.Operation == TransactionOperation.Restore && file.OriginalState == OriginalFileState.Existing)
                 {
+                    if (!IsValidSha256(file.ExpectedOriginalSha256))
+                        return SafeFailure(transactionId, request.Operation, affected, $"Original hash baseline is missing or malformed for restore: {file.RelativePath}");
+
                     backupPath = ResolveBackupPath(file.BackupRelativePath, transactionId, file.RelativePath);
                     if (!File.Exists(backupPath))
                         return SafeFailure(transactionId, request.Operation, affected, $"Original backup is unavailable for restore: {file.RelativePath}");
+
                     backupIdentity = FileIdentity.Capture(backupPath);
+                    if (!string.Equals(backupIdentity.Sha256, file.ExpectedOriginalSha256, StringComparison.OrdinalIgnoreCase))
+                        return SafeFailure(transactionId, request.Operation, affected, $"Original backup hash mismatch for restore: {file.RelativePath} (expected {file.ExpectedOriginalSha256}, actual {backupIdentity.Sha256})");
                 }
 
                 prepared.Add(new PreparedFile(file, targetPath, sourcePath, sourceIdentity, file.OriginalState, currentIdentity, backupPath, backupIdentity));
@@ -264,6 +271,9 @@ public sealed class MultiFileTransactionEngine
                 var current = FileIdentity.Capture(item.TargetPath);
                 if (current != item.BackupIdentity)
                     throw new IOException($"Restore verification failed: original identity mismatch: {item.File.RelativePath}");
+
+                if (!string.Equals(current.Sha256, item.File.ExpectedOriginalSha256, StringComparison.OrdinalIgnoreCase))
+                    throw new IOException($"Restore verification failed: restored content does not match expected original hash: {item.File.RelativePath}");
             }
             return;
         }
@@ -335,6 +345,11 @@ public sealed class MultiFileTransactionEngine
             Message = message,
             AffectedFiles = affected
         };
+
+    private static bool IsValidSha256(string? sha256) =>
+        !string.IsNullOrWhiteSpace(sha256) &&
+        sha256.Length == 64 &&
+        sha256.All(static c => Uri.IsHexDigit(c));
 
     private static SafetyTransactionResult SafeFailure(string id, TransactionOperation operation, IReadOnlyList<string> affected, string message) =>
         new()

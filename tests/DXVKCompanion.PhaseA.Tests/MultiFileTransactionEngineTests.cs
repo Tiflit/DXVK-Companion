@@ -182,6 +182,9 @@ public sealed class MultiFileTransactionEngineTests
         var a = game.CreateFile("d3d9.dll", "old-a");
         var b = game.CreateFile("d3d11.dll", "old-b");
         var c = game.CreateFile("dxgi.dll", "old-c");
+        var aIdentity = FileIdentity.Capture(a);
+        var bIdentity = FileIdentity.Capture(b);
+        var cIdentity = FileIdentity.Capture(c);
         var sa = game.CreateFile("src-a.dll", "new-a");
         var sb = game.CreateFile("src-b.dll", "new-b");
         var sc = game.CreateFile("src-c.dll", "new-c");
@@ -196,9 +199,9 @@ public sealed class MultiFileTransactionEngineTests
             Operation = TransactionOperation.Restore,
             Files = new[]
             {
-                RestoreFile("d3d9.dll", a, install.TransactionId, storage.RootPath),
-                RestoreFile("d3d11.dll", b, install.TransactionId, storage.RootPath),
-                RestoreFile("dxgi.dll", c, install.TransactionId, storage.RootPath)
+                RestoreFile("d3d9.dll", a, install.TransactionId, storage.RootPath, aIdentity.Sha256),
+                RestoreFile("d3d11.dll", b, install.TransactionId, storage.RootPath, bIdentity.Sha256),
+                RestoreFile("dxgi.dll", c, install.TransactionId, storage.RootPath, cIdentity.Sha256)
             }
         });
 
@@ -223,7 +226,7 @@ public sealed class MultiFileTransactionEngineTests
             }).ToArray()
         };
 
-    private static MultiFileTransactionFile RestoreFile(string relativePath, string target, string transactionId, string storageRoot)
+    private static MultiFileTransactionFile RestoreFile(string relativePath, string target, string transactionId, string storageRoot, string? expectedOriginalSha256 = null)
     {
         var backup = Path.Combine(storageRoot, "backups", transactionId, relativePath);
         return new MultiFileTransactionFile
@@ -231,7 +234,8 @@ public sealed class MultiFileTransactionEngineTests
             RelativePath = relativePath,
             ExpectedTargetIdentity = FileIdentity.Capture(target),
             OriginalState = OriginalFileState.Existing,
-            BackupRelativePath = Path.GetRelativePath(storageRoot, backup)
+            BackupRelativePath = Path.GetRelativePath(storageRoot, backup),
+            ExpectedOriginalSha256 = expectedOriginalSha256
         };
     }
 }
