@@ -169,7 +169,9 @@ namespace DXVKCompanion.UI
             DxvkManager dxvk,
             ManagedFileInspector inspector,
             SettingsStore settings,
-            Action<Process?, GameProfile, string>? onNotification = null)
+            Action<Process?, GameProfile, string>? onNotification = null,
+            Func<GameProfile, Process, Task>? autoEnableDispatcher = null,
+            Func<GameProfile, Process, Task>? autoReapplyDispatcher = null)
         {
             if (snapshot == null || !ProcessQualification.IsRecognizedGraphicsApi(snapshot.Classification.PrimaryApi))
             {
@@ -215,11 +217,25 @@ namespace DXVKCompanion.UI
                 dxvkCompatible && !antiCheat && !profile.DxvkEnabled &&
                 string.IsNullOrWhiteSpace(profile.DxvkVersion) && process != null)
             {
-                await dxvk.RequestEnableAsync(profile, process);
+                if (autoEnableDispatcher != null)
+                {
+                    await autoEnableDispatcher(profile, process);
+                }
+                else
+                {
+                    await dxvk.RequestEnableAsync(profile, process);
+                }
             }
             else if (isAutomated && canAutoDeploy && dxvkCompatible && externalChange && !antiCheat && profile.DxvkEnabled && process != null)
             {
-                await dxvk.RequestReapplyAsync(profile, process, updateBaseline: true);
+                if (autoReapplyDispatcher != null)
+                {
+                    await autoReapplyDispatcher(profile, process);
+                }
+                else
+                {
+                    await dxvk.RequestReapplyAsync(profile, process, updateBaseline: true);
+                }
             }
 
             profiles.Save(profile);

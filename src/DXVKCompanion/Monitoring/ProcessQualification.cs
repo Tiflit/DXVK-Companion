@@ -16,7 +16,7 @@ namespace DXVKCompanion.Monitoring
     internal sealed class CandidateProcessState
     {
         public int ProcessId { get; }
-        public DateTime ProcessStartTime { get; }
+        public DateTime ProcessStartTime { get; set; }
         public TimeSpan FirstAssessmentTime { get; }
         public int NextAssessmentIndex { get; set; }
         public int AssessmentsConductedCount { get; set; }

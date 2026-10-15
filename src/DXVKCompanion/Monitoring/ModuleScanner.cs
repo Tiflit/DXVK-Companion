@@ -46,6 +46,8 @@ namespace DXVKCompanion.Monitoring
         [ThreadStatic]
         private static bool _inOverriddenGetModules;
 
+        internal Func<Process, IEnumerable<string>>? RawModuleEnumerator { get; set; }
+
         internal virtual ModuleScanResult ScanLoadedGraphicsModules(Process process)
         {
             // If a derived type overrode GetLoadedGraphicsModules (such as existing test fakes),
@@ -82,6 +84,20 @@ namespace DXVKCompanion.Monitoring
 
             try
             {
+                if (RawModuleEnumerator != null)
+                {
+                    foreach (string rawName in RawModuleEnumerator(process))
+                    {
+                        string name = rawName.ToLowerInvariant();
+                        foreach (var tracked in TrackedModules)
+                        {
+                            if (name.Contains(tracked))
+                                found.Add(tracked);
+                        }
+                    }
+                    return ModuleScanResult.Complete(found);
+                }
+
                 foreach (ProcessModule module in process.Modules)
                 {
                     string name = module.ModuleName.ToLowerInvariant();

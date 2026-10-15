@@ -59,6 +59,13 @@
    - Guarded against recursive override loops in `ModuleScanner` when derived classes override `GetLoadedGraphicsModules`.
    - Repaired test compilation references (`DXVKCompanion.Safety` namespace import and unused variable cleanup in `ProcessMonitorQualificationTests`).
 
+8. **R8 — Exit Watcher Ownership, Reentrancy Boundaries, Identity Lifecycle & Headless Fakes (A-D)**:
+   - **Section A**: Removed premature poller disposal of missing processes in `ProcessMonitor`, allowing `ProcessExitHandler` to deliver queued exit notifications cleanly without racing against poller cleanup. Added internal `ProcessInstanceExited` event with PID-instance binding and exactly-once delivery. On `Dispose()`, monitor unhooks exit events, cleans state, and disposes attached processes only if monitor-owned (not externally injected).
+   - **Section B**: Enforced `_isPolling` reentrancy guard under `_pollLock` to exclude same-thread reentry from injected scanners or callbacks. Added explicit `_disposed` checks immediately following `CreateSnapshot` and preceding each individual event callback (`OnSnapshotDetected`, `OnQualifiedGameDetected`, `OnGameDetected`), ensuring in-flight disposal cleanly aborts qualification and publication.
+   - **Section C**: Handled transition between unresolved (`DateTime.MinValue`) and known process start times: in-progress candidates adopt known timestamps without restarting budget; qualified or expired candidates reset upon PID reuse or timestamp change, preventing inheritance of terminal states. Ensured exited and disappeared processes clean up `_windowRetries`.
+   - **Section D**: Introduced `FakeHttpMessageHandler` for `HttpClient` in `DxvkGithubClient` and `DxvkInstaller` to completely eliminate live network requests during headless testing. Added test seams `autoEnableDispatcher` and `autoReapplyDispatcher` to `TrayApp.ProcessGameAdmissionAsync` to verify single-dispatch on DX11 and zero-dispatch on Unknown/DX12/Vulkan without live installer execution. Provided synthetic `RawModuleEnumerator` seam in `ModuleScanner` to avoid live host module enumeration.
+   - Added 12 new deterministic tests and modernized headless admission orchestration test covering all requested scenarios in `tests/DXVKCompanion.PhaseA.Tests/ProcessMonitorQualificationTests.cs`.
+
 ---
 
 ### 3. Inspected vs. Executed Evidence

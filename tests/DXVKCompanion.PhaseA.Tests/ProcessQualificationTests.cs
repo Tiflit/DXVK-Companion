@@ -62,7 +62,10 @@ public sealed class ProcessQualificationTests
     [Fact]
     public void ModuleScanner_WhenOverridden_DelegatesWithoutRecursion()
     {
-        var scanner = new DelegatingModuleScanner();
+        var scanner = new DelegatingModuleScanner
+        {
+            RawModuleEnumerator = _ => new[] { "kernel32.dll", "user32.dll" }
+        };
         using var proc = Process.GetCurrentProcess();
 
         var result = scanner.ScanLoadedGraphicsModules(proc);

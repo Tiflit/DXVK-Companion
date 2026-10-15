@@ -30,6 +30,32 @@ public sealed class ProcessMonitorQualificationTests
         {
             RaiseProcessExited(exePath);
         }
+
+        public void SimulateInstanceExit(int pid, string exePath)
+        {
+            RaiseProcessInstanceExited(pid, exePath);
+        }
+    }
+
+    private sealed class FakeHttpMessageHandler : System.Net.Http.HttpMessageHandler
+    {
+        private readonly System.Net.HttpStatusCode _statusCode;
+        private readonly string _responseContent;
+
+        public FakeHttpMessageHandler(string responseContent = "{\"tag_name\":\"v2.3\",\"assets\":[]}", System.Net.HttpStatusCode statusCode = System.Net.HttpStatusCode.OK)
+        {
+            _responseContent = responseContent;
+            _statusCode = statusCode;
+        }
+
+        protected override Task<System.Net.Http.HttpResponseMessage> SendAsync(System.Net.Http.HttpRequestMessage request, System.Threading.CancellationToken cancellationToken)
+        {
+            var response = new System.Net.Http.HttpResponseMessage(_statusCode)
+            {
+                Content = new System.Net.Http.StringContent(_responseContent, System.Text.Encoding.UTF8, "application/json")
+            };
+            return Task.FromResult(response);
+        }
     }
 
     private sealed class DynamicModuleScanner : ModuleScanner
@@ -717,7 +743,581 @@ public sealed class ProcessMonitorQualificationTests
     }
 
     [Fact]
-    public async Task HeadlessGameAdmission_Orchestration_DX11_Vs_Unknown_Vs_DX12()
+    public void ExitWatcher_DisappearanceBeforeQueuedExitDelivery_DeliversExitCleanly()
+    {
+        using var tempDir = new SyntheticTestDirectory();
+        var libraryStore = new GameLibraryStore(
+            Path.Combine(tempDir.RootPath, "game-library.json"),
+            Path.Combine(tempDir.RootPath, "backups"));
+        var exitHandler = new FakeProcessExitHandler();
+        var scanner = new DynamicModuleScanner(_ => ModuleScanResult.Complete(new HashSet<string> { "d3d11.dll" }));
+        var classifier = new ApiClassifier(scanner, new FakePeParser());
+
+        using var currentProc = Process.GetCurrentProcess();
+        string exePath = @"C:\Games\Game11\Game.exe";
+        bool enumerateProc = true;
+
+        var monitor = new ProcessMonitor(
+            new GameDetector(),
+            exitHandler,
+            classifier,
+            libraryStore,
+            clock: () => TimeSpan.Zero,
+            processEnumerator: () => enumerateProc ? new[] { currentProc } : Array.Empty<Process>(),
+            startTimer: false);
+        monitor.GameProcessFilter = _ => true;
+        monitor.WindowFilter = _ => true;
+        monitor.StartTimeResolver = _ => new DateTime(2026, 10, 15, 12, 0, 0, DateTimeKind.Utc);
+        monitor.ExePathResolver = _ => exePath;
+
+        // Poll 1: Qualifies and attaches to exit watcher
+        monitor.PollProcessesOnce();
+        Assert.Single(exitHandler.AttachedProcesses);
+        Assert.NotNull(monitor.GetCandidateState(currentProc.Id));
+
+        // Poll 2: Process disappears from enumeration before Exited event arrives
+        enumerateProc = false;
+        monitor.PollProcessesOnce();
+
+        // Candidates are cleaned up on disappearance
+        Assert.Null(monitor.GetCandidateState(currentProc.Id));
+
+        // But exit watcher still delivers exit cleanly when the queued exit arrives
+        string? exitedExe = null;
+        monitor.OnGameExited += path => exitedExe = path;
+
+        exitHandler.SimulateInstanceExit(currentProc.Id, exePath);
+        Assert.Equal(exePath, exitedExe);
+    }
+
+    [Fact]
+    public void ExitWatcher_TwoSameExecutableInstances_ExitingInOppositeOrder_RemovesCorrectRegistrations()
+    {
+        using var tempDir = new SyntheticTestDirectory();
+        var libraryStore = new GameLibraryStore(
+            Path.Combine(tempDir.RootPath, "game-library.json"),
+            Path.Combine(tempDir.RootPath, "backups"));
+        var exitHandler = new FakeProcessExitHandler();
+        var scanner = new DynamicModuleScanner(_ => ModuleScanResult.Complete(new HashSet<string> { "d3d11.dll" }));
+        var classifier = new ApiClassifier(scanner, new FakePeParser());
+
+        using var proc1 = Process.GetCurrentProcess();
+        using var proc2 = Process.GetProcesses().FirstOrDefault(p => p.Id != proc1.Id);
+        if (proc2 == null) return; // Safeguard if environment has single process
+
+        string exePath = @"C:\Games\MultiInstance\Game.exe";
+
+        var monitor = new ProcessMonitor(
+            new GameDetector(),
+            exitHandler,
+            classifier,
+            libraryStore,
+            clock: () => TimeSpan.Zero,
+            processEnumerator: () => new[] { proc1, proc2 },
+            startTimer: false);
+        monitor.GameProcessFilter = _ => true;
+        monitor.WindowFilter = _ => true;
+        monitor.StartTimeResolver = p => p.Id == proc1.Id
+            ? new DateTime(2026, 10, 15, 12, 0, 0, DateTimeKind.Utc)
+            : new DateTime(2026, 10, 15, 12, 1, 0, DateTimeKind.Utc);
+        monitor.ExePathResolver = _ => exePath;
+
+        // Poll: both qualify and attach
+        monitor.PollProcessesOnce();
+        Assert.Equal(2, exitHandler.AttachedProcesses.Count);
+
+        var exits = new List<string>();
+        monitor.OnGameExited += path => exits.Add(path);
+
+        // Instance 2 exits first (opposite order)
+        exitHandler.SimulateInstanceExit(proc2.Id, exePath);
+        Assert.Single(exits);
+
+        // Verify proc1 is still qualified in monitor, while proc2 was removed
+        Assert.True(monitor.TryGetQualifiedSnapshot(proc1.Id, out _));
+        Assert.False(monitor.TryGetQualifiedSnapshot(proc2.Id, out _));
+
+        // Instance 1 exits
+        exitHandler.SimulateInstanceExit(proc1.Id, exePath);
+        Assert.Equal(2, exits.Count);
+        Assert.False(monitor.TryGetQualifiedSnapshot(proc1.Id, out _));
+    }
+
+    [Fact]
+    public void ExitWatcher_RepeatedAssessments_AttachesOncePerInstance()
+    {
+        using var tempDir = new SyntheticTestDirectory();
+        var libraryStore = new GameLibraryStore(
+            Path.Combine(tempDir.RootPath, "game-library.json"),
+            Path.Combine(tempDir.RootPath, "backups"));
+        var exitHandler = new FakeProcessExitHandler();
+        var scanner = new DynamicModuleScanner(_ => ModuleScanResult.Complete(new HashSet<string> { "d3d11.dll" }));
+        var classifier = new ApiClassifier(scanner, new FakePeParser());
+
+        using var currentProc = Process.GetCurrentProcess();
+        string exePath = @"C:\Games\Game11\Game.exe";
+
+        var monitor = new ProcessMonitor(
+            new GameDetector(),
+            exitHandler,
+            classifier,
+            libraryStore,
+            clock: () => TimeSpan.Zero,
+            processEnumerator: () => new[] { currentProc },
+            startTimer: false);
+        monitor.GameProcessFilter = _ => true;
+        monitor.WindowFilter = _ => true;
+        monitor.StartTimeResolver = _ => new DateTime(2026, 10, 15, 12, 0, 0, DateTimeKind.Utc);
+        monitor.ExePathResolver = _ => exePath;
+
+        // Poll 1: Qualifies and attaches
+        monitor.PollProcessesOnce();
+        Assert.Single(exitHandler.AttachedProcesses);
+
+        // Poll 2: Process still running and qualified
+        monitor.PollProcessesOnce();
+        Assert.Single(exitHandler.AttachedProcesses);
+
+        // Poll 3: Still only one attachment
+        monitor.PollProcessesOnce();
+        Assert.Single(exitHandler.AttachedProcesses);
+    }
+
+    [Fact]
+    public void ExitWatcher_ExitAfterDisposal_ProducesZeroMonitorEventsOrManagementCallbacks()
+    {
+        using var tempDir = new SyntheticTestDirectory();
+        var libraryStore = new GameLibraryStore(
+            Path.Combine(tempDir.RootPath, "game-library.json"),
+            Path.Combine(tempDir.RootPath, "backups"));
+        var exitHandler = new FakeProcessExitHandler();
+        var scanner = new DynamicModuleScanner(_ => ModuleScanResult.Complete(new HashSet<string> { "d3d11.dll" }));
+        var classifier = new ApiClassifier(scanner, new FakePeParser());
+
+        using var currentProc = Process.GetCurrentProcess();
+        string exePath = @"C:\Games\Game11\Game.exe";
+
+        var monitor = new ProcessMonitor(
+            new GameDetector(),
+            exitHandler,
+            classifier,
+            libraryStore,
+            clock: () => TimeSpan.Zero,
+            processEnumerator: () => new[] { currentProc },
+            startTimer: false);
+        monitor.GameProcessFilter = _ => true;
+        monitor.WindowFilter = _ => true;
+        monitor.StartTimeResolver = _ => new DateTime(2026, 10, 15, 12, 0, 0, DateTimeKind.Utc);
+        monitor.ExePathResolver = _ => exePath;
+
+        monitor.PollProcessesOnce();
+        Assert.Single(exitHandler.AttachedProcesses);
+
+        int exitEvents = 0;
+        monitor.OnGameExited += _ => exitEvents++;
+
+        // Dispose the monitor
+        monitor.Dispose();
+
+        // Simulate exit delivery after disposal
+        exitHandler.SimulateInstanceExit(currentProc.Id, exePath);
+
+        // Zero events emitted
+        Assert.Equal(0, exitEvents);
+    }
+
+    [Fact]
+    public void Reentrancy_ScannerDrivenReentry_SuppressesNestedPolling()
+    {
+        using var tempDir = new SyntheticTestDirectory();
+        var libraryStore = new GameLibraryStore(
+            Path.Combine(tempDir.RootPath, "game-library.json"),
+            Path.Combine(tempDir.RootPath, "backups"));
+        var exitHandler = new FakeProcessExitHandler();
+
+        ProcessMonitor? monitor = null;
+        int scannerInvocations = 0;
+
+        var scanner = new DynamicModuleScanner(_ =>
+        {
+            scannerInvocations++;
+            // Reentrancy attempt: synchronously call PollProcessesOnce from within scanner
+            monitor?.PollProcessesOnce();
+            return ModuleScanResult.Complete(new HashSet<string> { "d3d11.dll" });
+        });
+        var classifier = new ApiClassifier(scanner, new FakePeParser());
+
+        using var currentProc = Process.GetCurrentProcess();
+        string exePath = @"C:\Games\Game11\Game.exe";
+
+        monitor = new ProcessMonitor(
+            new GameDetector(),
+            exitHandler,
+            classifier,
+            libraryStore,
+            clock: () => TimeSpan.Zero,
+            processEnumerator: () => new[] { currentProc },
+            startTimer: false);
+        monitor.GameProcessFilter = _ => true;
+        monitor.WindowFilter = _ => true;
+        monitor.StartTimeResolver = _ => new DateTime(2026, 10, 15, 12, 0, 0, DateTimeKind.Utc);
+        monitor.ExePathResolver = _ => exePath;
+
+        monitor.PollProcessesOnce();
+
+        // Exactly one scanner invocation; nested reentrant poll was suppressed by _isPolling guard
+        Assert.Equal(1, scannerInvocations);
+    }
+
+    [Fact]
+    public void Disposal_DuringAssessment_AbortsQualificationAndZeroStatePersisted()
+    {
+        using var tempDir = new SyntheticTestDirectory();
+        string libraryPath = Path.Combine(tempDir.RootPath, "game-library.json");
+        var libraryStore = new GameLibraryStore(
+            libraryPath,
+            Path.Combine(tempDir.RootPath, "backups"));
+        var exitHandler = new FakeProcessExitHandler();
+
+        ProcessMonitor? monitor = null;
+        var scanner = new DynamicModuleScanner(_ =>
+        {
+            // Dispose monitor in-flight during assessment
+            monitor?.Dispose();
+            return ModuleScanResult.Complete(new HashSet<string> { "d3d11.dll" });
+        });
+        var classifier = new ApiClassifier(scanner, new FakePeParser());
+
+        using var currentProc = Process.GetCurrentProcess();
+        string exePath = @"C:\Games\Game11\Game.exe";
+
+        monitor = new ProcessMonitor(
+            new GameDetector(),
+            exitHandler,
+            classifier,
+            libraryStore,
+            clock: () => TimeSpan.Zero,
+            processEnumerator: () => new[] { currentProc },
+            startTimer: false);
+        monitor.GameProcessFilter = _ => true;
+        monitor.WindowFilter = _ => true;
+        monitor.StartTimeResolver = _ => new DateTime(2026, 10, 15, 12, 0, 0, DateTimeKind.Utc);
+        monitor.ExePathResolver = _ => exePath;
+
+        int qualifiedEvents = 0;
+        int snapshotEvents = 0;
+        monitor.OnQualifiedGameDetected += (_, _) => qualifiedEvents++;
+        monitor.OnSnapshotDetected += _ => snapshotEvents++;
+
+        monitor.PollProcessesOnce();
+
+        // Qualification aborted: zero events and zero library records persisted
+        Assert.Equal(0, qualifiedEvents);
+        Assert.Equal(0, snapshotEvents);
+        Assert.Empty(libraryStore.GetAll());
+        Assert.Empty(exitHandler.AttachedProcesses);
+    }
+
+    [Fact]
+    public void Disposal_DuringFirstEvent_SuppressesSubsequentEvents()
+    {
+        using var tempDir = new SyntheticTestDirectory();
+        var libraryStore = new GameLibraryStore(
+            Path.Combine(tempDir.RootPath, "game-library.json"),
+            Path.Combine(tempDir.RootPath, "backups"));
+        var exitHandler = new FakeProcessExitHandler();
+        var scanner = new DynamicModuleScanner(_ => ModuleScanResult.Complete(new HashSet<string> { "d3d11.dll" }));
+        var classifier = new ApiClassifier(scanner, new FakePeParser());
+
+        using var currentProc = Process.GetCurrentProcess();
+        string exePath = @"C:\Games\Game11\Game.exe";
+
+        ProcessMonitor? monitor = null;
+        monitor = new ProcessMonitor(
+            new GameDetector(),
+            exitHandler,
+            classifier,
+            libraryStore,
+            clock: () => TimeSpan.Zero,
+            processEnumerator: () => new[] { currentProc },
+            startTimer: false);
+        monitor.GameProcessFilter = _ => true;
+        monitor.WindowFilter = _ => true;
+        monitor.StartTimeResolver = _ => new DateTime(2026, 10, 15, 12, 0, 0, DateTimeKind.Utc);
+        monitor.ExePathResolver = _ => exePath;
+
+        int snapshotEvents = 0;
+        int qualifiedEvents = 0;
+        int gameDetectedEvents = 0;
+
+        monitor.OnSnapshotDetected += _ =>
+        {
+            snapshotEvents++;
+            // Dispose in first event callback
+            monitor.Dispose();
+        };
+        monitor.OnQualifiedGameDetected += (_, _) => qualifiedEvents++;
+        monitor.OnGameDetected += _ => gameDetectedEvents++;
+
+        monitor.PollProcessesOnce();
+
+        Assert.Equal(1, snapshotEvents);
+        // Subsequent events must be suppressed by _disposed boundary check
+        Assert.Equal(0, qualifiedEvents);
+        Assert.Equal(0, gameDetectedEvents);
+    }
+
+    [Fact]
+    public void Polling_ConcurrentCalls_ExcludeOverlappingPasses()
+    {
+        using var tempDir = new SyntheticTestDirectory();
+        var libraryStore = new GameLibraryStore(
+            Path.Combine(tempDir.RootPath, "game-library.json"),
+            Path.Combine(tempDir.RootPath, "backups"));
+        var exitHandler = new FakeProcessExitHandler();
+
+        var enteredFirst = new System.Threading.ManualResetEventSlim(false);
+        var releaseFirst = new System.Threading.ManualResetEventSlim(false);
+        int totalScans = 0;
+
+        var scanner = new DynamicModuleScanner(_ =>
+        {
+            System.Threading.Interlocked.Increment(ref totalScans);
+            enteredFirst.Set();
+            releaseFirst.Wait(5000);
+            return ModuleScanResult.Complete(new HashSet<string> { "d3d11.dll" });
+        });
+        var classifier = new ApiClassifier(scanner, new FakePeParser());
+
+        using var currentProc = Process.GetCurrentProcess();
+        string exePath = @"C:\Games\Game11\Game.exe";
+
+        var monitor = new ProcessMonitor(
+            new GameDetector(),
+            exitHandler,
+            classifier,
+            libraryStore,
+            clock: () => TimeSpan.Zero,
+            processEnumerator: () => new[] { currentProc },
+            startTimer: false);
+        monitor.GameProcessFilter = _ => true;
+        monitor.WindowFilter = _ => true;
+        monitor.StartTimeResolver = _ => new DateTime(2026, 10, 15, 12, 0, 0, DateTimeKind.Utc);
+        monitor.ExePathResolver = _ => exePath;
+
+        var task1 = Task.Run(() => monitor.PollProcessesOnce());
+        enteredFirst.Wait(5000);
+
+        // Attempt concurrent poll while task1 holds lock in assessment
+        monitor.PollProcessesOnce();
+
+        releaseFirst.Set();
+        task1.Wait();
+
+        // Exactly one scan occurred; second concurrent poll was excluded by Monitor.TryEnter
+        Assert.Equal(1, totalScans);
+    }
+
+    [Fact]
+    public void CandidateLifecycle_UnknownToKnownIdentity_AdoptsKnownStartTimeWithoutResettingBudget()
+    {
+        using var tempDir = new SyntheticTestDirectory();
+        var libraryStore = new GameLibraryStore(
+            Path.Combine(tempDir.RootPath, "game-library.json"),
+            Path.Combine(tempDir.RootPath, "backups"));
+        var exitHandler = new FakeProcessExitHandler();
+        var scanner = new DynamicModuleScanner(_ => ModuleScanResult.Complete(new HashSet<string>()));
+        var classifier = new ApiClassifier(scanner, new FakePeParser());
+
+        using var currentProc = Process.GetCurrentProcess();
+        string exePath = @"C:\Games\Game\Game.exe";
+        DateTime currentStartTime = DateTime.MinValue;
+        TimeSpan currentClock = TimeSpan.Zero;
+
+        var monitor = new ProcessMonitor(
+            new GameDetector(),
+            exitHandler,
+            classifier,
+            libraryStore,
+            clock: () => currentClock,
+            processEnumerator: () => new[] { currentProc },
+            startTimer: false);
+        monitor.GameProcessFilter = _ => true;
+        monitor.WindowFilter = _ => true;
+        monitor.StartTimeResolver = _ => currentStartTime;
+        monitor.ExePathResolver = _ => exePath;
+
+        // Poll 1 at t=0s: start time is unknown (MinValue)
+        monitor.PollProcessesOnce();
+        var candidate1 = monitor.GetCandidateState(currentProc.Id);
+        Assert.NotNull(candidate1);
+        Assert.Equal(DateTime.MinValue, candidate1!.ProcessStartTime);
+        Assert.Equal(1, candidate1.AssessmentsConductedCount);
+
+        // At t=2s: start time becomes known
+        currentClock = TimeSpan.FromSeconds(2);
+        var knownStart = new DateTime(2026, 10, 15, 12, 0, 0, DateTimeKind.Utc);
+        currentStartTime = knownStart;
+
+        // Poll 2 at t=2s
+        monitor.PollProcessesOnce();
+        var candidate2 = monitor.GetCandidateState(currentProc.Id);
+        Assert.NotNull(candidate2);
+        Assert.Equal(knownStart, candidate2!.ProcessStartTime);
+        // Budget was NOT reset: conducted count advanced to 2
+        Assert.Equal(2, candidate2.AssessmentsConductedCount);
+    }
+
+    [Fact]
+    public void CandidateLifecycle_QualifiedCandidate_PIDReused_ResetsCandidate()
+    {
+        using var tempDir = new SyntheticTestDirectory();
+        var libraryStore = new GameLibraryStore(
+            Path.Combine(tempDir.RootPath, "game-library.json"),
+            Path.Combine(tempDir.RootPath, "backups"));
+        var exitHandler = new FakeProcessExitHandler();
+        var loadedModules = new HashSet<string> { "d3d11.dll" };
+        var scanner = new DynamicModuleScanner(_ => ModuleScanResult.Complete(new HashSet<string>(loadedModules)));
+        var classifier = new ApiClassifier(scanner, new FakePeParser());
+
+        using var currentProc = Process.GetCurrentProcess();
+        string exePath = @"C:\Games\Game11\Game.exe";
+        var firstStart = new DateTime(2026, 10, 15, 12, 0, 0, DateTimeKind.Utc);
+        DateTime currentStart = firstStart;
+
+        var monitor = new ProcessMonitor(
+            new GameDetector(),
+            exitHandler,
+            classifier,
+            libraryStore,
+            clock: () => TimeSpan.Zero,
+            processEnumerator: () => new[] { currentProc },
+            startTimer: false);
+        monitor.GameProcessFilter = _ => true;
+        monitor.WindowFilter = _ => true;
+        monitor.StartTimeResolver = _ => currentStart;
+        monitor.ExePathResolver = _ => exePath;
+
+        // Poll 1: Qualifies
+        monitor.PollProcessesOnce();
+        var candidate1 = monitor.GetCandidateState(currentProc.Id);
+        Assert.NotNull(candidate1);
+        Assert.True(candidate1!.IsQualified);
+
+        // Next: PID is reused by a new process instance with differing start time and no graphics modules
+        currentStart = new DateTime(2026, 10, 15, 12, 5, 0, DateTimeKind.Utc);
+        loadedModules.Clear();
+
+        // Poll 2: State must reset, not inherit prior qualification
+        monitor.PollProcessesOnce();
+        var candidate2 = monitor.GetCandidateState(currentProc.Id);
+        Assert.NotNull(candidate2);
+        Assert.False(candidate2!.IsQualified);
+        Assert.Equal(currentStart, candidate2.ProcessStartTime);
+        Assert.Equal(1, candidate2.AssessmentsConductedCount);
+    }
+
+    [Fact]
+    public void CandidateLifecycle_ExpiredCandidate_PIDReused_ResetsCandidate()
+    {
+        using var tempDir = new SyntheticTestDirectory();
+        var libraryStore = new GameLibraryStore(
+            Path.Combine(tempDir.RootPath, "game-library.json"),
+            Path.Combine(tempDir.RootPath, "backups"));
+        var exitHandler = new FakeProcessExitHandler();
+        var loadedModules = new HashSet<string>();
+        var scanner = new DynamicModuleScanner(_ => ModuleScanResult.Complete(new HashSet<string>(loadedModules)));
+        var classifier = new ApiClassifier(scanner, new FakePeParser());
+
+        using var currentProc = Process.GetCurrentProcess();
+        string exePath = @"C:\Games\UnknownApp\App.exe";
+        var firstStart = new DateTime(2026, 10, 15, 12, 0, 0, DateTimeKind.Utc);
+        DateTime currentStart = firstStart;
+        TimeSpan currentClock = TimeSpan.Zero;
+
+        var monitor = new ProcessMonitor(
+            new GameDetector(),
+            exitHandler,
+            classifier,
+            libraryStore,
+            clock: () => currentClock,
+            processEnumerator: () => new[] { currentProc },
+            startTimer: false);
+        monitor.GameProcessFilter = _ => true;
+        monitor.WindowFilter = _ => true;
+        monitor.StartTimeResolver = _ => currentStart;
+        monitor.ExePathResolver = _ => exePath;
+
+        // Conduct all 12 assessments until expired
+        for (int i = 0; i < ProcessQualification.AssessmentScheduleSeconds.Length; i++)
+        {
+            currentClock = TimeSpan.FromSeconds(ProcessQualification.AssessmentScheduleSeconds[i]);
+            monitor.PollProcessesOnce();
+        }
+
+        var candidate1 = monitor.GetCandidateState(currentProc.Id);
+        Assert.NotNull(candidate1);
+        Assert.True(candidate1!.IsExpired);
+
+        // Next: PID is reused by a new process instance with differing start time
+        currentStart = new DateTime(2026, 10, 15, 12, 10, 0, DateTimeKind.Utc);
+
+        // Poll again: State must reset, not inherit prior expiration
+        monitor.PollProcessesOnce();
+        var candidate2 = monitor.GetCandidateState(currentProc.Id);
+        Assert.NotNull(candidate2);
+        Assert.False(candidate2!.IsExpired);
+        Assert.Equal(currentStart, candidate2.ProcessStartTime);
+        Assert.Equal(1, candidate2.AssessmentsConductedCount);
+    }
+
+    [Fact]
+    public void CandidateLifecycle_ExitedWindowRetry_CleanedUp()
+    {
+        using var tempDir = new SyntheticTestDirectory();
+        var libraryStore = new GameLibraryStore(
+            Path.Combine(tempDir.RootPath, "game-library.json"),
+            Path.Combine(tempDir.RootPath, "backups"));
+        var exitHandler = new FakeProcessExitHandler();
+        var scanner = new DynamicModuleScanner(_ => ModuleScanResult.Complete(new HashSet<string>()));
+        var classifier = new ApiClassifier(scanner, new FakePeParser());
+
+        using var currentProc = Process.GetCurrentProcess();
+        string exePath = @"C:\Games\Game\Game.exe";
+        bool enumerateProc = true;
+
+        var monitor = new ProcessMonitor(
+            new GameDetector(),
+            exitHandler,
+            classifier,
+            libraryStore,
+            clock: () => TimeSpan.Zero,
+            processEnumerator: () => enumerateProc ? new[] { currentProc } : Array.Empty<Process>(),
+            startTimer: false);
+        monitor.GameProcessFilter = _ => true;
+        monitor.WindowFilter = _ => false; // No window yet -> enters _windowRetries
+        monitor.StartTimeResolver = _ => new DateTime(2026, 10, 15, 12, 0, 0, DateTimeKind.Utc);
+        monitor.ExePathResolver = _ => exePath;
+
+        // Poll 1: Tracked in window retries
+        monitor.PollProcessesOnce();
+
+        // Process exits/disappears before gaining a window
+        enumerateProc = false;
+        monitor.PollProcessesOnce();
+
+        // Process reappears with a window: window retries was cleaned up so it starts fresh at tick 0
+        enumerateProc = true;
+        monitor.WindowFilter = _ => true;
+        monitor.PollProcessesOnce();
+
+        var candidate = monitor.GetCandidateState(currentProc.Id);
+        Assert.NotNull(candidate);
+        Assert.Equal(1, candidate!.AssessmentsConductedCount);
+    }
+
+    [Fact]
+    public async Task HeadlessGameAdmission_Orchestration_DX11_Vs_Unknown_Vs_DX12_Vs_Vulkan()
     {
         using var tempDir = new SyntheticTestDirectory();
         var gamesPath = Path.Combine(tempDir.RootPath, "games.json");
@@ -729,12 +1329,32 @@ public sealed class ProcessMonitorQualificationTests
         var inspector = new ManagedFileInspector(libraryStore);
         var fileUtils = new FileUtils();
         var engine = new MultiFileTransactionEngine(backupsPath);
-        var installer = new DxvkInstaller(new System.Net.Http.HttpClient(), engine, libraryStore, null, fileUtils);
+
+        // Use FakeHttpMessageHandler to guarantee zero real network access
+        var fakeHttpHandler = new FakeHttpMessageHandler("{\"tag_name\":\"v2.3\",\"assets\":[]}");
+        var fakeHttpClient = new System.Net.Http.HttpClient(fakeHttpHandler);
+
+        var installer = new DxvkInstaller(fakeHttpClient, engine, libraryStore, null, fileUtils);
         var rollback = new DxvkRollback(engine, libraryStore, fileUtils);
-        var github = new DxvkGithubClient(new System.Net.Http.HttpClient(), new CacheStore(Path.Combine(tempDir.RootPath, "cache.json")));
+        var github = new DxvkGithubClient(fakeHttpClient, new CacheStore(Path.Combine(tempDir.RootPath, "cache.json")));
         var dxvk = new DxvkManager(installer, rollback, github, profiles, libraryStore);
 
-        // Case 1: Unknown snapshot -> returns false, 0 profiles created
+        using var dummyProcess = Process.GetCurrentProcess();
+
+        int autoEnableCalls = 0;
+        int autoReapplyCalls = 0;
+        Func<GameProfile, Process, Task> autoEnableDispatcher = (p, proc) =>
+        {
+            autoEnableCalls++;
+            return Task.CompletedTask;
+        };
+        Func<GameProfile, Process, Task> autoReapplyDispatcher = (p, proc) =>
+        {
+            autoReapplyCalls++;
+            return Task.CompletedTask;
+        };
+
+        // Case 1: Unknown snapshot -> returns false, 0 profiles created, 0 dispatch calls
         var unknownSnapshot = new DetectionSnapshot
         {
             ProcessId = 100,
@@ -747,11 +1367,14 @@ public sealed class ProcessMonitorQualificationTests
         };
 
         bool admittedUnknown = await TrayApp.ProcessGameAdmissionAsync(
-            unknownSnapshot, null, profiles, libraryStore, dxvk, inspector, settings);
+            unknownSnapshot, dummyProcess, profiles, libraryStore, dxvk, inspector, settings,
+            autoEnableDispatcher: autoEnableDispatcher,
+            autoReapplyDispatcher: autoReapplyDispatcher);
         Assert.False(admittedUnknown);
         Assert.Empty(profiles.GetAll());
+        Assert.Equal(0, autoEnableCalls);
 
-        // Case 2: DX11 snapshot -> returns true, profile and library record created
+        // Case 2: DX11 snapshot -> returns true, profile and library record created, exactly 1 autoEnable dispatch
         var dx11Snapshot = new DetectionSnapshot
         {
             ProcessId = 200,
@@ -769,12 +1392,26 @@ public sealed class ProcessMonitorQualificationTests
         };
 
         bool admittedDx11 = await TrayApp.ProcessGameAdmissionAsync(
-            dx11Snapshot, null, profiles, libraryStore, dxvk, inspector, settings);
+            dx11Snapshot, dummyProcess, profiles, libraryStore, dxvk, inspector, settings,
+            autoEnableDispatcher: autoEnableDispatcher,
+            autoReapplyDispatcher: autoReapplyDispatcher);
         Assert.True(admittedDx11);
         Assert.Single(profiles.GetAll());
         Assert.Equal(GraphicsApi.DX11, profiles.GetAll().First().Api);
+        Assert.Equal(1, autoEnableCalls);
 
-        // Case 3: DX12 snapshot -> returns true (recorded), but deployment refused
+        // Assert file storage bytes exist for games.json and game-library.json
+        Assert.True(File.Exists(gamesPath));
+        Assert.True(new FileInfo(gamesPath).Length > 0);
+        string gamesContent = File.ReadAllText(gamesPath);
+        Assert.Contains("Game11", gamesContent);
+
+        Assert.True(File.Exists(libraryPath));
+        Assert.True(new FileInfo(libraryPath).Length > 0);
+        string libraryContent = File.ReadAllText(libraryPath);
+        Assert.Contains("Game11", libraryContent);
+
+        // Case 3: DX12 snapshot -> returns true (recorded), but deployment refused, 0 additional dispatch
         var dx12Snapshot = new DetectionSnapshot
         {
             ProcessId = 300,
@@ -792,12 +1429,44 @@ public sealed class ProcessMonitorQualificationTests
         };
 
         bool admittedDx12 = await TrayApp.ProcessGameAdmissionAsync(
-            dx12Snapshot, null, profiles, libraryStore, dxvk, inspector, settings);
+            dx12Snapshot, dummyProcess, profiles, libraryStore, dxvk, inspector, settings,
+            autoEnableDispatcher: autoEnableDispatcher,
+            autoReapplyDispatcher: autoReapplyDispatcher);
         Assert.True(admittedDx12);
-        var inst = libraryStore.FindByInstallationPath(@"C:\Games\Game12");
-        Assert.NotNull(inst);
-        bool deploySupported = DxvkCompatibility.IsInstallationSupported(inst, GraphicsApi.DX12, "Game.exe", out var refusalReason);
-        Assert.False(deploySupported);
-        Assert.NotNull(refusalReason);
+        Assert.Equal(1, autoEnableCalls); // Still 1 from DX11, not incremented
+        var inst12 = libraryStore.FindByInstallationPath(@"C:\Games\Game12");
+        Assert.NotNull(inst12);
+        bool deploySupported12 = DxvkCompatibility.IsInstallationSupported(inst12, GraphicsApi.DX12, "Game.exe", out var refusalReason12);
+        Assert.False(deploySupported12);
+        Assert.NotNull(refusalReason12);
+
+        // Case 4: Vulkan snapshot -> returns true (recorded), but deployment refused, 0 additional dispatch
+        var vulkanSnapshot = new DetectionSnapshot
+        {
+            ProcessId = 400,
+            ProcessName = "GameVk",
+            ExecutablePath = @"C:\Games\GameVk\Game.exe",
+            InstallationRoot = @"C:\Games\GameVk",
+            ExecutableRelativePath = "Game.exe",
+            Classification = new ApiClassificationResult
+            {
+                PrimaryApi = GraphicsApi.Vulkan,
+                Confidence = ApiDetectionConfidence.High,
+                Architecture = "x64"
+            },
+            AntiCheat = AntiCheatAssessment.None()
+        };
+
+        bool admittedVulkan = await TrayApp.ProcessGameAdmissionAsync(
+            vulkanSnapshot, dummyProcess, profiles, libraryStore, dxvk, inspector, settings,
+            autoEnableDispatcher: autoEnableDispatcher,
+            autoReapplyDispatcher: autoReapplyDispatcher);
+        Assert.True(admittedVulkan);
+        Assert.Equal(1, autoEnableCalls); // Still 1 from DX11, not incremented
+        var instVk = libraryStore.FindByInstallationPath(@"C:\Games\GameVk");
+        Assert.NotNull(instVk);
+        bool deploySupportedVk = DxvkCompatibility.IsInstallationSupported(instVk, GraphicsApi.Vulkan, "Game.exe", out var refusalReasonVk);
+        Assert.False(deploySupportedVk);
+        Assert.NotNull(refusalReasonVk);
     }
 }
