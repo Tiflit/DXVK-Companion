@@ -226,12 +226,14 @@ public sealed class RestoreBackupIdentityVerificationTests
 
         // 1. File 1: An originally absent file that was deployed and would be deleted during restore
         var dxgiDeployedBytes = "deployed-dxgi-content"u8.ToArray();
-        var dxgiPath = gameDir.CreateFile("dxgi.dll", dxgiDeployedBytes);
+        var dxgiPath = gameDir.GetPath("dxgi.dll");
+        File.WriteAllBytes(dxgiPath, dxgiDeployedBytes);
 
         // 2. File 2: A file with a valid original backup
         var d3d11OriginalBytes = "original-native-d3d11-content"u8.ToArray();
         var d3d11DeployedBytes = "deployed-dxvk-d3d11-content"u8.ToArray();
-        var d3d11Path = gameDir.CreateFile("d3d11.dll", d3d11DeployedBytes);
+        var d3d11Path = gameDir.GetPath("d3d11.dll");
+        File.WriteAllBytes(d3d11Path, d3d11DeployedBytes);
         var d3d11BackupRel = Path.Combine("Game", "d3d11.dll.bak");
         var d3d11BackupFull = Path.Combine(backupsDir, d3d11BackupRel);
         Directory.CreateDirectory(Path.GetDirectoryName(d3d11BackupFull)!);
@@ -242,12 +244,14 @@ public sealed class RestoreBackupIdentityVerificationTests
         var confExpectedOriginalBytes = "expected-original-conf-content"u8.ToArray();
         var confDeployedBytes = "deployed-dxvk-conf-content"u8.ToArray();
         var confCorruptedBackupBytes = "corrupted-conf-backup-content"u8.ToArray();
-        var confPath = gameDir.CreateFile("dxvk.conf", confDeployedBytes);
+        var confPath = gameDir.GetPath("dxvk.conf");
+        File.WriteAllBytes(confPath, confDeployedBytes);
         var confBackupRel = Path.Combine("Game", "dxvk.conf.bak");
         var confBackupFull = Path.Combine(backupsDir, confBackupRel);
         File.WriteAllBytes(confBackupFull, confCorruptedBackupBytes);
 
-        var tempRefFile = gameDir.CreateFile("temp_conf_ref", confExpectedOriginalBytes);
+        var tempRefFile = gameDir.GetPath("temp_conf_ref");
+        File.WriteAllBytes(tempRefFile, confExpectedOriginalBytes);
         var confExpectedSha = FileIdentity.Capture(tempRefFile).Sha256;
         File.Delete(tempRefFile);
 

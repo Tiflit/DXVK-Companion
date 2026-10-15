@@ -85,3 +85,5 @@ Investigate and implement a focused repair for original-backup identity verifica
    - Added engine-level test `Restore_MultiFile_InvalidLaterBackup_RefusesBeforeAnyApply_PreservesGameFilesAndBackups` verifying that `MultiFileTransactionEngine.Execute` with `TransactionOperation.Restore` validates all backups and halts before applying any changes when a later file's backup hash does not match.
 3. **`tests/DXVKCompanion.PhaseA.Tests/SharedDirectoryCompatibilityTests.cs`**:
    - In `SharedDirectory_Restore_SucceedsEvenWhenSiblingIncompatible`, populated `managedRecord.OriginalSha256` matching the test's mock backup to satisfy the original backup identity requirement during restore.
+4. **Compilation Repair on Head `cf0f0a2d06e158b55c6f201201f6f7d151a993aa`**:
+   - In `RestoreBackupIdentityVerificationTests.cs`, updated four calls that passed `byte[]` to `SyntheticTestDirectory.CreateFile` to use `GetPath` followed by `File.WriteAllBytes`, preserving the byte-based assertions while matching the string-only `CreateFile` API.
