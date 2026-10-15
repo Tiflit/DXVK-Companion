@@ -802,7 +802,7 @@ public sealed class ProcessMonitorQualificationTests
         var classifier = new ApiClassifier(scanner, new FakePeParser());
 
         using var proc1 = Process.GetCurrentProcess();
-        using var proc2 = Process.GetProcesses().FirstOrDefault(p => p.Id != proc1.Id);
+        using var proc2 = Process.GetProcesses().FirstOrDefault(p => p.Id > 0 && p.Id != proc1.Id);
         if (proc2 == null) return; // Safeguard if environment has single process
 
         string exePath = @"C:\Games\MultiInstance\Game.exe";
@@ -1325,7 +1325,7 @@ public sealed class ProcessMonitorQualificationTests
         var backupsPath = Path.Combine(tempDir.RootPath, "backups");
         var profiles = new ProfileStore(gamesPath);
         var libraryStore = new GameLibraryStore(libraryPath, backupsPath);
-        var settings = new SettingsStore();
+        var settings = new SettingsStore { GlobalPolicy = GlobalManagementPolicy.Automated };
         var inspector = new ManagedFileInspector(libraryStore);
         var fileUtils = new FileUtils();
         var engine = new MultiFileTransactionEngine(backupsPath);
