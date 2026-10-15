@@ -50,39 +50,81 @@ namespace DXVKCompanion.DXVK
                         if (installation != null && installation.ConflictFlags != InstallationConflictFlags.None)
                         {
                             var conflictReason = $"Refusing rollback on {installation.DisplayName}; installation has conflict flags: {installation.ConflictFlags}.";
-                            Logger.Log($"DxvkRollback: {conflictReason}");
-                            LastRefusalReason = conflictReason;
-                            return false;
+                            return RefuseRollback(installation, conflictReason);
                         }
 
                         if (installation != null && installation.ManagedFiles.Count > 0)
                         {
+                            if (installation.RestorationState == RestorationState.Restored)
+                            {
+                                foreach (var mf in installation.ManagedFiles)
+                                {
+                                    if (mf.OriginalState == FileOriginalState.Unknown)
+                                    {
+                                        return RefuseRollback(installation, $"Original state is unknown for managed file: {mf.RelativePath}");
+                                    }
+
+                                    var targetPath = Path.Combine(installation.InstallationPath, mf.RelativePath);
+
+                                    if (mf.OriginalState == FileOriginalState.Missing)
+                                    {
+                                        if (File.Exists(targetPath))
+                                        {
+                                            return RefuseRollback(installation, $"Already restored installation has unexpected file present: {mf.RelativePath}");
+                                        }
+                                    }
+                                    else if (mf.OriginalState == FileOriginalState.Existing)
+                                    {
+                                        if (!IsValidSha256(mf.OriginalSha256))
+                                        {
+                                            return RefuseRollback(installation, $"Original hash baseline is missing or malformed for restore: {mf.RelativePath}");
+                                        }
+
+                                        if (!File.Exists(targetPath))
+                                        {
+                                            return RefuseRollback(installation, $"Already restored original file is missing: {mf.RelativePath}");
+                                        }
+
+                                        var currentIdentity = FileIdentity.Capture(targetPath);
+                                        if (!string.Equals(currentIdentity.Sha256, mf.OriginalSha256, StringComparison.OrdinalIgnoreCase))
+                                        {
+                                            return RefuseRollback(installation, $"Already restored original file hash mismatch: {mf.RelativePath} (expected original {mf.OriginalSha256}, actual {currentIdentity.Sha256})");
+                                        }
+                                    }
+                                }
+
+                                return true;
+                            }
+
                             var filesToRestore = new List<MultiFileTransactionFile>();
 
                             foreach (var mf in installation.ManagedFiles)
                             {
                                 if (mf.OriginalState == FileOriginalState.Unknown)
                                 {
-                                    Logger.Log($"DxvkRollback: skipping file with unknown original state: {mf.RelativePath}");
-                                    continue;
+                                    return RefuseRollback(installation, $"Original state is unknown for managed file: {mf.RelativePath}");
+                                }
+
+                                if (!IsValidSha256(mf.ExpectedManagedSha256))
+                                {
+                                    return RefuseRollback(installation, $"Managed hash baseline is missing or malformed for restore: {mf.RelativePath}");
+                                }
+
+                                var targetPath = Path.Combine(installation.InstallationPath, mf.RelativePath);
+                                if (!File.Exists(targetPath))
+                                {
+                                    return RefuseRollback(installation, $"Managed target file is missing for restore: {mf.RelativePath}");
+                                }
+
+                                var currentTargetIdentity = FileIdentity.Capture(targetPath);
+                                if (!string.Equals(currentTargetIdentity.Sha256, mf.ExpectedManagedSha256, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    return RefuseRollback(installation, $"Managed target hash mismatch for restore: {mf.RelativePath} (expected managed {mf.ExpectedManagedSha256}, actual {currentTargetIdentity.Sha256})");
                                 }
 
                                 if (mf.OriginalState == FileOriginalState.Existing && !IsValidSha256(mf.OriginalSha256))
                                 {
-                                    var reason = $"Original hash baseline is missing or malformed for restore: {mf.RelativePath}";
-                                    Logger.Log($"DxvkRollback: {reason}");
-                                    LastRefusalReason = reason;
-                                    installation.RestorationState = RestorationState.AttentionRequired;
-                                    installation.LastRefusalReason = reason;
-                                    _gameLibraryStore.Save(installation);
-                                    return false;
-                                }
-
-                                var targetPath = Path.Combine(installation.InstallationPath, mf.RelativePath);
-                                SafetyFileIdentity? expectedTargetIdentity = null;
-                                if (File.Exists(targetPath))
-                                {
-                                    expectedTargetIdentity = FileIdentity.Capture(targetPath);
+                                    return RefuseRollback(installation, $"Original hash baseline is missing or malformed for restore: {mf.RelativePath}");
                                 }
 
                                 var safetyOriginalState = mf.OriginalState switch
@@ -97,8 +139,9 @@ namespace DXVKCompanion.DXVK
                                     RelativePath = mf.RelativePath,
                                     OriginalState = safetyOriginalState,
                                     BackupRelativePath = mf.BackupRelativePath,
-                                    ExpectedTargetIdentity = expectedTargetIdentity,
-                                    ExpectedOriginalSha256 = mf.OriginalSha256
+                                    ExpectedTargetIdentity = currentTargetIdentity,
+                                    ExpectedOriginalSha256 = mf.OriginalSha256,
+                                    ExpectedManagedSha256 = mf.ExpectedManagedSha256
                                 });
                             }
 
@@ -115,12 +158,7 @@ namespace DXVKCompanion.DXVK
                                 if (result.State != TransactionState.Committed || result.Outcome != TransactionOutcome.Success)
                                 {
                                     var reason = result.Message ?? $"Restore transaction failed ({result.State}/{result.Outcome})";
-                                    Logger.Log($"DxvkRollback: restore transaction failed ({result.State}/{result.Outcome}): {reason}");
-                                    LastRefusalReason = reason;
-                                    installation.RestorationState = RestorationState.AttentionRequired;
-                                    installation.LastRefusalReason = reason;
-                                    _gameLibraryStore.Save(installation);
-                                    return false;
+                                    return RefuseRollback(installation, reason);
                                 }
 
                                 foreach (var mf in installation.ManagedFiles)
@@ -176,6 +214,16 @@ namespace DXVKCompanion.DXVK
                     return false;
                 }
             });
+        }
+
+        private bool RefuseRollback(GameInstallation installation, string reason)
+        {
+            Logger.Log($"DxvkRollback: {reason}");
+            LastRefusalReason = reason;
+            installation.RestorationState = RestorationState.AttentionRequired;
+            installation.LastRefusalReason = reason;
+            _gameLibraryStore.Save(installation);
+            return false;
         }
 
         private static bool IsValidSha256(string? sha256) =>

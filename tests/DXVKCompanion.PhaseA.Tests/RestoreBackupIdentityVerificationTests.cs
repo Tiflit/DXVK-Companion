@@ -275,6 +275,7 @@ public sealed class RestoreBackupIdentityVerificationTests
             OriginalState = FileOriginalState.Missing,
             BackupRelativePath = null,
             OriginalSha256 = null,
+            ExpectedManagedSha256 = FileIdentity.Capture(dxgiPath).Sha256,
             ManagedDxvkVersion = "2.5"
         });
         installation.ManagedFiles.Add(new ManagedFileRecord
@@ -283,6 +284,7 @@ public sealed class RestoreBackupIdentityVerificationTests
             OriginalState = FileOriginalState.Existing,
             BackupRelativePath = d3d11BackupRel,
             OriginalSha256 = d3d11ValidSha,
+            ExpectedManagedSha256 = FileIdentity.Capture(d3d11Path).Sha256,
             ManagedDxvkVersion = "2.5"
         });
         installation.ManagedFiles.Add(new ManagedFileRecord
@@ -291,6 +293,7 @@ public sealed class RestoreBackupIdentityVerificationTests
             OriginalState = FileOriginalState.Existing,
             BackupRelativePath = confBackupRel,
             OriginalSha256 = confExpectedSha,
+            ExpectedManagedSha256 = FileIdentity.Capture(confPath).Sha256,
             ManagedDxvkVersion = "2.5"
         });
         store.Save(installation);

@@ -18,6 +18,7 @@ public sealed record MultiFileTransactionFile
     public OriginalFileState OriginalState { get; init; } = OriginalFileState.Unknown;
     public string? BackupRelativePath { get; init; }
     public string? ExpectedOriginalSha256 { get; init; }
+    public string? ExpectedManagedSha256 { get; init; }
 }
 
 public sealed record MultiFileTransactionTestHooks
@@ -100,18 +101,33 @@ public sealed class MultiFileTransactionEngine
                         backupIdentity = FileIdentity.Capture(backupPath);
                     }
                 }
-                else if (request.Operation == TransactionOperation.Restore && file.OriginalState == OriginalFileState.Existing)
+                else if (request.Operation == TransactionOperation.Restore)
                 {
-                    if (!IsValidSha256(file.ExpectedOriginalSha256))
-                        return SafeFailure(transactionId, request.Operation, affected, $"Original hash baseline is missing or malformed for restore: {file.RelativePath}");
+                    if (file.ExpectedManagedSha256 is not null)
+                    {
+                        if (!IsValidSha256(file.ExpectedManagedSha256))
+                            return SafeFailure(transactionId, request.Operation, affected, $"Managed hash baseline is missing or malformed for restore: {file.RelativePath}");
 
-                    backupPath = ResolveBackupPath(file.BackupRelativePath, transactionId, file.RelativePath);
-                    if (!File.Exists(backupPath))
-                        return SafeFailure(transactionId, request.Operation, affected, $"Original backup is unavailable for restore: {file.RelativePath}");
+                        if (currentState != OriginalFileState.Existing || currentIdentity is null)
+                            return SafeFailure(transactionId, request.Operation, affected, $"Managed target file is missing for restore: {file.RelativePath}");
 
-                    backupIdentity = FileIdentity.Capture(backupPath);
-                    if (!string.Equals(backupIdentity.Sha256, file.ExpectedOriginalSha256, StringComparison.OrdinalIgnoreCase))
-                        return SafeFailure(transactionId, request.Operation, affected, $"Original backup hash mismatch for restore: {file.RelativePath} (expected {file.ExpectedOriginalSha256}, actual {backupIdentity.Sha256})");
+                        if (!string.Equals(currentIdentity.Sha256, file.ExpectedManagedSha256, StringComparison.OrdinalIgnoreCase))
+                            return SafeFailure(transactionId, request.Operation, affected, $"Managed target hash mismatch for restore: {file.RelativePath} (expected managed {file.ExpectedManagedSha256}, actual {currentIdentity.Sha256})");
+                    }
+
+                    if (file.OriginalState == OriginalFileState.Existing)
+                    {
+                        if (!IsValidSha256(file.ExpectedOriginalSha256))
+                            return SafeFailure(transactionId, request.Operation, affected, $"Original hash baseline is missing or malformed for restore: {file.RelativePath}");
+
+                        backupPath = ResolveBackupPath(file.BackupRelativePath, transactionId, file.RelativePath);
+                        if (!File.Exists(backupPath))
+                            return SafeFailure(transactionId, request.Operation, affected, $"Original backup is unavailable for restore: {file.RelativePath}");
+
+                        backupIdentity = FileIdentity.Capture(backupPath);
+                        if (!string.Equals(backupIdentity.Sha256, file.ExpectedOriginalSha256, StringComparison.OrdinalIgnoreCase))
+                            return SafeFailure(transactionId, request.Operation, affected, $"Original backup hash mismatch for restore: {file.RelativePath} (expected {file.ExpectedOriginalSha256}, actual {backupIdentity.Sha256})");
+                    }
                 }
 
                 prepared.Add(new PreparedFile(file, targetPath, sourcePath, sourceIdentity, file.OriginalState, currentIdentity, backupPath, backupIdentity));

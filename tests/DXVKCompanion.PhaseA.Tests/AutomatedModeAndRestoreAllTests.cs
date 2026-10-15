@@ -87,6 +87,7 @@ namespace DXVKCompanion.PhaseA.Tests
                 RelativePath = "d3d11.dll",
                 OriginalState = FileOriginalState.Missing,
                 CurrentState = ManagedFileState.Consistent,
+                ExpectedManagedSha256 = FileIdentity.Capture(game1D3D11).Sha256,
                 ManagedDxvkVersion = "2.6"
             });
             store.Save(inst1);

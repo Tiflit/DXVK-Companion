@@ -482,6 +482,7 @@ namespace DXVKCompanion.PhaseA.Tests
             managedRecord.OriginalState = FileOriginalState.Existing;
             managedRecord.BackupRelativePath = Path.Combine("Game_DX11", "d3d11.dll.bak");
             managedRecord.OriginalSha256 = FileIdentity.Capture(backupPath).Sha256;
+            managedRecord.ExpectedManagedSha256 = FileIdentity.Capture(deployedD3D11).Sha256;
             managedRecord.CurrentState = ManagedFileState.Consistent;
             managedRecord.ManagedDxvkVersion = "2.5";
             store.Save(installation);
