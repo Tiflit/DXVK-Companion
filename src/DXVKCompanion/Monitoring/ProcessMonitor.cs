@@ -306,4 +306,5 @@ namespace DXVKCompanion.Monitoring
             _nonGamePids.Clear();
             _windowRetryCounts.Clear();
         }
+    }
 }
