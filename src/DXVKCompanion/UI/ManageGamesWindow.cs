@@ -175,9 +175,7 @@ namespace DXVKCompanion.UI
                     continue;
                 if (filter == "Managed / Active Only" && (!profile.DxvkEnabled || isHidden))
                     continue;
-                if (filter == "Attention Required" &&
-                    (installation?.RestorationState != RestorationState.AttentionRequired &&
-                     installation?.ConflictFlags == InstallationConflictFlags.None))
+                if (filter == "Attention Required" && !GameListAttentionFilter.MatchesAttentionRequired(installation, profile))
                     continue;
 
                 string statusText = "Clean / Native";
