@@ -87,7 +87,7 @@ namespace DXVKCompanion.Storage
                 installation.PendingAction = null;
             }
 
-            if (anyExternalChange)
+            if (!allFilesVerifiedConsistent && installation.ManagedFiles.Count > 0)
             {
                 installation.RestorationState = RestorationState.AttentionRequired;
             }

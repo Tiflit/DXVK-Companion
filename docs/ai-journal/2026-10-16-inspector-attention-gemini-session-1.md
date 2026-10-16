@@ -1,8 +1,9 @@
 # AI Engineering Journal: Preserve Unresolved Managed-File Attention Across Repeated Inspections
 
 **Date**: 2026-10-16  
-**Session**: Gemini Session 1  
+**Session**: Gemini Session 1 & Codex Focused Repair  
 **Primary Issue**: [#133](https://github.com/Tiflit/DXVK-Companion/issues/133)  
+**Pull Request**: [#134](https://github.com/Tiflit/DXVK-Companion/pull/134)  
 **Base Revision**: `3ea4f39f8c7e4edb7b312a7c728c3a570e09a1fc` (`origin/main`)  
 
 ---
@@ -46,7 +47,22 @@ Fix `ManagedFileInspector` so an actively managed installation remains in `Resto
 
 ---
 
-### 3. Verification & Governance
+### 3. Codex Review Findings & Focused Repair
+
+Codex coordinator review identified that installations previously affected by the old bug could have `RestorationState.Managed` persisted alongside records already marked `ExternallyChanged`.
+On inspection:
+- `record.CurrentState` was already `ExternallyChanged`, so `anyExternalChange` remained `false`.
+- Previously, `AttentionRequired` was assigned only when `anyExternalChange` was true (`if (anyExternalChange)`), so an affected installation stayed `RestorationState.Managed` even though files remained missing or mismatched.
+- **Repair**: In `ManagedFileInspector.cs`, decoupled installation attention assignment from `anyExternalChange`. If `!allFilesVerifiedConsistent && installation.ManagedFiles.Count > 0`, `installation.RestorationState` is unconditionally set to `RestorationState.AttentionRequired`.
+- Preserved `anyExternalChange` exclusively as the signal for Section 20 stale pending action invalidation and the method's Boolean return value.
+- Added seeded persistence/reload regressions in `ManagedFileInspectorAttentionTests.cs`:
+  - `PersistedLegacyState_ManagedWithExternallyChanged_MissingDll_ReconcilesAttentionRequired_PreservesPendingActionAndMetadata`
+  - `PersistedLegacyState_ManagedWithExternallyChanged_ReplacedDll_ReconcilesAttentionRequired_PreservesPendingActionAndMetadata`
+  Verifies that seeded `Managed + ExternallyChanged` installations reconcile to `AttentionRequired`, return `false`, preserve newly queued pending actions, retain management/version/file/backup data, and persist to disk.
+
+---
+
+### 4. Verification & Governance
 
 - Local host execution: `NOT RUN (pending human authorization)`.
 - Verified via GitHub Actions Cloud CI on Windows runners (`build-and-test`, `ai-scope-check`, `ai-pr-hygiene`, `Run Python workflow tests`).

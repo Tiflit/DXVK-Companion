@@ -427,4 +427,146 @@ public sealed class ManagedFileInspectorAttentionTests
         Assert.True(installation.PendingAction.IsPending);
         Assert.Equal(RestorationState.AttentionRequired, installation.RestorationState);
     }
+
+    [Fact]
+    public void PersistedLegacyState_ManagedWithExternallyChanged_MissingDll_ReconcilesAttentionRequired_PreservesPendingActionAndMetadata()
+    {
+        // Codex P2 Regression:
+        // When an installation was persisted by the old bug with RestorationState.Managed and a record already ExternallyChanged,
+        // inspection of a still-missing DLL must reconcile AttentionRequired, return false (no new transition),
+        // preserve newly queued pending actions, retain management/version/file/backup data, and persist to disk.
+        using var gameDir = new SyntheticTestDirectory();
+        using var storageDir = new SyntheticTestDirectory();
+
+        var libraryPath = Path.Combine(storageDir.RootPath, "game-library.json");
+        var backupsPath = Path.Combine(storageDir.RootPath, "backups");
+        var backupFile = Path.Combine(backupsPath, "d3d11.dll.bak");
+        Directory.CreateDirectory(backupsPath);
+        File.WriteAllText(backupFile, "original-backup-bytes");
+
+        gameDir.CreateFile("Game.exe", "synthetic-binary");
+        // Note: d3d11.dll is NOT created in gameDir (missing on disk)
+
+        var expectedManagedHash = ComputeSha256Hex("expected-dxvk-d3d11");
+        var originalHash = ComputeSha256Hex("original-backup-bytes");
+
+        var store = new GameLibraryStore(libraryPath, backupsPath);
+        var installation = store.GetOrCreateInstallation(gameDir.RootPath, "TestGame");
+        installation.RestorationState = RestorationState.Managed; // Seeded with Managed (old bug state)
+        installation.ManagedDxvkVersion = "2.5";
+        installation.ConflictFlags = InstallationConflictFlags.None;
+        installation.PendingAction = PendingAction.Reapply("2.5", "Newly queued offline recovery");
+        installation.ManagedFiles.Add(new ManagedFileRecord
+        {
+            RelativePath = "d3d11.dll",
+            OriginalState = FileOriginalState.Existing,
+            CurrentState = ManagedFileState.ExternallyChanged, // Seeded with ExternallyChanged
+            ExpectedManagedSha256 = expectedManagedHash,
+            OriginalSha256 = originalHash,
+            BackupRelativePath = "d3d11.dll.bak",
+            ManagedDxvkVersion = "2.5"
+        });
+        store.Save(installation);
+
+        // Reload fresh store and inspector from disk
+        var freshStore = new GameLibraryStore(libraryPath, backupsPath);
+        var freshInspector = new ManagedFileInspector(freshStore);
+        var loaded = freshStore.FindByInstallationPath(gameDir.RootPath)!;
+        Assert.NotNull(loaded);
+        Assert.Equal(RestorationState.Managed, loaded.RestorationState); // Pre-inspection state
+
+        // Act: Inspect installation
+        bool changed = freshInspector.InspectInstallation(loaded);
+
+        // Assert: Return false (no new transition), AttentionRequired reconciled, PendingAction preserved
+        Assert.False(changed);
+        Assert.Equal(RestorationState.AttentionRequired, loaded.RestorationState);
+        Assert.Equal(ManagedFileState.ExternallyChanged, loaded.FindManagedFile("d3d11.dll")!.CurrentState);
+        Assert.NotNull(loaded.PendingAction);
+        Assert.Equal(PendingActionType.Reapply, loaded.PendingAction!.Type);
+        Assert.True(loaded.PendingAction.IsPending);
+        Assert.Equal("2.5", loaded.ManagedDxvkVersion);
+        Assert.True(File.Exists(backupFile));
+        Assert.Equal("original-backup-bytes", File.ReadAllText(backupFile));
+
+        // Verify disk persistence through another fresh store reload
+        var persistedStore = new GameLibraryStore(libraryPath, backupsPath);
+        var persisted = persistedStore.FindByInstallationPath(gameDir.RootPath)!;
+        Assert.NotNull(persisted);
+        Assert.Equal(RestorationState.AttentionRequired, persisted.RestorationState);
+        Assert.Equal("2.5", persisted.ManagedDxvkVersion);
+        Assert.NotNull(persisted.PendingAction);
+        Assert.Equal(PendingActionType.Reapply, persisted.PendingAction!.Type);
+    }
+
+    [Fact]
+    public void PersistedLegacyState_ManagedWithExternallyChanged_ReplacedDll_ReconcilesAttentionRequired_PreservesPendingActionAndMetadata()
+    {
+        // Codex P2 Regression:
+        // When an installation was persisted by the old bug with RestorationState.Managed and a record already ExternallyChanged,
+        // inspection of an externally replaced DLL (mismatched hash) must reconcile AttentionRequired, return false (no new transition),
+        // preserve newly queued pending actions, retain management/version/file/backup data, and persist to disk.
+        using var gameDir = new SyntheticTestDirectory();
+        using var storageDir = new SyntheticTestDirectory();
+
+        var libraryPath = Path.Combine(storageDir.RootPath, "game-library.json");
+        var backupsPath = Path.Combine(storageDir.RootPath, "backups");
+        var backupFile = Path.Combine(backupsPath, "d3d11.dll.bak");
+        Directory.CreateDirectory(backupsPath);
+        File.WriteAllText(backupFile, "original-backup-bytes");
+
+        gameDir.CreateFile("Game.exe", "synthetic-binary");
+        var d3d11Path = gameDir.CreateFile("d3d11.dll", "mismatched-external-patch-content");
+
+        var expectedManagedHash = ComputeSha256Hex("expected-dxvk-d3d11");
+        var originalHash = ComputeSha256Hex("original-backup-bytes");
+
+        var store = new GameLibraryStore(libraryPath, backupsPath);
+        var installation = store.GetOrCreateInstallation(gameDir.RootPath, "TestGame");
+        installation.RestorationState = RestorationState.Managed; // Seeded with Managed (old bug state)
+        installation.ManagedDxvkVersion = "2.5";
+        installation.ConflictFlags = InstallationConflictFlags.None;
+        installation.PendingAction = PendingAction.Install("2.6", "Queued upgrade");
+        installation.ManagedFiles.Add(new ManagedFileRecord
+        {
+            RelativePath = "d3d11.dll",
+            OriginalState = FileOriginalState.Existing,
+            CurrentState = ManagedFileState.ExternallyChanged, // Seeded with ExternallyChanged
+            ExpectedManagedSha256 = expectedManagedHash,
+            OriginalSha256 = originalHash,
+            BackupRelativePath = "d3d11.dll.bak",
+            ManagedDxvkVersion = "2.5"
+        });
+        store.Save(installation);
+
+        // Reload fresh store and inspector from disk
+        var freshStore = new GameLibraryStore(libraryPath, backupsPath);
+        var freshInspector = new ManagedFileInspector(freshStore);
+        var loaded = freshStore.FindByInstallationPath(gameDir.RootPath)!;
+        Assert.NotNull(loaded);
+        Assert.Equal(RestorationState.Managed, loaded.RestorationState); // Pre-inspection state
+
+        // Act: Inspect installation
+        bool changed = freshInspector.InspectInstallation(loaded);
+
+        // Assert: Return false (no new transition), AttentionRequired reconciled, PendingAction preserved
+        Assert.False(changed);
+        Assert.Equal(RestorationState.AttentionRequired, loaded.RestorationState);
+        Assert.Equal(ManagedFileState.ExternallyChanged, loaded.FindManagedFile("d3d11.dll")!.CurrentState);
+        Assert.NotNull(loaded.PendingAction);
+        Assert.Equal(PendingActionType.Install, loaded.PendingAction!.Type);
+        Assert.True(loaded.PendingAction.IsPending);
+        Assert.Equal("2.5", loaded.ManagedDxvkVersion);
+        Assert.Equal("mismatched-external-patch-content", File.ReadAllText(d3d11Path));
+        Assert.Equal("original-backup-bytes", File.ReadAllText(backupFile));
+
+        // Verify disk persistence through another fresh store reload
+        var persistedStore = new GameLibraryStore(libraryPath, backupsPath);
+        var persisted = persistedStore.FindByInstallationPath(gameDir.RootPath)!;
+        Assert.NotNull(persisted);
+        Assert.Equal(RestorationState.AttentionRequired, persisted.RestorationState);
+        Assert.Equal("2.5", persisted.ManagedDxvkVersion);
+        Assert.NotNull(persisted.PendingAction);
+        Assert.Equal(PendingActionType.Install, persisted.PendingAction!.Type);
+    }
 }
