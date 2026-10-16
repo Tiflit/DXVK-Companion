@@ -35,7 +35,9 @@ namespace DXVKCompanion.DXVK
                 while ((line = reader.ReadLine()) != null)
                 {
                     var trimmed = line.Trim();
-                    if (trimmed.StartsWith("dxvk.hud", StringComparison.OrdinalIgnoreCase))
+                    int separatorIndex = trimmed.IndexOf('=');
+                    string key = separatorIndex >= 0 ? trimmed[..separatorIndex].Trim() : string.Empty;
+                    if (string.Equals(key, "dxvk.hud", StringComparison.OrdinalIgnoreCase))
                     {
                         if (config.HudEnabled)
                         {
@@ -45,7 +47,7 @@ namespace DXVKCompanion.DXVK
                         continue;
                     }
 
-                    if (trimmed.StartsWith("dxvk.maxFrameRate", StringComparison.OrdinalIgnoreCase))
+                    if (string.Equals(key, "dxvk.maxFrameRate", StringComparison.OrdinalIgnoreCase))
                     {
                         if (config.FrameLimitEnabled && config.FrameLimit > 0)
                         {
