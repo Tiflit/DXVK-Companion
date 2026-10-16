@@ -25,6 +25,7 @@ namespace DXVKCompanion.Storage
             }
 
             bool anyExternalChange = false;
+            bool allFilesVerifiedConsistent = installation.ManagedFiles.Count > 0;
 
             foreach (var record in installation.ManagedFiles)
             {
@@ -40,25 +41,38 @@ namespace DXVKCompanion.Storage
                         Logger.Log($"ManagedFileInspector: {record.RelativePath} is missing on disk for {installation.DisplayName}.");
                     }
                     record.LastVerifiedUtc = DateTime.UtcNow;
+                    allFilesVerifiedConsistent = false;
+                    continue;
+                }
+
+                if (!IsValidSha256(record.ExpectedManagedSha256))
+                {
+                    // Managed file has missing or unusable baseline evidence
+                    if (record.CurrentState != ManagedFileState.ExternallyChanged)
+                    {
+                        record.CurrentState = ManagedFileState.ExternallyChanged;
+                        anyExternalChange = true;
+                        Logger.Log($"ManagedFileInspector: {record.RelativePath} has missing or unusable managed hash baseline for {installation.DisplayName}.");
+                    }
+                    record.LastVerifiedUtc = DateTime.UtcNow;
+                    allFilesVerifiedConsistent = false;
                     continue;
                 }
 
                 var currentIdentity = FileIdentity.Capture(targetPath);
 
-                if (!string.IsNullOrEmpty(record.ExpectedManagedSha256))
+                if (string.Equals(currentIdentity.Sha256, record.ExpectedManagedSha256, StringComparison.OrdinalIgnoreCase))
                 {
-                    if (string.Equals(currentIdentity.Sha256, record.ExpectedManagedSha256, StringComparison.OrdinalIgnoreCase))
+                    record.CurrentState = ManagedFileState.Consistent;
+                }
+                else
+                {
+                    allFilesVerifiedConsistent = false;
+                    if (record.CurrentState != ManagedFileState.ExternallyChanged)
                     {
-                        record.CurrentState = ManagedFileState.Consistent;
-                    }
-                    else
-                    {
-                        if (record.CurrentState != ManagedFileState.ExternallyChanged)
-                        {
-                            record.CurrentState = ManagedFileState.ExternallyChanged;
-                            anyExternalChange = true;
-                            Logger.Log($"ManagedFileInspector: external change detected on {record.RelativePath} for {installation.DisplayName} (Expected: {record.ExpectedManagedSha256[..Math.Min(8, record.ExpectedManagedSha256.Length)]}, Found: {currentIdentity.Sha256[..Math.Min(8, currentIdentity.Sha256.Length)]}).");
-                        }
+                        record.CurrentState = ManagedFileState.ExternallyChanged;
+                        anyExternalChange = true;
+                        Logger.Log($"ManagedFileInspector: external change detected on {record.RelativePath} for {installation.DisplayName} (Expected: {record.ExpectedManagedSha256[..Math.Min(8, record.ExpectedManagedSha256.Length)]}, Found: {currentIdentity.Sha256[..Math.Min(8, currentIdentity.Sha256.Length)]}).");
                     }
                 }
 
@@ -77,7 +91,7 @@ namespace DXVKCompanion.Storage
             {
                 installation.RestorationState = RestorationState.AttentionRequired;
             }
-            else if (installation.ManagedFiles.Count > 0 &&
+            else if (allFilesVerifiedConsistent &&
                      installation.ConflictFlags == InstallationConflictFlags.None &&
                      installation.RestorationState == RestorationState.AttentionRequired)
             {
@@ -90,6 +104,9 @@ namespace DXVKCompanion.Storage
             _store.Save(installation);
             return anyExternalChange;
         }
+
+        private static bool IsValidSha256(string? sha256) =>
+            !string.IsNullOrWhiteSpace(sha256) && sha256.Length == 64 && sha256.All(Uri.IsHexDigit);
 
         public virtual int InspectAll()
         {

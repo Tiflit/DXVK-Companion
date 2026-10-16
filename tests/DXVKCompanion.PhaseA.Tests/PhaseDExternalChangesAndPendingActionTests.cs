@@ -60,6 +60,12 @@ public sealed class PhaseDExternalChangesAndPendingActionTests
         Assert.NotNull(d3d11Record);
         Assert.Equal(ManagedFileState.ExternallyChanged, d3d11Record!.CurrentState);
         Assert.Equal(RestorationState.AttentionRequired, installation.RestorationState);
+
+        // Repeated inspection without repair retains ExternallyChanged and AttentionRequired
+        bool repeatedChange = inspector.InspectInstallation(installation);
+        Assert.False(repeatedChange);
+        Assert.Equal(ManagedFileState.ExternallyChanged, d3d11Record.CurrentState);
+        Assert.Equal(RestorationState.AttentionRequired, installation.RestorationState);
     }
 
     [Fact]
@@ -108,6 +114,12 @@ public sealed class PhaseDExternalChangesAndPendingActionTests
         var d3d11Record = installation!.FindManagedFile("d3d11.dll");
         Assert.NotNull(d3d11Record);
         Assert.Equal(ManagedFileState.ExternallyChanged, d3d11Record!.CurrentState);
+        Assert.Equal(RestorationState.AttentionRequired, installation.RestorationState);
+
+        // Repeated inspection without repair retains ExternallyChanged and AttentionRequired
+        bool repeatedChange = inspector.InspectInstallation(installation);
+        Assert.False(repeatedChange);
+        Assert.Equal(ManagedFileState.ExternallyChanged, d3d11Record.CurrentState);
         Assert.Equal(RestorationState.AttentionRequired, installation.RestorationState);
     }
 
