@@ -321,5 +321,175 @@ namespace DXVKCompanion.PhaseA.Tests
             Assert.Null(inst2After.PendingAction);
             Assert.Equal("original-native-d3d11", File.ReadAllText(Path.Combine(gameDir2.RootPath, "d3d11.dll")));
         }
+
+        [Fact]
+        public async Task TransientFailure_PersistedReload_HealthyRescan_RetiresInspectionFailureReason()
+        {
+            // Acceptance: After a transient inspection failure is persisted and reloaded, a subsequent
+            // genuinely complete successful verification restores AttentionRequired to Managed and
+            // retires the inspector-owned failure reason (clears LastRefusalReason to null).
+            using var storageDir = new SyntheticTestDirectory();
+            using var sourceDir = new SyntheticTestDirectory();
+            using var gameDir = new SyntheticTestDirectory();
+
+            var (manager, _, store, profileStore, _) = CreateTestEnvironment(storageDir, sourceDir);
+
+            // Setup healthy managed installation
+            var exePath = gameDir.CreateFile("Game.exe", "synthetic-binary");
+            gameDir.CreateFile("d3d11.dll", "original-native-d3d11");
+            var profile = profileStore.GetOrCreate(exePath);
+            profile.Api = GraphicsApi.DX11;
+            profile.Architecture = "x64";
+            profileStore.Save(profile);
+            bool deployOk = await manager.EnableDxvkAsync(profile, "2.5");
+            Assert.True(deployOk);
+
+            // 1. Transient failure occurs during InspectAll
+            var faultyInspector = new FaultyFirstInspectionInspector(store, gameDir.RootPath);
+            int changesDetected = faultyInspector.InspectAll();
+            Assert.Equal(0, changesDetected);
+
+            var instAfterFail = store.FindByInstallationPath(gameDir.RootPath);
+            Assert.NotNull(instAfterFail);
+            Assert.Equal(RestorationState.AttentionRequired, instAfterFail.RestorationState);
+            Assert.NotNull(instAfterFail.LastRefusalReason);
+            Assert.Contains("Inspection failed", instAfterFail.LastRefusalReason);
+
+            // 2. Persisted reload confirms failure state on disk
+            var reloadedStore = new GameLibraryStore(
+                Path.Combine(storageDir.RootPath, "game-library.json"),
+                Path.Combine(storageDir.RootPath, "backups"));
+            var reloadedInst = reloadedStore.FindByInstallationPath(gameDir.RootPath);
+            Assert.NotNull(reloadedInst);
+            Assert.Equal(RestorationState.AttentionRequired, reloadedInst.RestorationState);
+            Assert.Contains("Inspection failed", reloadedInst.LastRefusalReason);
+
+            // 3. Healthy rescan performs genuine complete successful verification
+            var healthyInspector = new ManagedFileInspector(reloadedStore);
+            int healthyChanges = healthyInspector.InspectAll();
+            Assert.Equal(0, healthyChanges);
+
+            var instAfterHealthy = reloadedStore.FindByInstallationPath(gameDir.RootPath);
+            Assert.NotNull(instAfterHealthy);
+            Assert.Equal(RestorationState.Managed, instAfterHealthy.RestorationState);
+            Assert.Null(instAfterHealthy.LastRefusalReason); // Retired!
+
+            // 4. Fresh store reload verifies retired reason is durable on disk
+            var freshStore = new GameLibraryStore(
+                Path.Combine(storageDir.RootPath, "game-library.json"),
+                Path.Combine(storageDir.RootPath, "backups"));
+            var freshInst = freshStore.FindByInstallationPath(gameDir.RootPath);
+            Assert.NotNull(freshInst);
+            Assert.Equal(RestorationState.Managed, freshInst.RestorationState);
+            Assert.Null(freshInst.LastRefusalReason);
+        }
+
+        [Fact]
+        public async Task UnresolvedInspection_DoesNotRetireInspectionFailureReason()
+        {
+            // Acceptance: Negative coverage: missing directories, missing/unusable evidence or
+            // remaining conflicts must not masquerade as successful verification or clear the failure reason.
+            using var storageDir = new SyntheticTestDirectory();
+            using var sourceDir = new SyntheticTestDirectory();
+            using var gameDir = new SyntheticTestDirectory();
+            using var missingRoot = new SyntheticTestDirectory();
+
+            var (manager, _, store, profileStore, _) = CreateTestEnvironment(storageDir, sourceDir);
+
+            // Case A: Missing directory does not retire reason
+            var missingPath = Path.Combine(missingRoot.RootPath, "AbsentGameDir");
+            Assert.False(Directory.Exists(missingPath));
+            var missingInst = store.GetOrCreateInstallation(missingPath, "AbsentGame");
+            missingInst.RestorationState = RestorationState.AttentionRequired;
+            missingInst.LastRefusalReason = "Inspection failed: Directory inaccessible";
+            store.Save(missingInst);
+
+            var inspector = new ManagedFileInspector(store);
+            bool missingResult = inspector.InspectInstallation(missingInst);
+            Assert.False(missingResult);
+            Assert.Equal(RestorationState.AttentionRequired, missingInst.RestorationState);
+            Assert.Equal("Inspection failed: Directory inaccessible", missingInst.LastRefusalReason);
+
+            // Case B: Tampered/missing file evidence does not retire reason
+            var exePath = gameDir.CreateFile("Game.exe", "synthetic-binary");
+            gameDir.CreateFile("d3d11.dll", "original-native-d3d11");
+            var profile = profileStore.GetOrCreate(exePath);
+            profile.Api = GraphicsApi.DX11;
+            profile.Architecture = "x64";
+            profileStore.Save(profile);
+            bool deployOk = await manager.EnableDxvkAsync(profile, "2.5");
+            Assert.True(deployOk);
+
+            // Tamper file and assign previous inspection failure
+            File.WriteAllText(Path.Combine(gameDir.RootPath, "d3d11.dll"), "tampered-content");
+            var tamperedInst = store.FindByInstallationPath(gameDir.RootPath)!;
+            tamperedInst.RestorationState = RestorationState.AttentionRequired;
+            tamperedInst.LastRefusalReason = "Inspection failed: Previous transient error";
+            store.Save(tamperedInst);
+
+            bool tamperedResult = inspector.InspectInstallation(tamperedInst);
+            Assert.True(tamperedResult); // external change detected
+            Assert.Equal(RestorationState.AttentionRequired, tamperedInst.RestorationState);
+            Assert.Equal("Inspection failed: Previous transient error", tamperedInst.LastRefusalReason);
+
+            // Case C: Conflict flags present do not retire reason even if files are consistent
+            // Restore consistent file
+            File.WriteAllText(Path.Combine(gameDir.RootPath, "d3d11.dll"), "dxvk-d3d11");
+            tamperedInst.ConflictFlags = InstallationConflictFlags.MultipleExecutablesDifferentApi;
+            tamperedInst.RestorationState = RestorationState.AttentionRequired;
+            tamperedInst.LastRefusalReason = "Inspection failed: Conflict unresolved";
+            store.Save(tamperedInst);
+
+            bool conflictResult = inspector.InspectInstallation(tamperedInst);
+            Assert.False(conflictResult);
+            Assert.Equal(RestorationState.AttentionRequired, tamperedInst.RestorationState);
+            Assert.Equal("Inspection failed: Conflict unresolved", tamperedInst.LastRefusalReason);
+        }
+
+        [Fact]
+        public async Task UnrelatedRefusalReason_PreservedAcrossHealthySuccessfulInspection()
+        {
+            // Acceptance: After a genuinely complete successful verification, unrelated deployment /
+            // restore / cancellation refusal reasons are strictly preserved and not cleared.
+            using var storageDir = new SyntheticTestDirectory();
+            using var sourceDir = new SyntheticTestDirectory();
+            using var gameDir = new SyntheticTestDirectory();
+
+            var (manager, _, store, profileStore, _) = CreateTestEnvironment(storageDir, sourceDir);
+
+            var exePath = gameDir.CreateFile("Game.exe", "synthetic-binary");
+            gameDir.CreateFile("d3d11.dll", "original-native-d3d11");
+            var profile = profileStore.GetOrCreate(exePath);
+            profile.Api = GraphicsApi.DX11;
+            profile.Architecture = "x64";
+            profileStore.Save(profile);
+            bool deployOk = await manager.EnableDxvkAsync(profile, "2.5");
+            Assert.True(deployOk);
+
+            // Set an unrelated refusal reason (e.g. from an adoption or restore check)
+            const string unrelatedReason = "Existing DLLs cannot be adopted (status: UnrecognizedDllPresent).";
+            var inst = store.FindByInstallationPath(gameDir.RootPath)!;
+            inst.RestorationState = RestorationState.AttentionRequired;
+            inst.LastRefusalReason = unrelatedReason;
+            store.Save(inst);
+
+            // ACT: Healthy inspection runs on fully consistent files
+            var inspector = new ManagedFileInspector(store);
+            bool changed = inspector.InspectInstallation(inst);
+            Assert.False(changed);
+
+            // ASSERT: State recovered to Managed, but unrelated refusal reason is preserved intact
+            Assert.Equal(RestorationState.Managed, inst.RestorationState);
+            Assert.Equal(unrelatedReason, inst.LastRefusalReason);
+
+            // Reload store: confirms durable preservation on disk
+            var reloadedStore = new GameLibraryStore(
+                Path.Combine(storageDir.RootPath, "game-library.json"),
+                Path.Combine(storageDir.RootPath, "backups"));
+            var reloadedInst = reloadedStore.FindByInstallationPath(gameDir.RootPath);
+            Assert.NotNull(reloadedInst);
+            Assert.Equal(RestorationState.Managed, reloadedInst.RestorationState);
+            Assert.Equal(unrelatedReason, reloadedInst.LastRefusalReason);
+        }
     }
 }

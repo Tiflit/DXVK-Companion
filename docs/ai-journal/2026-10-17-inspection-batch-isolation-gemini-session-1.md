@@ -37,6 +37,12 @@ Acceptance criteria:
        - Does not mutate game files, deploy, restore, clear pending actions, change APIs, or rewrite baselines.
        - Best-effort persists the failure state via `_store.Save(installation)`, guarded by a try/catch block so persistence failures also do not prevent batch continuation.
      - The loop continues to inspect all remaining installations.
+   - In `InspectInstallation()`, implemented inspector-owned reason retirement:
+     - When an installation achieves genuinely complete successful verification (`allFilesVerifiedConsistent && installation.ConflictFlags == InstallationConflictFlags.None`):
+       - Recovers `RestorationState` to `Managed` or `Restored`.
+       - If `LastRefusalReason` starts with `"Inspection failed"` (case-insensitive), clears `LastRefusalReason` to `null`.
+       - Unrelated refusal reasons (e.g. restore refusal, adoption refusal, deployment refusal) are strictly preserved.
+       - Unresolved states (missing directories, missing/unusable file evidence, remaining conflict flags) do not clear the failure reason.
 
 2. **`tests/DXVKCompanion.PhaseA.Tests/ManagedFileInspectorBatchIsolationTests.cs`**:
    - `FirstInspectionThrows_ContinuationInspectsLaterTargetAndDetectsExternalChange`:
@@ -58,10 +64,19 @@ Acceptance criteria:
      - Verifies `InspectAll` completes without throwing.
      - Verifies `ProcessAllPendingActionsAsync` restores Game 2 successfully, returning processed count of 1.
      - Verifies authoritative ownership/backup validation on Game 1 is NOT bypassed: Game 1 restore is refused due to target hash mismatch, and tampered files are not restored.
+   - `TransientFailure_PersistedReload_HealthyRescan_RetiresInspectionFailureReason`:
+     - Verifies transient failure persists `AttentionRequired` and `LastRefusalReason = "Inspection failed..."` across store reload.
+     - Verifies subsequent healthy rescan achieves complete verification, restores state to `Managed`, and retires `LastRefusalReason` to `null`.
+     - Verifies retired healthy state is durably persisted across fresh store reload.
+   - `UnresolvedInspection_DoesNotRetireInspectionFailureReason`:
+     - Verifies negative cases: missing directories, missing/tampered files, and active conflict flags do NOT clear the inspection failure reason.
+   - `UnrelatedRefusalReason_PreservedAcrossHealthySuccessfulInspection`:
+     - Verifies unrelated refusal reasons (e.g. adoption/restore refusals) are preserved intact across a healthy successful inspection.
 
 ---
 
 ### 3. Verification & Governance
 
+- Addressed Codex review on PR #153: implemented inspector-owned reason retirement lifecycle upon complete successful verification, preserved unrelated refusal reasons, and added regression/negative test coverage.
 - Local host execution: `NOT RUN (pending human authorization)` under AGENTS.md.
 - Verified via GitHub Actions Cloud CI on Windows runners (`build-and-test`, `ai-scope-check`, `ai-pr-hygiene`, `Run Python workflow tests`).

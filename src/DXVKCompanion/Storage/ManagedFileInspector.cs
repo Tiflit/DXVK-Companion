@@ -172,13 +172,21 @@ namespace DXVKCompanion.Storage
                 installation.RestorationState = RestorationState.AttentionRequired;
             }
             else if (allFilesVerifiedConsistent &&
-                     installation.ConflictFlags == InstallationConflictFlags.None &&
-                     installation.RestorationState == RestorationState.AttentionRequired)
+                     installation.ConflictFlags == InstallationConflictFlags.None)
             {
-                // All managed files verified consistent and no conflict flags
-                installation.RestorationState = installation.ManagedDxvkVersion != null
-                    ? RestorationState.Managed
-                    : RestorationState.Restored;
+                if (installation.RestorationState == RestorationState.AttentionRequired)
+                {
+                    // All managed files verified consistent and no conflict flags
+                    installation.RestorationState = installation.ManagedDxvkVersion != null
+                        ? RestorationState.Managed
+                        : RestorationState.Restored;
+                }
+
+                if (installation.LastRefusalReason?.StartsWith("Inspection failed", StringComparison.OrdinalIgnoreCase) == true)
+                {
+                    Logger.Log($"ManagedFileInspector: retiring resolved inspection failure reason for {installation.DisplayName}.");
+                    installation.LastRefusalReason = null;
+                }
             }
 
             _store.Save(installation);
