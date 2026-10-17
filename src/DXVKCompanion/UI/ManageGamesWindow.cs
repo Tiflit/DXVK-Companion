@@ -401,11 +401,7 @@ namespace DXVKCompanion.UI
             var summary = await _dxvk.RestoreAllAsync();
             RefreshList();
 
-            string msg = $"Restore All completed:\n\n" +
-                         $"• Restored: {summary.Restored}\n" +
-                         $"• Already clean: {summary.AlreadyRestored}\n" +
-                         $"• Queued (games running): {summary.QueuedRunning}\n" +
-                         $"• Attention required / failed: {summary.FailedOrAttentionRequired}";
+            string msg = RestoreAllSummaryFormatter.Format(summary);
 
             MessageBox.Show(msg, "Restore All", MessageBoxButtons.OK,
                 summary.FailedOrAttentionRequired > 0 ? MessageBoxIcon.Warning : MessageBoxIcon.Information);
