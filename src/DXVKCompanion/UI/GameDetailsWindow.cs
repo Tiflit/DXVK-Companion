@@ -108,6 +108,16 @@ namespace DXVKCompanion.UI
                 top += 25;
             }
 
+            var pendingActionLabel = new Label
+            {
+                Text = PendingActionPresentation.FormatRecordedPendingActionLabel(installation, isPreexistingInstallation),
+                AutoSize = true,
+                Top = top,
+                Left = 20
+            };
+            Controls.Add(pendingActionLabel);
+            top += 25;
+
             // Restoration & Health status
             string healthStatus = "Clean / Baseline";
             Color healthColor = Color.DarkGreen;
