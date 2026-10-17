@@ -172,13 +172,21 @@ namespace DXVKCompanion.Storage
                 installation.RestorationState = RestorationState.AttentionRequired;
             }
             else if (allFilesVerifiedConsistent &&
-                     installation.ConflictFlags == InstallationConflictFlags.None &&
-                     installation.RestorationState == RestorationState.AttentionRequired)
+                     installation.ConflictFlags == InstallationConflictFlags.None)
             {
-                // All managed files verified consistent and no conflict flags
-                installation.RestorationState = installation.ManagedDxvkVersion != null
-                    ? RestorationState.Managed
-                    : RestorationState.Restored;
+                if (installation.RestorationState == RestorationState.AttentionRequired)
+                {
+                    // All managed files verified consistent and no conflict flags
+                    installation.RestorationState = installation.ManagedDxvkVersion != null
+                        ? RestorationState.Managed
+                        : RestorationState.Restored;
+                }
+
+                if (installation.LastRefusalReason?.StartsWith("Inspection failed", StringComparison.OrdinalIgnoreCase) == true)
+                {
+                    Logger.Log($"ManagedFileInspector: retiring resolved inspection failure reason for {installation.DisplayName}.");
+                    installation.LastRefusalReason = null;
+                }
             }
 
             _store.Save(installation);
@@ -193,8 +201,47 @@ namespace DXVKCompanion.Storage
             int changesDetected = 0;
             foreach (var installation in _store.GetAll())
             {
-                if (InspectInstallation(installation))
-                    changesDetected++;
+                try
+                {
+                    if (InspectInstallation(installation))
+                        changesDetected++;
+                }
+                catch (Exception ex)
+                {
+                    string targetName = installation?.DisplayName ?? installation?.InstallationPath ?? "unknown installation";
+                    try
+                    {
+                        Logger.Log($"ManagedFileInspector: inspection failed for {targetName}: {ex.Message}");
+                    }
+                    catch
+                    {
+                        // Best-effort logging must not prevent continuation
+                    }
+
+                    if (installation != null)
+                    {
+                        installation.RestorationState = RestorationState.AttentionRequired;
+                        installation.LastRefusalReason = string.IsNullOrWhiteSpace(ex.Message)
+                            ? "Inspection failed."
+                            : $"Inspection failed: {ex.Message}";
+
+                        try
+                        {
+                            _store.Save(installation);
+                        }
+                        catch (Exception saveEx)
+                        {
+                            try
+                            {
+                                Logger.Log($"ManagedFileInspector: failed to persist inspection failure state for {targetName}: {saveEx.Message}");
+                            }
+                            catch
+                            {
+                                // Best-effort persistence must not prevent batch continuation
+                            }
+                        }
+                    }
+                }
             }
             return changesDetected;
         }
