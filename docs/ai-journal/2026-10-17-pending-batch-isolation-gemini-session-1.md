@@ -44,12 +44,15 @@ Acceptance criteria:
      - Uses existing test seam `profileStore.CustomTempWriter` to simulate a transient I/O error during game 1's profile save.
      - Verifies game 2 completes successfully while game 1 retains its pending intent in memory and across reload.
      - Verifies game 1 completes on subsequent batch run after transient error condition clears.
-   - `UnhandledException_DuringInstallationResolution_DoesNotAbortRemainingInstallations`:
-     - Verifies an unresolvable or faulty directory path on one installation does not abort remaining queued installations.
+   - `UnresolvedExecutable_MissingDirectory_SkipsAndRetainsPendingIntent_WithoutAbortingRemainingInstallations`:
+     - Confines the missing path to a non-existent child directory under an owned `SyntheticTestDirectory` and asserts absence.
+     - Accurately asserts and describes this behavior as skipped unresolved work: when the directory is absent, executable enumeration is skipped and `primaryExeRel` remains null, skipping execution without counting as processed and without aborting subsequent installations.
+     - Asserts that the skipped entry retains its pending action intent across store reload (not cleared, not marked cancelled), while the remaining queued installation completes successfully.
 
 ---
 
 ### 3. Verification & Governance
 
+- Addressed Codex review on PR #151: confined the missing directory path to an owned `SyntheticTestDirectory`, documented and asserted it as skipped unresolved work with retained pending intent across reload, and updated journal accordingly.
 - Local host execution: `NOT RUN (pending human authorization)` under AGENTS.md.
 - Verified via GitHub Actions Cloud CI on Windows runners (`build-and-test`, `ai-scope-check`, `ai-pr-hygiene`, `Run Python workflow tests`).

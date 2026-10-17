@@ -221,19 +221,23 @@ namespace DXVKCompanion.PhaseA.Tests
         }
 
         [Fact]
-        public async Task UnhandledException_DuringInstallationResolution_DoesNotAbortRemainingInstallations()
+        public async Task UnresolvedExecutable_MissingDirectory_SkipsAndRetainsPendingIntent_WithoutAbortingRemainingInstallations()
         {
-            // Acceptance: An installation-specific exception during directory/executable enumeration
-            // does not abort processing of later queued installations.
+            // Acceptance: An installation with an unresolvable executable / missing directory is skipped
+            // as unresolved work, retaining its pending intent without aborting processing of later queued installations.
             using var storageDir = new SyntheticTestDirectory();
             using var sourceDir = new SyntheticTestDirectory();
+            using var missingDirRoot = new SyntheticTestDirectory();
             using var gameDir2 = new SyntheticTestDirectory();
 
             var (manager, _, store, profileStore, _) = CreateTestEnvironment(storageDir, sourceDir);
 
-            // Game 1: Installation with a non-existent invalid path that triggers an unhandled condition
-            var installation1 = store.GetOrCreateInstallation(@"C:\NonExistent\DummyInstallationDir\Path", "FaultyGame");
-            installation1.PendingAction = PendingAction.Install("2.5", "Queued on broken directory");
+            // Game 1: Installation with a missing child directory under an owned synthetic root
+            var missingGamePath = Path.Combine(missingDirRoot.RootPath, "MissingGameDir");
+            Assert.False(Directory.Exists(missingGamePath));
+
+            var installation1 = store.GetOrCreateInstallation(missingGamePath, "MissingGame");
+            installation1.PendingAction = PendingAction.Install("2.5", "Queued on missing directory");
             store.Save(installation1);
 
             // Game 2: Valid supported DX11 installation with queued Install
@@ -252,13 +256,25 @@ namespace DXVKCompanion.PhaseA.Tests
             // ACT
             int processed = await manager.ProcessAllPendingActionsAsync();
 
-            // ASSERT: Game 2 successfully processed despite Game 1's directory being non-existent/unresolved
+            // ASSERT:
+            // 1. Processed count is exactly 1 (Game 2 succeeded; Game 1 was skipped as unresolved)
             Assert.Equal(1, processed);
             Assert.True(File.Exists(Path.Combine(gameDir2.RootPath, "d3d11.dll")));
 
+            // 2. Reload store to verify state persistence
             var reloadedStore = new GameLibraryStore(
                 Path.Combine(storageDir.RootPath, "game-library.json"),
                 Path.Combine(storageDir.RootPath, "backups"));
+
+            // Game 1: Skipped unresolved work retains pending intent across reload (not cleared, not cancelled)
+            var inst1After = reloadedStore.FindByInstallationPath(missingGamePath);
+            Assert.NotNull(inst1After);
+            Assert.NotNull(inst1After.PendingAction);
+            Assert.Equal(PendingActionType.Install, inst1After.PendingAction.Type);
+            Assert.Equal("2.5", inst1After.PendingAction.TargetDxvkVersion);
+            Assert.Null(inst1After.LastCancelledAction);
+
+            // Game 2: Succeeded and pending action cleared
             var inst2After = reloadedStore.FindByInstallationPath(gameDir2.RootPath);
             Assert.NotNull(inst2After);
             Assert.Null(inst2After.PendingAction);
