@@ -95,7 +95,7 @@ namespace DXVKCompanion.PhaseA.Tests
             byte[] game1DllBefore = File.ReadAllBytes(game1DllPath);
             var game1Record = inst1.FindManagedFile("d3d11.dll");
             Assert.NotNull(game1Record);
-            var backupFilePath = Path.Combine(storageDir.RootPath, "backups", game1Record.OriginalBackupRelativePath!);
+            var backupFilePath = Path.Combine(storageDir.RootPath, "backups", game1Record.BackupRelativePath!);
             byte[] game1BackupBefore = File.ReadAllBytes(backupFilePath);
 
             // Game 2: Managed DXVK 2.5 installation with external change
