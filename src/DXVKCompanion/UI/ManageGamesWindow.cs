@@ -80,7 +80,7 @@ namespace DXVKCompanion.UI
             _listView.Columns.Add("API", 80);
             _listView.Columns.Add("Arch", 55);
             _listView.Columns.Add("DXVK", 70);
-            _listView.Columns.Add("Version", 85);
+            _listView.Columns.Add("Recorded Version", 115);
             _listView.Columns.Add("Pending", 110);
             _listView.Columns.Add("Path", 340);
 
@@ -219,7 +219,7 @@ namespace DXVKCompanion.UI
                 item.SubItems.Add(profile.Api.ToString());
                 item.SubItems.Add(profile.Architecture);
                 item.SubItems.Add(profile.DxvkEnabled ? "Enabled" : "Disabled");
-                item.SubItems.Add(profile.DxvkVersion ?? "-");
+                item.SubItems.Add(GameVersionPresentation.GetRecordedManagedVersion(installation));
                 item.SubItems.Add(pendingText);
                 item.SubItems.Add(profile.ExePath);
 
