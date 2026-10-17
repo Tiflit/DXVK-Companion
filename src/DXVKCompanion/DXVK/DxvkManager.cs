@@ -517,76 +517,97 @@ namespace DXVKCompanion.DXVK
             int processed = 0;
             foreach (var installation in _gameLibraryStore.GetAll())
             {
-                if (installation.PendingAction == null || !installation.PendingAction.IsPending)
-                    continue;
-
-                bool anyRunning = false;
-                foreach (var exe in installation.Executables)
+                try
                 {
-                    string fullPath = Path.Combine(installation.InstallationPath, exe.RelativePath);
-                    if (IsPathCurrentlyRunning(fullPath))
+                    if (installation.PendingAction == null || !installation.PendingAction.IsPending)
+                        continue;
+
+                    bool anyRunning = false;
+                    foreach (var exe in installation.Executables)
                     {
-                        anyRunning = true;
-                        break;
+                        string fullPath = Path.Combine(installation.InstallationPath, exe.RelativePath);
+                        if (IsPathCurrentlyRunning(fullPath))
+                        {
+                            anyRunning = true;
+                            break;
+                        }
+                    }
+
+                    if (anyRunning)
+                        continue;
+
+                    string? primaryExeRel = null;
+                    if (installation.Executables.Count > 0)
+                    {
+                        var allProfiles = _profiles.GetAll().ToList();
+                        var matchingExe = installation.Executables.FirstOrDefault(e =>
+                        {
+                            string p = Path.Combine(installation.InstallationPath, e.RelativePath);
+                            var prof = allProfiles.FirstOrDefault(pr => string.Equals(pr.ExePath, p, StringComparison.OrdinalIgnoreCase));
+                            return prof != null && (prof.DxvkEnabled || prof.Api != GraphicsApi.Unknown);
+                        }) ?? installation.Executables.FirstOrDefault();
+                        primaryExeRel = matchingExe?.RelativePath;
+                    }
+                    if (string.IsNullOrEmpty(primaryExeRel) && Directory.Exists(installation.InstallationPath))
+                    {
+                        var firstExe = Directory.EnumerateFiles(installation.InstallationPath, "*.exe").FirstOrDefault();
+                        if (firstExe != null) primaryExeRel = Path.GetFileName(firstExe);
+                    }
+
+                    if (string.IsNullOrEmpty(primaryExeRel))
+                        continue;
+
+                    string primaryExePath = Path.Combine(installation.InstallationPath, primaryExeRel);
+                    var profile = _profiles.GetOrCreate(primaryExePath);
+                    ReassessEffectiveApi(installation, profile);
+
+                    if (installation.PendingAction.Type != PendingActionType.Restore && !DxvkCompatibility.IsInstallationSupported(installation, profile.Api, profile.ExeName, out var refusalReason))
+                    {
+                        CancelIncompatiblePendingAction(installation, profile, refusalReason);
+                        continue;
+                    }
+
+                    bool success = false;
+                    switch (installation.PendingAction.Type)
+                    {
+                        case PendingActionType.Install:
+                        case PendingActionType.Update:
+                            success = await EnableDxvkAsync(profile, installation.PendingAction.TargetDxvkVersion);
+                            break;
+                        case PendingActionType.Reapply:
+                            success = await ReapplyAsync(profile, updateBaseline: true);
+                            break;
+                        case PendingActionType.Restore:
+                            success = await DisableDxvkAsync(profile);
+                            break;
+                    }
+
+                    if (success)
+                    {
+                        installation.PendingAction = null;
+                        installation.LastRefusalReason = null;
+                        _gameLibraryStore.Save(installation);
+                        LastRefusalReason = null;
+                        processed++;
                     }
                 }
-
-                if (anyRunning)
-                    continue;
-
-                string? primaryExeRel = null;
-                if (installation.Executables.Count > 0)
+                catch (Exception ex)
                 {
-                    var allProfiles = _profiles.GetAll().ToList();
-                    var matchingExe = installation.Executables.FirstOrDefault(e =>
+                    try
                     {
-                        string p = Path.Combine(installation.InstallationPath, e.RelativePath);
-                        var prof = allProfiles.FirstOrDefault(pr => string.Equals(pr.ExePath, p, StringComparison.OrdinalIgnoreCase));
-                        return prof != null && (prof.DxvkEnabled || prof.Api != GraphicsApi.Unknown);
-                    }) ?? installation.Executables.FirstOrDefault();
-                    primaryExeRel = matchingExe?.RelativePath;
-                }
-                if (string.IsNullOrEmpty(primaryExeRel) && Directory.Exists(installation.InstallationPath))
-                {
-                    var firstExe = Directory.EnumerateFiles(installation.InstallationPath, "*.exe").FirstOrDefault();
-                    if (firstExe != null) primaryExeRel = Path.GetFileName(firstExe);
-                }
+                        string target = !string.IsNullOrEmpty(installation?.DisplayName)
+                            ? installation.DisplayName
+                            : (installation?.InstallationPath ?? "unknown installation");
+                        string actionType = installation?.PendingAction?.Type.ToString()
+                            ?? installation?.LastCancelledAction?.Type.ToString()
+                            ?? "Unknown";
 
-                if (string.IsNullOrEmpty(primaryExeRel))
-                    continue;
-
-                string primaryExePath = Path.Combine(installation.InstallationPath, primaryExeRel);
-                var profile = _profiles.GetOrCreate(primaryExePath);
-                ReassessEffectiveApi(installation, profile);
-
-                if (installation.PendingAction.Type != PendingActionType.Restore && !DxvkCompatibility.IsInstallationSupported(installation, profile.Api, profile.ExeName, out var refusalReason))
-                {
-                    CancelIncompatiblePendingAction(installation, profile, refusalReason);
-                    continue;
-                }
-
-                bool success = false;
-                switch (installation.PendingAction.Type)
-                {
-                    case PendingActionType.Install:
-                    case PendingActionType.Update:
-                        success = await EnableDxvkAsync(profile, installation.PendingAction.TargetDxvkVersion);
-                        break;
-                    case PendingActionType.Reapply:
-                        success = await ReapplyAsync(profile, updateBaseline: true);
-                        break;
-                    case PendingActionType.Restore:
-                        success = await DisableDxvkAsync(profile);
-                        break;
-                }
-
-                if (success)
-                {
-                    installation.PendingAction = null;
-                    installation.LastRefusalReason = null;
-                    _gameLibraryStore.Save(installation);
-                    LastRefusalReason = null;
-                    processed++;
+                        Logger.Log($"DxvkManager: failed processing pending action {actionType} for {target}: {ex.Message}");
+                    }
+                    catch
+                    {
+                        // Failure reporting must not prevent continuation
+                    }
                 }
             }
             return processed;
