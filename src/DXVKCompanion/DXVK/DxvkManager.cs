@@ -646,6 +646,7 @@ namespace DXVKCompanion.DXVK
 
         public async Task<bool> DisableDxvkAsync(GameProfile profile)
         {
+            LastRefusalReason = null;
             var installation = ResolveInstallation(profile.ExePath);
             if (installation != null &&
                 (!string.IsNullOrWhiteSpace(installation.ManagedDxvkVersion) || installation.RestorationState == RestorationState.Managed) &&
@@ -663,10 +664,7 @@ namespace DXVKCompanion.DXVK
             bool ok = await _rollback.RestoreOriginalDllsAsync(profile);
             if (!ok)
             {
-                if (_rollback.LastRefusalReason != null)
-                {
-                    LastRefusalReason = _rollback.LastRefusalReason;
-                }
+                LastRefusalReason = _rollback.LastRefusalReason;
                 return false;
             }
 

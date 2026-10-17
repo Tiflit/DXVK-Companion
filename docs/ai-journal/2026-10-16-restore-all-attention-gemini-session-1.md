@@ -3,7 +3,7 @@
 **Date**: 2026-10-16  
 **Session**: Gemini Session 1  
 **Primary Issue**: [#137](https://github.com/Tiflit/DXVK-Companion/issues/137)  
-**Base Revision**: `7fb601a742e9a5953d6118d611b814674722ce9f` (`origin/main`)  
+**Base Revision**: `7fb601ab558c9ca6c6cc040f808192748c96704b` (`origin/main`)  
 
 ---
 
@@ -30,6 +30,7 @@ Fix `RestoreAllAsync` so that actively managed games whose installation state is
    - In `DisableDxvkAsync`:
      - Added guard for actively managed installations (`!string.IsNullOrWhiteSpace(installation.ManagedDxvkVersion) || installation.RestorationState == RestorationState.Managed`): if `installation.ManagedFiles` is empty or null, refuse safely rather than executing the unverified legacy `.bak` fallback.
      - Preserved `LastRefusalReason` from `_rollback.LastRefusalReason` on failed rollback.
+     - Cleared refusal state (`LastRefusalReason = null;`) at entry of `DisableDxvkAsync` and unconditionally assigned `LastRefusalReason = _rollback.LastRefusalReason;` on rollback failure so reasonless failures cannot retain or leak an earlier game's refusal reason.
    - In `RestoreAllAsync`:
      - Added `LastRefusalReason` propagation into `summary.Messages` when available.
 
@@ -42,6 +43,7 @@ Fix `RestoreAllAsync` so that actively managed games whose installation state is
      5. `RestoreAll_PersistedAndReloaded_DisabledProfileWithActiveAttention_RestoresSuccessfully`: full round-trip disk persistence and reload verification.
      6. `RestoreAll_DisabledProfile_RestoredOrNativeWithoutActiveVersion_CountedAsAlreadyRestored`: native and restored installations without active version remain `AlreadyRestored`.
      7. `RestoreAll_MultipleGames_IsolationBetweenActiveAttentionAndOtherStates`: per-entry error isolation across multiple games in mixed states.
+     8. `RestoreAll_SequentialFailures_SecondReasonlessFailure_DoesNotInheritFirstRefusalReason`: sequential regression verifying that a second reasonless failure clears `LastRefusalReason` and does not inherit the preceding game's refusal reason.
 
 3. **`tests/DXVKCompanion.PhaseA.Tests/AutomatedModeAndRestoreAllTests.cs`**:
    - Added `RestoreAllAsync_DisabledProfile_WithActiveAttentionInstallation_IsIncludedAndRestored` to verify multi-game RestoreAll with disabled profile and active attention installation.

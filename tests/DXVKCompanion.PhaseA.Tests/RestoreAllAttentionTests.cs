@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Net.Http;
 using System.Threading.Tasks;
@@ -511,5 +512,81 @@ public sealed class RestoreAllAttentionTests
         Assert.Equal("tampered-target", File.ReadAllText(Path.Combine(g2Dir, "d3d11.dll")));
         Assert.Equal(RestorationState.AttentionRequired, store.FindByInstallationPath(g2Dir)!.RestorationState);
         Assert.Equal("2.5", store.FindByInstallationPath(g2Dir)!.ManagedDxvkVersion);
+    }
+
+    [Fact]
+    public async Task RestoreAll_SequentialFailures_SecondReasonlessFailure_DoesNotInheritFirstRefusalReason()
+    {
+        // Codex review finding:
+        // A reasonless failure (e.g. non-existent directory) following a refusal must not inherit
+        // the previous game's refusal reason. LastRefusalReason must be cleared per attempt.
+        using var testDir = new SyntheticTestDirectory();
+        using var storageDir = new SyntheticTestDirectory();
+        using var sourceDir = new SyntheticTestDirectory();
+
+        var storePath = Path.Combine(storageDir.RootPath, "game-library.json");
+        var backupsPath = Path.Combine(storageDir.RootPath, "backups");
+        var profilesPath = Path.Combine(storageDir.RootPath, "profiles.json");
+
+        var store = new GameLibraryStore(storePath, backupsPath);
+        var engine = new MultiFileTransactionEngine(backupsPath);
+        using var http = new HttpClient();
+        var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
+        var rollback = new DxvkRollback(engine, store);
+        var profileStore = new ProfileStore(profilesPath);
+
+        // Game A: Enabled profile + Managed installation with empty ManagedFiles -> Refusal: "missing ownership evidence"
+        string gADir = Path.Combine(testDir.RootPath, "GameA");
+        Directory.CreateDirectory(gADir);
+        string gAExe = Path.Combine(gADir, "GameA.exe");
+        File.WriteAllText(gAExe, "exe");
+        var pA = profileStore.GetOrCreate(gAExe);
+        pA.DxvkEnabled = true;
+        profileStore.Save(pA);
+        var instA = store.GetOrCreateInstallation(gADir, "GameA");
+        instA.RestorationState = RestorationState.Managed;
+        instA.ManagedDxvkVersion = "2.5";
+        instA.ManagedFiles = new List<ManagedFileRecord>();
+        store.Save(instA);
+
+        // Game B: Enabled profile pointing to a missing directory -> reasonless rollback failure
+        string gBDir = Path.Combine(testDir.RootPath, "NonExistentGameB");
+        string gBExe = Path.Combine(gBDir, "GameB.exe");
+        var pB = profileStore.GetOrCreate(gBExe);
+        pB.DxvkEnabled = true;
+        profileStore.Save(pB);
+
+        var manager = new DxvkManager(installer, rollback, new DxvkGithubClient(http, new CacheStore()), profileStore, store);
+
+        // Act: Run RestoreAllAsync which sequentially disables Game A then Game B
+        var summary = await manager.RestoreAllAsync();
+
+        // Assert: Both failed, but Game B's failure message does not inherit Game A's refusal reason
+        Assert.Equal(2, summary.TotalManaged);
+        Assert.Equal(0, summary.Restored);
+        Assert.Equal(2, summary.FailedOrAttentionRequired);
+        Assert.Equal(2, summary.Messages.Count);
+
+        var msgA = Assert.Single(summary.Messages, m => m.StartsWith("GameA.exe:"));
+        var msgB = Assert.Single(summary.Messages, m => m.StartsWith("GameB.exe:"));
+
+        Assert.Contains("missing ownership evidence", msgA);
+        Assert.Equal("GameB.exe: Restore operation failed.", msgB);
+        Assert.DoesNotContain("missing ownership evidence", msgB);
+
+        // Manager's LastRefusalReason is cleared to null following Game B's reasonless failure
+        Assert.Null(manager.LastRefusalReason);
+
+        // Also verify direct sequential call to DisableDxvkAsync:
+        // First disable Game A (sets refusal reason)
+        bool okA = await manager.DisableDxvkAsync(pA);
+        Assert.False(okA);
+        Assert.NotNull(manager.LastRefusalReason);
+        Assert.Contains("missing ownership evidence", manager.LastRefusalReason);
+
+        // Next disable Game B (reasonless failure must clear LastRefusalReason)
+        bool okB = await manager.DisableDxvkAsync(pB);
+        Assert.False(okB);
+        Assert.Null(manager.LastRefusalReason);
     }
 }
