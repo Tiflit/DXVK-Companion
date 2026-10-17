@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
@@ -14,6 +16,27 @@ namespace DXVKCompanion.PhaseA.Tests;
 
 public sealed class PersistedDeploymentLifecycleAcceptanceTests
 {
+    private sealed record DirectoryFileSnapshot(string RelativePath, string Sha256, long Size, byte[] Content);
+
+    private static Dictionary<string, DirectoryFileSnapshot> SnapshotDirectory(string rootPath)
+    {
+        var snapshot = new Dictionary<string, DirectoryFileSnapshot>(StringComparer.OrdinalIgnoreCase);
+        if (!Directory.Exists(rootPath))
+        {
+            return snapshot;
+        }
+
+        foreach (var file in Directory.GetFiles(rootPath, "*", SearchOption.AllDirectories))
+        {
+            string relativePath = Path.GetRelativePath(rootPath, file);
+            var identity = FileIdentity.Capture(file);
+            byte[] content = File.ReadAllBytes(file);
+            snapshot[relativePath] = new DirectoryFileSnapshot(relativePath, identity.Sha256, identity.Size, content);
+        }
+
+        return snapshot;
+    }
+
     private sealed class RejectingCountingHandler : HttpMessageHandler
     {
         private int _requestCount;
@@ -251,6 +274,9 @@ public sealed class PersistedDeploymentLifecycleAcceptanceTests
         string confPath = gameDir.CreateFile("dxvk.conf", nativeConfContent);
         string dxgiPath = Path.Combine(gameDir.RootPath, "dxgi.dll");
 
+        var originalD3D11Identity = FileIdentity.Capture(d3d11Path);
+        var originalConfIdentity = FileIdentity.Capture(confPath);
+
         var v25ArchDir = Path.Combine(sourceDir.RootPath, "2.5", "x64");
         Directory.CreateDirectory(v25ArchDir);
         File.WriteAllText(Path.Combine(v25ArchDir, "d3d11.dll"), "dxvk-2.5-d3d11-payload");
@@ -322,8 +348,33 @@ public sealed class PersistedDeploymentLifecycleAcceptanceTests
         string dxgiBeforeRestore = File.ReadAllText(dxgiPath);
         string confBeforeRestore = File.ReadAllText(confPath);
         var d3d11Record3 = inst3.FindManagedFile("d3d11.dll")!;
+        Assert.NotNull(d3d11Record3.BackupRelativePath);
         var d3d11BackupPath = Path.Combine(backupsPath, d3d11Record3.BackupRelativePath!);
         string backupBeforeRestore = File.ReadAllText(d3d11BackupPath);
+
+        var confRecord3 = inst3.FindManagedFile("dxvk.conf")!;
+        Assert.NotNull(confRecord3.BackupRelativePath);
+        var confBackupPath = Path.Combine(backupsPath, confRecord3.BackupRelativePath!);
+        string confBackupBeforeRestore = File.ReadAllText(confBackupPath);
+
+        // Snapshot complete relative file sets and byte identities before refused restore
+        var gameSnapshotBefore = SnapshotDirectory(gameDir.RootPath);
+        var backupSnapshotBefore = SnapshotDirectory(backupsPath);
+
+        // Ensure pre-snapshot includes both DLL and config backups and expected targets (non-vacuous check)
+        Assert.True(gameSnapshotBefore.ContainsKey("Game.exe"));
+        Assert.True(gameSnapshotBefore.ContainsKey("d3d11.dll"));
+        Assert.True(gameSnapshotBefore.ContainsKey("dxgi.dll"));
+        Assert.True(gameSnapshotBefore.ContainsKey("dxvk.conf"));
+        Assert.Equal(4, gameSnapshotBefore.Count);
+
+        string d3d11BackupRel = Path.GetRelativePath(backupsPath, d3d11BackupPath);
+        string confBackupRel = Path.GetRelativePath(backupsPath, confBackupPath);
+        Assert.True(backupSnapshotBefore.ContainsKey(d3d11BackupRel));
+        Assert.True(backupSnapshotBefore.ContainsKey(confBackupRel));
+        Assert.Equal(originalD3D11Identity.Sha256, backupSnapshotBefore[d3d11BackupRel].Sha256);
+        Assert.Equal(originalConfIdentity.Sha256, backupSnapshotBefore[confBackupRel].Sha256);
+        Assert.Equal(2, backupSnapshotBefore.Count);
 
         // Step 5: Act - attempt restore
         var restoreResult = await manager3.RequestDisableByPathAsync(profile3);
@@ -333,11 +384,36 @@ public sealed class PersistedDeploymentLifecycleAcceptanceTests
         Assert.NotNull(manager3.LastRefusalReason);
         Assert.Contains("Managed target hash mismatch for restore", manager3.LastRefusalReason);
 
+        // Assert: complete file sets and byte hashes for synthetic game and backup directories are preserved
+        var gameSnapshotAfter = SnapshotDirectory(gameDir.RootPath);
+        var backupSnapshotAfter = SnapshotDirectory(backupsPath);
+
+        Assert.Equal(gameSnapshotBefore.Keys.OrderBy(k => k, StringComparer.OrdinalIgnoreCase),
+                     gameSnapshotAfter.Keys.OrderBy(k => k, StringComparer.OrdinalIgnoreCase));
+        foreach (var (relPath, beforeSnapshot) in gameSnapshotBefore)
+        {
+            var afterSnapshot = gameSnapshotAfter[relPath];
+            Assert.Equal(beforeSnapshot.Sha256, afterSnapshot.Sha256);
+            Assert.Equal(beforeSnapshot.Size, afterSnapshot.Size);
+            Assert.Equal(beforeSnapshot.Content, afterSnapshot.Content);
+        }
+
+        Assert.Equal(backupSnapshotBefore.Keys.OrderBy(k => k, StringComparer.OrdinalIgnoreCase),
+                     backupSnapshotAfter.Keys.OrderBy(k => k, StringComparer.OrdinalIgnoreCase));
+        foreach (var (relPath, beforeSnapshot) in backupSnapshotBefore)
+        {
+            var afterSnapshot = backupSnapshotAfter[relPath];
+            Assert.Equal(beforeSnapshot.Sha256, afterSnapshot.Sha256);
+            Assert.Equal(beforeSnapshot.Size, afterSnapshot.Size);
+            Assert.Equal(beforeSnapshot.Content, afterSnapshot.Content);
+        }
+
         // Assert: no target mutation (every target, config, and backup byte preserved)
         Assert.Equal(foreignD3D11Content, File.ReadAllText(d3d11Path));
         Assert.Equal(dxgiBeforeRestore, File.ReadAllText(dxgiPath));
         Assert.Equal(confBeforeRestore, File.ReadAllText(confPath));
         Assert.Equal(backupBeforeRestore, File.ReadAllText(d3d11BackupPath));
+        Assert.Equal(confBackupBeforeRestore, File.ReadAllText(confBackupPath));
 
         // Assert: active management and failure evidence retained
         Assert.True(profile3.DxvkEnabled);

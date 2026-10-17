@@ -36,8 +36,9 @@ Issue [#154](https://github.com/Tiflit/DXVK-Companion/issues/154) validates the 
    - `PersistedLifecycle_WhenManagedTargetTamperedBeforeRestore_RefusesWithoutMutation_PreservesStateAndEvidence`:
      - Follows the install A -> reload -> update B -> reload lifecycle.
      - Tampers with `d3d11.dll` using foreign bytes before requesting restore.
+     - Snapshots complete relative file sets and byte identities (`Sha256`, `Size`, `Content`) for both the synthetic game directory and backup directory before restore, asserting non-vacuous inclusion of all expected targets (`Game.exe`, `d3d11.dll`, `dxgi.dll`, `dxvk.conf`) and both DLL and config original baseline backups (`d3d11.dll` and `dxvk.conf`).
      - Asserts restore fails (`DxvkActionResult.Failed`), sets `RestorationState.AttentionRequired`, and populates `LastRefusalReason` with ownership mismatch evidence.
-     - Asserts zero target mutation: foreign `d3d11.dll` bytes are untouched, `dxgi.dll` remains present, `dxvk.conf` is preserved, and original backup files in the backup directory are unmodified.
+     - Asserts zero target/backup mutation: complete game and backup directory snapshots (relative path sets, SHA-256 hashes, file sizes, and raw byte contents) are identical before and after refusal; foreign `d3d11.dll` bytes are untouched, `dxgi.dll` remains present, `dxvk.conf` is preserved, and both DLL and configuration backup files in the backup directory are completely unmodified.
      - Asserts active management is retained (`profile.DxvkEnabled == true`, `installation.ManagedDxvkVersion == "2.6"`).
      - Reconstructs fresh stores from disk and confirms failure and active management are persisted.
      - Verifies zero HTTP requests made.
