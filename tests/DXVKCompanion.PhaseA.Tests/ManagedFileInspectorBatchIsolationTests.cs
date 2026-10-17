@@ -205,7 +205,7 @@ namespace DXVKCompanion.PhaseA.Tests
             int saveFailuresInjected = 0;
             store.CustomTempWriter = (tempPath, content) =>
             {
-                if (content.Contains(gameDir1.RootPath) && saveFailuresInjected == 0)
+                if (content.Contains("Inspection failed") && saveFailuresInjected == 0)
                 {
                     saveFailuresInjected++;
                     throw new IOException("Simulated I/O disk failure during Game 1 failure-state persistence");
