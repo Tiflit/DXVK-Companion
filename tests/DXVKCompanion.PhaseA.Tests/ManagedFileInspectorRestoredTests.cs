@@ -409,7 +409,7 @@ public sealed class ManagedFileInspectorRestoredTests
         Assert.Equal(RestorationState.AttentionRequired, installation.RestorationState);
 
         // Set conflict flags and repair the file
-        installation.ConflictFlags = InstallationConflictFlags.ManualInterventionRequired;
+        installation.ConflictFlags = InstallationConflictFlags.DxvkVersion;
         store.Save(installation);
         File.Delete(dxgiPath);
 
