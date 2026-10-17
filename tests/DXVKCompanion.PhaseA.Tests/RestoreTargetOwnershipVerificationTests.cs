@@ -464,6 +464,14 @@ public sealed class RestoreTargetOwnershipVerificationTests
         Assert.Equal(RestorationState.Restored, instResolved!.RestorationState);
         Assert.Null(instResolved.LastRefusalReason);
         Assert.Null(instResolved.ManagedDxvkVersion);
+
+        // 7. Verify ManagedFileInspector inspects against original baselines and keeps Restored state
+        var inspector = new ManagedFileInspector(store);
+        bool inspectChanged = inspector.InspectInstallation(instResolved);
+        Assert.False(inspectChanged);
+        Assert.Equal(RestorationState.Restored, instResolved.RestorationState);
+        Assert.Equal(ManagedFileState.Consistent, instResolved.FindManagedFile("d3d11.dll")!.CurrentState);
+        Assert.Equal(ManagedFileState.Consistent, instResolved.FindManagedFile("dxgi.dll")!.CurrentState);
     }
 
     [Fact]
