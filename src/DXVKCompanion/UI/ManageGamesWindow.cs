@@ -173,7 +173,7 @@ namespace DXVKCompanion.UI
                     continue;
                 if (filter == "Hidden Games" && !isHidden)
                     continue;
-                if (filter == "Managed / Active Only" && (!profile.DxvkEnabled || isHidden))
+                if (filter == "Managed / Active Only" && !GameListManagedFilter.MatchesManagedOrActive(installation, profile))
                     continue;
                 if (filter == "Attention Required" && !GameListAttentionFilter.MatchesAttentionRequired(installation, profile))
                     continue;
