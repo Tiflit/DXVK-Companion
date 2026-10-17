@@ -82,16 +82,31 @@ namespace DXVKCompanion.UI
             Controls.Add(apiLabel);
             top += 25;
 
-            string versionText = string.IsNullOrWhiteSpace(_profile.DxvkVersion) ? "None (Native)" : _profile.DxvkVersion;
+            string recordedVersion = GameVersionPresentation.GetRecordedManagedVersion(installation, isPreexistingInstallation);
             var dxvkLabel = new Label
             {
-                Text = $"DXVK Version: {versionText}",
+                Text = $"Recorded Managed Version: {recordedVersion}",
                 AutoSize = true,
                 Top = top,
                 Left = 20
             };
             Controls.Add(dxvkLabel);
             top += 25;
+
+            var historicalVersionLabel = GameVersionPresentation.FormatHistoricalProfileVersionLabel(_profile);
+            if (historicalVersionLabel != null)
+            {
+                var profileVersionLabel = new Label
+                {
+                    Text = historicalVersionLabel,
+                    AutoSize = true,
+                    Top = top,
+                    Left = 20,
+                    ForeColor = Color.DimGray
+                };
+                Controls.Add(profileVersionLabel);
+                top += 25;
+            }
 
             // Restoration & Health status
             string healthStatus = "Clean / Baseline";
