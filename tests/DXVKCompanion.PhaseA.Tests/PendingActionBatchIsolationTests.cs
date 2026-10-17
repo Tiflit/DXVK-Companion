@@ -211,7 +211,10 @@ namespace DXVKCompanion.PhaseA.Tests
             int retryProcessedCount = await manager.ProcessAllPendingActionsAsync();
             Assert.Equal(1, retryProcessedCount);
 
-            var inst1AfterRetry = reloadedStore.FindByInstallationPath(gameDir1.RootPath);
+            var freshStoreAfterRetry = new GameLibraryStore(
+                Path.Combine(storageDir.RootPath, "game-library.json"),
+                Path.Combine(storageDir.RootPath, "backups"));
+            var inst1AfterRetry = freshStoreAfterRetry.FindByInstallationPath(gameDir1.RootPath);
             Assert.NotNull(inst1AfterRetry);
             Assert.Null(inst1AfterRetry.PendingAction);
             Assert.True(File.Exists(Path.Combine(gameDir1.RootPath, "d3d11.dll")));
