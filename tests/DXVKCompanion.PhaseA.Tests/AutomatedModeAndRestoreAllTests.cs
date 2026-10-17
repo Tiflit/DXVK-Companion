@@ -121,5 +121,66 @@ namespace DXVKCompanion.PhaseA.Tests
             Assert.False(File.Exists(game1D3D11));
             Assert.False(p1.DxvkEnabled);
         }
+
+        [Fact]
+        public async Task RestoreAllAsync_DisabledProfile_WithActiveAttentionInstallation_IsIncludedAndRestored()
+        {
+            using var testDir = new SyntheticTestDirectory();
+            string libraryPath = Path.Combine(testDir.RootPath, "game-library.json");
+            string backupsPath = Path.Combine(testDir.RootPath, "backups");
+            string profilesPath = Path.Combine(testDir.RootPath, "games.json");
+
+            var store = new GameLibraryStore(libraryPath, backupsPath, profilesPath);
+            var engine = new MultiFileTransactionEngine(backupsPath);
+            var fileUtils = new FileUtils();
+            var installer = new DxvkInstaller(new HttpClient(), engine, store, null, fileUtils);
+            var rollback = new DxvkRollback(engine, store, fileUtils);
+            var profileStore = new ProfileStore(profilesPath);
+
+            string gameDir = Path.Combine(testDir.RootPath, "Games", "AttentionGame");
+            Directory.CreateDirectory(gameDir);
+            string gameExe = Path.Combine(gameDir, "Game.exe");
+            File.WriteAllText(gameExe, "exe");
+            string gameD3D11 = Path.Combine(gameDir, "d3d11.dll");
+            File.WriteAllText(gameD3D11, "dxvk-dll");
+
+            // Profile flag is false (e.g. stale or reconstructed disabled profile)
+            var profile = profileStore.GetOrCreate(gameExe);
+            profile.DxvkEnabled = false;
+            profile.DxvkVersion = null;
+            profileStore.Save(profile);
+
+            // Installation is AttentionRequired with active ManagedDxvkVersion and valid records
+            var inst = store.GetOrCreateInstallation(gameDir, "AttentionGame");
+            inst.RestorationState = RestorationState.AttentionRequired;
+            inst.ManagedDxvkVersion = "2.6";
+            inst.ManagedFiles.Add(new ManagedFileRecord
+            {
+                RelativePath = "d3d11.dll",
+                OriginalState = FileOriginalState.Missing,
+                CurrentState = ManagedFileState.Consistent,
+                ExpectedManagedSha256 = FileIdentity.Capture(gameD3D11).Sha256,
+                ManagedDxvkVersion = "2.6"
+            });
+            store.Save(inst);
+
+            var manager = new DxvkManager(installer, rollback, new DxvkGithubClient(new HttpClient(), new CacheStore()), profileStore, store);
+
+            // Act: run RestoreAll
+            var summary = await manager.RestoreAllAsync();
+
+            // Assert: counted in TotalManaged and restored, not counted as AlreadyRestored
+            Assert.Equal(1, summary.TotalManaged);
+            Assert.Equal(1, summary.Restored);
+            Assert.Equal(0, summary.AlreadyRestored);
+            Assert.Equal(0, summary.FailedOrAttentionRequired);
+
+            // File removed cleanly and state transitioned to Restored
+            Assert.False(File.Exists(gameD3D11));
+            var updatedInst = store.FindByInstallationPath(gameDir);
+            Assert.NotNull(updatedInst);
+            Assert.Equal(RestorationState.Restored, updatedInst!.RestorationState);
+            Assert.Null(updatedInst.ManagedDxvkVersion);
+        }
     }
 }
