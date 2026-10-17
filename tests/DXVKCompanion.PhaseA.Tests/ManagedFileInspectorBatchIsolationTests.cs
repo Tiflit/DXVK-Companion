@@ -435,7 +435,7 @@ namespace DXVKCompanion.PhaseA.Tests
             // Case C: Conflict flags present do not retire reason even if files are consistent
             // Restore consistent file
             File.WriteAllText(Path.Combine(gameDir.RootPath, "d3d11.dll"), "dxvk-d3d11");
-            tamperedInst.ConflictFlags = InstallationConflictFlags.MultipleExecutablesDifferentApi;
+            tamperedInst.ConflictFlags = InstallationConflictFlags.DxvkVersion;
             tamperedInst.RestorationState = RestorationState.AttentionRequired;
             tamperedInst.LastRefusalReason = "Inspection failed: Conflict unresolved";
             store.Save(tamperedInst);
