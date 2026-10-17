@@ -193,8 +193,47 @@ namespace DXVKCompanion.Storage
             int changesDetected = 0;
             foreach (var installation in _store.GetAll())
             {
-                if (InspectInstallation(installation))
-                    changesDetected++;
+                try
+                {
+                    if (InspectInstallation(installation))
+                        changesDetected++;
+                }
+                catch (Exception ex)
+                {
+                    string targetName = installation?.DisplayName ?? installation?.InstallationPath ?? "unknown installation";
+                    try
+                    {
+                        Logger.Log($"ManagedFileInspector: inspection failed for {targetName}: {ex.Message}");
+                    }
+                    catch
+                    {
+                        // Best-effort logging must not prevent continuation
+                    }
+
+                    if (installation != null)
+                    {
+                        installation.RestorationState = RestorationState.AttentionRequired;
+                        installation.LastRefusalReason = string.IsNullOrWhiteSpace(ex.Message)
+                            ? "Inspection failed."
+                            : $"Inspection failed: {ex.Message}";
+
+                        try
+                        {
+                            _store.Save(installation);
+                        }
+                        catch (Exception saveEx)
+                        {
+                            try
+                            {
+                                Logger.Log($"ManagedFileInspector: failed to persist inspection failure state for {targetName}: {saveEx.Message}");
+                            }
+                            catch
+                            {
+                                // Best-effort persistence must not prevent batch continuation
+                            }
+                        }
+                    }
+                }
             }
             return changesDetected;
         }
