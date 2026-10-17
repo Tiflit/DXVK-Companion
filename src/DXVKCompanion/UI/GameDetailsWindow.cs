@@ -225,15 +225,11 @@ namespace DXVKCompanion.UI
                 btnReapply.Click += async (_, _) =>
                 {
                     var res = await _dxvk.RequestReapplyByPathAsync(_profile, updateBaseline: true);
-                    if (res == DxvkActionResult.Applied)
+                    var presentation = ReapplyResultPresentation.GetPresentation(res, _dxvk.LastRefusalReason);
+                    MessageBox.Show(presentation.Message, presentation.Title, MessageBoxButtons.OK, presentation.Icon);
+                    if (presentation.ShouldCloseWindow)
                     {
-                        MessageBox.Show("DXVK reapplied successfully and baseline updated.", "Reapply", MessageBoxButtons.OK, MessageBoxIcon.Information);
                         Close();
-                    }
-                    else
-                    {
-                        string reason = _dxvk.LastRefusalReason ?? "Reapply operation failed.";
-                        MessageBox.Show($"DXVK reapply was refused or failed:\n\n{reason}", "Reapply Refused", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     }
                 };
                 reapplyPanel.Controls.Add(reapplyLabel);
