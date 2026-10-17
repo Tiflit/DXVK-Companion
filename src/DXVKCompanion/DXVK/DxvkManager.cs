@@ -290,7 +290,7 @@ namespace DXVKCompanion.DXVK
             }
 
             bool ok = action == PendingAction.Enable
-                ? await EnableDxvkAsync(profile, profile.DxvkVersion)
+                ? await EnableDxvkAsync(profile)
                 : await DisableDxvkAsync(profile);
 
             return ok ? DxvkActionResult.Applied : DxvkActionResult.Failed;

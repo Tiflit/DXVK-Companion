@@ -630,8 +630,8 @@ public sealed class FirstRunQueuedEnableTests
         profileStore.Save(prof2);
 
         int downloadRequestsBeforeGame2 = httpHandler.ArchiveDownloadRequests;
-        var res2 = await manager.RequestEnableByPathAsync(prof2);
-        Assert.Equal(DxvkActionResult.Applied, res2);
+        bool res2 = await manager.EnableDxvkAsync(prof2, "2.4");
+        Assert.True(res2);
         Assert.Equal(downloadRequestsBeforeGame2, httpHandler.ArchiveDownloadRequests);
         Assert.Equal(v24D3D11, File.ReadAllBytes(Path.Combine(gameDir2.RootPath, "d3d11.dll")));
     }

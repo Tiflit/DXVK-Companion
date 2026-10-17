@@ -33,8 +33,7 @@ Issue [#158](https://github.com/Tiflit/DXVK-Companion/issues/158) addresses the 
      `if (!string.IsNullOrWhiteSpace(targetVersion) && !string.Equals(targetVersion, "latest", StringComparison.OrdinalIgnoreCase))`
      When `targetVersion` is null, empty, whitespace, or `"latest"` (case-insensitive sentinel), `EnableDxvkAsync` calls `GetLatestReleaseAsync()` to resolve official metadata and valid download URLs from cache or GitHub.
      When `targetVersion` is an explicit pinned version (e.g., `"2.4"`), it preserves exact version semantics without fetching latest metadata.
-   - In `QueueOrApplyAsync`:
-     When the game is not running, passed `profile.DxvkVersion` to `EnableDxvkAsync(profile, profile.DxvkVersion)`, matching the queued path's intent (`profile.DxvkVersion ?? "latest"`) so pinned profile versions are respected on immediate deployment.
+   - Minimal manager fix: shared by exit and startup paths, strictly within `EnableDxvkAsync`. Preserves existing `QueueOrApplyAsync` update and enable flows without mutating public entrypoint signatures.
 
 2. **Regression Test Suite (`tests/DXVKCompanion.PhaseA.Tests/FirstRunQueuedEnableTests.cs`)**:
    - `FirstRunQueuedEnable_ApplyPendingAsync_ResolvesLatest_DownloadsOnce_AndDeploysToGame`:
