@@ -290,7 +290,7 @@ namespace DXVKCompanion.DXVK
             }
 
             bool ok = action == PendingAction.Enable
-                ? await EnableDxvkAsync(profile)
+                ? await EnableDxvkAsync(profile, profile.DxvkVersion)
                 : await DisableDxvkAsync(profile);
 
             return ok ? DxvkActionResult.Applied : DxvkActionResult.Failed;
@@ -636,7 +636,7 @@ namespace DXVKCompanion.DXVK
             }
 
             ReleaseInfo? release;
-            if (!string.IsNullOrWhiteSpace(targetVersion))
+            if (!string.IsNullOrWhiteSpace(targetVersion) && !string.Equals(targetVersion, "latest", StringComparison.OrdinalIgnoreCase))
             {
                 release = new ReleaseInfo { Version = targetVersion, DownloadUrl = "" };
             }
