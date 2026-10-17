@@ -210,7 +210,7 @@ namespace DXVKCompanion.PhaseATests
                 RestorationState = RestorationState.AttentionRequired,
                 ManagedDxvkVersion = "2.5",
                 ConflictFlags = InstallationConflictFlags.None,
-                PendingAction = new PendingAction { Type = PendingActionType.Restore, IsPending = true }
+                PendingAction = PendingAction.Restore()
             };
             installation.ManagedFiles.Add(new ManagedFileRecord { RelativePath = "d3d11.dll" });
 
