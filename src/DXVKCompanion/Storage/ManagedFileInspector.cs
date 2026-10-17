@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 using DXVKCompanion.Models;
 using DXVKCompanion.Safety;
 using DXVKCompanion.Utils;
@@ -26,10 +27,88 @@ namespace DXVKCompanion.Storage
 
             bool anyExternalChange = false;
             bool allFilesVerifiedConsistent = installation.ManagedFiles.Count > 0;
+            bool isRestoredLifecycle = installation.RestorationState == RestorationState.Restored
+                || (installation.RestorationState != RestorationState.Managed && string.IsNullOrWhiteSpace(installation.ManagedDxvkVersion));
 
             foreach (var record in installation.ManagedFiles)
             {
                 string targetPath = Path.Combine(installation.InstallationPath, record.RelativePath);
+
+                if (isRestoredLifecycle)
+                {
+                    if (record.OriginalState == FileOriginalState.Missing)
+                    {
+                        if (File.Exists(targetPath))
+                        {
+                            allFilesVerifiedConsistent = false;
+                            if (record.CurrentState != ManagedFileState.ExternallyChanged)
+                            {
+                                record.CurrentState = ManagedFileState.ExternallyChanged;
+                                anyExternalChange = true;
+                                Logger.Log($"ManagedFileInspector: unexpected file present at originally absent path {record.RelativePath} for {installation.DisplayName}.");
+                            }
+                        }
+                        else
+                        {
+                            record.CurrentState = ManagedFileState.Consistent;
+                        }
+                    }
+                    else if (record.OriginalState == FileOriginalState.Existing)
+                    {
+                        if (!IsValidSha256(record.OriginalSha256))
+                        {
+                            allFilesVerifiedConsistent = false;
+                            if (record.CurrentState != ManagedFileState.ExternallyChanged)
+                            {
+                                record.CurrentState = ManagedFileState.ExternallyChanged;
+                                anyExternalChange = true;
+                                Logger.Log($"ManagedFileInspector: {record.RelativePath} has missing or unusable original hash baseline for {installation.DisplayName}.");
+                            }
+                        }
+                        else if (!File.Exists(targetPath))
+                        {
+                            allFilesVerifiedConsistent = false;
+                            if (record.CurrentState != ManagedFileState.ExternallyChanged)
+                            {
+                                record.CurrentState = ManagedFileState.ExternallyChanged;
+                                anyExternalChange = true;
+                                Logger.Log($"ManagedFileInspector: original file {record.RelativePath} is missing on disk for {installation.DisplayName}.");
+                            }
+                        }
+                        else
+                        {
+                            var currentIdentity = FileIdentity.Capture(targetPath);
+                            if (string.Equals(currentIdentity.Sha256, record.OriginalSha256, StringComparison.OrdinalIgnoreCase))
+                            {
+                                record.CurrentState = ManagedFileState.Consistent;
+                            }
+                            else
+                            {
+                                allFilesVerifiedConsistent = false;
+                                if (record.CurrentState != ManagedFileState.ExternallyChanged)
+                                {
+                                    record.CurrentState = ManagedFileState.ExternallyChanged;
+                                    anyExternalChange = true;
+                                    var origExpected = record.OriginalSha256!;
+                                    Logger.Log($"ManagedFileInspector: external change detected on restored original {record.RelativePath} for {installation.DisplayName} (Expected original: {origExpected[..Math.Min(8, origExpected.Length)]}, Found: {currentIdentity.Sha256[..Math.Min(8, currentIdentity.Sha256.Length)]}).");
+                                }
+                            }
+                        }
+                    }
+                    else
+                    {
+                        allFilesVerifiedConsistent = false;
+                        if (record.CurrentState != ManagedFileState.ExternallyChanged)
+                        {
+                            record.CurrentState = ManagedFileState.ExternallyChanged;
+                            anyExternalChange = true;
+                            Logger.Log($"ManagedFileInspector: original state is unknown or unsupported for {record.RelativePath} for {installation.DisplayName}.");
+                        }
+                    }
+
+                    record.LastVerifiedUtc = DateTime.UtcNow;
+                    continue;
+                }
 
                 if (!File.Exists(targetPath))
                 {
@@ -59,9 +138,9 @@ namespace DXVKCompanion.Storage
                     continue;
                 }
 
-                var currentIdentity = FileIdentity.Capture(targetPath);
+                var currentManagedIdentity = FileIdentity.Capture(targetPath);
 
-                if (string.Equals(currentIdentity.Sha256, record.ExpectedManagedSha256, StringComparison.OrdinalIgnoreCase))
+                if (string.Equals(currentManagedIdentity.Sha256, record.ExpectedManagedSha256, StringComparison.OrdinalIgnoreCase))
                 {
                     record.CurrentState = ManagedFileState.Consistent;
                 }
@@ -72,7 +151,8 @@ namespace DXVKCompanion.Storage
                     {
                         record.CurrentState = ManagedFileState.ExternallyChanged;
                         anyExternalChange = true;
-                        Logger.Log($"ManagedFileInspector: external change detected on {record.RelativePath} for {installation.DisplayName} (Expected: {record.ExpectedManagedSha256[..Math.Min(8, record.ExpectedManagedSha256.Length)]}, Found: {currentIdentity.Sha256[..Math.Min(8, currentIdentity.Sha256.Length)]}).");
+                        var managedExpected = record.ExpectedManagedSha256!;
+                        Logger.Log($"ManagedFileInspector: external change detected on {record.RelativePath} for {installation.DisplayName} (Expected: {managedExpected[..Math.Min(8, managedExpected.Length)]}, Found: {currentManagedIdentity.Sha256[..Math.Min(8, currentManagedIdentity.Sha256.Length)]}).");
                     }
                 }
 
