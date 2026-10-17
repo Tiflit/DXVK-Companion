@@ -646,10 +646,31 @@ namespace DXVKCompanion.DXVK
 
         public async Task<bool> DisableDxvkAsync(GameProfile profile)
         {
+            var installation = ResolveInstallation(profile.ExePath);
+            if (installation != null &&
+                (!string.IsNullOrWhiteSpace(installation.ManagedDxvkVersion) || installation.RestorationState == RestorationState.Managed) &&
+                (installation.ManagedFiles == null || installation.ManagedFiles.Count == 0))
+            {
+                var reason = $"Refusing rollback on {installation.DisplayName ?? profile.ExeName}; missing ownership evidence for actively managed installation.";
+                LastRefusalReason = reason;
+                installation.RestorationState = RestorationState.AttentionRequired;
+                installation.LastRefusalReason = reason;
+                _gameLibraryStore.Save(installation);
+                Logger.Log($"DxvkManager: {reason}");
+                return false;
+            }
+
             bool ok = await _rollback.RestoreOriginalDllsAsync(profile);
             if (!ok)
+            {
+                if (_rollback.LastRefusalReason != null)
+                {
+                    LastRefusalReason = _rollback.LastRefusalReason;
+                }
                 return false;
+            }
 
+            LastRefusalReason = null;
             profile.DxvkEnabled = false;
             _profiles.Save(profile);
 
@@ -752,7 +773,10 @@ namespace DXVKCompanion.DXVK
             {
                 var installation = ResolveInstallation(profile.ExePath);
 
-                bool isManaged = profile.DxvkEnabled || (installation != null && installation.RestorationState == RestorationState.Managed);
+                bool isManaged = profile.DxvkEnabled
+                    || (installation != null && (
+                        installation.RestorationState == RestorationState.Managed
+                        || (installation.RestorationState == RestorationState.AttentionRequired && !string.IsNullOrWhiteSpace(installation.ManagedDxvkVersion))));
                 if (!isManaged)
                 {
                     summary.AlreadyRestored++;
@@ -779,7 +803,9 @@ namespace DXVKCompanion.DXVK
                     else
                     {
                         summary.FailedOrAttentionRequired++;
-                        summary.Messages.Add($"{profile.ExeName}: Restore operation failed.");
+                        summary.Messages.Add(LastRefusalReason != null
+                            ? $"{profile.ExeName}: {LastRefusalReason}"
+                            : $"{profile.ExeName}: Restore operation failed.");
                     }
                 }
                 catch (Exception ex)
