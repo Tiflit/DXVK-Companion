@@ -35,6 +35,19 @@
 
 ---
 
+## Cloud CI Verification & Calibration
+
+- **PR:** [#177](https://github.com/Tiflit/DXVK-Companion/pull/177) — `[Draft] [Do not merge] test(safety): reproduce overlapping operations and design installation activity/exclusion boundary (#176)`
+- **Initial Cloud CI Run:** `39172485694` (Job `117808277752`)
+  - Baseline 907 existing tests: Unchanged and passing.
+  - Hygiene, scope, and workflow test checks: Passing.
+  - Calibration notes:
+    - `OverlappingOperations_IndependentInstallations_ProceedConcurrentlyWithoutMutualInterference`: Calibrated with independent storage roots (`storageDir1` and `storageDir2`). As analyzed in the design doc, `GameLibraryStore` enforces whole-file optimistic serialization (`VerifyDiskMatchesAuthoritativeBaselineLocked`). Providing separate storage directories isolates the installation-level concurrency test, verifying that independent installations proceed concurrently without mutual blocking.
+    - `OverlappingOperations_SameInstallation_ConcurrentApply_MustRefuseSecondOperationToPreventMixedPayload`: Explicitly asserts `installer2.LastRefusalReason` contains `"in progress"`, ensuring that the test fails as expected-red on missing operation exclusion rather than inadvertently passing on an unhandled mid-mutation file collision.
+  - Expected-Red Status: 3 failing tests demonstrating missing operation lease boundaries on unchanged production; 1 passing positive control demonstrating concurrent independent installation operations.
+
+---
+
 ## Changed Files
 
 - `tests/DXVKCompanion.PhaseA.Tests/OperationExclusionBoundaryTests.cs`

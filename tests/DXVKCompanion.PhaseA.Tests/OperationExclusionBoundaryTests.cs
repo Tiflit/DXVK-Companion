@@ -204,8 +204,11 @@ public sealed class OperationExclusionBoundaryTests
         var op1Result = await op1Task;
 
         // Intended Safe Invariant:
-        // Concurrent mutations to the same installation root must be mutually excluded to prevent mixed file payloads.
+        // Concurrent mutations to the same installation root must be mutually excluded to prevent mixed file payloads
+        // and must refuse with a clean operation-in-progress reason rather than a mid-mutation validation error.
         Assert.False(op2Result, "Concurrent install/update on the same installation root must be refused while another operation is in flight.");
+        Assert.NotNull(installer2.LastRefusalReason);
+        Assert.Contains("in progress", installer2.LastRefusalReason, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -309,14 +312,17 @@ public sealed class OperationExclusionBoundaryTests
     {
         using var gameDir1 = new SyntheticTestDirectory();
         using var gameDir2 = new SyntheticTestDirectory();
-        using var storageDir = new SyntheticTestDirectory();
+        using var storageDir1 = new SyntheticTestDirectory();
+        using var storageDir2 = new SyntheticTestDirectory();
         using var sourceDir = new SyntheticTestDirectory();
 
         CreateDxvkReleasePayload(sourceDir.RootPath, "2.5", "dxvk-2.5-d3d11", "dxvk-2.5-dxgi");
         CreateDxvkReleasePayload(sourceDir.RootPath, "2.6", "dxvk-2.6-d3d11", "dxvk-2.6-dxgi");
 
-        var storePath = Path.Combine(storageDir.RootPath, "game-library.json");
-        var backupsPath = Path.Combine(storageDir.RootPath, "backups");
+        var storePath1 = Path.Combine(storageDir1.RootPath, "game-library.json");
+        var backupsPath1 = Path.Combine(storageDir1.RootPath, "backups");
+        var storePath2 = Path.Combine(storageDir2.RootPath, "game-library.json");
+        var backupsPath2 = Path.Combine(storageDir2.RootPath, "backups");
 
         var exe1 = gameDir1.CreateFile("Game1.exe", "binary-1");
         var exe2 = gameDir2.CreateFile("Game2.exe", "binary-2");
@@ -325,16 +331,20 @@ public sealed class OperationExclusionBoundaryTests
         var profile2 = new GameProfile(exe2) { Api = GraphicsApi.DX11, Architecture = "x64" };
 
         using var http = new HttpClient();
-        var store = new GameLibraryStore(storePath, backupsPath);
-        var engine = new MultiFileTransactionEngine(backupsPath);
-        var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
+        var store1 = new GameLibraryStore(storePath1, backupsPath1);
+        var engine1 = new MultiFileTransactionEngine(backupsPath1);
+        var installer1 = new DxvkInstaller(http, engine1, store1, sourceDir.RootPath);
+
+        var store2 = new GameLibraryStore(storePath2, backupsPath2);
+        var engine2 = new MultiFileTransactionEngine(backupsPath2);
+        var installer2 = new DxvkInstaller(http, engine2, store2, sourceDir.RootPath);
 
         var release25 = new ReleaseInfo { Version = "2.5", DownloadUrl = "" };
         var release26 = new ReleaseInfo { Version = "2.6", DownloadUrl = "" };
 
         // Act: Run both independent installs concurrently
-        var task1 = Task.Run(async () => await installer.ApplyToGameAsync(profile1, release25));
-        var task2 = Task.Run(async () => await installer.ApplyToGameAsync(profile2, release26));
+        var task1 = Task.Run(async () => await installer1.ApplyToGameAsync(profile1, release25));
+        var task2 = Task.Run(async () => await installer2.ApplyToGameAsync(profile2, release26));
 
         await Task.WhenAll(task1, task2);
 
