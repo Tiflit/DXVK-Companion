@@ -2,12 +2,19 @@ using System;
 using System.IO;
 using System.Text.Json;
 using DXVKCompanion.Models;
+using DXVKCompanion.Utils;
 
 namespace DXVKCompanion.Storage
 {
     public class CacheStore
     {
         private readonly string _cacheFile;
+        private readonly string _attemptFile;
+        private readonly string _corruptFile;
+
+        public string CacheFile => _cacheFile;
+        public string AttemptFile => _attemptFile;
+        public string CorruptBackupFile => _corruptFile;
 
         internal Action<string, string>? CustomTempWriter { get; set; }
         internal Action<string, string>? CustomCommitReplace { get; set; }
@@ -16,6 +23,25 @@ namespace DXVKCompanion.Storage
         public CacheStore(string? cacheFile = null)
         {
             _cacheFile = cacheFile ?? Paths.CacheFile;
+            _attemptFile = _cacheFile + ".attempt.json";
+            _corruptFile = _cacheFile + ".corrupt";
+        }
+
+        public bool HasUnreadableCacheFile()
+        {
+            if (!File.Exists(_cacheFile))
+                return false;
+
+            try
+            {
+                var json = File.ReadAllText(_cacheFile);
+                var parsed = JsonSerializer.Deserialize<CachedRelease>(json);
+                return parsed == null;
+            }
+            catch
+            {
+                return true;
+            }
         }
 
         public CachedRelease? LoadCachedRelease()
@@ -24,18 +50,38 @@ namespace DXVKCompanion.Storage
             if (!string.IsNullOrEmpty(dir))
                 Directory.CreateDirectory(dir);
 
-            if (!File.Exists(_cacheFile))
-                return null;
+            if (File.Exists(_cacheFile))
+            {
+                try
+                {
+                    var json = File.ReadAllText(_cacheFile);
+                    var cached = JsonSerializer.Deserialize<CachedRelease>(json);
+                    if (cached != null)
+                        return cached;
+                }
+                catch
+                {
+                    // Cache file exists on disk but is corrupt / unparseable
+                }
+            }
 
-            try
+            // If the primary cache file was absent or unreadable, check if an attempt record was stored
+            if (File.Exists(_attemptFile))
             {
-                var json = File.ReadAllText(_cacheFile);
-                return JsonSerializer.Deserialize<CachedRelease>(json);
+                try
+                {
+                    var attemptJson = File.ReadAllText(_attemptFile);
+                    var attemptRecord = JsonSerializer.Deserialize<CachedRelease>(attemptJson);
+                    if (attemptRecord != null)
+                        return attemptRecord;
+                }
+                catch
+                {
+                    // Attempt sidecar could not be read
+                }
             }
-            catch
-            {
-                return null;
-            }
+
+            return null;
         }
 
         public void SaveCachedRelease(ReleaseInfo release, string? etag, DateTime? cachedAt = null, DateTime? lastAttemptAt = null)
@@ -43,6 +89,12 @@ namespace DXVKCompanion.Storage
             var dir = Path.GetDirectoryName(_cacheFile);
             if (!string.IsNullOrEmpty(dir))
                 Directory.CreateDirectory(dir);
+
+            if (HasUnreadableCacheFile())
+            {
+                // Preserve recoverable bytes from unreadable cache before overwriting
+                PreserveCorruptFile();
+            }
 
             var now = DateTime.UtcNow;
             var cached = new CachedRelease
@@ -58,7 +110,13 @@ namespace DXVKCompanion.Storage
                 WriteIndented = true
             });
 
-            CommitStagedJson(json);
+            CommitStagedJson(json, _cacheFile);
+
+            // Clean up attempt sidecar now that a valid release cache is committed
+            if (File.Exists(_attemptFile))
+            {
+                try { File.Delete(_attemptFile); } catch { }
+            }
         }
 
         public void RecordFailedAttempt(DateTime? attemptAt = null)
@@ -67,16 +125,35 @@ namespace DXVKCompanion.Storage
             if (!string.IsNullOrEmpty(dir))
                 Directory.CreateDirectory(dir);
 
-            var existing = LoadCachedRelease();
-            if (existing == null && File.Exists(_cacheFile))
+            var now = attemptAt ?? DateTime.UtcNow;
+
+            if (HasUnreadableCacheFile())
             {
                 // The cache file exists on disk but could not be parsed.
-                // To prevent overwriting a recoverable corrupted file after a parse failure,
-                // do not overwrite the existing file.
+                // Preserve the unreadable file's recoverable bytes in .corrupt,
+                // and store the attempt timestamp in the attempt sidecar so that
+                // the corrupted file on disk is not overwritten, while throttle state
+                // is reliably persisted across repeated calls and client reconstruction.
+                PreserveCorruptFile();
+
+                var attemptRecord = new CachedRelease
+                {
+                    Release = new ReleaseInfo(),
+                    CachedAt = default,
+                    LastAttemptAt = now,
+                    ETag = null
+                };
+
+                var attemptJson = JsonSerializer.Serialize(attemptRecord, new JsonSerializerOptions
+                {
+                    WriteIndented = true
+                });
+
+                CommitStagedJson(attemptJson, _attemptFile);
                 return;
             }
 
-            var now = attemptAt ?? DateTime.UtcNow;
+            var existing = LoadCachedRelease();
             var toSave = existing ?? new CachedRelease
             {
                 Release = new ReleaseInfo(),
@@ -91,12 +168,31 @@ namespace DXVKCompanion.Storage
                 WriteIndented = true
             });
 
-            CommitStagedJson(json);
+            CommitStagedJson(json, _cacheFile);
         }
 
-        private void CommitStagedJson(string json)
+        private void PreserveCorruptFile()
         {
-            string tempPath = _cacheFile + ".tmp." + Guid.NewGuid().ToString("N");
+            try
+            {
+                if (File.Exists(_cacheFile))
+                {
+                    if (!File.Exists(_corruptFile) || File.ReadAllText(_corruptFile) != File.ReadAllText(_cacheFile))
+                    {
+                        File.Copy(_cacheFile, _corruptFile, overwrite: true);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"CacheStore: failed to preserve corrupt cache file: {ex.Message}");
+            }
+        }
+
+        private void CommitStagedJson(string json, string? targetFile = null)
+        {
+            string destination = targetFile ?? _cacheFile;
+            string tempPath = destination + ".tmp." + Guid.NewGuid().ToString("N");
             bool committed = false;
             try
             {
@@ -111,17 +207,17 @@ namespace DXVKCompanion.Storage
 
                 if (CustomCommitReplace != null)
                 {
-                    CustomCommitReplace(tempPath, _cacheFile);
+                    CustomCommitReplace(tempPath, destination);
                 }
                 else
                 {
-                    if (File.Exists(_cacheFile))
+                    if (File.Exists(destination))
                     {
-                        File.Move(tempPath, _cacheFile, overwrite: true);
+                        File.Move(tempPath, destination, overwrite: true);
                     }
                     else
                     {
-                        File.Move(tempPath, _cacheFile);
+                        File.Move(tempPath, destination);
                     }
                 }
 

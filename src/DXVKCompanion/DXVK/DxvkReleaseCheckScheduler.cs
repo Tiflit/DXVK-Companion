@@ -14,6 +14,7 @@ namespace DXVKCompanion.DXVK
         private readonly System.Threading.Timer? _timer;
         private readonly CancellationTokenSource _cts = new();
         private readonly SemaphoreSlim _tickLock = new(1, 1);
+        private readonly object _lifecycleLock = new();
         private bool _disposed;
 
         public DxvkReleaseCheckScheduler(
@@ -34,7 +35,11 @@ namespace DXVKCompanion.DXVK
 
         private async void OnTimerTick(object? state)
         {
-            if (_disposed) return;
+            lock (_lifecycleLock)
+            {
+                if (_disposed) return;
+            }
+
             try
             {
                 await TriggerCheckAsync(_cts.Token);
@@ -51,84 +56,119 @@ namespace DXVKCompanion.DXVK
 
         public async Task<ReleaseInfo?> TriggerCheckAsync(CancellationToken cancellationToken = default)
         {
-            if (_disposed) return null;
-
-            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token, cancellationToken);
-            bool lockAcquired = false;
-            try
-            {
-                lockAcquired = await _tickLock.WaitAsync(0, linkedCts.Token);
-            }
-            catch (OperationCanceledException)
-            {
-                return null;
-            }
-
-            if (!lockAcquired)
-            {
-                // A check is already active under this scheduler instance
-                return null;
-            }
-
-            try
+            CancellationTokenSource linkedCts;
+            lock (_lifecycleLock)
             {
                 if (_disposed) return null;
 
-                var latest = await _checkAction(linkedCts.Token);
-                if (latest != null && !_disposed && _onUpdateChecked != null)
-                {
-                    try
-                    {
-                        await _onUpdateChecked(latest);
-                    }
-                    catch (OperationCanceledException)
-                    {
-                        // Cancelled
-                    }
-                    catch (Exception ex)
-                    {
-                        Logger.Log($"DxvkReleaseCheckScheduler: update notification callback error: {ex.GetType().Name} - {ex.Message}");
-                    }
-                }
-
-                return latest;
-            }
-            catch (OperationCanceledException)
-            {
-                return null;
-            }
-            catch (Exception ex)
-            {
-                Logger.Log($"DxvkReleaseCheckScheduler: check action execution error: {ex.GetType().Name} - {ex.Message}");
-                return null;
-            }
-            finally
-            {
                 try
                 {
-                    _tickLock.Release();
+                    linkedCts = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token, cancellationToken);
                 }
                 catch (ObjectDisposedException)
                 {
-                    // Suppressed: scheduler was disposed while check was in-flight
+                    return null;
+                }
+            }
+
+            using (linkedCts)
+            {
+                bool lockAcquired = false;
+                try
+                {
+                    lockAcquired = await _tickLock.WaitAsync(0, linkedCts.Token);
+                }
+                catch (OperationCanceledException)
+                {
+                    return null;
+                }
+                catch (ObjectDisposedException)
+                {
+                    return null;
+                }
+
+                if (!lockAcquired)
+                {
+                    // A check is already active under this scheduler instance
+                    return null;
+                }
+
+                try
+                {
+                    lock (_lifecycleLock)
+                    {
+                        if (_disposed || linkedCts.IsCancellationRequested) return null;
+                    }
+
+                    var latest = await _checkAction(linkedCts.Token);
+
+                    bool shouldNotify = false;
+                    lock (_lifecycleLock)
+                    {
+                        shouldNotify = latest != null && !_disposed && !linkedCts.IsCancellationRequested && _onUpdateChecked != null;
+                    }
+
+                    if (shouldNotify && latest != null && _onUpdateChecked != null)
+                    {
+                        try
+                        {
+                            await _onUpdateChecked(latest);
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            // Cancelled
+                        }
+                        catch (Exception ex)
+                        {
+                            Logger.Log($"DxvkReleaseCheckScheduler: update notification callback error: {ex.GetType().Name} - {ex.Message}");
+                        }
+                    }
+
+                    return latest;
+                }
+                catch (OperationCanceledException)
+                {
+                    return null;
+                }
+                catch (ObjectDisposedException)
+                {
+                    return null;
+                }
+                catch (Exception ex)
+                {
+                    Logger.Log($"DxvkReleaseCheckScheduler: check action execution error: {ex.GetType().Name} - {ex.Message}");
+                    return null;
+                }
+                finally
+                {
+                    try
+                    {
+                        _tickLock.Release();
+                    }
+                    catch (ObjectDisposedException)
+                    {
+                        // Suppressed: scheduler was disposed while check was in-flight
+                    }
                 }
             }
         }
 
         public void Dispose()
         {
-            if (_disposed) return;
-            _disposed = true;
+            lock (_lifecycleLock)
+            {
+                if (_disposed) return;
+                _disposed = true;
+            }
 
             try
             {
                 _cts.Cancel();
             }
-            catch { }
+            catch (ObjectDisposedException) { }
+            catch (Exception) { }
 
             _timer?.Dispose();
-            _cts.Dispose();
-            _tickLock.Dispose();
         }
     }
 }

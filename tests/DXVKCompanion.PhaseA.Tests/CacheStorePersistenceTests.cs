@@ -473,11 +473,58 @@ namespace DXVKCompanion.PhaseA.Tests
             string corruptedContent = "<<<CORRUPTED JSON CONTENT>>>";
             File.WriteAllText(cacheFile, corruptedContent);
 
+            var attemptTime = new DateTime(2026, 10, 17, 18, 0, 0, DateTimeKind.Utc);
             var store = new CacheStore(cacheFile);
-            store.RecordFailedAttempt(DateTime.UtcNow);
+            store.RecordFailedAttempt(attemptTime);
 
             // Staged write must not overwrite the unparseable file
             Assert.Equal(corruptedContent, File.ReadAllText(cacheFile));
+
+            // Preserves recoverable bytes to .corrupt backup
+            Assert.True(File.Exists(store.CorruptBackupFile));
+            Assert.Equal(corruptedContent, File.ReadAllText(store.CorruptBackupFile));
+
+            // Stores attempt in sidecar so that throttle is preserved across reloads
+            Assert.True(File.Exists(store.AttemptFile));
+            var loaded = store.LoadCachedRelease();
+            Assert.NotNull(loaded);
+            Assert.Equal(attemptTime, loaded.LastAttemptAt);
+            Assert.False(loaded.HasValidRelease);
+
+            // Reconstructed store also preserves throttle and corrupt file
+            var reloaded = new CacheStore(cacheFile);
+            var reloadedRecord = reloaded.LoadCachedRelease();
+            Assert.NotNull(reloadedRecord);
+            Assert.Equal(attemptTime, reloadedRecord.LastAttemptAt);
+            Assert.False(reloadedRecord.HasValidRelease);
+            Assert.Equal(corruptedContent, File.ReadAllText(cacheFile));
+        }
+
+        [Fact]
+        public void CacheStore_SaveCachedRelease_WhenExistingFileMalformed_PreservesCorruptBackupAndWritesNewRelease()
+        {
+            using var testDir = new SyntheticTestDirectory();
+            string cacheFile = Path.Combine(testDir.RootPath, "release-cache.json");
+
+            string corruptedContent = "<<<CORRUPTED JSON CONTENT>>>";
+            File.WriteAllText(cacheFile, corruptedContent);
+
+            var store = new CacheStore(cacheFile);
+            var release = new ReleaseInfo { Version = "v2.5", DownloadUrl = "https://example.com/dxvk-2.5.tar.gz" };
+            store.SaveCachedRelease(release, "\"etag-25\"");
+
+            // Preserves recoverable corrupt bytes in .corrupt
+            Assert.True(File.Exists(store.CorruptBackupFile));
+            Assert.Equal(corruptedContent, File.ReadAllText(store.CorruptBackupFile));
+
+            // Primary cache file now contains valid new release
+            var loaded = store.LoadCachedRelease();
+            Assert.NotNull(loaded);
+            Assert.True(loaded.HasValidRelease);
+            Assert.Equal("v2.5", loaded.Release.Version);
+
+            // Attempt file is cleaned up if present
+            Assert.False(File.Exists(store.AttemptFile));
         }
     }
 }

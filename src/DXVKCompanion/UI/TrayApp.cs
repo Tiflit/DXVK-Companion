@@ -36,6 +36,9 @@ namespace DXVKCompanion.UI
         private bool _disposed;
 
         internal DxvkReleaseCheckScheduler ReleaseScheduler => _releaseScheduler;
+        internal Action<string, string>? CustomBalloonNotifier { get; set; }
+        internal string? LastNotifiedDxvkVersion => _lastNotifiedDxvkVersion;
+        internal SynchronizationContext SyncContext => _syncContext;
 
         public TrayApp(
             ProcessMonitor monitor,
@@ -45,7 +48,9 @@ namespace DXVKCompanion.UI
             SettingsStore settings,
             HttpClient httpClient,
             GameLibraryStore? gameLibraryStore = null,
-            DxvkReleaseCheckScheduler? releaseScheduler = null)
+            DxvkReleaseCheckScheduler? releaseScheduler = null,
+            DxvkGithubClient? githubClient = null,
+            SynchronizationContext? syncContext = null)
         {
             _monitor = monitor;
             _profiles = profiles;
@@ -57,7 +62,7 @@ namespace DXVKCompanion.UI
             _inspector = new ManagedFileInspector(_gameLibraryStore);
 
             _detector = new GameDetector();
-            _syncContext = SynchronizationContext.Current ?? new SynchronizationContext();
+            _syncContext = syncContext ?? SynchronizationContext.Current ?? new SynchronizationContext();
 
             _trayIcon = new NotifyIcon
             {
@@ -105,7 +110,9 @@ namespace DXVKCompanion.UI
             };
 
             _releaseScheduler = releaseScheduler ?? new DxvkReleaseCheckScheduler(
-                async ct => await _dxvk.GetLatestReleaseAsync(),
+                async ct => githubClient != null
+                    ? await githubClient.FetchLatestReleaseAsync(ct)
+                    : await _dxvk.GetLatestReleaseAsync(),
                 async latest => await NotifyIfDxvkUpdateAvailableAsync(latest));
 
             // Startup tasks: inspect all installations and process pending actions
@@ -130,36 +137,66 @@ namespace DXVKCompanion.UI
             }
         }
 
-        internal Task NotifyIfDxvkUpdateAvailableAsync(ReleaseInfo latest)
+        internal Task<bool> NotifyIfDxvkUpdateAvailableAsync(ReleaseInfo latest)
         {
             if (_disposed || latest == null || string.IsNullOrWhiteSpace(latest.Version))
-                return Task.CompletedTask;
+                return Task.FromResult(false);
 
-            if (string.Equals(latest.Version, _lastNotifiedDxvkVersion, StringComparison.OrdinalIgnoreCase))
-                return Task.CompletedTask;
-
-            bool anyOutdated = false;
-            foreach (var profile in _profiles.GetAll())
+            var tcs = new TaskCompletionSource<bool>();
+            _syncContext.Post(_ =>
             {
-                if (profile.DxvkEnabled && _dxvk.UpdateAvailable(profile, latest))
+                try
                 {
-                    anyOutdated = true;
-                    break;
+                    if (_disposed)
+                    {
+                        tcs.TrySetResult(false);
+                        return;
+                    }
+
+                    if (string.Equals(latest.Version, _lastNotifiedDxvkVersion, StringComparison.OrdinalIgnoreCase))
+                    {
+                        tcs.TrySetResult(false);
+                        return;
+                    }
+
+                    bool anyOutdated = false;
+                    foreach (var profile in _profiles.GetAll())
+                    {
+                        if (profile.DxvkEnabled && _dxvk.UpdateAvailable(profile, latest))
+                        {
+                            anyOutdated = true;
+                            break;
+                        }
+                    }
+
+                    if (anyOutdated)
+                    {
+                        _lastNotifiedDxvkVersion = latest.Version;
+                        if (!_disposed)
+                        {
+                            if (CustomBalloonNotifier != null)
+                            {
+                                CustomBalloonNotifier("DXVK Update Available",
+                                    $"A new DXVK version ({latest.Version}) is available. Open Manage Games to update.");
+                            }
+                            else if (_trayIcon != null)
+                            {
+                                _trayIcon.ShowBalloonTip(5000, "DXVK Update Available",
+                                    $"A new DXVK version ({latest.Version}) is available. Open Manage Games to update.", ToolTipIcon.Info);
+                            }
+                        }
+                    }
+
+                    tcs.TrySetResult(anyOutdated);
                 }
-            }
-
-            if (anyOutdated)
-            {
-                _lastNotifiedDxvkVersion = latest.Version;
-                _syncContext.Post(_ =>
+                catch (Exception ex)
                 {
-                    if (_disposed) return;
-                    _trayIcon.ShowBalloonTip(5000, "DXVK Update Available",
-                        $"A new DXVK version ({latest.Version}) is available. Open Manage Games to update.", ToolTipIcon.Info);
-                }, null);
-            }
+                    Logger.Log($"TrayApp: update check error on UI context: {ex.GetType().Name} - {ex.Message}");
+                    tcs.TrySetException(ex);
+                }
+            }, null);
 
-            return Task.CompletedTask;
+            return tcs.Task;
         }
 
         private async Task CheckCompanionUpdateOnStartup()

@@ -98,4 +98,34 @@ Issue [#161](https://github.com/Tiflit/DXVK-Companion/issues/161) implements the
   - Initial run `39082710006`: failed on WinForms/Threading `Timer` ambiguity in `DxvkReleaseCheckScheduler.cs`. Repaired via explicit `System.Threading.Timer` qualification.
   - Second run `39082832206`: failed on test compilation in `DailyReleaseCheckTests.cs` (namespace import and API mapping). Repaired via `using DXVKCompanion.Safety;`, `GraphicsApi.DX11`, `Assert.True(enableRes)`, and `CreateAsync` factory.
   - Third run `39083019385`: 787/788 tests passed! Exactly 1 test (`DailyReleaseCheck_Scheduler_StopAndDisposal_CancelsOwnedWorkWithoutCallbacks`) threw `ObjectDisposedException` when `Dispose()` disposed `_tickLock` while an in-flight test check was completing. Repaired by safely catching `ObjectDisposedException` during teardown.
-- Repaired head commit pushed to `feat/daily-release-check-161`.
+- Repaired head commit pushed to `feat/daily-release-check-161` (`6c9211bef59198b1ef5f47c22160b61fd7a0215e`).
+- Cloud CI run `39083239746` on `6c9211bef59198b1ef5f47c22160b61fd7a0215e` passed all 6 checks, 788/788 tests passing.
+
+---
+
+### 4. Codex Grouped Review & Integration Repairs (Session 1 Delta)
+
+Codex provided a grouped review ([PR #162 Comment](https://github.com/Tiflit/DXVK-Companion/pull/162#issuecomment-6243835498)) identifying three P2 integration findings:
+
+1. **Marshal Full Update Decision to UI SynchronizationContext**:
+   - `TrayApp.cs`: Background scheduler check callback previously invoked `NotifyIfDxvkUpdateAvailableAsync` on a thread pool thread, enumerating `_profiles.GetAll()` and calling `_dxvk.UpdateAvailable` (which can mutate/save profile state concurrently with UI actions).
+   - *Fix*: Marshaled the entire evaluation (disposed check, `_lastNotifiedDxvkVersion` deduplication, `_profiles.GetAll()` enumeration, `_dxvk.UpdateAvailable`, dedup state update, and balloon notification) together onto `_syncContext` via `_syncContext.Post(...)`. Added `syncContext` injection to `TrayApp` constructor and added `CustomBalloonNotifier` test hook.
+   - *Regression Test*: Added `DailyReleaseCheck_TrayApp_NotificationDecisionMarshaledToSyncContext_AndDeduplicatesVersions` in `DailyReleaseCheckTests.cs` using a `TrackingSyncContext` to verify execution on the sync context, initial balloon notification, subsequent duplicate suppression, newer version re-notification, and disposal suppression.
+
+2. **Propagate Cancellation and Coordinate Lifetime**:
+   - `Program.cs` / `TrayApp.cs`: `Program.cs` passes `githubClient: github` to `TrayApp`. `TrayApp` wires the scheduler check delegate to token-aware `_github.FetchLatestReleaseAsync(ct)`, ensuring cancellation is propagated down to HTTP network requests and inflight gates upon app shutdown or scheduler disposal.
+   - `DxvkReleaseCheckScheduler.cs`: Protected entry and disposal under `_lifecycleLock`. When `Dispose()` is called, it cancels `_cts`, cleanly stopping in-flight work and suppressing callbacks without abruptly disposing active primitives or throwing `ObjectDisposedException`.
+   - *Regression Tests*:
+     - `DailyReleaseCheck_Scheduler_StopAndDisposal_CancelsOwnedWorkAndSuppressesCallbacks`: validates that disposing a scheduler with an in-flight check actively signals cancellation to the inner token and suppresses callbacks.
+     - `DailyReleaseCheck_Scheduler_ConcurrentEntryAndDispose_TerminatesCleanlyWithoutUnobservedExceptions`: tests 20 concurrent tasks entering `TriggerCheckAsync` while `Dispose()` executes concurrently, ensuring clean completion without unhandled exceptions.
+     - `DailyReleaseCheck_DxvkGithubClient_TokenCancellation_AbortsBlockedHttpRequest`: verifies that token cancellation aborts blocked network calls immediately.
+
+3. **Protect Corrupt Cache Evidence and Retain 24h Throttle**:
+   - `CacheStore.cs`: Added `HasUnreadableCacheFile()`, `CorruptBackupFile` (`_cacheFile + ".corrupt"`), and `AttemptFile` (`_cacheFile + ".attempt.json"`).
+     - When `_cacheFile` is unreadable/corrupt, `PreserveCorruptFile()` copies the unreadable file to `CorruptBackupFile` so recoverable corrupt bytes are never destroyed.
+     - On HTTP failure: preserves `_cacheFile` untouched on disk, preserves `.corrupt` backup, and commits failed attempt timestamp to `_attemptFile` via atomic staged replacement. `LoadCachedRelease()` reads `_attemptFile` when the primary file is unreadable, maintaining 24h throttle across repeated calls and client reconstruction.
+     - On HTTP 200 OK: preserves `.corrupt` backup before committing the new valid release to `_cacheFile`, and cleans up `_attemptFile`.
+   - *Regression Tests*:
+     - `CacheStore_RecordFailedAttempt_WhenExistingFileMalformed_PreservesFileWithoutOverwriting` and `CacheStore_SaveCachedRelease_WhenExistingFileMalformed_PreservesCorruptBackupAndWritesNewRelease` in `CacheStorePersistenceTests.cs`.
+     - `DxvkGithubClient_FetchLatestReleaseAsync_WhenExistingCacheCorrupt_OnHttpFailure_PreservesCorruptFileAndThrottlesRepeatedAndReconstructedCalls` and `DxvkGithubClient_FetchLatestReleaseAsync_WhenExistingCacheCorrupt_OnHttp200_PreservesCorruptBackupAndWritesNewRelease` in `DxvkGithubClientTests.cs`.
+

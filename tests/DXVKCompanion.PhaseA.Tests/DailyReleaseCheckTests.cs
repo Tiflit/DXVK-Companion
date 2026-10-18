@@ -9,9 +9,11 @@ using System.Threading;
 using System.Threading.Tasks;
 using DXVKCompanion.DXVK;
 using DXVKCompanion.Models;
+using DXVKCompanion.Monitoring;
 using DXVKCompanion.PhaseATests;
 using DXVKCompanion.Storage;
 using DXVKCompanion.Safety;
+using DXVKCompanion.UI;
 using DXVKCompanion.Utils;
 using Xunit;
 
@@ -497,14 +499,25 @@ namespace DXVKCompanion.PhaseA.Tests
         {
             int checkCallCount = 0;
             int callbackCallCount = 0;
-
-            var tcs = new TaskCompletionSource<ReleaseInfo?>();
+            bool cancellationObserved = false;
+            var actionStarted = new TaskCompletionSource<bool>();
 
             using (var scheduler = new DxvkReleaseCheckScheduler(
                 async ct =>
                 {
                     Interlocked.Increment(ref checkCallCount);
-                    return await tcs.Task;
+                    actionStarted.TrySetResult(true);
+                    try
+                    {
+                        // Block waiting for cancellation token from scheduler
+                        await Task.Delay(10000, ct);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        cancellationObserved = true;
+                        throw;
+                    }
+                    return new ReleaseInfo { Version = "v2.5", DownloadUrl = "" };
                 },
                 latest =>
                 {
@@ -517,13 +530,17 @@ namespace DXVKCompanion.PhaseA.Tests
                 // Trigger check asynchronously
                 var triggerTask = scheduler.TriggerCheckAsync();
 
-                // Dispose while check is waiting
+                // Wait until action has actually entered and is waiting
+                await actionStarted.Task;
+
+                // Dispose while check is blocked in flight
                 scheduler.Dispose();
 
-                // Complete the check task after scheduler was disposed
-                tcs.SetResult(new ReleaseInfo { Version = "v2.5", DownloadUrl = "" });
-
                 var result = await triggerTask;
+
+                // Cancellation must have actually been signaled to the in-flight checkAction
+                Assert.True(cancellationObserved);
+                Assert.Null(result);
 
                 // After disposal, callback must not be invoked
                 Assert.Equal(0, callbackCallCount);
@@ -535,45 +552,155 @@ namespace DXVKCompanion.PhaseA.Tests
         }
 
         [Fact]
-        public async Task DailyReleaseCheck_Scheduler_PeriodicDueCheck_DoesNotSpamNotifications()
+        public async Task DailyReleaseCheck_Scheduler_ConcurrentEntryAndDispose_TerminatesCleanlyWithoutUnobservedExceptions()
         {
-            int checkActionCount = 0;
-            var notifiedVersions = new List<string>();
-
-            var releaseToReturn = new ReleaseInfo { Version = "v2.5", DownloadUrl = "https://example.com/2.5.tar.gz" };
-
-            using var scheduler = new DxvkReleaseCheckScheduler(
-                ct =>
-                {
-                    Interlocked.Increment(ref checkActionCount);
-                    return Task.FromResult<ReleaseInfo?>(releaseToReturn);
-                },
-                latest =>
-                {
-                    // Simulated notification filter mimicking TrayApp
-                    if (!notifiedVersions.Contains(latest.Version))
+            for (int round = 0; round < 3; round++)
+            {
+                var scheduler = new DxvkReleaseCheckScheduler(
+                    async ct =>
                     {
-                        notifiedVersions.Add(latest.Version);
-                    }
-                    return Task.CompletedTask;
-                },
-                checkInterval: TimeSpan.FromMilliseconds(50),
-                startImmediately: false);
+                        await Task.Delay(5, ct);
+                        return new ReleaseInfo { Version = "v2.5", DownloadUrl = "" };
+                    },
+                    latest => Task.CompletedTask,
+                    checkInterval: TimeSpan.FromMinutes(1),
+                    startImmediately: false);
 
-            // First check: notifies for v2.5
-            await scheduler.TriggerCheckAsync();
-            Assert.Single(notifiedVersions);
-            Assert.Equal("v2.5", notifiedVersions[0]);
+                var tasks = new List<Task<ReleaseInfo?>>();
+                for (int i = 0; i < 20; i++)
+                {
+                    tasks.Add(Task.Run(async () => await scheduler.TriggerCheckAsync()));
+                }
 
-            // Second check with same version: does not re-notify
-            await scheduler.TriggerCheckAsync();
-            Assert.Single(notifiedVersions);
+                // Concurrently dispose while tasks are entering or executing
+                var disposeTask = Task.Run(async () =>
+                {
+                    await Task.Delay(2);
+                    scheduler.Dispose();
+                });
 
-            // Third check with newer version: notifies for v2.6
-            releaseToReturn = new ReleaseInfo { Version = "v2.6", DownloadUrl = "https://example.com/2.6.tar.gz" };
-            await scheduler.TriggerCheckAsync();
-            Assert.Equal(2, notifiedVersions.Count);
-            Assert.Equal("v2.6", notifiedVersions[1]);
+                await Task.WhenAll(tasks.Cast<Task>().Concat(new[] { disposeTask }));
+
+                // Post-disposal check returns null cleanly
+                var postDisposal = await scheduler.TriggerCheckAsync();
+                Assert.Null(postDisposal);
+            }
+        }
+
+        [Fact]
+        public async Task DailyReleaseCheck_TrayApp_NotificationDecisionMarshaledToSyncContext_AndDeduplicatesVersions()
+        {
+            using var testDir = new SyntheticTestDirectory();
+            string profilesFile = Path.Combine(testDir.RootPath, "profiles.json");
+            string libFile = Path.Combine(testDir.RootPath, "library.json");
+            string settingsFile = Path.Combine(testDir.RootPath, "settings.json");
+            string cacheFile = Path.Combine(testDir.RootPath, "release-cache.json");
+
+            var profiles = new ProfileStore(profilesFile);
+            var libStore = new GameLibraryStore(libFile);
+            var settings = new SettingsStore(settingsFile);
+
+            var exitHandler = new ProcessExitHandler();
+            var scanner = new ModuleScanner();
+            var peParser = new PeParser();
+            var classifier = new ApiClassifier(scanner, peParser);
+            var monitor = new ProcessMonitor(new GameDetector(), exitHandler, classifier, libStore);
+
+            var fileUtils = new FileUtils();
+            var txEngine = new MultiFileTransactionEngine(Path.Combine(testDir.RootPath, "backups"));
+            var handler = new RecordingHttpMessageHandler(req => new HttpResponseMessage(HttpStatusCode.OK));
+            using var httpClient = new HttpClient(handler);
+            var installer = new DxvkInstaller(httpClient, txEngine, libStore, null, fileUtils);
+            var rollback = new DxvkRollback(txEngine, libStore, fileUtils);
+            var cacheStore = new CacheStore(cacheFile);
+            var github = new DxvkGithubClient(httpClient, cacheStore);
+            var dxvk = new DxvkManager(installer, rollback, github, profiles, libStore);
+
+            // Register game with older Dxvk version
+            var game = profiles.GetOrCreate(@"C:\Games\Skyrim\SkyrimSE.exe");
+            game.DxvkEnabled = true;
+            game.InstalledDxvkVersion = "v2.4";
+            profiles.Save(game);
+
+            var testSync = new TrackingSyncContext();
+            var balloons = new List<(string Title, string Msg)>();
+
+            using var trayApp = new TrayApp(
+                monitor, profiles, dxvk, classifier, settings, httpClient,
+                gameLibraryStore: libStore,
+                githubClient: github,
+                syncContext: testSync);
+
+            trayApp.CustomBalloonNotifier = (title, msg) => balloons.Add((title, msg));
+
+            // First check: new release v2.5 available
+            bool firstResult = await trayApp.NotifyIfDxvkUpdateAvailableAsync(new ReleaseInfo { Version = "v2.5" });
+            Assert.True(firstResult);
+            Assert.Single(balloons);
+            Assert.Equal("DXVK Update Available", balloons[0].Title);
+            Assert.Equal("v2.5", trayApp.LastNotifiedDxvkVersion);
+            Assert.True(testSync.PostCount > 0);
+
+            int postCountAfterFirst = testSync.PostCount;
+
+            // Second check: same version v2.5 -> deduplicated on sync context, no balloon spam
+            bool secondResult = await trayApp.NotifyIfDxvkUpdateAvailableAsync(new ReleaseInfo { Version = "v2.5" });
+            Assert.False(secondResult);
+            Assert.Single(balloons);
+            Assert.True(testSync.PostCount > postCountAfterFirst);
+
+            // Third check: newer version v2.6 -> notifies again
+            bool thirdResult = await trayApp.NotifyIfDxvkUpdateAvailableAsync(new ReleaseInfo { Version = "v2.6" });
+            Assert.True(thirdResult);
+            Assert.Equal(2, balloons.Count);
+            Assert.Equal("v2.6", trayApp.LastNotifiedDxvkVersion);
+
+            // Disposal suppresses notification even if check arrives
+            trayApp.Dispose();
+            bool fourthResult = await trayApp.NotifyIfDxvkUpdateAvailableAsync(new ReleaseInfo { Version = "v2.7" });
+            Assert.False(fourthResult);
+            Assert.Equal(2, balloons.Count);
+        }
+
+        [Fact]
+        public async Task DailyReleaseCheck_DxvkGithubClient_TokenCancellation_AbortsBlockedHttpRequest()
+        {
+            using var testDir = new SyntheticTestDirectory();
+            string cacheFile = Path.Combine(testDir.RootPath, "release-cache.json");
+            var store = new CacheStore(cacheFile);
+
+            var requestStarted = new TaskCompletionSource<bool>();
+            var handler = RecordingHttpMessageHandler.CreateTokenAware(async (req, ct) =>
+            {
+                requestStarted.TrySetResult(true);
+                await Task.Delay(10000, ct);
+                return new HttpResponseMessage(HttpStatusCode.OK);
+            });
+
+            using var httpClient = new HttpClient(handler);
+            var client = new DxvkGithubClient(httpClient, store);
+
+            using var cts = new CancellationTokenSource();
+            var checkTask = client.FetchLatestReleaseAsync(cts.Token);
+
+            await requestStarted.Task;
+            cts.Cancel();
+
+            var result = await checkTask;
+            Assert.Null(result);
+        }
+
+        private sealed class TrackingSyncContext : SynchronizationContext
+        {
+            public int PostCount { get; private set; }
+            public List<int> ExecutionThreads { get; } = new();
+
+            public override void Post(SendOrPostCallback d, object? state)
+            {
+                PostCount++;
+                ExecutionThreads.Add(Environment.CurrentManagedThreadId);
+                d(state);
+            }
         }
 
         private static HttpResponseMessage CreateJsonResponse(
@@ -611,21 +738,26 @@ namespace DXVKCompanion.PhaseA.Tests
 
         private sealed class RecordingHttpMessageHandler : HttpMessageHandler
         {
-            private readonly Func<HttpRequestMessage, Task<HttpResponseMessage>> _handler;
+            private readonly Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> _handler;
 
             public List<HttpRequestMessage> CapturedRequests { get; } = new();
 
             public RecordingHttpMessageHandler(Func<HttpRequestMessage, HttpResponseMessage> handler)
             {
-                _handler = req => Task.FromResult(handler(req));
+                _handler = (req, ct) => Task.FromResult(handler(req));
             }
 
             public static RecordingHttpMessageHandler CreateAsync(Func<HttpRequestMessage, Task<HttpResponseMessage>> asyncHandler)
             {
-                return new RecordingHttpMessageHandler(asyncHandler, isAsync: true);
+                return new RecordingHttpMessageHandler((req, ct) => asyncHandler(req));
             }
 
-            private RecordingHttpMessageHandler(Func<HttpRequestMessage, Task<HttpResponseMessage>> handler, bool isAsync)
+            public static RecordingHttpMessageHandler CreateTokenAware(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> asyncHandler)
+            {
+                return new RecordingHttpMessageHandler(asyncHandler);
+            }
+
+            public RecordingHttpMessageHandler(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> handler)
             {
                 _handler = handler;
             }
@@ -633,7 +765,7 @@ namespace DXVKCompanion.PhaseA.Tests
             protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
             {
                 CapturedRequests.Add(request);
-                return _handler(request);
+                return _handler(request, cancellationToken);
             }
         }
     }

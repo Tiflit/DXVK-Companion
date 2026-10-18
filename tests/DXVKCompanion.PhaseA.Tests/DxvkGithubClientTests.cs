@@ -505,6 +505,112 @@ namespace DXVKCompanion.PhaseA.Tests
             await AssertClientUsableAsync(httpClient);
         }
 
+        [Fact]
+        public async Task DxvkGithubClient_FetchLatestReleaseAsync_WhenExistingCacheCorrupt_OnHttpFailure_PreservesCorruptFileAndThrottlesRepeatedAndReconstructedCalls()
+        {
+            using var testDir = new SyntheticTestDirectory();
+            string cacheFile = Path.Combine(testDir.RootPath, "release-cache.json");
+            string corruptCorpus = "<<<MALFORMED CACHE CORPUS>>>";
+            File.WriteAllText(cacheFile, corruptCorpus);
+
+            var store = new CacheStore(cacheFile);
+            var fakeNow = new DateTime(2026, 10, 17, 12, 0, 0, DateTimeKind.Utc);
+
+            int requestCount = 0;
+            var handler = new FakeHttpMessageHandler(req =>
+            {
+                requestCount++;
+                return new HttpResponseMessage(HttpStatusCode.InternalServerError);
+            });
+            using var httpClient = new HttpClient(handler);
+            var client = new DxvkGithubClient(httpClient, store)
+            {
+                UtcNowSeam = () => fakeNow
+            };
+
+            // First call: encounters corrupt cache on disk, tries HTTP, fails with 500
+            var firstResult = await client.FetchLatestReleaseAsync();
+            Assert.Null(firstResult);
+            Assert.Equal(1, requestCount);
+
+            // Corrupt file remains preserved with original bytes
+            Assert.Equal(corruptCorpus, File.ReadAllText(cacheFile));
+            // Recovery backup preserves the corrupt bytes
+            Assert.True(File.Exists(store.CorruptBackupFile));
+            Assert.Equal(corruptCorpus, File.ReadAllText(store.CorruptBackupFile));
+
+            // Immediate repeated call within 24h: throttled without network request
+            var repeatedResult = await client.FetchLatestReleaseAsync();
+            Assert.Null(repeatedResult);
+            Assert.Equal(1, requestCount);
+
+            // Reconstructed store & client: throttled without network request
+            var reloadedStore = new CacheStore(cacheFile);
+            var reloadedClient = new DxvkGithubClient(httpClient, reloadedStore)
+            {
+                UtcNowSeam = () => fakeNow.AddHours(2)
+            };
+            var reloadedResult = await reloadedClient.FetchLatestReleaseAsync();
+            Assert.Null(reloadedResult);
+            Assert.Equal(1, requestCount);
+
+            // After 25 hours, 24h throttle expires: attempts network again
+            reloadedClient.UtcNowSeam = () => fakeNow.AddHours(25);
+            var expiredResult = await reloadedClient.FetchLatestReleaseAsync();
+            Assert.Null(expiredResult);
+            Assert.Equal(2, requestCount);
+
+            // Corrupt file is still preserved
+            Assert.Equal(corruptCorpus, File.ReadAllText(cacheFile));
+        }
+
+        [Fact]
+        public async Task DxvkGithubClient_FetchLatestReleaseAsync_WhenExistingCacheCorrupt_OnHttp200_PreservesCorruptBackupAndWritesNewRelease()
+        {
+            using var testDir = new SyntheticTestDirectory();
+            string cacheFile = Path.Combine(testDir.RootPath, "release-cache.json");
+            string corruptCorpus = "<<<MALFORMED CACHE CORPUS>>>";
+            File.WriteAllText(cacheFile, corruptCorpus);
+
+            var store = new CacheStore(cacheFile);
+            var fakeNow = new DateTime(2026, 10, 17, 12, 0, 0, DateTimeKind.Utc);
+
+            string validJson = CreateReleaseJson("v2.5", "dxvk-2.5.tar.gz", "https://example.com/dxvk-2.5.tar.gz");
+            int requestCount = 0;
+            var handler = new FakeHttpMessageHandler(req =>
+            {
+                requestCount++;
+                return CreateJsonResponse(HttpStatusCode.OK, validJson, "\"etag-25\"");
+            });
+            using var httpClient = new HttpClient(handler);
+            var client = new DxvkGithubClient(httpClient, store)
+            {
+                UtcNowSeam = () => fakeNow
+            };
+
+            // Call with corrupt existing cache: succeeds with 200 OK
+            var result = await client.FetchLatestReleaseAsync();
+            Assert.NotNull(result);
+            Assert.Equal("v2.5", result.Version);
+            Assert.Equal(1, requestCount);
+
+            // Recovery backup preserves the corrupt bytes
+            Assert.True(File.Exists(store.CorruptBackupFile));
+            Assert.Equal(corruptCorpus, File.ReadAllText(store.CorruptBackupFile));
+
+            // Primary cache file now contains valid release JSON
+            var loaded = store.LoadCachedRelease();
+            Assert.NotNull(loaded);
+            Assert.True(loaded.HasValidRelease);
+            Assert.Equal("v2.5", loaded.Release.Version);
+
+            // Subsequent call is served from cache with zero network calls
+            var cachedResult = await client.FetchLatestReleaseAsync();
+            Assert.NotNull(cachedResult);
+            Assert.Equal("v2.5", cachedResult.Version);
+            Assert.Equal(1, requestCount);
+        }
+
         private static async Task AssertClientUsableAsync(HttpClient client)
         {
             using var probeRequest = new HttpRequestMessage(HttpMethod.Get, "http://localhost/probe");
