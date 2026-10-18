@@ -598,7 +598,7 @@ namespace DXVKCompanion.PhaseA.Tests
 
             var profiles = new ProfileStore(profilesFile);
             var libStore = new GameLibraryStore(libFile);
-            var settings = new SettingsStore(settingsFile);
+            var settings = SettingsStore.Load(settingsFile);
 
             var exitHandler = new ProcessExitHandler();
             var scanner = new ModuleScanner();
@@ -619,7 +619,8 @@ namespace DXVKCompanion.PhaseA.Tests
             // Register game with older Dxvk version
             var game = profiles.GetOrCreate(@"C:\Games\Skyrim\SkyrimSE.exe");
             game.DxvkEnabled = true;
-            game.InstalledDxvkVersion = "v2.4";
+            game.Api = GraphicsApi.DX11;
+            game.DxvkVersion = "v2.4";
             profiles.Save(game);
 
             var testSync = new TrackingSyncContext();
