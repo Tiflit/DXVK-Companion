@@ -1430,6 +1430,14 @@ public sealed class OwnershipPersistenceFailureTests
         using var http = new HttpClient();
         var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
 
+        var profile = new GameProfile(exePath)
+        {
+            Api = GraphicsApi.DX11,
+            Architecture = "x64",
+            HudEnabled = false,
+            FrameLimit = 0
+        };
+
         // 0. Exercise ApplyToGameAsync failure during preparation when dxvk.conf is locked with speculative settings
         profile.HudEnabled = true;
         profile.FrameLimit = 144;
@@ -1450,16 +1458,8 @@ public sealed class OwnershipPersistenceFailureTests
             profile.FrameLimit = 0;
         }
 
-        // 1. Initial clean install with HudEnabled=false, FrameLimit=0
-        var profileClean = new GameProfile(exePath)
-        {
-            Api = GraphicsApi.DX11,
-            Architecture = "x64",
-            HudEnabled = false,
-            FrameLimit = 0
-        };
-
-        bool installOk = await installer.ApplyToGameAsync(profileClean, new ReleaseInfo { Version = "2.4", DownloadUrl = "" });
+        // 1. Initial clean install with HudEnabled=false, FrameLimit=0 succeeds after lock release
+        bool installOk = await installer.ApplyToGameAsync(profile, new ReleaseInfo { Version = "2.4", DownloadUrl = "" });
         Assert.True(installOk);
 
         var inst = store.FindByInstallationPath(gameDir.RootPath)!;
@@ -1467,8 +1467,8 @@ public sealed class OwnershipPersistenceFailureTests
         Assert.Equal(0, inst.Configuration.FrameLimit);
 
         // 2. Prepare new speculative settings
-        profileClean.HudEnabled = true;
-        profileClean.FrameLimit = 144;
+        profile.HudEnabled = true;
+        profile.FrameLimit = 144;
 
         // Create dxvk.conf and lock it with FileShare.None so reading/capturing it throws during preparation
         File.WriteAllText(confPath, "dxvk.hud = compiler");
@@ -1478,7 +1478,7 @@ public sealed class OwnershipPersistenceFailureTests
             confLock = new FileStream(confPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
 
             // ReapplyAsync fails during preparation
-            bool reapplyOk = await installer.ReapplyAsync(profileClean);
+            bool reapplyOk = await installer.ReapplyAsync(profile);
             Assert.False(reapplyOk);
 
             // In-memory snapshot must be restored, not mutated with speculative settings
@@ -1498,7 +1498,7 @@ public sealed class OwnershipPersistenceFailureTests
         Assert.Equal(0, reloadedInst.Configuration.FrameLimit);
 
         // 3. Retry ReapplyAsync after lock is released succeeds and persists new settings
-        bool retryOk = await installer.ReapplyAsync(profileClean);
+        bool retryOk = await installer.ReapplyAsync(profile);
         Assert.True(retryOk);
         Assert.True(inst.Configuration.HudEnabled);
         Assert.Equal(144, inst.Configuration.FrameLimit);
