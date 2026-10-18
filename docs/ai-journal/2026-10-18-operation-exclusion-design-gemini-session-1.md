@@ -38,33 +38,47 @@
 ## Response to Codex Grouped Review (Repairs R1–R4)
 
 Codex provided a detailed grouped review on PR #177 ([Comment 6256230302](https://github.com/Tiflit/DXVK-Companion/pull/177#issuecomment-6256230302)). All four review findings were addressed:
+- R1: Replaced contradictory oracles; established genuine committed baseline; labeled observed protection honestly; instrumented two-way overlap handshake; guaranteed barrier release in `finally`; bounded task waits.
+- R2: Two-tier lock hierarchy; async-safe `FileStream` primitive overcoming thread affinity of `Mutex`; `IOperationLeaseCoordinator` single enforceable owner with internal tokens.
+- R3: Factual correction of `NormalizeInstallationPath`; candidate relevance filtering in process model; 7 deterministic fake-inspector test scenarios; removed unmeasured claims.
+- R4: Corrected inventory against actual source; preservation of pending intents in store on deferred states; exact Phase B file list; clear separation of delegated choices from human authority decisions.
 
-### R1: Test Oracle Consistency, Cleanup & Concurrency Handshake
-- **Fixture 1 (`RollbackUndoingCommittedBytes`):** Eliminated the contradictory assertion demanding both `Assert.False(op2Result)` and version 2.7 bytes. Defined a clean, consistent oracle: under the safe exclusion design, Operation 2 is refused at the lease boundary, Operation 1 recovers to pre-operation 2.5, and disk/metadata remain consistent at 2.5. On unpatched production, Operation 2 is not refused (`op2Result == true`), deterministically failing as expected-red. Added verification that the deliberate injected fault (`IOException`) was processed and verified by Operation 1.
-- **Fixture 2 (`ConcurrentApply`):** Established a real committed baseline (version 2.5) before constructing both concurrent service graphs/stores. This ensures Operation 2 does not fail on stale baseline creation, but genuinely attempts concurrent target mutation. On unpatched production, it fails on missing "in progress" lease refusal.
-- **Fixture 3 (`ManagerLevel_ConcurrentDisableAndEnable`):** Honestly labeled the observed protection on unpatched code (mid-transaction tamper detection / hash mismatch) and structured the oracle around entry-boundary lease refusal.
-- **Fixture 4 (`IndependentInstallations`):** Instrumented a deterministic two-way bounded handshake via `MultiFileTransactionTestHooks.AfterApply` verifying that both independent operations actively mutate files simultaneously without mutual blocking.
-- **Cleanup & Safety:** All fixtures guarantee barrier release in `finally` blocks, bound all task waits with 10-second timeouts, avoid blanket exception swallows, and ensure zero background tasks leak.
+---
 
-### R2: Two-Tier Lock Hierarchy & Async-Safe Lease Primitive
-- Defined a strict Two-Tier Hierarchy:
-  - **Tier 1 Installation Lease (Fine-Grained):** Held across pre-validation, activity check, target mutation, and metadata commit/recovery.
-  - **Tier 2 Storage Directory Lock (Coarse-Grained):** Held briefly only during atomic read-modify-write phases on `game-library.json`.
-  - Acquisition order is strictly `Tier 1 -> Tier 2`, preventing deadlocks.
-- Resolved the thread-affinity flaw of `System.Threading.Mutex` across `await` boundaries by specifying an exclusive OS `FileStream` lock (`FileShare.None`, `FileOptions.DeleteOnClose`) on `<storageDir>/leases/<hash>.lease`. This primitive is thread-agnostic, kernel-enforced across all processes, privilege-free, and automatically cleaned up on crash.
-- Defined `IOperationLeaseCoordinator` as the single enforceable lease owner with internal `IOperationLease` token passing to prevent bypass or nested reentrancy deadlocks.
+## Response to Codex Focused Delta Review ([Comment 6256379288](https://github.com/Tiflit/DXVK-Companion/pull/177#issuecomment-6256379288))
 
-### R3: Path Identity, Realistic Process Model & Accurate Boundary
-- Corrected factual claim regarding `GameInstallation.NormalizeInstallationPath` (it does not resolve junctions or change case); defined uppercase canonicalization and SHA256 hashing.
-- Specified Candidate Relevance Filtering in the process evidence model: only processes matching registered game executables are evaluated; unrelated elevated system processes (`services.exe`, `svchost.exe`) are ignored and do not trigger false `Unknown` states.
-- Defined 7 deterministic fake-inspector test scenarios for the internal test seam.
-- Removed unmeasured timing claims ("50 ms", "physical minimum") and honestly bounded cooperative exclusion versus external process start races.
+Codex accepted the initial delta and identified five remaining areas for refinement:
 
-### R4: Source Call Flows, Preservation & File List
-- Corrected inventory against actual source: `ProcessAllPendingActionsAsync` directly dispatches operations; `RestoreAllAsync` checks running state before queueing.
-- Specified preservation of persisted `PendingAction` in the store and transient intents in `_pending` when operations are deferred due to busy/running/unknown states.
-- Enumerated the exact production files to add and modify in Phase B.
-- Separated delegated internal choices from human authority decisions (contention policy, single-instance policy, and `Unknown` evidence policy).
+1. **Target-Scoped Coordination Namespace (Independent of Storage Root):**
+   - Moved the Tier 1 Installation Lease out of `<storageDir>/leases/` into a shared, discoverable coordination namespace: `%LOCALAPPDATA%\DXVKCompanion\locks\target_<CanonicalHash>.lock` (with `DXVK_COORDINATION_DIR` environment override for test sandboxing).
+   - Clarified the lifecycle of `FileStream` (`FileShare.None`, `FileOptions.DeleteOnClose`), handling transient `ERROR_DELETE_PENDING` contention.
+   - Distinguished handle release on crash from transaction recovery: OS handle closure releases the lease, but does not restore corrupted files. Added pre-operation safety inspection (checking for orphaned `.transactions/` or hash mismatches from a crashed predecessor).
+   - Explicitly defined unsupported boundaries: cross-session Windows users, UNC network paths, read-only volumes, and non-locking filesystems are conservatively refused.
+
+2. **Simpler Safe Scope for Metadata (No Unreviewed 3-Way Merge):**
+   - Replaced the late merge sketch with the recommended simpler safe scope: serialize the full mutation/commit scope for a shared store root.
+   - Authoritative state is acquired and checked for freshness BEFORE target mutation. If disk changed or unowned mutations are present, stale instances conservatively refuse before touching target files.
+   - Independent store roots are disjoint on Tier 2 and proceed concurrently without serialization.
+   - Strict preservation of #171 uncertainty guard (`AttentionRequired`, uncommitted evidence).
+   - Removed nonexistent fields like `ActiveRecovery`; defined full writer file list (`GameLibraryStore.cs`, `ProfileStore.cs`, `DxvkManager.cs`).
+
+3. **Actual Call/API and Path-Boundary Specification:**
+   - Corrected method names to match actual production source: `DxvkRollback.RestoreOriginalDllsAsync(GameProfile profile)`.
+   - Preserved all existing public signatures unchanged; added internal overloads with `IOperationLease lease`.
+   - Explicitly split installer source preparation (`DownloadAndExtractAsync` unleased) from in-lease pre-mutation revalidation.
+   - Specified directory ancestor traversal up to volume root to detect junctions/symlinks in parent folders; unsupported aliases conservatively refused.
+
+4. **Evidence Claims & Fixture Hygiene in `OperationExclusionBoundaryTests.cs`:**
+   - Asserted native backup bytes and identity in Fixture 1 (`backups/<instId>/d3d11.dll` contains `native-original-d3d11`), verifying backup preservation after rollback.
+   - Kept all task handles in outer scope and performed bounded joins after releasing barriers INSIDE `finally` blocks, preventing orphaned tasks accessing disposed synthetic directories if assertions fail.
+   - Labeled Fixture 3 honestly as an entry-boundary contract oracle.
+
+5. **Bounded Process & Physical Claims:**
+   - Acknowledged candidate-filtering limitation (protects known/registered executables in `Executables`; unregistered differently named siblings are an acknowledged boundary).
+   - Specified image name normalization and PID reuse detection with `StartTime`.
+   - Highlighted in-lease pre-mutation revalidation catching relaunches during downloads.
+   - Replaced unmeasured filesystem claims with bounded pre-mutation activity-check guarantees and explicitly retained external-start races.
+   - Clarified explicit triggers for pending action retries (startup scan, process exit notification, user re-request).
 
 ---
 
@@ -73,7 +87,8 @@ Codex provided a detailed grouped review on PR #177 ([Comment 6256230302](https:
 - **PR:** [#177](https://github.com/Tiflit/DXVK-Companion/pull/177) — `[Draft] [Do not merge] test(safety): reproduce overlapping operations and design installation activity/exclusion boundary (#176)`
 - **Run 1:** `39172485694` (Job `117808277752`) — Initial draft test suite.
 - **Run 2:** `39172910470` (Job `117809521101`) — Baseline 907 tests pass; 1 positive control passes; 3 expected-red tests fail.
-- **Current Head:** Calibrated fixtures and refined technical design addressing Codex R1–R4 review findings.
+- **Run 3:** `39175104905` (Job `117816031276`) — R1–R4 repaired; 908 passed, 3 failed as expected-red; 2-way handshake verified; scope and hygiene pass.
+- **Current Head:** Refined target-scoped coordination namespace, simpler safe metadata scope, ancestor junction traversal, and outer-scope inside-finally task draining.
 
 ---
 

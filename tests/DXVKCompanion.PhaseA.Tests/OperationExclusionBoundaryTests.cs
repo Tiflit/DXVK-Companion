@@ -45,7 +45,7 @@ public sealed class OperationExclusionBoundaryTests
             Architecture = "x64"
         };
 
-        // 1. Baseline: legitimately deploy DXVK 2.5
+        // 1. Baseline: legitimately deploy DXVK 2.5 and capture native backup
         using var http = new HttpClient();
         var initialEngine = new MultiFileTransactionEngine(backupsPath);
         var initialStore = new GameLibraryStore(storePath, backupsPath);
@@ -55,6 +55,16 @@ public sealed class OperationExclusionBoundaryTests
 
         Assert.Equal("dxvk-2.5-d3d11", File.ReadAllText(d3d11Path));
         Assert.Equal("dxvk-2.5-dxgi", File.ReadAllText(Path.Combine(gameDir.RootPath, "dxgi.dll")));
+
+        // Verify native backup was created and holds pristine original bytes
+        var initialInst = initialStore.FindByInstallationPath(gameDir.RootPath);
+        Assert.NotNull(initialInst);
+        var nativeBackupRecord = initialInst.FindManagedFile("d3d11.dll");
+        Assert.NotNull(nativeBackupRecord);
+        Assert.NotNull(nativeBackupRecord.BackupRelativePath);
+        var nativeBackupFile = Path.Combine(backupsPath, nativeBackupRecord.BackupRelativePath);
+        Assert.True(File.Exists(nativeBackupFile), "Native backup file must exist in backups directory.");
+        Assert.Equal("native-original-d3d11", File.ReadAllText(nativeBackupFile));
 
         // 2. Setup concurrency coordination barriers with finite timeouts
         var testTimeout = TimeSpan.FromSeconds(10);
@@ -90,31 +100,40 @@ public sealed class OperationExclusionBoundaryTests
         var release26 = new ReleaseInfo { Version = "2.6", DownloadUrl = "" };
         var release27 = new ReleaseInfo { Version = "2.7", DownloadUrl = "" };
 
-        // 3. Launch Operation 1 (Update to 2.6) in background
-        var op1Task = Task.Run(async () => await installer1.ApplyToGameAsync(profile, release26));
-
+        Task<bool>? op1Task = null;
+        Task<bool>? op2Task = null;
         bool op2Result = false;
+        bool op1Result = true;
+
         try
         {
+            // 3. Launch Operation 1 (Update to 2.6) in background
+            op1Task = Task.Run(async () => await installer1.ApplyToGameAsync(profile, release26));
+
             // 4. Wait until Operation 1 has applied d3d11.dll (v2.6 bytes now on disk)
             var reached = await Task.WhenAny(op1AppliedD3d11.Task, Task.Delay(testTimeout));
             Assert.True(reached == op1AppliedD3d11.Task, "Operation 1 failed to reach AfterApply hook within timeout.");
 
             // 5. While Operation 1 holds in-flight mutations, launch Operation 2 (Update to 2.7) with bounded wait
-            var op2Task = Task.Run(async () => await installer2.ApplyToGameAsync(profile, release27));
+            op2Task = Task.Run(async () => await installer2.ApplyToGameAsync(profile, release27));
             var op2Completed = await Task.WhenAny(op2Task, Task.Delay(testTimeout));
             Assert.True(op2Completed == op2Task, "Operation 2 timed out during execution.");
             op2Result = await op2Task;
         }
         finally
         {
-            // Ensure op2Finished barrier is always released so op1Task never hangs
+            // Guaranteed barrier release and bounded task draining inside finally to prevent orphaned work on disposed directories
             op2Finished.TrySetResult(true);
+            if (op2Task != null)
+            {
+                await Task.WhenAny(op2Task, Task.Delay(testTimeout));
+            }
+            if (op1Task != null)
+            {
+                await Task.WhenAny(op1Task, Task.Delay(testTimeout));
+                op1Result = await op1Task;
+            }
         }
-
-        var op1Completed = await Task.WhenAny(op1Task, Task.Delay(testTimeout));
-        Assert.True(op1Completed == op1Task, "Operation 1 timed out during recovery.");
-        var op1Result = await op1Task;
 
         // Verify Operation 1 failed and handled the deliberate injected fault
         Assert.False(op1Result);
@@ -131,12 +150,14 @@ public sealed class OperationExclusionBoundaryTests
         Assert.Equal("dxvk-2.5-d3d11", File.ReadAllText(d3d11Path));
         Assert.Equal("dxvk-2.5-dxgi", File.ReadAllText(Path.Combine(gameDir.RootPath, "dxgi.dll")));
 
-        // 3. Reloaded store state confirms the installation remains at 2.5 with its native backup preserved.
+        // 3. Reloaded store state confirms the installation remains at 2.5 with its native backup intact and uncorrupted.
         var reloadedStore = new GameLibraryStore(storePath, backupsPath);
         var reloadedInst = reloadedStore.FindByInstallationPath(gameDir.RootPath);
         Assert.NotNull(reloadedInst);
         Assert.Equal("2.5", reloadedInst.ManagedDxvkVersion);
         Assert.Equal(RestorationState.Managed, reloadedInst.RestorationState);
+        Assert.True(File.Exists(nativeBackupFile), "Native backup file must remain preserved after rollback.");
+        Assert.Equal("native-original-d3d11", File.ReadAllText(nativeBackupFile));
     }
 
     [Fact]
@@ -200,29 +221,39 @@ public sealed class OperationExclusionBoundaryTests
         var release26 = new ReleaseInfo { Version = "2.6", DownloadUrl = "" };
         var release27 = new ReleaseInfo { Version = "2.7", DownloadUrl = "" };
 
-        // Launch Op 1 (Update to 2.6)
-        var op1Task = Task.Run(async () => await installer1.ApplyToGameAsync(profile, release26));
-
+        Task<bool>? op1Task = null;
+        Task<bool>? op2Task = null;
         bool op2Result = false;
+        bool op1Result = false;
+
         try
         {
+            // Launch Op 1 (Update to 2.6)
+            op1Task = Task.Run(async () => await installer1.ApplyToGameAsync(profile, release26));
+
             var reached = await Task.WhenAny(op1AppliedD3d11.Task, Task.Delay(testTimeout));
             Assert.True(reached == op1AppliedD3d11.Task, "Operation 1 failed to reach AfterApply hook.");
 
             // While Op 1 has partially mutated the installation, Op 2 attempts to update to 2.7
-            var op2Task = Task.Run(async () => await installer2.ApplyToGameAsync(profile, release27));
+            op2Task = Task.Run(async () => await installer2.ApplyToGameAsync(profile, release27));
             var op2Completed = await Task.WhenAny(op2Task, Task.Delay(testTimeout));
             Assert.True(op2Completed == op2Task, "Operation 2 timed out during execution.");
             op2Result = await op2Task;
         }
         finally
         {
+            // Guaranteed barrier release and bounded task draining inside finally
             op2Finished.TrySetResult(true);
+            if (op2Task != null)
+            {
+                await Task.WhenAny(op2Task, Task.Delay(testTimeout));
+            }
+            if (op1Task != null)
+            {
+                await Task.WhenAny(op1Task, Task.Delay(testTimeout));
+                op1Result = await op1Task;
+            }
         }
-
-        var op1Completed = await Task.WhenAny(op1Task, Task.Delay(testTimeout));
-        Assert.True(op1Completed == op1Task, "Operation 1 timed out during execution.");
-        var op1Result = await op1Task;
 
         // Intended Safe Invariant:
         // Concurrent mutations to the same installation root must be mutually excluded at the operation boundary.
@@ -240,6 +271,9 @@ public sealed class OperationExclusionBoundaryTests
     [Fact]
     public async Task OverlappingOperations_SameInstallation_ManagerLevel_ConcurrentDisableAndEnable_MustBeExcluded()
     {
+        // Characterization Note: On unchanged production, Manager 2 enters rollback execution and halts when
+        // mid-transaction target hash mismatch is detected, flagging AttentionRequired. Under the proposed contract,
+        // Manager 2 must be cleanly refused at the entry lease boundary with an "in progress" diagnostic before touching disk.
         using var gameDir = new SyntheticTestDirectory();
         using var storageDir = new SyntheticTestDirectory();
         using var sourceDir = new SyntheticTestDirectory();
@@ -307,29 +341,39 @@ public sealed class OperationExclusionBoundaryTests
         var rollback2 = new DxvkRollback(engine2, store2);
         var manager2 = new DxvkManager(installer2, rollback2, new DxvkGithubClient(http, new CacheStore()), profileStore2, store2);
 
-        // Launch Manager 1 Enable/Update to 2.6
-        var m1Task = Task.Run(async () => await manager1.EnableDxvkAsync(profile, "2.6"));
-
+        Task<bool>? m1Task = null;
+        Task<bool>? m2Task = null;
         bool m2Result = false;
+        bool m1Result = false;
+
         try
         {
+            // Launch Manager 1 Enable/Update to 2.6
+            m1Task = Task.Run(async () => await manager1.EnableDxvkAsync(profile, "2.6"));
+
             var reached = await Task.WhenAny(manager1AppliedD3d11.Task, Task.Delay(testTimeout));
             Assert.True(reached == manager1AppliedD3d11.Task, "Manager 1 failed to reach AfterApply hook.");
 
             // While Manager 1 is in-flight, Manager 2 attempts DisableDxvkAsync on the same profile
-            var m2Task = Task.Run(async () => await manager2.DisableDxvkAsync(profile));
+            m2Task = Task.Run(async () => await manager2.DisableDxvkAsync(profile));
             var m2Completed = await Task.WhenAny(m2Task, Task.Delay(testTimeout));
             Assert.True(m2Completed == m2Task, "Manager 2 timed out during execution.");
             m2Result = await m2Task;
         }
         finally
         {
+            // Guaranteed barrier release and bounded task draining inside finally
             manager2Finished.TrySetResult(true);
+            if (m2Task != null)
+            {
+                await Task.WhenAny(m2Task, Task.Delay(testTimeout));
+            }
+            if (m1Task != null)
+            {
+                await Task.WhenAny(m1Task, Task.Delay(testTimeout));
+                m1Result = await m1Task;
+            }
         }
-
-        var m1Completed = await Task.WhenAny(m1Task, Task.Delay(testTimeout));
-        Assert.True(m1Completed == m1Task, "Manager 1 timed out during execution.");
-        var m1Result = await m1Task;
 
         // Intended Safe Invariant:
         // Manager 2 must refuse the operation before entering rollback execution because Manager 1 holds an active operation lease.
@@ -414,8 +458,8 @@ public sealed class OperationExclusionBoundaryTests
         var release25 = new ReleaseInfo { Version = "2.5", DownloadUrl = "" };
         var release26 = new ReleaseInfo { Version = "2.6", DownloadUrl = "" };
 
-        Task<bool> task1;
-        Task<bool> task2;
+        Task<bool>? task1 = null;
+        Task<bool>? task2 = null;
         try
         {
             // Act: Run both independent installs concurrently
@@ -436,9 +480,19 @@ public sealed class OperationExclusionBoundaryTests
         finally
         {
             testFinished.TrySetResult(true);
+            if (task1 != null)
+            {
+                await Task.WhenAny(task1, Task.Delay(testTimeout));
+            }
+            if (task2 != null)
+            {
+                await Task.WhenAny(task2, Task.Delay(testTimeout));
+            }
         }
 
         // Assert: Both succeed independently without mutual interference
+        Assert.NotNull(task1);
+        Assert.NotNull(task2);
         Assert.True(await task1);
         Assert.True(await task2);
 
