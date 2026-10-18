@@ -59,5 +59,25 @@
 
 ## Cloud CI & Verification Status
 
-- Initial Reproducer CI: Run `39169251599` (Job `117798676953`) — 898 passed, 9 failed, confirming the exact bug boundary.
-- Fix Commit CI: In progress.
+- **Initial Reproducer CI:** Run `39169251599` (Job `117798676953`) — 898 passed, 9 failed, confirming the exact bug boundary on the unpatched codebase.
+- **Fix Commit CI:** Run `39169620373` (Job `117799766101`) — 906 passed, 1 failed:
+  - All 10 tests in `UnownedRestoreRefusalTests.cs` passed.
+  - The corrected test oracle `DxvkRollback_UnownedDxvkConf_RefusesRollbackAndPreservesConfFile` in `SafeDeploymentIntegrationTests.cs` passed.
+  - 896 existing tests passed.
+  - Single remaining failure: `DxvkInstaller_AdoptExisting_MixedDlls_RefusesAdoption_LeavesFilesAndOwnershipUnchanged_AndRollbackPreservesUnrelatedFile` in `tests/DXVKCompanion.PhaseA.Tests/PhaseCManualManagementTests.cs` (line 234: `Assert.True(rollbackOk); // Existing successful unmanaged no-op restore`). This test was written under the prior behavior when unmanaged/unowned restore returned `true`. Under Issue #173 Requirement 1, `RestoreOriginalDllsAsync` now strictly refuses unowned restores with `false`, causing line 234 to fail.
+- **Workflow Checks on PR #174:**
+  - `AI task scope`: PASS (`39169935605`)
+  - `PR hygiene`: PASS (`39169935540`)
+  - `Run Python workflow tests`: PASS (`39169620393`)
+  - `Acquire Facts and Render Snapshot`: PASS (`39169935840`)
+  - `Publish Dashboard to Dedicated Issue`: PASS (`39169618488`)
+
+---
+
+## Exact Minimum Additional Path Report
+
+Per the task contract ("*Report exact minimum additional paths if an unmet acceptance actually needs them*"):
+- **Additional Path Needed:** `tests/DXVKCompanion.PhaseA.Tests/PhaseCManualManagementTests.cs`
+- **Location:** Line 234 in `DxvkInstaller_AdoptExisting_MixedDlls_RefusesAdoption_LeavesFilesAndOwnershipUnchanged_AndRollbackPreservesUnrelatedFile`
+- **Rationale:** Similar to `SafeDeploymentIntegrationTests.DxvkRollback_CleansUpDxvkConfFile` which was authorized for oracle correction in Issue #173, `PhaseCManualManagementTests.cs` line 234 asserts `Assert.True(rollbackOk); // Existing successful unmanaged no-op restore` on an unowned directory. Updating this line to assert `Assert.False(rollbackOk);` (and verifying `LastRefusalReason`) aligns it with Issue #173 Requirement 1 and will bring the test suite to 907/907 passing (100% green).
+- **Status:** Paused dependent modification pending authorized task scope expansion to add `tests/DXVKCompanion.PhaseA.Tests/PhaseCManualManagementTests.cs` to Issue #173 `### Allowed paths`.
