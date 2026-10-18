@@ -30,9 +30,27 @@
    - Transitioned `Characterization_PostReplaceException_WhenCommitReplaceMovesFileThenThrows_MetadataIsAlreadyDurableOnDisk` to `Assert.True(installOk)` as authorized in the `#171` contract.
    - Strengthened `PostReplaceException_WhenReadbackIsTemporarilyUnavailable_ClassifiesOutcomeAsUnknown_RetainsEvidenceAndAvoidsBlindCompensation` and added the 5 required regression test groups (12 test methods total in `OwnershipPersistenceFailureTests.cs`).
 
+6. **PR #172 Grouped Implementation Review Repair Cycle (Findings R1, R2, R3 & Prior Backup Compensation):**
+   - **R1 (Authoritative library baseline & external change refusal):**
+     - Tracked authoritative library baseline (`_lastCommittedExisted`, `_lastCommittedLibraryBytes`, `_loadedFromBrokenFileRecovery`) from `Load()` and every committed write.
+     - Enforced `VerifyDiskMatchesAuthoritativeBaselineLocked` before any library modification (`TryCheckCanModifyLibrary`, `EnsureNotRefusedLocked`, `ExecuteClassifiedCommitLocked`) so external disk modifications (valid schema-1 conflicting JSON, malformed JSON, unexpected appearance/deletion) latch `HasUncertainPersistence` and refuse without overwriting or staging. Preserved `IncompatibleLibrarySchemaException` on newer-schema appearance.
+     - Fixed `PostReplaceException_ReadbackClassification_DistinguishesMalformedConflictingNewerSchemaAndPositivelyMissingFiles` (eliminated `File.Delete` hack and changed Sub-case 3 to valid schema-1 conflicting JSON) and eliminated `File.Delete` hack in `UnresolvedRecovery_WhenNoPriorLibraryFileExistedOrBaselineChanged_PreservesInMemoryHealthWithoutWritingIncompleteLibraryFile`.
+     - Added comprehensive regression tests `PreCommitCallback_WhenExternalLibraryChangeOccurs_PreservesDiskBytes_RetainsRecoveryEvidence_AndBlocksSessionWrites` and `PreOperationExternalLibraryChange_RefusesBeforeModifyingTargetOrBackups_AndProtectsSession`.
+   - **R2 (Universal uncertain-save protection across all persistence/exception paths):**
+     - Changed `OwnershipPersistenceOutcome` default value to `Unknown = 0` (`Unknown = 0, Committed = 1, ProvenNotCommitted = 2`).
+     - Unified `GetOrCreateInstallation`, `RecordDetectionSnapshot`, `Save`, `SaveAll`, and `TrySaveWithOutcome` through `ExecuteClassifiedCommitLocked`.
+     - Wrapped commit callbacks in `DxvkInstaller.cs` and `DxvkRollback.cs` in `try/catch` recording unexpected exceptions on `_gameLibraryStore` via `RecordUnexpectedCommitCallbackException` and latching `HasUncertainPersistence`.
+     - Added regression tests `PublicSave_WhenPostReplaceLockedReadbackOccurs_LatchesUncertainPersistence_AndBlocksSubsequentSaveAllOverwrite`, `InitialCheckpoint_WhenGetOrCreateInstallationAmbiguityOccurs_LatchesUncertainPersistence_AndBlocksSubsequentOperations`, and `UnexpectedCommitCallbackException_LatchesUncertainPersistence_AndRetainsRecoveryEvidence`.
+   - **R3 (Entry snapshot restoration on preparation refusals/exceptions):**
+     - Deferred speculative mutations to `installation.Configuration` and `installation.Executables` in `ApplyToGameAsync` and `ReapplyAsync` until inside the commit scope callback.
+     - Ensured entry-point snapshot `preOperationSnapshot` is restored across all preparation refusals and outer `catch (Exception ex)` blocks in `ApplyToGameAsync`, `ReapplyAsync`, and `AdoptExisting`.
+     - Added regression test `PreparationException_WhenDxvkConfLocked_RestoresEntrySnapshotsInApplyAndReapply_AndPreventsPublishingSpeculativeSettings` verifying `dxvk.conf` lock during preparation restores in-memory configuration, does not publish rejected settings via `SaveAll()`, and subsequent retry succeeds.
+   - **Prior Backup Compensation Failure Verification:**
+     - Added regression test `ReapplyUpdateBaseline_WhenPriorBackupCompensationFails_RetainsPriorBackupEvidenceAndTransitionsToAttentionRequired` verifying retained `.transactions/<txId>/prior-backups/` evidence and transition to `AttentionRequired`.
+
 ---
 
-## Changed and Uncommitted Files
+## Changed Files
 
 - `src/DXVKCompanion/Storage/GameLibraryStore.cs`
 - `src/DXVKCompanion/Storage/ManagedFileInspector.cs`
@@ -52,7 +70,10 @@
 - **Local Execution:** `NOT RUN (pending human authorization)` — per `AGENTS.md` and [Issue #171](https://github.com/Tiflit/DXVK-Companion/issues/171), Cloud CI is the only authorized verification route.
 - **Prior Expected-Red Baseline ([Draft PR #170](https://github.com/Tiflit/DXVK-Companion/pull/170)):**
   - `Build and Test` [Run `39149282765`](https://github.com/Tiflit/DXVK-Companion/actions/runs/39149282765) on head `860140e5c3fbc7fc03047db532a6495734a568ce` (merge checkout `14c98931edba4e3ffb170002409128531bdc9238`): `877 passed, 6 failed, 0 skipped (total 883)`.
-- **Production PR Cloud CI:** Final revision-bound CI run ID, merge checkout SHA, and TRX totals (`888` expected total: `888 passed, 0 failed, 0 skipped`) will be recorded in the PR body once the run completes.
+- **Initial Production Head ([PR #172](https://github.com/Tiflit/DXVK-Companion/pull/172)):**
+  - `Build and Test` [Run `39159343965`](https://github.com/Tiflit/DXVK-Companion/actions/runs/39159343965) on head `2bea4113365611ea5d0bac7b28f8d37d2c2fa093`: `888 passed, 0 failed, 0 skipped`.
+- **Repaired Production Head ([PR #172](https://github.com/Tiflit/DXVK-Companion/pull/172)):**
+  - Cloud CI results and test totals will be updated in the PR body upon completion of the CI workflows.
 
 ---
 
@@ -64,11 +85,12 @@
 
 ## Product Trial Interruptions
 
-- **Interruptions encountered during `#171`:** `0` (none). All implementation, test expansion, and documentation updates were completed within the delegated `### Allowed paths` and approved cloud-CI verification route.
+- **Interruptions encountered during `#171` review repairs:** `0` (none). All implementation, test expansion, and documentation updates were completed within the delegated `### Allowed paths` and approved cloud-CI verification route.
 
 ---
 
 ## Next Owner and Action
 
 - **Next Owner:** Codex / Coordinator.
-- **Next Action:** Grouped review of the production PR for [Issue #171](https://github.com/Tiflit/DXVK-Companion/issues/171), while keeping `#165` queued and `#94` paused.
+- **Next Action:** Grouped review of the repaired production PR #172 for [Issue #171](https://github.com/Tiflit/DXVK-Companion/issues/171), while keeping `#165` queued and `#94` paused.
+

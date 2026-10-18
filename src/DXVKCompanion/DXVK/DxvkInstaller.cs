@@ -116,9 +116,12 @@ namespace DXVKCompanion.DXVK
         {
             LastRefusalReason = null;
             string? stagingDir = null;
+            GameInstallation? installation = null;
+            GameInstallation? preOperationSnapshot = null;
+            string gameDir = string.Empty;
             try
             {
-                string gameDir = Path.GetDirectoryName(profile.ExePath) ?? string.Empty;
+                gameDir = Path.GetDirectoryName(profile.ExePath) ?? string.Empty;
                 if (string.IsNullOrWhiteSpace(gameDir) || !Directory.Exists(gameDir))
                 {
                     LastRefusalReason = $"Could not determine valid game directory for {profile.ExePath}.";
@@ -193,17 +196,13 @@ namespace DXVKCompanion.DXVK
                     }
                 }
 
-                var installation = existingInstallation
+                installation = existingInstallation
                     ?? _gameLibraryStore.GetOrCreateInstallation(gameDir, Path.GetFileNameWithoutExtension(profile.ExePath));
 
-                var preOperationSnapshot = _gameLibraryStore.CreateSnapshot(installation);
+                preOperationSnapshot = _gameLibraryStore.CreateSnapshot(installation);
                 _gameLibraryStore.CaptureCurrentLibraryBaseline(out var preOperationLibraryBytes, out bool preOperationLibraryExisted);
 
                 string relExe = Path.GetRelativePath(installation.InstallationPath, profile.ExePath);
-                var executable = installation.GetOrAddExecutable(relExe, profile.ExeName);
-                executable.LastKnownApi = profile.Api;
-                executable.LastKnownArchitecture = arch;
-
                 string relGameDir = Path.GetRelativePath(installation.InstallationPath, gameDir);
                 string ResolveInstallationRelativeFilePath(string fileName) =>
                     string.IsNullOrEmpty(relGameDir) || relGameDir == "."
@@ -216,7 +215,6 @@ namespace DXVKCompanion.DXVK
                     FrameLimit = profile.FrameLimit,
                     FrameLimitEnabled = profile.FrameLimit > 0
                 };
-                installation.Configuration = config;
 
                 var filesToProcess = new List<MultiFileTransactionFile>();
 
@@ -352,40 +350,62 @@ namespace DXVKCompanion.DXVK
                 };
 
                 bool saveCallbackInvoked = false;
-                OwnershipSaveResult lastSaveResult = default;
+                OwnershipSaveResult lastSaveResult = new OwnershipSaveResult(
+                    OwnershipPersistenceOutcome.Unknown,
+                    DiagnosticMessage: "Ownership commit callback did not complete.");
 
                 var result = _transactionEngine.ExecuteWithCommitScope(request, committedFiles =>
                 {
-                    foreach (var filePlan in committedFiles)
-                    {
-                        var record = installation.GetOrAddManagedFile(filePlan.RelativePath);
-                        record.OriginalState = filePlan.OriginalState switch
-                        {
-                            OriginalFileState.Existing => FileOriginalState.Existing,
-                            OriginalFileState.DidNotExist => FileOriginalState.Missing,
-                            _ => FileOriginalState.Unknown
-                        };
-                        record.BackupRelativePath = filePlan.BackupRelativePath;
-                        if (filePlan.OriginalState == OriginalFileState.Existing && filePlan.ExpectedTargetIdentity != null && string.IsNullOrEmpty(record.OriginalSha256))
-                        {
-                            record.OriginalSha256 = filePlan.ExpectedTargetIdentity.Sha256;
-                        }
-                        record.ExpectedManagedSha256 = filePlan.ExpectedSourceIdentity?.Sha256;
-                        record.ManagedDxvkVersion = filePlan.RelativePath.EndsWith(".dll", StringComparison.OrdinalIgnoreCase) ? release.Version : null;
-                        record.CurrentState = ManagedFileState.Consistent;
-                        record.LastVerifiedUtc = DateTime.UtcNow;
-                    }
-
-                    installation.ManagedDxvkVersion = release.Version;
-                    installation.ManagedDxvkArchitecture = arch;
-                    installation.RestorationState = RestorationState.Managed;
-                    installation.ConflictFlags = InstallationConflictFlags.None;
-                    installation.LastRefusalReason = null;
-                    installation.LastSeenUtc = DateTime.UtcNow;
-
                     saveCallbackInvoked = true;
-                    lastSaveResult = _gameLibraryStore.TrySaveWithOutcome(installation);
-                    return lastSaveResult;
+                    try
+                    {
+                        var executable = installation.GetOrAddExecutable(relExe, profile.ExeName);
+                        executable.LastKnownApi = profile.Api;
+                        executable.LastKnownArchitecture = arch;
+                        installation.Configuration = config;
+
+                        foreach (var filePlan in committedFiles)
+                        {
+                            var record = installation.GetOrAddManagedFile(filePlan.RelativePath);
+                            record.OriginalState = filePlan.OriginalState switch
+                            {
+                                OriginalFileState.Existing => FileOriginalState.Existing,
+                                OriginalFileState.DidNotExist => FileOriginalState.Missing,
+                                _ => FileOriginalState.Unknown
+                            };
+                            record.BackupRelativePath = filePlan.BackupRelativePath;
+                            if (filePlan.OriginalState == OriginalFileState.Existing && filePlan.ExpectedTargetIdentity != null && string.IsNullOrEmpty(record.OriginalSha256))
+                            {
+                                record.OriginalSha256 = filePlan.ExpectedTargetIdentity.Sha256;
+                            }
+                            record.ExpectedManagedSha256 = filePlan.ExpectedSourceIdentity?.Sha256;
+                            record.ManagedDxvkVersion = filePlan.RelativePath.EndsWith(".dll", StringComparison.OrdinalIgnoreCase) ? release.Version : null;
+                            record.CurrentState = ManagedFileState.Consistent;
+                            record.LastVerifiedUtc = DateTime.UtcNow;
+                        }
+
+                        installation.ManagedDxvkVersion = release.Version;
+                        installation.ManagedDxvkArchitecture = arch;
+                        installation.RestorationState = RestorationState.Managed;
+                        installation.ConflictFlags = InstallationConflictFlags.None;
+                        installation.LastRefusalReason = null;
+                        installation.LastSeenUtc = DateTime.UtcNow;
+
+                        lastSaveResult = _gameLibraryStore.TrySaveWithOutcome(installation);
+                        return lastSaveResult;
+                    }
+                    catch (Exception callbackEx)
+                    {
+                        string reason = $"Unexpected exception in ownership commit callback: {callbackEx.GetType().Name} - {callbackEx.Message}";
+                        _gameLibraryStore.RecordUnexpectedCommitCallbackException(reason, installation);
+                        lastSaveResult = new OwnershipSaveResult(
+                            OwnershipPersistenceOutcome.Unknown,
+                            Exception: callbackEx,
+                            DiagnosticMessage: reason,
+                            PreWriteBytes: preOperationLibraryBytes,
+                            PreWriteExisted: preOperationLibraryExisted);
+                        throw;
+                    }
                 });
 
                 if (result.State == TransactionState.Committed && result.Outcome == TransactionOutcome.Success)
@@ -430,6 +450,28 @@ namespace DXVKCompanion.DXVK
             catch (Exception ex)
             {
                 LastRefusalReason = $"Unexpected error applying DXVK to {profile.ExeName}: {ex.GetType().Name} - {ex.Message}";
+                if (installation != null && preOperationSnapshot != null)
+                {
+                    if (_gameLibraryStore.HasUncertainPersistence)
+                    {
+                        installation.RestorationState = RestorationState.AttentionRequired;
+                        installation.LastRefusalReason = LastRefusalReason;
+                    }
+                    else
+                    {
+                        _gameLibraryStore.RestoreSnapshot(installation, preOperationSnapshot);
+                    }
+                }
+                else if (_gameLibraryStore.HasUncertainPersistence && !string.IsNullOrWhiteSpace(gameDir))
+                {
+                    var tracked = _gameLibraryStore.FindInstallationForExecutable(profile.ExePath)
+                        ?? _gameLibraryStore.FindByInstallationPath(gameDir);
+                    if (tracked != null)
+                    {
+                        tracked.RestorationState = RestorationState.AttentionRequired;
+                        tracked.LastRefusalReason ??= LastRefusalReason;
+                    }
+                }
                 Logger.Log($"DxvkInstaller: {LastRefusalReason}");
                 return false;
             }
@@ -446,6 +488,8 @@ namespace DXVKCompanion.DXVK
         {
             LastRefusalReason = null;
             string? stagingDir = null;
+            GameInstallation? installation = null;
+            GameInstallation? preOperationSnapshot = null;
             try
             {
                 string gameDir = Path.GetDirectoryName(profile.ExePath) ?? string.Empty;
@@ -456,7 +500,7 @@ namespace DXVKCompanion.DXVK
                     return false;
                 }
 
-                var installation = _gameLibraryStore.FindInstallationForExecutable(profile.ExePath)
+                installation = _gameLibraryStore.FindInstallationForExecutable(profile.ExePath)
                     ?? _gameLibraryStore.FindByInstallationPath(gameDir);
                 if (installation == null || string.IsNullOrEmpty(installation.ManagedDxvkVersion))
                 {
@@ -521,7 +565,7 @@ namespace DXVKCompanion.DXVK
                     }
                 }
 
-                var preOperationSnapshot = _gameLibraryStore.CreateSnapshot(installation);
+                preOperationSnapshot = _gameLibraryStore.CreateSnapshot(installation);
                 _gameLibraryStore.CaptureCurrentLibraryBaseline(out var preOperationLibraryBytes, out bool preOperationLibraryExisted);
 
                 string relGameDir = Path.GetRelativePath(installation.InstallationPath, gameDir);
@@ -569,6 +613,7 @@ namespace DXVKCompanion.DXVK
                                 var existingBackupIdentity = FileIdentity.Capture(fullExistingBackup);
                                 if (!string.Equals(existingBackupIdentity.Sha256, existingRecord.OriginalSha256, StringComparison.OrdinalIgnoreCase))
                                 {
+                                    _gameLibraryStore.RestoreSnapshot(installation, preOperationSnapshot);
                                     LastRefusalReason = $"Refusing reapply on {installation.DisplayName}; existing backup for {relFilePath} at {backupRelativePath} was corrupted or modified.";
                                     Logger.Log($"DxvkInstaller: {LastRefusalReason}");
                                     return false;
@@ -585,6 +630,7 @@ namespace DXVKCompanion.DXVK
                             backupRelativePath = ResolveSafeNewBackupRelativePath(installation.Id, relFilePath, expectedTargetIdentity);
                             if (backupRelativePath == null)
                             {
+                                _gameLibraryStore.RestoreSnapshot(installation, preOperationSnapshot);
                                 LastRefusalReason = $"Refusing reapply on {installation.DisplayName}; unresolvable backup collision for {relFilePath}.";
                                 Logger.Log($"DxvkInstaller: {LastRefusalReason}");
                                 return false;
@@ -611,6 +657,7 @@ namespace DXVKCompanion.DXVK
                                 backupRelativePath = existingRecord.BackupRelativePath ?? ResolveSafeNewBackupRelativePath(installation.Id, relFilePath, currentIdentity);
                                 if (backupRelativePath == null)
                                 {
+                                    _gameLibraryStore.RestoreSnapshot(installation, preOperationSnapshot);
                                     LastRefusalReason = $"Refusing reapply with updateBaseline on {installation.DisplayName}; unresolvable backup collision for {relFilePath}.";
                                     Logger.Log($"DxvkInstaller: {LastRefusalReason}");
                                     return false;
@@ -634,6 +681,7 @@ namespace DXVKCompanion.DXVK
                             backupRelativePath = ResolveSafeNewBackupRelativePath(installation.Id, relFilePath, currentIdentity);
                             if (backupRelativePath == null)
                             {
+                                _gameLibraryStore.RestoreSnapshot(installation, preOperationSnapshot);
                                 LastRefusalReason = $"Refusing reapply with updateBaseline on {installation.DisplayName}; unresolvable backup collision for {relFilePath}.";
                                 Logger.Log($"DxvkInstaller: {LastRefusalReason}");
                                 return false;
@@ -666,7 +714,6 @@ namespace DXVKCompanion.DXVK
                     FrameLimit = profile.FrameLimit,
                     FrameLimitEnabled = profile.FrameLimit > 0
                 };
-                installation.Configuration = config;
 
                 if (DxvkConfigManager.RequiresConfigFile(config))
                 {
@@ -762,42 +809,61 @@ namespace DXVKCompanion.DXVK
                 };
 
                 bool saveCallbackInvoked = false;
-                OwnershipSaveResult lastSaveResult = default;
+                OwnershipSaveResult lastSaveResult = new OwnershipSaveResult(
+                    OwnershipPersistenceOutcome.Unknown,
+                    DiagnosticMessage: "Ownership commit callback did not complete.");
 
                 var result = _transactionEngine.ExecuteWithCommitScope(request, committedFiles =>
                 {
-                    foreach (var filePlan in committedFiles)
-                    {
-                        var record = installation.GetOrAddManagedFile(filePlan.RelativePath);
-                        var previousOriginalState = record.OriginalState;
-                        record.OriginalState = filePlan.OriginalState switch
-                        {
-                            OriginalFileState.Existing => FileOriginalState.Existing,
-                            OriginalFileState.DidNotExist => FileOriginalState.Missing,
-                            _ => FileOriginalState.Unknown
-                        };
-                        record.BackupRelativePath = filePlan.BackupRelativePath;
-                        if (filePlan.OriginalState == OriginalFileState.Existing &&
-                            filePlan.ExpectedTargetIdentity != null &&
-                            (filePlan.UpdateOriginalSha256OnCommit || string.IsNullOrEmpty(record.OriginalSha256) || previousOriginalState != FileOriginalState.Existing))
-                        {
-                            record.OriginalSha256 = filePlan.ExpectedTargetIdentity.Sha256;
-                        }
-                        record.ExpectedManagedSha256 = filePlan.ExpectedSourceIdentity?.Sha256;
-                        record.ManagedDxvkVersion = filePlan.RelativePath.EndsWith(".dll", StringComparison.OrdinalIgnoreCase) ? version : null;
-                        record.CurrentState = ManagedFileState.Consistent;
-                        record.LastVerifiedUtc = DateTime.UtcNow;
-                    }
-
-                    installation.RestorationState = RestorationState.Managed;
-                    installation.ConflictFlags = InstallationConflictFlags.None;
-                    installation.LastRefusalReason = null;
-                    installation.PendingAction = null;
-                    installation.LastSeenUtc = DateTime.UtcNow;
-
                     saveCallbackInvoked = true;
-                    lastSaveResult = _gameLibraryStore.TrySaveWithOutcome(installation);
-                    return lastSaveResult;
+                    try
+                    {
+                        installation.Configuration = config;
+
+                        foreach (var filePlan in committedFiles)
+                        {
+                            var record = installation.GetOrAddManagedFile(filePlan.RelativePath);
+                            var previousOriginalState = record.OriginalState;
+                            record.OriginalState = filePlan.OriginalState switch
+                            {
+                                OriginalFileState.Existing => FileOriginalState.Existing,
+                                OriginalFileState.DidNotExist => FileOriginalState.Missing,
+                                _ => FileOriginalState.Unknown
+                            };
+                            record.BackupRelativePath = filePlan.BackupRelativePath;
+                            if (filePlan.OriginalState == OriginalFileState.Existing &&
+                                filePlan.ExpectedTargetIdentity != null &&
+                                (filePlan.UpdateOriginalSha256OnCommit || string.IsNullOrEmpty(record.OriginalSha256) || previousOriginalState != FileOriginalState.Existing))
+                            {
+                                record.OriginalSha256 = filePlan.ExpectedTargetIdentity.Sha256;
+                            }
+                            record.ExpectedManagedSha256 = filePlan.ExpectedSourceIdentity?.Sha256;
+                            record.ManagedDxvkVersion = filePlan.RelativePath.EndsWith(".dll", StringComparison.OrdinalIgnoreCase) ? version : null;
+                            record.CurrentState = ManagedFileState.Consistent;
+                            record.LastVerifiedUtc = DateTime.UtcNow;
+                        }
+
+                        installation.RestorationState = RestorationState.Managed;
+                        installation.ConflictFlags = InstallationConflictFlags.None;
+                        installation.LastRefusalReason = null;
+                        installation.PendingAction = null;
+                        installation.LastSeenUtc = DateTime.UtcNow;
+
+                        lastSaveResult = _gameLibraryStore.TrySaveWithOutcome(installation);
+                        return lastSaveResult;
+                    }
+                    catch (Exception callbackEx)
+                    {
+                        string reason = $"Unexpected exception in ownership commit callback: {callbackEx.GetType().Name} - {callbackEx.Message}";
+                        _gameLibraryStore.RecordUnexpectedCommitCallbackException(reason, installation);
+                        lastSaveResult = new OwnershipSaveResult(
+                            OwnershipPersistenceOutcome.Unknown,
+                            Exception: callbackEx,
+                            DiagnosticMessage: reason,
+                            PreWriteBytes: preOperationLibraryBytes,
+                            PreWriteExisted: preOperationLibraryExisted);
+                        throw;
+                    }
                 });
 
                 if (result.State == TransactionState.Committed && result.Outcome == TransactionOutcome.Success)
@@ -842,6 +908,18 @@ namespace DXVKCompanion.DXVK
             catch (Exception ex)
             {
                 LastRefusalReason = $"Unexpected error reapplying DXVK to {profile.ExeName}: {ex.GetType().Name} - {ex.Message}";
+                if (installation != null && preOperationSnapshot != null)
+                {
+                    if (_gameLibraryStore.HasUncertainPersistence)
+                    {
+                        installation.RestorationState = RestorationState.AttentionRequired;
+                        installation.LastRefusalReason = LastRefusalReason;
+                    }
+                    else
+                    {
+                        _gameLibraryStore.RestoreSnapshot(installation, preOperationSnapshot);
+                    }
+                }
                 Logger.Log($"DxvkInstaller: {LastRefusalReason}");
                 return false;
             }
@@ -857,6 +935,8 @@ namespace DXVKCompanion.DXVK
         public bool AdoptExisting(GameProfile profile, ExistingDxvkAssessment assessment)
         {
             LastRefusalReason = null;
+            GameInstallation? installation = null;
+            GameInstallation? preOperationSnapshot = null;
             try
             {
                 if (!DxvkCompatibility.IsDxvkSupported(profile.Api))
@@ -896,7 +976,7 @@ namespace DXVKCompanion.DXVK
                     return false;
                 }
 
-                var installation = existingInstallation
+                installation = existingInstallation
                     ?? _gameLibraryStore.GetOrCreateInstallation(gameDir, Path.GetFileNameWithoutExtension(profile.ExePath));
 
                 if (installation.ConflictFlags != InstallationConflictFlags.None)
@@ -915,7 +995,7 @@ namespace DXVKCompanion.DXVK
                     return false;
                 }
 
-                var preOperationSnapshot = _gameLibraryStore.CreateSnapshot(installation);
+                preOperationSnapshot = _gameLibraryStore.CreateSnapshot(installation);
 
                 string relGameDir = Path.GetRelativePath(installation.InstallationPath, gameDir);
                 string ResolveInstallationRelativeFilePath(string fileName) =>
@@ -989,6 +1069,18 @@ namespace DXVKCompanion.DXVK
             catch (Exception ex)
             {
                 LastRefusalReason = $"Unexpected error adopting DXVK for {profile.ExeName}: {ex.GetType().Name} - {ex.Message}";
+                if (installation != null && preOperationSnapshot != null)
+                {
+                    if (_gameLibraryStore.HasUncertainPersistence)
+                    {
+                        installation.RestorationState = RestorationState.AttentionRequired;
+                        installation.LastRefusalReason = LastRefusalReason;
+                    }
+                    else
+                    {
+                        _gameLibraryStore.RestoreSnapshot(installation, preOperationSnapshot);
+                    }
+                }
                 Logger.Log($"DxvkInstaller: {LastRefusalReason}");
                 return false;
             }

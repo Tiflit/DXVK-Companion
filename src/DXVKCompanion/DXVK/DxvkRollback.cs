@@ -196,25 +196,42 @@ namespace DXVKCompanion.DXVK
                                 };
 
                                 bool saveCallbackInvoked = false;
-                                OwnershipSaveResult lastSaveResult = default;
+                                OwnershipSaveResult lastSaveResult = new OwnershipSaveResult(
+                                    OwnershipPersistenceOutcome.Unknown,
+                                    DiagnosticMessage: "Ownership commit callback did not complete.");
 
                                 var result = _transactionEngine.ExecuteWithCommitScope(request, _ =>
                                 {
-                                    foreach (var mf in installation.ManagedFiles)
-                                    {
-                                        mf.CurrentState = ManagedFileState.Consistent;
-                                        mf.ManagedDxvkVersion = null;
-                                        mf.LastVerifiedUtc = DateTime.UtcNow;
-                                    }
-
-                                    installation.ManagedDxvkVersion = null;
-                                    installation.RestorationState = RestorationState.Restored;
-                                    installation.LastRefusalReason = null;
-                                    installation.LastSeenUtc = DateTime.UtcNow;
-
                                     saveCallbackInvoked = true;
-                                    lastSaveResult = _gameLibraryStore.TrySaveWithOutcome(installation);
-                                    return lastSaveResult;
+                                    try
+                                    {
+                                        foreach (var mf in installation.ManagedFiles)
+                                        {
+                                            mf.CurrentState = ManagedFileState.Consistent;
+                                            mf.ManagedDxvkVersion = null;
+                                            mf.LastVerifiedUtc = DateTime.UtcNow;
+                                        }
+
+                                        installation.ManagedDxvkVersion = null;
+                                        installation.RestorationState = RestorationState.Restored;
+                                        installation.LastRefusalReason = null;
+                                        installation.LastSeenUtc = DateTime.UtcNow;
+
+                                        lastSaveResult = _gameLibraryStore.TrySaveWithOutcome(installation);
+                                        return lastSaveResult;
+                                    }
+                                    catch (Exception callbackEx)
+                                    {
+                                        string reason = $"Unexpected exception in ownership commit callback: {callbackEx.GetType().Name} - {callbackEx.Message}";
+                                        _gameLibraryStore.RecordUnexpectedCommitCallbackException(reason, installation);
+                                        lastSaveResult = new OwnershipSaveResult(
+                                            OwnershipPersistenceOutcome.Unknown,
+                                            Exception: callbackEx,
+                                            DiagnosticMessage: reason,
+                                            PreWriteBytes: preOperationLibraryBytes,
+                                            PreWriteExisted: preOperationLibraryExisted);
+                                        throw;
+                                    }
                                 });
 
                                 if (result.State != TransactionState.Committed || result.Outcome != TransactionOutcome.Success)
