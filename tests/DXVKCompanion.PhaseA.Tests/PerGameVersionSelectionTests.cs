@@ -112,9 +112,8 @@ public sealed class PerGameVersionSelectionTests : IDisposable
             File.WriteAllBytes(Path.Combine(dir, "d3d11.dll"), initialD3D11);
         }
 
-        return new GameProfile
+        return new GameProfile(exePath)
         {
-            ExePath = exePath,
             Api = GraphicsApi.DX11,
             Architecture = "x64",
             DxvkEnabled = false

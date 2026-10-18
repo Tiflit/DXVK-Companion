@@ -94,7 +94,7 @@ public sealed class DxvkLocalReleaseLibraryTests : IDisposable
         File.WriteAllBytes(Path.Combine(vDir, "dxgi.dll"), new byte[] { 1, 2, 3 });
 
         // Unsupported API
-        Assert.False(DxvkLocalReleaseLibrary.IsVersionAvailable(_tempRoot, "v2.4", GraphicsApi.Direct3D12, "x64"));
+        Assert.False(DxvkLocalReleaseLibrary.IsVersionAvailable(_tempRoot, "v2.4", GraphicsApi.DX12, "x64"));
         Assert.False(DxvkLocalReleaseLibrary.IsVersionAvailable(_tempRoot, "v2.4", GraphicsApi.Vulkan, "x64"));
         Assert.False(DxvkLocalReleaseLibrary.IsVersionAvailable(_tempRoot, "v2.4", GraphicsApi.Unknown, "x64"));
 
@@ -182,7 +182,7 @@ public sealed class DxvkLocalReleaseLibraryTests : IDisposable
         Assert.Equal("v2.3", available[2]);
 
         // Check unsupported API returns empty
-        var emptyApi = DxvkLocalReleaseLibrary.GetAvailableVersions(_tempRoot, GraphicsApi.Direct3D12, "x64");
+        var emptyApi = DxvkLocalReleaseLibrary.GetAvailableVersions(_tempRoot, GraphicsApi.DX12, "x64");
         Assert.Empty(emptyApi);
 
         // Check Unknown arch returns empty
