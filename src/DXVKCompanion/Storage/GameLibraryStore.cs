@@ -650,8 +650,8 @@ namespace DXVKCompanion.Storage
         {
             if (source == null) throw new ArgumentNullException(nameof(source));
 
-            string json = JsonSerializer.Serialize(source, _jsonOptions);
-            return JsonSerializer.Deserialize<GameInstallation>(json, _jsonOptions)
+            string json = JsonSerializer.Serialize(source, JsonOptions);
+            return JsonSerializer.Deserialize<GameInstallation>(json, JsonOptions)
                 ?? throw new InvalidOperationException("Failed to deserialize GameInstallation snapshot.");
         }
 
