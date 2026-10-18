@@ -77,7 +77,13 @@
 - **Initial Production Head ([PR #172](https://github.com/Tiflit/DXVK-Companion/pull/172)):**
   - `Build and Test` [Run `39159343965`](https://github.com/Tiflit/DXVK-Companion/actions/runs/39159343965) on head `2bea4113365611ea5d0bac7b28f8d37d2c2fa093`: `888 passed, 0 failed, 0 skipped`.
 - **Repaired Production Head ([PR #172](https://github.com/Tiflit/DXVK-Companion/pull/172)):**
-  - Cloud CI results and test totals will be updated in the PR body upon completion of the CI workflows.
+  - **PR Head SHA:** `63b609058a283834f56b6ce433538dc27128b80d`
+  - **Base `main` SHA:** `fb598add34d3e4eb936c714dc7be6e5214e6318a`
+  - **Merge Checkout SHA (`GITHUB_SHA`):** `9dbf10977d910be3a893f7c87d0e76f6372f94fa`
+  - **`Build and Test` ([Run `39164475726`](https://github.com/Tiflit/DXVK-Companion/actions/runs/39164475726)):** `success` — `897 passed, 0 failed, 0 skipped (total 897)` (including all 21 tests in `OwnershipPersistenceFailureTests` and all `PendingActionBatchIsolationTests`).
+  - **`AI Scope Check` ([Run `39164475760`](https://github.com/Tiflit/DXVK-Companion/actions/runs/39164475760)):** `success`
+  - **`AI PR Hygiene` ([Run `39164475745`](https://github.com/Tiflit/DXVK-Companion/actions/runs/39164475745)):** `success`
+  - **`AI Workflow Tests` ([Run `39164475743`](https://github.com/Tiflit/DXVK-Companion/actions/runs/39164475743)):** `success`
 
 ---
 
