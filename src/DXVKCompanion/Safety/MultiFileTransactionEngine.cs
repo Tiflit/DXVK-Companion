@@ -26,6 +26,8 @@ public sealed record MultiFileTransactionTestHooks
     public Action<string, int>? AfterApply { get; init; }
     public Action<string>? BeforeRecovery { get; init; }
     public Action<int>? DuringRecovery { get; init; }
+    internal Action<string, string, int>? AfterStageNativeBackup { get; init; }
+    internal Action<string, string, int>? BeforePublishNativeBackup { get; init; }
 }
 
 public sealed class MultiFileTransactionEngine
@@ -49,14 +51,22 @@ public sealed class MultiFileTransactionEngine
 
         var transactionId = Guid.NewGuid().ToString("N");
         var affected = request.Files.Select(f => f.RelativePath).ToArray();
-        var prepared = new List<PreparedFile>();
-        var planPath = Path.Combine(_transactionStoreRoot, transactionId + ".json");
-        var anyWrite = false;
+        var validated = new List<ValidatedFile>(request.Files.Count);
+        var prepared = new List<PreparedFile>(request.Files.Count);
+        var createdNativeBackups = new List<string>();
+        var transactionsRoot = ResolveInsideRoot(_transactionStoreRoot, ".transactions");
+        var operationRoot = ResolveInsideRoot(transactionsRoot, transactionId);
+        var planPath = ResolveInsideRoot(operationRoot, "plan.json");
+        var undoRoot = ResolveInsideRoot(operationRoot, "undo");
+        var nativeBackupStagingRoot = ResolveInsideRoot(operationRoot, "native-backups");
+        var anyMutationAttempted = false;
+        var lastAttemptedIndex = -1;
 
         try
         {
             ValidateRequest(request);
 
+            // Phase 1: Validate all targets, sources, and restore baselines before writing any backup or undo artifact.
             foreach (var file in request.Files)
             {
                 var targetPath = ResolveInsideRoot(request.InstallationRoot, file.RelativePath);
@@ -83,23 +93,13 @@ public sealed class MultiFileTransactionEngine
                 }
 
                 string? backupPath = null;
+                string? stagedNativeBackupPath = null;
                 SafetyFileIdentity? backupIdentity = null;
                 if ((request.Operation is TransactionOperation.Install or TransactionOperation.Update or TransactionOperation.Reapply)
                     && file.OriginalState == OriginalFileState.Existing)
                 {
                     backupPath = ResolveBackupPath(file.BackupRelativePath, transactionId, file.RelativePath);
-                    if (request.Operation == TransactionOperation.Install || !File.Exists(backupPath))
-                    {
-                        Directory.CreateDirectory(Path.GetDirectoryName(backupPath)!);
-                        File.Copy(targetPath, backupPath, overwrite: true);
-                        backupIdentity = FileIdentity.Capture(backupPath);
-                        if (backupIdentity != currentIdentity)
-                            return SafeFailure(transactionId, request.Operation, affected, $"The backup could not be verified: {file.RelativePath}");
-                    }
-                    else
-                    {
-                        backupIdentity = FileIdentity.Capture(backupPath);
-                    }
+                    stagedNativeBackupPath = ResolveInsideRoot(nativeBackupStagingRoot, file.RelativePath);
                 }
                 else if (request.Operation == TransactionOperation.Restore)
                 {
@@ -127,7 +127,99 @@ public sealed class MultiFileTransactionEngine
                     }
                 }
 
-                prepared.Add(new PreparedFile(file, targetPath, sourcePath, sourceIdentity, file.OriginalState, currentIdentity, backupPath, backupIdentity));
+                var undoPath = currentState == OriginalFileState.Existing
+                    ? ResolveInsideRoot(undoRoot, file.RelativePath)
+                    : null;
+
+                validated.Add(new ValidatedFile(
+                    file,
+                    targetPath,
+                    sourcePath,
+                    sourceIdentity,
+                    currentState,
+                    currentIdentity,
+                    undoPath,
+                    stagedNativeBackupPath,
+                    backupPath,
+                    backupIdentity));
+            }
+
+            // Phase 2: Capture per-operation undo copies in the isolated operation namespace and stage/publish missing native backups.
+            Directory.CreateDirectory(operationRoot);
+
+            for (var index = 0; index < validated.Count; index++)
+            {
+                var item = validated[index];
+                string? undoPath = item.UndoPath;
+                if (item.PreOperationState == OriginalFileState.Existing)
+                {
+                    Directory.CreateDirectory(Path.GetDirectoryName(undoPath!)!);
+                    File.Copy(item.TargetPath, undoPath!, overwrite: true);
+                    var undoIdentity = FileIdentity.Capture(undoPath!);
+                    if (undoIdentity != item.PreOperationIdentity)
+                    {
+                        CleanupOperationArtifacts(operationRoot, transactionsRoot);
+                        CleanupCreatedNativeBackups(createdNativeBackups);
+                        return SafeFailure(transactionId, request.Operation, affected, $"The pre-operation undo copy could not be verified: {item.File.RelativePath}");
+                    }
+                }
+
+                var backupIdentity = item.BackupIdentity;
+                if ((request.Operation is TransactionOperation.Install or TransactionOperation.Update or TransactionOperation.Reapply)
+                    && item.File.OriginalState == OriginalFileState.Existing)
+                {
+                    var backupPath = item.BackupPath!;
+                    if (!File.Exists(backupPath))
+                    {
+                        var stagedBackupPath = item.StagedNativeBackupPath!;
+                        Directory.CreateDirectory(Path.GetDirectoryName(stagedBackupPath)!);
+                        File.Copy(item.TargetPath, stagedBackupPath, overwrite: true);
+                        _hooks.AfterStageNativeBackup?.Invoke(stagedBackupPath, backupPath, index);
+                        var stagedBackupIdentity = FileIdentity.Capture(stagedBackupPath);
+                        if (stagedBackupIdentity != item.PreOperationIdentity)
+                        {
+                            CleanupOperationArtifacts(operationRoot, transactionsRoot);
+                            CleanupCreatedNativeBackups(createdNativeBackups);
+                            return SafeFailure(transactionId, request.Operation, affected, $"The backup could not be verified: {item.File.RelativePath}");
+                        }
+
+                        _hooks.BeforePublishNativeBackup?.Invoke(stagedBackupPath, backupPath, index);
+                        Directory.CreateDirectory(Path.GetDirectoryName(backupPath)!);
+                        try
+                        {
+                            File.Move(stagedBackupPath, backupPath, overwrite: false);
+                        }
+                        catch
+                        {
+                            PruneEmptyParentDirectories(Path.GetDirectoryName(backupPath), _transactionStoreRoot);
+                            throw;
+                        }
+
+                        createdNativeBackups.Add(backupPath);
+                        backupIdentity = FileIdentity.Capture(backupPath);
+                        if (backupIdentity != item.PreOperationIdentity)
+                        {
+                            CleanupOperationArtifacts(operationRoot, transactionsRoot);
+                            CleanupCreatedNativeBackups(createdNativeBackups);
+                            return SafeFailure(transactionId, request.Operation, affected, $"The backup could not be verified: {item.File.RelativePath}");
+                        }
+                    }
+                    else
+                    {
+                        backupIdentity = FileIdentity.Capture(backupPath);
+                    }
+                }
+
+                prepared.Add(new PreparedFile(
+                    item.File,
+                    item.TargetPath,
+                    item.SourcePath,
+                    item.SourceIdentity,
+                    item.PreOperationState,
+                    item.PreOperationIdentity,
+                    undoPath,
+                    item.BackupPath,
+                    backupIdentity));
             }
 
             var plan = new SafetyTransactionPlan
@@ -149,15 +241,16 @@ public sealed class MultiFileTransactionEngine
             for (var index = 0; index < prepared.Count; index++)
             {
                 var item = prepared[index];
+                anyMutationAttempted = true;
+                lastAttemptedIndex = index;
                 Apply(item, request.Operation);
-                anyWrite = true;
                 _hooks.AfterApply?.Invoke(item.TargetPath, index);
             }
 
             foreach (var item in prepared)
                 Verify(item, request.Operation);
 
-            File.Delete(planPath);
+            CleanupOperationArtifacts(operationRoot, transactionsRoot);
             return new SafetyTransactionResult
             {
                 TransactionId = transactionId,
@@ -169,17 +262,20 @@ public sealed class MultiFileTransactionEngine
         }
         catch (Exception ex)
         {
-            if (!anyWrite)
+            if (!anyMutationAttempted)
             {
-                TryDelete(planPath);
+                CleanupOperationArtifacts(operationRoot, transactionsRoot);
+                CleanupCreatedNativeBackups(createdNativeBackups);
                 return Abort(transactionId, request.Operation, affected, ex.Message);
             }
 
             try
             {
                 _hooks.BeforeRecovery?.Invoke(Path.GetFullPath(request.InstallationRoot));
-                RecoverAll(prepared);
-                TryDelete(planPath);
+                RecoverAttempted(prepared, lastAttemptedIndex);
+                VerifyPreOperationState(prepared);
+                CleanupOperationArtifacts(operationRoot, transactionsRoot);
+                CleanupCreatedNativeBackups(createdNativeBackups);
                 return new SafetyTransactionResult
                 {
                     TransactionId = transactionId,
@@ -267,6 +363,7 @@ public sealed class MultiFileTransactionEngine
             return;
         }
 
+        Directory.CreateDirectory(Path.GetDirectoryName(item.TargetPath)!);
         File.Copy(item.SourcePath!, item.TargetPath, overwrite: true);
     }
 
@@ -296,32 +393,64 @@ public sealed class MultiFileTransactionEngine
             throw new IOException($"The resulting target does not match the source identity: {item.File.RelativePath}");
     }
 
-    private void RecoverAll(IReadOnlyList<PreparedFile> prepared)
+    private void RecoverAttempted(IReadOnlyList<PreparedFile> prepared, int lastAttemptedIndex)
     {
-        for (var index = prepared.Count - 1; index >= 0; index--)
+        var startIndex = Math.Min(lastAttemptedIndex, prepared.Count - 1);
+        for (var index = startIndex; index >= 0; index--)
         {
             var item = prepared[index];
             _hooks.DuringRecovery?.Invoke(index);
 
-            if (item.OriginalState == OriginalFileState.Existing)
+            if (item.PreOperationState == OriginalFileState.Existing)
             {
-                if (item.BackupPath is null || !File.Exists(item.BackupPath))
-                    throw new IOException($"Original backup is unavailable: {item.File.RelativePath}");
-                File.Copy(item.BackupPath, item.TargetPath, overwrite: true);
+                if (item.UndoPath is null || !File.Exists(item.UndoPath))
+                    throw new IOException($"Pre-operation undo copy is unavailable: {item.File.RelativePath}");
+
+                var undoIdentity = FileIdentity.Capture(item.UndoPath);
+                if (undoIdentity != item.PreOperationIdentity)
+                    throw new IOException($"Pre-operation undo copy failed verification: {item.File.RelativePath}");
+
+                Directory.CreateDirectory(Path.GetDirectoryName(item.TargetPath)!);
+                File.Copy(item.UndoPath, item.TargetPath, overwrite: true);
                 var recovered = FileIdentity.Capture(item.TargetPath);
-                if (recovered != item.OriginalIdentity)
-                    throw new IOException($"Recovered target does not match the original identity: {item.File.RelativePath}");
+                if (recovered != item.PreOperationIdentity)
+                    throw new IOException($"Recovered target does not match the pre-operation identity: {item.File.RelativePath}");
             }
-            else if (item.OriginalState == OriginalFileState.DidNotExist)
+            else if (item.PreOperationState == OriginalFileState.DidNotExist)
             {
                 if (File.Exists(item.TargetPath))
                     File.Delete(item.TargetPath);
                 if (File.Exists(item.TargetPath))
-                    throw new IOException($"Originally absent target still exists after recovery: {item.File.RelativePath}");
+                    throw new IOException($"Pre-operation absent target still exists after recovery: {item.File.RelativePath}");
             }
             else
             {
-                throw new IOException($"Original state is unknown, so recovery cannot be proven safe: {item.File.RelativePath}");
+                throw new IOException($"Pre-operation state is unknown, so recovery cannot be proven safe: {item.File.RelativePath}");
+            }
+        }
+    }
+
+    private static void VerifyPreOperationState(IReadOnlyList<PreparedFile> prepared)
+    {
+        foreach (var item in prepared)
+        {
+            if (item.PreOperationState == OriginalFileState.Existing)
+            {
+                if (!File.Exists(item.TargetPath))
+                    throw new IOException($"Target file is missing after recovery verification: {item.File.RelativePath}");
+
+                var current = FileIdentity.Capture(item.TargetPath);
+                if (current != item.PreOperationIdentity)
+                    throw new IOException($"Target file does not match pre-operation identity during verification: {item.File.RelativePath}");
+            }
+            else if (item.PreOperationState == OriginalFileState.DidNotExist)
+            {
+                if (File.Exists(item.TargetPath))
+                    throw new IOException($"Pre-operation absent target still exists during verification: {item.File.RelativePath}");
+            }
+            else
+            {
+                throw new IOException($"Pre-operation state is unknown during verification: {item.File.RelativePath}");
             }
         }
     }
@@ -343,9 +472,56 @@ public sealed class MultiFileTransactionEngine
         return candidate;
     }
 
-    private static void TryDelete(string path)
+    private static void CleanupOperationArtifacts(string operationRoot, string transactionsRoot)
     {
-        try { if (File.Exists(path)) File.Delete(path); } catch { }
+        try
+        {
+            if (Directory.Exists(operationRoot))
+                Directory.Delete(operationRoot, recursive: true);
+
+            if (Directory.Exists(transactionsRoot) && !Directory.EnumerateFileSystemEntries(transactionsRoot).Any())
+                Directory.Delete(transactionsRoot, recursive: false);
+        }
+        catch
+        {
+        }
+    }
+
+    private void CleanupCreatedNativeBackups(IReadOnlyList<string> createdNativeBackups)
+    {
+        foreach (var backupPath in createdNativeBackups)
+        {
+            try
+            {
+                if (File.Exists(backupPath))
+                    File.Delete(backupPath);
+
+                PruneEmptyParentDirectories(Path.GetDirectoryName(backupPath), _transactionStoreRoot);
+            }
+            catch
+            {
+            }
+        }
+    }
+
+    private static void PruneEmptyParentDirectories(string? directoryPath, string stopAtRoot)
+    {
+        var rootFull = Path.TrimEndingDirectorySeparator(Path.GetFullPath(stopAtRoot));
+        var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        var current = directoryPath;
+
+        while (!string.IsNullOrWhiteSpace(current))
+        {
+            var currentFull = Path.TrimEndingDirectorySeparator(Path.GetFullPath(current));
+            if (string.Equals(currentFull, rootFull, comparison) || !currentFull.StartsWith(rootFull + Path.DirectorySeparatorChar, comparison))
+                break;
+
+            if (!Directory.Exists(currentFull) || Directory.EnumerateFileSystemEntries(currentFull).Any())
+                break;
+
+            Directory.Delete(currentFull, recursive: false);
+            current = Path.GetDirectoryName(currentFull);
+        }
     }
 
     private static SafetyTransactionResult Abort(string id, TransactionOperation operation, IReadOnlyList<string> affected, string message) =>
@@ -375,13 +551,26 @@ public sealed class MultiFileTransactionEngine
             AffectedFiles = affected
         };
 
+    private sealed record ValidatedFile(
+        MultiFileTransactionFile File,
+        string TargetPath,
+        string? SourcePath,
+        SafetyFileIdentity? SourceIdentity,
+        OriginalFileState PreOperationState,
+        SafetyFileIdentity? PreOperationIdentity,
+        string? UndoPath,
+        string? StagedNativeBackupPath,
+        string? BackupPath,
+        SafetyFileIdentity? BackupIdentity);
+
     private sealed record PreparedFile(
         MultiFileTransactionFile File,
         string TargetPath,
         string? SourcePath,
         SafetyFileIdentity? SourceIdentity,
-        OriginalFileState OriginalState,
-        SafetyFileIdentity? OriginalIdentity,
+        OriginalFileState PreOperationState,
+        SafetyFileIdentity? PreOperationIdentity,
+        string? UndoPath,
         string? BackupPath,
         SafetyFileIdentity? BackupIdentity);
 }
