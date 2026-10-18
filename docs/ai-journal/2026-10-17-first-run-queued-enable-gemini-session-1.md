@@ -45,13 +45,13 @@ Issue [#158](https://github.com/Tiflit/DXVK-Companion/issues/158) addresses the 
    - `FirstRunQueuedEnable_MetadataUnavailable_FailsWithoutMutatingTarget_RetainsRetryablePendingIntent`:
      Negative path with HTTP 500 error on metadata fetch; asserts failure without creating game DLLs, no fake `"latest"` source cache, and durable retention of retryable pending intent.
    - `FirstRunQueuedEnable_LocalLibrary_DownloadsArchiveOnlyOnceAcrossMultipleGamesAndReEnables`:
-     Deploys to Game 1 (downloads archive once), then Game 2 (reuses local source without downloading), then disables and re-enables Game 1 (reuses local source); asserts total archive downloads remain strictly 1 across all operations.
+     Establishes older `2.4` release with initial directory snapshot (complete relative paths, file lengths, and SHA-256 hashes); deploys to Game 1 (downloads archive once), then Game 2 (reuses local library without downloading), then restores Game 1; reconstructs stores, cache, and manager from persisted paths with a recording rejecting HTTP client; re-enables Game 1 and deploys pinned 2.4 to Game 3 with strictly zero HTTP requests; asserts archive download count remains strictly 1 across entire lifecycle, and asserts complete older release 2.4 file set, sizes, and hashes remain completely identical.
    - `FirstRunQueuedEnable_LocalLibrary_FreshCacheAndPayload_DeploysOfflineWithZeroHttp`:
      Preloads cache metadata and payload in source tree, verifies offline deployment succeeds with strict zero-HTTP assertion.
    - `FirstRunQueuedEnable_LocalLibrary_StaleMetadataRefreshFailure_PermitsLocalDeploymentWithoutArchiveDownload`:
      Simulates expired cache with metadata service failure (HTTP 503); asserts local deployment still succeeds using existing payload with zero archive download requests.
    - `FirstRunQueuedEnable_LocalLibrary_RetainsOlderReleasePayloadsDuringNewerOperations`:
-     Establishes older `2.4` release with recorded SHA256 hashes, performs new `v3.1.1` download and deployment to Game 1, asserts older release payload files and hashes remain untouched, and deploys pinned `2.4` to Game 2 without network requests.
+     Establishes older `2.4` release with recorded SHA-256 and byte snapshot, downloads newer `v3.1.1` and deploys to Game 1, asserts older release payload untouched; restores Game 1, reconstructs stores/cache/manager with a recording rejecting HTTP client; re-enables Game 1 and deploys pinned `2.4` to Game 2 with zero HTTP requests; asserts total archive download requests remain 1 and asserts complete relative file set, sizes, and SHA-256 hashes of older release remain completely identical throughout all transitions.
 
 ---
 
@@ -62,7 +62,8 @@ Issue [#158](https://github.com/Tiflit/DXVK-Companion/issues/158) addresses the 
    - GitHub Actions workflow run `39079670207` executed and demonstrated expected test failure on the unfixed manager:
      - `FirstRunQueuedEnable_ApplyPendingAsync_ResolvesLatest_DownloadsOnce_AndDeploysToGame` failed at line 166 (expected `True`, actual `False`).
      - `FirstRunQueuedEnable_ProcessAllPendingActionsAsync_PersistedStartup_ResolvesLatestAndDeploys` failed at line 265 (expected `1`, actual `0`).
-     - `FirstRunQueuedEnable_LocalLibrary_RetainsOlderReleasePayloadsDuringNewerOperations` failed at line 636 due to unforwarded pinned version on immediate enable.
-2. **Green Test Verification**:
+2. **Green Test Verification & PR CI**:
    - Applied manager fix to `src/DXVKCompanion/DXVK/DxvkManager.cs`.
-   - Verified via follow-up CI workflow run.
+   - PR [#160](https://github.com/Tiflit/DXVK-Companion/pull/160) passed all checks (run `39080397208`, 772/772 passing tests).
+3. **P2 Review Test Extension**:
+   - Extended `FirstRunQueuedEnable_LocalLibrary_DownloadsArchiveOnlyOnceAcrossMultipleGamesAndReEnables` and `FirstRunQueuedEnable_LocalLibrary_RetainsOlderReleasePayloadsDuringNewerOperations` to include store/cache/manager reconstruction from persisted storage, re-obtaining profiles from reconstructed stores, rejecting HTTP client on re-enable, and full directory snapshot equality asserting complete older release file-set, byte, and SHA-256 hash preservation.

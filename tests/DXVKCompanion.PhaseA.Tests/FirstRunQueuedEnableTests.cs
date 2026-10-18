@@ -67,6 +67,35 @@ public sealed class FirstRunQueuedEnableTests
         return memoryStream.ToArray();
     }
 
+    private sealed record FileSnapshot(string RelativePath, long Length, string Sha256, byte[] Content);
+
+    private static Dictionary<string, FileSnapshot> SnapshotDirectory(string directoryPath)
+    {
+        var result = new Dictionary<string, FileSnapshot>(StringComparer.OrdinalIgnoreCase);
+        if (!Directory.Exists(directoryPath)) return result;
+
+        foreach (string file in Directory.EnumerateFiles(directoryPath, "*", SearchOption.AllDirectories))
+        {
+            string rel = Path.GetRelativePath(directoryPath, file).Replace('\\', '/');
+            byte[] bytes = File.ReadAllBytes(file);
+            string hash = Convert.ToHexString(SHA256.HashData(bytes));
+            result[rel] = new FileSnapshot(rel, bytes.Length, hash, bytes);
+        }
+        return result;
+    }
+
+    private static void AssertSnapshotsEqual(Dictionary<string, FileSnapshot> expected, Dictionary<string, FileSnapshot> actual)
+    {
+        Assert.Equal(expected.Keys.OrderBy(k => k), actual.Keys.OrderBy(k => k));
+        foreach (var (key, exp) in expected)
+        {
+            Assert.True(actual.TryGetValue(key, out var act), $"File missing: {key}");
+            Assert.Equal(exp.Length, act.Length);
+            Assert.Equal(exp.Sha256, act.Sha256);
+            Assert.Equal(exp.Content, act.Content);
+        }
+    }
+
     private static (DxvkManager Manager, GameLibraryStore LibraryStore, ProfileStore ProfileStore, CacheStore CacheStore, DxvkInstaller Installer) CreateTestManager(
         SyntheticTestDirectory storageDir,
         SyntheticTestDirectory sourceDir,
@@ -379,6 +408,17 @@ public sealed class FirstRunQueuedEnableTests
         string exe1 = gameDir1.CreateFile("Game1.exe", "bin1");
         string exe2 = gameDir2.CreateFile("Game2.exe", "bin2");
 
+        // 1. Establish older 2.4 release in sourceDir and snapshot complete relative file set + hashes
+        string v24Dir = Path.Combine(sourceDir.RootPath, "2.4", "x64");
+        Directory.CreateDirectory(v24Dir);
+        byte[] v24D3D11 = Encoding.UTF8.GetBytes("retained-2.4-d3d11-content");
+        byte[] v24Dxgi = Encoding.UTF8.GetBytes("retained-2.4-dxgi-content");
+        File.WriteAllBytes(Path.Combine(v24Dir, "d3d11.dll"), v24D3D11);
+        File.WriteAllBytes(Path.Combine(v24Dir, "dxgi.dll"), v24Dxgi);
+
+        var initialOlderSnapshot = SnapshotDirectory(Path.Combine(sourceDir.RootPath, "2.4"));
+        Assert.Equal(2, initialOlderSnapshot.Count);
+
         byte[] d3d11Bytes = Encoding.UTF8.GetBytes("shared-d3d11");
         byte[] dxgiBytes = Encoding.UTF8.GetBytes("shared-dxgi");
         byte[] archiveBytes = CreateSyntheticTarGz("v3.1.1", d3d11Bytes, dxgiBytes);
@@ -428,25 +468,70 @@ public sealed class FirstRunQueuedEnableTests
         prof2.Architecture = "x64";
         profileStore.Save(prof2);
 
-        // 1. Game 1 deploys -> requires initial archive download
+        // 2. Game 1 deploys -> requires initial archive download
         var res1 = await manager.RequestEnableByPathAsync(prof1);
         Assert.Equal(DxvkActionResult.Applied, res1);
         Assert.Equal(1, httpHandler.ArchiveDownloadRequests);
+        Assert.Equal(d3d11Bytes, File.ReadAllBytes(Path.Combine(gameDir1.RootPath, "d3d11.dll")));
+        Assert.Equal(dxgiBytes, File.ReadAllBytes(Path.Combine(gameDir1.RootPath, "dxgi.dll")));
 
-        // 2. Game 2 deploys -> reuses existing local library payload (zero new archive downloads!)
+        // 3. Game 2 deploys -> reuses existing local library payload (zero new archive downloads!)
         var res2 = await manager.RequestEnableByPathAsync(prof2);
         Assert.Equal(DxvkActionResult.Applied, res2);
         Assert.Equal(1, httpHandler.ArchiveDownloadRequests);
+        Assert.Equal(d3d11Bytes, File.ReadAllBytes(Path.Combine(gameDir2.RootPath, "d3d11.dll")));
 
-        // 3. Game 1 restores (disables) and re-enables -> reuses local library payload
+        // 4. Game 1 restores (disables) -> original baseline restored, wrappers removed
         var disableRes = await manager.RequestDisableByPathAsync(prof1);
         Assert.Equal(DxvkActionResult.Applied, disableRes);
-
-        var reEnableRes = await manager.RequestEnableByPathAsync(prof1);
-        Assert.Equal(DxvkActionResult.Applied, reEnableRes);
-
-        // Assert: Total archive downloads remain strictly 1 throughout all operations
+        Assert.False(File.Exists(Path.Combine(gameDir1.RootPath, "d3d11.dll")));
+        Assert.False(File.Exists(Path.Combine(gameDir1.RootPath, "dxgi.dll")));
         Assert.Equal(1, httpHandler.ArchiveDownloadRequests);
+
+        // 5. Reconstruct stores, cache, and manager from persisted paths; reject ANY subsequent HTTP
+        var rejectingHandler = new RecordingFakeHttpMessageHandler(req =>
+            throw new InvalidOperationException($"Zero HTTP requests permitted after restart/reconstruction, got: {req.RequestUri}"));
+        using var rejectingClient = new HttpClient(rejectingHandler);
+
+        var (manager2, libraryStore2, profileStore2, _, _) = CreateTestManager(storageDir, sourceDir, rejectingClient);
+        var prof1Reloaded = profileStore2.GetOrCreate(exe1);
+        var prof2Reloaded = profileStore2.GetOrCreate(exe2);
+
+        // 6. Re-enable Game 1 from reconstructed manager -> reuses local library offline with zero HTTP
+        var reEnableRes = await manager2.RequestEnableByPathAsync(prof1Reloaded);
+        Assert.Equal(DxvkActionResult.Applied, reEnableRes);
+        Assert.Empty(rejectingHandler.Requests);
+        Assert.Equal(1, httpHandler.ArchiveDownloadRequests);
+        Assert.Equal(d3d11Bytes, File.ReadAllBytes(Path.Combine(gameDir1.RootPath, "d3d11.dll")));
+        Assert.Equal(dxgiBytes, File.ReadAllBytes(Path.Combine(gameDir1.RootPath, "dxgi.dll")));
+        Assert.Equal("v3.1.1", prof1Reloaded.DxvkVersion);
+
+        var inst1 = libraryStore2.FindByInstallationPath(gameDir1.RootPath);
+        Assert.NotNull(inst1);
+        Assert.Equal("v3.1.1", inst1.ManagedDxvkVersion);
+        Assert.Equal(RestorationState.Managed, inst1.RestorationState);
+
+        // 7. Deploy pinned older release 2.4 to Game 3 using reconstructed manager -> offline zero HTTP
+        using var gameDir3 = new SyntheticTestDirectory();
+        string exe3 = gameDir3.CreateFile("Game3.exe", "bin3");
+        var prof3 = profileStore2.GetOrCreate(exe3);
+        prof3.Api = GraphicsApi.DX11;
+        prof3.Architecture = "x64";
+        prof3.DxvkVersion = "2.4";
+        profileStore2.Save(prof3);
+
+        bool pinRes = await manager2.EnableDxvkAsync(prof3, "2.4");
+        Assert.True(pinRes);
+        Assert.Empty(rejectingHandler.Requests);
+        Assert.Equal(v24D3D11, File.ReadAllBytes(Path.Combine(gameDir3.RootPath, "d3d11.dll")));
+        Assert.Equal(v24Dxgi, File.ReadAllBytes(Path.Combine(gameDir3.RootPath, "dxgi.dll")));
+
+        // 8. Assert: Total archive downloads remain strictly 1 across entire lifecycle
+        Assert.Equal(1, httpHandler.ArchiveDownloadRequests);
+
+        // 9. Assert: Older release complete relative file set, sizes, and SHA256 hashes completely preserved
+        var currentOlderSnapshot = SnapshotDirectory(Path.Combine(sourceDir.RootPath, "2.4"));
+        AssertSnapshotsEqual(initialOlderSnapshot, currentOlderSnapshot);
     }
 
     [Fact]
@@ -554,7 +639,7 @@ public sealed class FirstRunQueuedEnableTests
         string exe1 = gameDir1.CreateFile("Game1.exe", "bin1");
         string exe2 = gameDir2.CreateFile("Game2.exe", "bin2");
 
-        // 1. Establish older 2.4 release in sourceDir
+        // 1. Establish older 2.4 release in sourceDir and snapshot complete relative file set + hashes
         string v24Dir = Path.Combine(sourceDir.RootPath, "2.4", "x64");
         Directory.CreateDirectory(v24Dir);
         byte[] v24D3D11 = Encoding.UTF8.GetBytes("retained-2.4-d3d11-content");
@@ -564,8 +649,8 @@ public sealed class FirstRunQueuedEnableTests
         File.WriteAllBytes(v24D3D11Path, v24D3D11);
         File.WriteAllBytes(v24DxgiPath, v24Dxgi);
 
-        string v24D3D11Hash = Convert.ToHexString(SHA256.HashData(v24D3D11));
-        string v24DxgiHash = Convert.ToHexString(SHA256.HashData(v24Dxgi));
+        var initialOlderSnapshot = SnapshotDirectory(Path.Combine(sourceDir.RootPath, "2.4"));
+        Assert.Equal(2, initialOlderSnapshot.Count);
 
         // 2. Setup newer v3.1.1 download
         byte[] v311D3D11 = Encoding.UTF8.GetBytes("newer-3.1.1-d3d11");
@@ -615,24 +700,51 @@ public sealed class FirstRunQueuedEnableTests
 
         var res1 = await manager.RequestEnableByPathAsync(prof1);
         Assert.Equal(DxvkActionResult.Applied, res1);
+        Assert.Equal(v311D3D11, File.ReadAllBytes(Path.Combine(gameDir1.RootPath, "d3d11.dll")));
+        Assert.Equal(v311Dxgi, File.ReadAllBytes(Path.Combine(gameDir1.RootPath, "dxgi.dll")));
 
-        // 4. Verify older 2.4 payload remains completely intact with identical SHA256 hashes
-        Assert.True(File.Exists(v24D3D11Path));
-        Assert.True(File.Exists(v24DxgiPath));
-        Assert.Equal(v24D3D11Hash, Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(v24D3D11Path))));
-        Assert.Equal(v24DxgiHash, Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(v24DxgiPath))));
+        // 4. Verify older 2.4 payload remains completely intact after initial newer deployment
+        AssertSnapshotsEqual(initialOlderSnapshot, SnapshotDirectory(Path.Combine(sourceDir.RootPath, "2.4")));
 
-        // 5. Deploy pinned 2.4 to Game 2 -> deploys without new archive downloads
-        var prof2 = profileStore.GetOrCreate(exe2);
-        prof2.Api = GraphicsApi.DX11;
-        prof2.Architecture = "x64";
-        prof2.DxvkVersion = "2.4";
-        profileStore.Save(prof2);
+        // 5. Restore / disable Game 1
+        var disableRes = await manager.RequestDisableByPathAsync(prof1);
+        Assert.Equal(DxvkActionResult.Applied, disableRes);
+        Assert.False(File.Exists(Path.Combine(gameDir1.RootPath, "d3d11.dll")));
 
-        int downloadRequestsBeforeGame2 = httpHandler.ArchiveDownloadRequests;
-        bool res2 = await manager.EnableDxvkAsync(prof2, "2.4");
+        // 6. Reconstruct stores, cache, and manager from persisted paths; enforce strict zero-HTTP on re-enable/pinned deploy
+        var rejectingHandler = new RecordingFakeHttpMessageHandler(req =>
+            throw new InvalidOperationException($"Zero HTTP requests permitted after restart/reconstruction, got: {req.RequestUri}"));
+        using var rejectingClient = new HttpClient(rejectingHandler);
+
+        var (manager2, libraryStore2, profileStore2, _, _) = CreateTestManager(storageDir, sourceDir, rejectingClient);
+        var prof1Reloaded = profileStore2.GetOrCreate(exe1);
+        var prof2Reloaded = profileStore2.GetOrCreate(exe2);
+
+        // 7. Re-enable Game 1 using reconstructed manager -> offline zero HTTP from local source tree
+        var reEnableRes = await manager2.RequestEnableByPathAsync(prof1Reloaded);
+        Assert.Equal(DxvkActionResult.Applied, reEnableRes);
+        Assert.Empty(rejectingHandler.Requests);
+        Assert.Equal(v311D3D11, File.ReadAllBytes(Path.Combine(gameDir1.RootPath, "d3d11.dll")));
+        Assert.Equal(v311Dxgi, File.ReadAllBytes(Path.Combine(gameDir1.RootPath, "dxgi.dll")));
+        Assert.Equal("v3.1.1", prof1Reloaded.DxvkVersion);
+
+        // 8. Deploy pinned 2.4 to Game 2 using reconstructed manager -> offline zero HTTP from local source tree
+        prof2Reloaded.Api = GraphicsApi.DX11;
+        prof2Reloaded.Architecture = "x64";
+        prof2Reloaded.DxvkVersion = "2.4";
+        profileStore2.Save(prof2Reloaded);
+
+        bool res2 = await manager2.EnableDxvkAsync(prof2Reloaded, "2.4");
         Assert.True(res2);
-        Assert.Equal(downloadRequestsBeforeGame2, httpHandler.ArchiveDownloadRequests);
+        Assert.Empty(rejectingHandler.Requests);
         Assert.Equal(v24D3D11, File.ReadAllBytes(Path.Combine(gameDir2.RootPath, "d3d11.dll")));
+        Assert.Equal(v24Dxgi, File.ReadAllBytes(Path.Combine(gameDir2.RootPath, "dxgi.dll")));
+
+        // 9. Total archive downloads across entire lifecycle remain strictly 1
+        Assert.Equal(1, httpHandler.ArchiveDownloadRequests);
+
+        // 10. Assert complete older release relative file set, sizes, and SHA256 hashes completely preserved through all transitions
+        var finalOlderSnapshot = SnapshotDirectory(Path.Combine(sourceDir.RootPath, "2.4"));
+        AssertSnapshotsEqual(initialOlderSnapshot, finalOlderSnapshot);
     }
 }
