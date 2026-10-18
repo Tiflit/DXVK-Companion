@@ -234,13 +234,14 @@ public sealed class SafeDeploymentIntegrationTests
     }
 
     [Fact]
-    public async Task DxvkRollback_CleansUpDxvkConfFile()
+    public async Task DxvkRollback_UnownedDxvkConf_RefusesRollbackAndPreservesConfFile()
     {
         using var gameDir = new SyntheticTestDirectory();
         using var storageDir = new SyntheticTestDirectory();
 
         var exePath = gameDir.CreateFile("Game.exe", "synthetic-binary");
-        var confPath = gameDir.CreateFile("dxvk.conf", "dxvk.hud = fps\ndxvk.frameRate = 120");
+        var confContent = "dxvk.hud = fps\ndxvk.frameRate = 120";
+        var confPath = gameDir.CreateFile("dxvk.conf", confContent);
 
         var store = new GameLibraryStore(
             Path.Combine(storageDir.RootPath, "game-library.json"),
@@ -252,8 +253,11 @@ public sealed class SafeDeploymentIntegrationTests
 
         Assert.True(File.Exists(confPath));
         var rollbackOk = await rollback.RestoreOriginalDllsAsync(profile);
-        Assert.True(rollbackOk);
-        Assert.False(File.Exists(confPath));
+        Assert.False(rollbackOk);
+        Assert.NotNull(rollback.LastRefusalReason);
+        Assert.Contains("missing ownership", rollback.LastRefusalReason, StringComparison.OrdinalIgnoreCase);
+        Assert.True(File.Exists(confPath));
+        Assert.Equal(confContent, File.ReadAllText(confPath));
     }
 
     [Fact]

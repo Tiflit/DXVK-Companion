@@ -59,14 +59,27 @@ namespace DXVKCompanion.DXVK
                             return false;
                         }
 
-                        if (installation != null && installation.ConflictFlags != InstallationConflictFlags.None)
+                        if (installation == null)
+                        {
+                            var reason = $"Refusing rollback on {profile.ExeName}; missing ownership records for game directory '{gameDir}'.";
+                            LastRefusalReason = reason;
+                            Logger.Log($"DxvkRollback: {reason}");
+                            return false;
+                        }
+
+                        if (installation.ConflictFlags != InstallationConflictFlags.None)
                         {
                             var conflictReason = $"Refusing rollback on {installation.DisplayName}; installation has conflict flags: {installation.ConflictFlags}.";
                             return RefuseRollback(installation, conflictReason);
                         }
 
-                        if (installation != null && installation.ManagedFiles.Count > 0)
+                        if (installation.ManagedFiles == null || installation.ManagedFiles.Count == 0)
                         {
+                            string reason = (installation.RestorationState == RestorationState.Managed || !string.IsNullOrWhiteSpace(installation.ManagedDxvkVersion))
+                                ? $"Refusing rollback on {installation.DisplayName ?? profile.ExeName}; missing ownership evidence for actively managed installation."
+                                : $"Refusing rollback on {installation.DisplayName ?? profile.ExeName}; missing ownership evidence for managed installation.";
+                            return RefuseRollback(installation, reason);
+                        }
                             bool isAlreadyRestoredCandidate = installation.RestorationState == RestorationState.Restored
                                 || string.IsNullOrWhiteSpace(installation.ManagedDxvkVersion);
 
@@ -276,30 +289,10 @@ namespace DXVKCompanion.DXVK
                                 }
 
                                 Logger.Log($"DxvkRollback: successfully restored {filesToRestore.Count} files for {profile.ExeName} via safe transaction {result.TransactionId}.");
+                                return true;
                             }
-                        }
-                        else
-                        {
-                            // Fallback for pre-existing legacy .bak files if present
-                            string d3d9 = Path.Combine(gameDir, "d3d9.dll");
-                            string d3d11 = Path.Combine(gameDir, "d3d11.dll");
-                            string dxgi = Path.Combine(gameDir, "dxgi.dll");
 
-                            RestoreLegacyBakIfExists(d3d9);
-                            RestoreLegacyBakIfExists(d3d11);
-                            // Self-clean any dxvk.conf left in game directory in legacy fallback mode
-                            string confPath = Path.Combine(gameDir, "dxvk.conf");
-                            if (File.Exists(confPath))
-                            {
-                                try { File.Delete(confPath); }
-                                catch (Exception ex)
-                                {
-                                    Logger.Log($"DxvkRollback: could not delete legacy dxvk.conf: {ex.Message}");
-                                }
-                            }
-                        }
-
-                        return true;
+                            return false;
                     }
                 catch (Exception ex)
                 {
@@ -348,22 +341,5 @@ namespace DXVKCompanion.DXVK
             !string.IsNullOrWhiteSpace(sha256) &&
             sha256.Length == 64 &&
             sha256.All(static c => Uri.IsHexDigit(c));
-
-        private static void RestoreLegacyBakIfExists(string dllPath)
-        {
-            string bak = dllPath + ".bak";
-            if (File.Exists(bak))
-            {
-                try
-                {
-                    if (File.Exists(dllPath)) File.Delete(dllPath);
-                    File.Move(bak, dllPath);
-                }
-                catch (Exception ex)
-                {
-                    Logger.Log($"DxvkRollback: failed restoring legacy bak {bak}: {ex.Message}");
-                }
-            }
-        }
     }
 }
