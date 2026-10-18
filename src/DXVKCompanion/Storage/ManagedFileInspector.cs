@@ -20,6 +20,12 @@ namespace DXVKCompanion.Storage
         {
             if (installation == null) return false;
 
+            if (_store.HasUncertainPersistence)
+            {
+                Logger.Log($"ManagedFileInspector: skipping inspection for {installation.DisplayName} because GameLibraryStore persistence outcome is uncertain for this session.");
+                return false;
+            }
+
             if (string.IsNullOrWhiteSpace(installation.InstallationPath) || !Directory.Exists(installation.InstallationPath))
             {
                 return false;
@@ -198,6 +204,12 @@ namespace DXVKCompanion.Storage
 
         public virtual int InspectAll()
         {
+            if (_store.HasUncertainPersistence)
+            {
+                Logger.Log("ManagedFileInspector: skipping batch inspection because GameLibraryStore persistence outcome is uncertain for this session.");
+                return 0;
+            }
+
             int changesDetected = 0;
             foreach (var installation in _store.GetAll())
             {
@@ -218,7 +230,7 @@ namespace DXVKCompanion.Storage
                         // Best-effort logging must not prevent continuation
                     }
 
-                    if (installation != null)
+                    if (installation != null && !_store.HasUncertainPersistence)
                     {
                         installation.RestorationState = RestorationState.AttentionRequired;
                         installation.LastRefusalReason = string.IsNullOrWhiteSpace(ex.Message)

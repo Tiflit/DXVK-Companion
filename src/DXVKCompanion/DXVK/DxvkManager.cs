@@ -60,7 +60,22 @@ namespace DXVKCompanion.DXVK
                 {
                     installation.LastRefusalReason = null;
                 }
-                _gameLibraryStore.Save(installation);
+                if (!_gameLibraryStore.HasUncertainPersistence)
+                {
+                    _gameLibraryStore.Save(installation);
+                }
+            }
+        }
+
+        private void TrySaveProfileNonFatal(GameProfile profile, string context)
+        {
+            try
+            {
+                _profiles.Save(profile);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"DxvkManager: non-fatal ProfileStore.Save failure during {context} for {profile.ExeName}: {ex.GetType().Name} - {ex.Message}");
             }
         }
 
@@ -110,11 +125,35 @@ namespace DXVKCompanion.DXVK
 
             if (installation == null)
             {
-                if (profileChanged)
+                if (profileChanged || _profiles.HasPendingWriteRetry)
                 {
-                    _profiles.Save(profile);
+                    TrySaveProfileNonFatal(profile, "reconciliation");
                 }
                 return;
+            }
+
+            // Reconcile secondary ProfileStore state from authoritative GameLibraryStore ownership state
+            if (installation.RestorationState == RestorationState.Managed && !string.IsNullOrWhiteSpace(installation.ManagedDxvkVersion))
+            {
+                string managedVersion = installation.ManagedDxvkVersion.Trim();
+                if (!profile.DxvkEnabled)
+                {
+                    profile.DxvkEnabled = true;
+                    profileChanged = true;
+                }
+                if (!string.Equals(profile.DxvkVersion, managedVersion, StringComparison.Ordinal))
+                {
+                    profile.DxvkVersion = managedVersion;
+                    profileChanged = true;
+                }
+            }
+            else if (installation.RestorationState == RestorationState.Restored && string.IsNullOrWhiteSpace(installation.ManagedDxvkVersion))
+            {
+                if (profile.DxvkEnabled)
+                {
+                    profile.DxvkEnabled = false;
+                    profileChanged = true;
+                }
             }
 
             string relExe = Path.GetRelativePath(installation.InstallationPath, profile.ExePath);
@@ -193,11 +232,11 @@ namespace DXVKCompanion.DXVK
                 }
             }
 
-            if (profileChanged)
+            if (profileChanged || _profiles.HasPendingWriteRetry)
             {
-                _profiles.Save(profile);
+                TrySaveProfileNonFatal(profile, "reconciliation");
             }
-            if (installationChanged)
+            if (installationChanged && !_gameLibraryStore.HasUncertainPersistence)
             {
                 _gameLibraryStore.Save(installation);
             }
@@ -295,7 +334,10 @@ namespace DXVKCompanion.DXVK
                     if (installation != null)
                     {
                         installation.LastRefusalReason = refusalReason;
-                        _gameLibraryStore.Save(installation);
+                        if (!_gameLibraryStore.HasUncertainPersistence)
+                        {
+                            _gameLibraryStore.Save(installation);
+                        }
                     }
                     Logger.Log($"DxvkManager: refusing deployment for {profile.ExeName}: {refusalReason}");
                     return DxvkActionResult.Failed;
@@ -310,6 +352,17 @@ namespace DXVKCompanion.DXVK
 
             if (isRunning)
             {
+                if (!_gameLibraryStore.TryCheckCanModifyLibrary(out var storeRefusalReason))
+                {
+                    LastRefusalReason = storeRefusalReason;
+                    if (installation != null)
+                    {
+                        installation.RestorationState = RestorationState.AttentionRequired;
+                        installation.LastRefusalReason = storeRefusalReason;
+                    }
+                    return DxvkActionResult.Failed;
+                }
+
                 string gameDir = Path.GetDirectoryName(profile.ExePath) ?? string.Empty;
                 if (!string.IsNullOrWhiteSpace(gameDir))
                 {
@@ -396,7 +449,10 @@ namespace DXVKCompanion.DXVK
                 if (installation != null)
                 {
                     installation.LastRefusalReason = refusalReason;
-                    _gameLibraryStore.Save(installation);
+                    if (!_gameLibraryStore.HasUncertainPersistence)
+                    {
+                        _gameLibraryStore.Save(installation);
+                    }
                 }
                 Logger.Log($"DxvkManager: refusing reapply for {profile.ExeName}: {refusalReason}");
                 return DxvkActionResult.Failed;
@@ -404,6 +460,17 @@ namespace DXVKCompanion.DXVK
 
             if (isRunning)
             {
+                if (!_gameLibraryStore.TryCheckCanModifyLibrary(out var storeRefusalReason))
+                {
+                    LastRefusalReason = storeRefusalReason;
+                    if (installation != null)
+                    {
+                        installation.RestorationState = RestorationState.AttentionRequired;
+                        installation.LastRefusalReason = storeRefusalReason;
+                    }
+                    return DxvkActionResult.Failed;
+                }
+
                 string gameDir = Path.GetDirectoryName(profile.ExePath) ?? string.Empty;
                 if (!string.IsNullOrWhiteSpace(gameDir))
                 {
@@ -502,7 +569,7 @@ namespace DXVKCompanion.DXVK
         public async Task<bool> ApplyPendingAsync(string exePath, DetectionSnapshot? snapshot = null)
         {
             LastRefusalReason = null;
-            if (snapshot != null)
+            if (snapshot != null && !_gameLibraryStore.HasUncertainPersistence)
             {
                 _gameLibraryStore.RecordDetectionSnapshot(snapshot);
             }
@@ -542,7 +609,10 @@ namespace DXVKCompanion.DXVK
                 {
                     installation.PendingAction = null;
                     installation.LastRefusalReason = null;
-                    _gameLibraryStore.Save(installation);
+                    if (!_gameLibraryStore.HasUncertainPersistence)
+                    {
+                        _gameLibraryStore.Save(installation);
+                    }
                     LastRefusalReason = null;
                 }
                 return success;
@@ -600,7 +670,10 @@ namespace DXVKCompanion.DXVK
             }
 
             // 3. Persist the outcome before treating cancellation as completed
-            _gameLibraryStore.Save(installation);
+            if (!_gameLibraryStore.HasUncertainPersistence)
+            {
+                _gameLibraryStore.Save(installation);
+            }
 
             Logger.Log($"DxvkManager: cancelled incompatible pending action {cancelledAction.Type} for {profile.ExeName}: {outcome}");
 
@@ -682,7 +755,10 @@ namespace DXVKCompanion.DXVK
                     {
                         installation.PendingAction = null;
                         installation.LastRefusalReason = null;
-                        _gameLibraryStore.Save(installation);
+                        if (!_gameLibraryStore.HasUncertainPersistence)
+                        {
+                            _gameLibraryStore.Save(installation);
+                        }
                         LastRefusalReason = null;
                         processed++;
                     }
@@ -720,7 +796,10 @@ namespace DXVKCompanion.DXVK
                 if (installation != null)
                 {
                     installation.LastRefusalReason = refusalReason;
-                    _gameLibraryStore.Save(installation);
+                    if (!_gameLibraryStore.HasUncertainPersistence)
+                    {
+                        _gameLibraryStore.Save(installation);
+                    }
                 }
                 Logger.Log($"DxvkManager: refusing EnableDxvkAsync for {profile.ExeName}: {refusalReason}");
                 return false;
@@ -747,7 +826,10 @@ namespace DXVKCompanion.DXVK
                     if (installation != null)
                     {
                         installation.LastRefusalReason = unavailableReason;
-                        _gameLibraryStore.Save(installation);
+                        if (!_gameLibraryStore.HasUncertainPersistence)
+                        {
+                            _gameLibraryStore.Save(installation);
+                        }
                     }
                     Logger.Log($"DxvkManager: {unavailableReason}");
                     return false;
@@ -775,7 +857,7 @@ namespace DXVKCompanion.DXVK
             LastRefusalReason = null;
             profile.DxvkEnabled = true;
             profile.DxvkVersion = release.Version;
-            _profiles.Save(profile);
+            TrySaveProfileNonFatal(profile, nameof(EnableDxvkAsync));
 
             return true;
         }
@@ -792,7 +874,10 @@ namespace DXVKCompanion.DXVK
                 LastRefusalReason = reason;
                 installation.RestorationState = RestorationState.AttentionRequired;
                 installation.LastRefusalReason = reason;
-                _gameLibraryStore.Save(installation);
+                if (!_gameLibraryStore.HasUncertainPersistence)
+                {
+                    _gameLibraryStore.Save(installation);
+                }
                 Logger.Log($"DxvkManager: {reason}");
                 return false;
             }
@@ -806,7 +891,7 @@ namespace DXVKCompanion.DXVK
 
             LastRefusalReason = null;
             profile.DxvkEnabled = false;
-            _profiles.Save(profile);
+            TrySaveProfileNonFatal(profile, nameof(DisableDxvkAsync));
 
             return true;
         }
@@ -829,7 +914,10 @@ namespace DXVKCompanion.DXVK
                 if (installation != null)
                 {
                     installation.LastRefusalReason = refusalReason;
-                    _gameLibraryStore.Save(installation);
+                    if (!_gameLibraryStore.HasUncertainPersistence)
+                    {
+                        _gameLibraryStore.Save(installation);
+                    }
                 }
                 Logger.Log($"DxvkManager: refusing AdoptExistingAsync for {profile.ExeName}: {refusalReason}");
                 return false;
@@ -848,7 +936,7 @@ namespace DXVKCompanion.DXVK
             if (ok)
             {
                 LastRefusalReason = null;
-                _profiles.Save(profile);
+                TrySaveProfileNonFatal(profile, nameof(AdoptExistingAsync));
             }
             else
             {
@@ -871,7 +959,10 @@ namespace DXVKCompanion.DXVK
                 if (installation != null)
                 {
                     installation.LastRefusalReason = refusalReason;
-                    _gameLibraryStore.Save(installation);
+                    if (!_gameLibraryStore.HasUncertainPersistence)
+                    {
+                        _gameLibraryStore.Save(installation);
+                    }
                 }
                 Logger.Log($"DxvkManager: refusing ReapplyAsync for {profile.ExeName}: {refusalReason}");
                 return false;
@@ -882,7 +973,12 @@ namespace DXVKCompanion.DXVK
             {
                 LastRefusalReason = null;
                 profile.DxvkEnabled = true;
-                _profiles.Save(profile);
+                var committedInstallation = ResolveInstallation(profile.ExePath);
+                if (!string.IsNullOrWhiteSpace(committedInstallation?.ManagedDxvkVersion))
+                {
+                    profile.DxvkVersion = committedInstallation.ManagedDxvkVersion.Trim();
+                }
+                TrySaveProfileNonFatal(profile, nameof(ReapplyAsync));
             }
             else
             {

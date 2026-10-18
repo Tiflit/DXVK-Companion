@@ -17,6 +17,7 @@ namespace DXVKCompanion.Storage
         internal Action<string, string>? CustomTempWriter { get; set; }
         internal Action<string, string>? CustomCommitReplace { get; set; }
         internal Action<string>? CustomTempCleaner { get; set; }
+        internal bool HasPendingWriteRetry { get; private set; }
 
         public ProfileStore(string? profilesFile = null)
         {
@@ -113,11 +114,13 @@ namespace DXVKCompanion.Storage
                 }
 
                 committed = true;
+                HasPendingWriteRetry = false;
             }
             finally
             {
                 if (!committed)
                 {
+                    HasPendingWriteRetry = true;
                     try
                     {
                         if (CustomTempCleaner != null)

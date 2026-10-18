@@ -601,9 +601,16 @@ public sealed class OwnershipPersistenceFailureTests
         // (a) Per-operation .transactions/<txId> evidence (plan.json + undo/) must be retained on Unknown outcome;
         // (b) DxvkInstaller.LastRefusalReason and in-memory installation health must report AttentionRequired;
         // (c) No blind second Save overwrote game-library.json after the lock was released (reconstructed store has the replaced 2.4 record).
+        Assert.True(store.HasUncertainPersistence, "Expected GameLibraryStore.HasUncertainPersistence to be latched after an Unknown persistence outcome.");
+        Assert.False(string.IsNullOrWhiteSpace(store.UncertainPersistenceReason));
         Assert.True(
             Directory.Exists(transactionsRoot) && Directory.GetDirectories(transactionsRoot).Length > 0,
             "Expected per-operation .transactions/<txId> undo evidence to be retained when ownership persistence outcome is Unknown.");
+        string retainedTxDir = Directory.GetDirectories(transactionsRoot).Single();
+        Assert.True(File.Exists(Path.Combine(retainedTxDir, "plan.json")), "Expected retained transaction directory to contain plan.json.");
+        string retainedUndoD3d11 = Path.Combine(retainedTxDir, "undo", "d3d11.dll");
+        Assert.True(File.Exists(retainedUndoD3d11), "Expected retained transaction directory to contain undo/d3d11.dll.");
+        Assert.Equal("native-original-d3d11", File.ReadAllText(retainedUndoD3d11));
         Assert.False(string.IsNullOrWhiteSpace(installer.LastRefusalReason), "Expected DxvkInstaller.LastRefusalReason to be populated when persistence outcome is Unknown.");
         Assert.Equal(RestorationState.AttentionRequired, inMemoryInst!.RestorationState);
         Assert.False(string.IsNullOrWhiteSpace(inMemoryInst.LastRefusalReason));
@@ -660,23 +667,26 @@ public sealed class OwnershipPersistenceFailureTests
             Architecture = "x64"
         };
 
-        // CHARACTERIZATION (current main behavior): ApplyToGameAsync catches the post-replace exception and returns false,
-        // even though both target files and game-library.json were already replaced on disk and are readable.
-        // NOTE FOR FOLLOW-UP IMPLEMENTATION ISSUE: Under the approved design, when readback positively verifies that
-        // expectedPostWriteBytes are present on disk (PersistenceOutcome.Committed), ApplyToGameAsync will treat the
-        // operation as committed and return true; the follow-up implementation contract is authorized to transition
-        // Assert.False(installOk) -> Assert.True(installOk) (or add a post-fix regression assertion alongside this characterization).
+        // Issue #171: When synchronous readback positively verifies that expectedPostWriteBytes are present on disk
+        // (OwnershipPersistenceOutcome.Committed), ApplyToGameAsync treats the operation as committed and returns true.
         bool installOk = await installer.ApplyToGameAsync(profile, new ReleaseInfo { Version = "2.4", DownloadUrl = "" });
         store.CustomCommitReplace = null;
 
         Assert.True(postFileReplaceMoved, "Expected CustomCommitReplace to complete File.Move before throwing.");
-        Assert.False(installOk);
+        Assert.True(installOk);
+        Assert.Null(installer.LastRefusalReason);
+        Assert.False(store.HasUncertainPersistence);
 
-        // CHARACTERIZATION: Target files on disk have the deployed Version 2.4 DXVK bytes.
+        string transactionsRoot = Path.Combine(backupsDir, ".transactions");
+        Assert.False(
+            Directory.Exists(transactionsRoot) && Directory.GetDirectories(transactionsRoot).Length > 0,
+            "Per-operation .transactions directory must be cleaned up when post-replace readback confirms Committed.");
+
+        // Target files on disk have the deployed Version 2.4 DXVK bytes.
         Assert.Equal("dxvk-2.4-d3d11", File.ReadAllText(targetD3d11));
         Assert.Equal("dxvk-2.4-dxgi", File.ReadAllText(targetDxgi));
 
-        // CHARACTERIZATION: Reconstructing GameLibraryStore from disk proves the updated ownership record
+        // Reconstructing GameLibraryStore from disk proves the updated ownership record
         // IS already on disk (RestorationState.Managed, ManagedDxvkVersion == "2.4", ExpectedManagedSha256 populated).
         var reconstructedStore = new GameLibraryStore(libraryFile, backupsDir);
         var reconstructedInst = reconstructedStore.FindByInstallationPath(gameDir.RootPath);
@@ -692,5 +702,447 @@ public sealed class OwnershipPersistenceFailureTests
         Assert.Equal(
             FileIdentity.Capture(targetDxgi).Sha256,
             reconstructedInst.FindManagedFile("dxgi.dll")!.ExpectedManagedSha256);
+    }
+
+    [Fact]
+    public async Task ReapplyUpdateBaseline_WhenEarlyPreTargetFailureOccursAfterBackupPublish_RestoresPriorBackupAndLeavesTargetsUnmodified()
+    {
+        using var gameDir = new SyntheticTestDirectory();
+        using var storageDir = new SyntheticTestDirectory();
+        using var sourceDir = new SyntheticTestDirectory();
+
+        SeedLocalRelease(sourceDir.RootPath, "2.4", "dxvk-2.4-d3d11", "dxvk-2.4-dxgi");
+
+        string exePath = gameDir.CreateFile("Game.exe", "synthetic-game-exe");
+        string targetD3d11 = gameDir.CreateFile("d3d11.dll", "native-v1-original-d3d11");
+        string targetDxgi = Path.Combine(gameDir.RootPath, "dxgi.dll");
+        var nativeV1Identity = FileIdentity.Capture(targetD3d11);
+
+        string libraryFile = Path.Combine(storageDir.RootPath, "game-library.json");
+        string backupsDir = Path.Combine(storageDir.RootPath, "backups");
+        var store = new GameLibraryStore(libraryFile, backupsDir);
+
+        bool failAfterPublishBackup = false;
+        bool failDuringSecondFileStaging = false;
+
+        var engine = new MultiFileTransactionEngine(
+            backupsDir,
+            new MultiFileTransactionTestHooks
+            {
+                AfterPublishNativeBackup = (_, index) =>
+                {
+                    if (failAfterPublishBackup && index == 0)
+                    {
+                        throw new IOException("Simulated pre-target fault immediately after replacing canonical backup for file 0.");
+                    }
+                },
+                BeforeStage = (_, index) =>
+                {
+                    if (failDuringSecondFileStaging && index == 1)
+                    {
+                        throw new IOException("Simulated pre-target fault while staging file 1 after file 0 backup replacement.");
+                    }
+                }
+            });
+
+        using var http = new HttpClient();
+        var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
+        var profile = new GameProfile(exePath)
+        {
+            Api = GraphicsApi.DX11,
+            Architecture = "x64"
+        };
+
+        Assert.True(await installer.ApplyToGameAsync(profile, new ReleaseInfo { Version = "2.4", DownloadUrl = "" }));
+
+        // Simulate external game update replacing d3d11.dll with v2 native DLL
+        File.WriteAllText(targetD3d11, "game-update-v2-d3d11");
+        var gameUpdateV2Identity = FileIdentity.Capture(targetD3d11);
+
+        var instBeforeReapply = store.FindByInstallationPath(gameDir.RootPath)!;
+        string canonicalBackupD3d11 = Path.Combine(backupsDir, instBeforeReapply.FindManagedFile("d3d11.dll")!.BackupRelativePath!);
+        byte[] libraryBytesBeforeReapply = File.ReadAllBytes(libraryFile);
+
+        // Sub-case A: Fault in AfterPublishNativeBackup on file 0 (before any target file is modified)
+        failAfterPublishBackup = true;
+        bool reapplyA = await installer.ReapplyAsync(profile, updateBaseline: true);
+        failAfterPublishBackup = false;
+
+        Assert.False(reapplyA);
+        Assert.Equal("game-update-v2-d3d11", File.ReadAllText(targetD3d11));
+        Assert.Equal(gameUpdateV2Identity, FileIdentity.Capture(targetD3d11));
+        Assert.Equal("native-v1-original-d3d11", File.ReadAllText(canonicalBackupD3d11));
+        Assert.Equal(nativeV1Identity, FileIdentity.Capture(canonicalBackupD3d11));
+        Assert.Equal(libraryBytesBeforeReapply, File.ReadAllBytes(libraryFile));
+        Assert.Equal(nativeV1Identity.Sha256, store.FindByInstallationPath(gameDir.RootPath)!.FindManagedFile("d3d11.dll")!.OriginalSha256);
+
+        // Sub-case B: Fault in BeforeStage on file 1 (after file 0 backup replacement completed, before ApplyPlan)
+        failDuringSecondFileStaging = true;
+        bool reapplyB = await installer.ReapplyAsync(profile, updateBaseline: true);
+        failDuringSecondFileStaging = false;
+
+        Assert.False(reapplyB);
+        Assert.Equal("game-update-v2-d3d11", File.ReadAllText(targetD3d11));
+        Assert.Equal("native-v1-original-d3d11", File.ReadAllText(canonicalBackupD3d11));
+        Assert.Equal(nativeV1Identity, FileIdentity.Capture(canonicalBackupD3d11));
+        Assert.Equal(libraryBytesBeforeReapply, File.ReadAllBytes(libraryFile));
+
+        string transactionsRoot = Path.Combine(backupsDir, ".transactions");
+        Assert.False(
+            Directory.Exists(transactionsRoot) && Directory.GetDirectories(transactionsRoot).Length > 0,
+            "Per-operation .transactions directory must be cleaned up after verified backup rollback.");
+    }
+
+    [Fact]
+    public async Task UnresolvedRecovery_WhenNoPriorLibraryFileExistedOrBaselineChanged_PreservesInMemoryHealthWithoutWritingIncompleteLibraryFile()
+    {
+        using var gameDir = new SyntheticTestDirectory();
+        using var storageDir = new SyntheticTestDirectory();
+        using var sourceDir = new SyntheticTestDirectory();
+
+        SeedLocalRelease(sourceDir.RootPath, "2.4", "dxvk-2.4-d3d11", "dxvk-2.4-dxgi");
+
+        string exePath = gameDir.CreateFile("Game.exe", "synthetic-game-exe");
+        string targetD3d11 = gameDir.CreateFile("d3d11.dll", "native-original-d3d11");
+
+        string libraryFile = Path.Combine(storageDir.RootPath, "game-library.json");
+        string backupsDir = Path.Combine(storageDir.RootPath, "backups");
+        var store = new GameLibraryStore(libraryFile, backupsDir);
+
+        // Pre-populate installation while preventing any initial game-library.json file from being written to disk
+        var inst = store.GetOrCreateInstallation(gameDir.RootPath, "Game");
+        File.Delete(libraryFile);
+        Assert.False(File.Exists(libraryFile));
+
+        var engine = new MultiFileTransactionEngine(
+            backupsDir,
+            new MultiFileTransactionTestHooks
+            {
+                AfterApply = (_, index) =>
+                {
+                    if (index == 1)
+                    {
+                        store.CustomCommitReplace = (_, _) =>
+                        {
+                            throw new IOException("Simulated pre-replacement failure when no prior game-library.json existed.");
+                        };
+                    }
+                },
+                BeforeCompensate = (_, index) =>
+                {
+                    if (index == 0)
+                    {
+                        throw new IOException("Simulated compensation failure when no prior game-library.json existed.");
+                    }
+                }
+            });
+
+        using var http = new HttpClient();
+        var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
+        var profile = new GameProfile(exePath)
+        {
+            Api = GraphicsApi.DX11,
+            Architecture = "x64",
+            HudEnabled = true,
+            FrameLimit = 90
+        };
+
+        bool installOk = await installer.ApplyToGameAsync(profile, new ReleaseInfo { Version = "2.4", DownloadUrl = "" });
+        store.CustomCommitReplace = null;
+
+        Assert.False(installOk);
+        // Because no prior game-library.json existed on disk before the failed operation,
+        // TrySaveHealthAfterFailedCompensation must NOT create a new library file from scratch.
+        Assert.False(File.Exists(libraryFile), "Expected no game-library.json to be created when no pre-existing library file existed before failed compensation.");
+
+        // In-memory state must still surface AttentionRequired and LastRefusalReason while restoring uncommitted ownership fields.
+        Assert.Equal(RestorationState.AttentionRequired, inst.RestorationState);
+        Assert.False(string.IsNullOrWhiteSpace(inst.LastRefusalReason));
+        Assert.Null(inst.ManagedDxvkVersion);
+        Assert.Empty(inst.ManagedFiles);
+        Assert.False(inst.Configuration.HudEnabled);
+        Assert.Equal(0, inst.Configuration.FrameLimit);
+    }
+
+    [Fact]
+    public async Task PostReplaceException_ReadbackClassification_DistinguishesMalformedConflictingNewerSchemaAndPositivelyMissingFiles()
+    {
+        using var gameDir = new SyntheticTestDirectory();
+        using var storageDir = new SyntheticTestDirectory();
+        using var sourceDir = new SyntheticTestDirectory();
+
+        SeedLocalRelease(sourceDir.RootPath, "2.4", "dxvk-2.4-d3d11", "dxvk-2.4-dxgi");
+
+        string exePath = gameDir.CreateFile("Game.exe", "synthetic-game-exe");
+        string targetD3d11 = gameDir.CreateFile("d3d11.dll", "native-original-d3d11");
+        string targetDxgi = Path.Combine(gameDir.RootPath, "dxgi.dll");
+
+        // Sub-case 1: Pre-existing game-library.json did NOT exist, and CustomCommitReplace throws without creating destPath -> ProvenNotCommitted
+        string libraryFileMissing = Path.Combine(storageDir.RootPath, "missing-library.json");
+        string backupsDir1 = Path.Combine(storageDir.RootPath, "backups-1");
+        var store1 = new GameLibraryStore(libraryFileMissing, backupsDir1);
+        store1.GetOrCreateInstallation(gameDir.RootPath, "Game");
+        File.Delete(libraryFileMissing);
+
+        var engine1 = new MultiFileTransactionEngine(
+            backupsDir1,
+            new MultiFileTransactionTestHooks
+            {
+                AfterApply = (_, index) =>
+                {
+                    if (index == 1)
+                    {
+                        store1.CustomCommitReplace = (_, _) =>
+                        {
+                            throw new IOException("Simulated pre-replace failure when destPath is positively absent.");
+                        };
+                    }
+                }
+            });
+
+        using var http = new HttpClient();
+        var installer1 = new DxvkInstaller(http, engine1, store1, sourceDir.RootPath);
+        var profile = new GameProfile(exePath) { Api = GraphicsApi.DX11, Architecture = "x64" };
+
+        bool ok1 = await installer1.ApplyToGameAsync(profile, new ReleaseInfo { Version = "2.4", DownloadUrl = "" });
+        store1.CustomCommitReplace = null;
+
+        Assert.False(ok1);
+        Assert.False(store1.HasUncertainPersistence, "Positively absent destination file when PreWriteExisted=false must be classified as ProvenNotCommitted, not Unknown.");
+        Assert.Equal("native-original-d3d11", File.ReadAllText(targetD3d11));
+        Assert.False(File.Exists(targetDxgi));
+
+        // Sub-case 2: Post-replace readback observes malformed JSON -> Unknown
+        string libraryFileMalformed = Path.Combine(storageDir.RootPath, "malformed-library.json");
+        string backupsDir2 = Path.Combine(storageDir.RootPath, "backups-2");
+        var store2 = new GameLibraryStore(libraryFileMalformed, backupsDir2);
+        var inst2 = store2.GetOrCreateInstallation(gameDir.RootPath, "Game");
+        store2.CustomCommitReplace = (_, destPath) =>
+        {
+            File.WriteAllText(destPath, "{ malformed json");
+            throw new IOException("Simulated post-replace failure leaving malformed JSON on disk.");
+        };
+
+        var malformedResult = store2.TrySaveWithOutcome(inst2);
+        store2.CustomCommitReplace = null;
+        Assert.Equal(OwnershipPersistenceOutcome.Unknown, malformedResult.Outcome);
+        Assert.True(store2.HasUncertainPersistence);
+
+        // Sub-case 3: Post-replace readback observes conflicting valid JSON (neither PreWriteBytes nor ExpectedPostWriteBytes) -> Unknown
+        string libraryFileConflict = Path.Combine(storageDir.RootPath, "conflict-library.json");
+        string backupsDir3 = Path.Combine(storageDir.RootPath, "backups-3");
+        var store3 = new GameLibraryStore(libraryFileConflict, backupsDir3);
+        var inst3 = store3.GetOrCreateInstallation(gameDir.RootPath, "Game");
+        store3.CustomCommitReplace = (_, destPath) =>
+        {
+            File.WriteAllText(destPath, "{\"SchemaVersion\": 2, \"Installations\": []}");
+            throw new IOException("Simulated post-replace failure with concurrent third-party write.");
+        };
+
+        var conflictResult = store3.TrySaveWithOutcome(inst3);
+        store3.CustomCommitReplace = null;
+        Assert.Equal(OwnershipPersistenceOutcome.Unknown, conflictResult.Outcome);
+        Assert.True(store3.HasUncertainPersistence);
+
+        // Sub-case 4: Post-replace readback observes newer SchemaVersion -> Unknown
+        string libraryFileNewerSchema = Path.Combine(storageDir.RootPath, "newer-schema-library.json");
+        string backupsDir4 = Path.Combine(storageDir.RootPath, "backups-4");
+        var store4 = new GameLibraryStore(libraryFileNewerSchema, backupsDir4);
+        var inst4 = store4.GetOrCreateInstallation(gameDir.RootPath, "Game");
+        store4.CustomCommitReplace = (_, destPath) =>
+        {
+            File.WriteAllText(destPath, "{\"SchemaVersion\": 99, \"Installations\": []}");
+            throw new IOException("Simulated post-replace failure with newer schema version.");
+        };
+
+        var newerSchemaResult = store4.TrySaveWithOutcome(inst4);
+        store4.CustomCommitReplace = null;
+        Assert.Equal(OwnershipPersistenceOutcome.Unknown, newerSchemaResult.Outcome);
+        Assert.True(store4.HasUncertainPersistence);
+    }
+
+    [Fact]
+    public async Task UnknownPersistenceOutcome_SessionGuard_BlocksSubsequentStoreSavesInspectorOverwritesAndMutationsInSameSession()
+    {
+        using var gameDir = new SyntheticTestDirectory();
+        using var storageDir = new SyntheticTestDirectory();
+        using var sourceDir = new SyntheticTestDirectory();
+
+        SeedLocalRelease(sourceDir.RootPath, "2.4", "dxvk-2.4-d3d11", "dxvk-2.4-dxgi");
+
+        string exePath = gameDir.CreateFile("Game.exe", "synthetic-game-exe");
+        string targetD3d11 = gameDir.CreateFile("d3d11.dll", "native-original-d3d11");
+        string targetDxgi = Path.Combine(gameDir.RootPath, "dxgi.dll");
+
+        string libraryFile = Path.Combine(storageDir.RootPath, "game-library.json");
+        string profilesFile = Path.Combine(storageDir.RootPath, "profiles.json");
+        string backupsDir = Path.Combine(storageDir.RootPath, "backups");
+        var store = new GameLibraryStore(libraryFile, backupsDir);
+        var profileStore = new ProfileStore(profilesFile);
+
+        FileStream? readbackBlocker = null;
+        var engine = new MultiFileTransactionEngine(
+            backupsDir,
+            new MultiFileTransactionTestHooks
+            {
+                AfterApply = (_, index) =>
+                {
+                    if (index == 1)
+                    {
+                        store.CustomCommitReplace = (tempPath, destPath) =>
+                        {
+                            File.Move(tempPath, destPath, overwrite: true);
+                            readbackBlocker = new FileStream(destPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+                            throw new IOException("Simulated post-replace lock producing Unknown persistence outcome.");
+                        };
+                    }
+                }
+            });
+
+        using var http = new HttpClient();
+        var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
+        var rollback = new DxvkRollback(engine, store);
+        var github = new DxvkGithubClient(http);
+        var manager = new DxvkManager(installer, rollback, github, profileStore, store);
+
+        var profile = profileStore.GetOrCreate(exePath);
+        profile.Api = GraphicsApi.DX11;
+        profile.Architecture = "x64";
+        profileStore.Save(profile);
+
+        bool enableOk;
+        try
+        {
+            enableOk = await manager.EnableDxvkAsync(profile, "2.4");
+        }
+        finally
+        {
+            readbackBlocker?.Dispose();
+            store.CustomCommitReplace = null;
+        }
+
+        Assert.False(enableOk);
+        Assert.True(store.HasUncertainPersistence);
+        Assert.False(string.IsNullOrWhiteSpace(manager.LastRefusalReason));
+
+        byte[] onDiskLibraryBytesAfterUnlock = File.ReadAllBytes(libraryFile);
+        var inMemoryInst = store.FindByInstallationPath(gameDir.RootPath)!;
+        Assert.Equal(RestorationState.AttentionRequired, inMemoryInst.RestorationState);
+
+        // 1. Direct store writes must be blocked in the same session
+        Assert.Throws<InvalidOperationException>(() => store.Save(inMemoryInst));
+        Assert.Throws<InvalidOperationException>(() => store.SaveAll());
+        Assert.Throws<InvalidOperationException>(() => store.RecordDetectionSnapshot(new DetectionSnapshot
+        {
+            ExecutablePath = exePath,
+            DetectedApi = GraphicsApi.DX11,
+            Architecture = "x64"
+        }));
+        string otherGameDir = Path.Combine(storageDir.RootPath, "OtherGame");
+        Directory.CreateDirectory(otherGameDir);
+        Assert.Throws<InvalidOperationException>(() => store.GetOrCreateInstallation(otherGameDir, "OtherGame"));
+
+        // 2. ManagedFileInspector must NOT overwrite game-library.json or clear AttentionRequired in memory
+        var inspector = new ManagedFileInspector(store, backupsDir);
+        inspector.InspectAll();
+        inspector.InspectInstallation(inMemoryInst);
+        Assert.Equal(RestorationState.AttentionRequired, inMemoryInst.RestorationState);
+        Assert.Equal(onDiskLibraryBytesAfterUnlock, File.ReadAllBytes(libraryFile));
+
+        // 3. Subsequent mutating operations in the same session must refuse cleanly without touching target files or game-library.json
+        Assert.False(await manager.EnableDxvkAsync(profile, "2.4"));
+        Assert.False(string.IsNullOrWhiteSpace(manager.LastRefusalReason));
+        Assert.False(await manager.ReapplyAsync(profile, updateBaseline: true));
+        Assert.False(string.IsNullOrWhiteSpace(manager.LastRefusalReason));
+        Assert.False(await manager.DisableDxvkAsync(profile));
+        Assert.False(string.IsNullOrWhiteSpace(manager.LastRefusalReason));
+        Assert.Equal("dxvk-2.4-d3d11", File.ReadAllText(targetD3d11));
+        Assert.Equal("dxvk-2.4-dxgi", File.ReadAllText(targetDxgi));
+        Assert.Equal(onDiskLibraryBytesAfterUnlock, File.ReadAllBytes(libraryFile));
+    }
+
+    [Fact]
+    public async Task SecondaryProfileStoreSaveFailure_AfterCommittedEnableOrDisable_DoesNotFailOperation_AndReconcilesOnSubsequentManagerOperation()
+    {
+        using var gameDir = new SyntheticTestDirectory();
+        using var storageDir = new SyntheticTestDirectory();
+        using var sourceDir = new SyntheticTestDirectory();
+
+        SeedLocalRelease(sourceDir.RootPath, "2.4", "dxvk-2.4-d3d11", "dxvk-2.4-dxgi");
+
+        string exePath = gameDir.CreateFile("Game.exe", "synthetic-game-exe");
+        string targetD3d11 = gameDir.CreateFile("d3d11.dll", "native-original-d3d11");
+        string targetDxgi = Path.Combine(gameDir.RootPath, "dxgi.dll");
+
+        string libraryFile = Path.Combine(storageDir.RootPath, "game-library.json");
+        string profilesFile = Path.Combine(storageDir.RootPath, "profiles.json");
+        string backupsDir = Path.Combine(storageDir.RootPath, "backups");
+
+        var store = new GameLibraryStore(libraryFile, backupsDir);
+        var profileStore = new ProfileStore(profilesFile);
+        var engine = new MultiFileTransactionEngine(backupsDir);
+        using var http = new HttpClient();
+        var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
+        var rollback = new DxvkRollback(engine, store);
+        var github = new DxvkGithubClient(http);
+        var manager = new DxvkManager(installer, rollback, github, profileStore, store);
+
+        var profile = profileStore.GetOrCreate(exePath);
+        profile.Api = GraphicsApi.DX11;
+        profile.Architecture = "x64";
+        profileStore.Save(profile);
+
+        // 1. Fail secondary ProfileStore.Save after EnableDxvkAsync commits target files + GameLibraryStore
+        bool enableProfileSaveAttempted = false;
+        profileStore.CustomCommitReplace = (_, _) =>
+        {
+            enableProfileSaveAttempted = true;
+            throw new IOException("Simulated secondary ProfileStore.Save failure after committed EnableDxvkAsync.");
+        };
+
+        bool enableOk = await manager.EnableDxvkAsync(profile, "2.4");
+        profileStore.CustomCommitReplace = null;
+
+        Assert.True(enableProfileSaveAttempted);
+        Assert.True(enableOk, "Expected EnableDxvkAsync to succeed once target files and GameLibraryStore ownership commit succeeded.");
+        Assert.Null(manager.LastRefusalReason);
+        Assert.Equal("dxvk-2.4-d3d11", File.ReadAllText(targetD3d11));
+        Assert.Equal("dxvk-2.4-dxgi", File.ReadAllText(targetDxgi));
+
+        // On-disk profiles.json still has DxvkEnabled == false before reconciliation
+        var staleDiskProfileAfterEnable = new ProfileStore(profilesFile).GetOrCreate(exePath);
+        Assert.False(staleDiskProfileAfterEnable.DxvkEnabled);
+
+        // Subsequent DxvkManager operation reconciles and persists ProfileStore state to disk
+        _ = manager.UpdateAvailable(profile);
+        var reconciledDiskProfileAfterEnable = new ProfileStore(profilesFile).GetOrCreate(exePath);
+        Assert.True(reconciledDiskProfileAfterEnable.DxvkEnabled);
+        Assert.Equal("2.4", reconciledDiskProfileAfterEnable.DxvkVersion);
+
+        // 2. Fail secondary ProfileStore.Save after DisableDxvkAsync commits native restoration + GameLibraryStore
+        bool disableProfileSaveAttempted = false;
+        profileStore.CustomCommitReplace = (_, _) =>
+        {
+            disableProfileSaveAttempted = true;
+            throw new IOException("Simulated secondary ProfileStore.Save failure after committed DisableDxvkAsync.");
+        };
+
+        bool disableOk = await manager.DisableDxvkAsync(profile);
+        profileStore.CustomCommitReplace = null;
+
+        Assert.True(disableProfileSaveAttempted);
+        Assert.True(disableOk, "Expected DisableDxvkAsync to succeed once native restoration and GameLibraryStore commit succeeded.");
+        Assert.Null(manager.LastRefusalReason);
+        Assert.Equal("native-original-d3d11", File.ReadAllText(targetD3d11));
+        Assert.False(File.Exists(targetDxgi));
+
+        // On-disk profiles.json still has DxvkEnabled == true before reconciliation
+        var staleDiskProfileAfterDisable = new ProfileStore(profilesFile).GetOrCreate(exePath);
+        Assert.True(staleDiskProfileAfterDisable.DxvkEnabled);
+
+        // Subsequent DxvkManager operation reconciles and persists ProfileStore state (DxvkEnabled = false) to disk
+        _ = manager.UpdateAvailable(profile);
+        var reconciledDiskProfileAfterDisable = new ProfileStore(profilesFile).GetOrCreate(exePath);
+        Assert.False(reconciledDiskProfileAfterDisable.DxvkEnabled);
     }
 }
