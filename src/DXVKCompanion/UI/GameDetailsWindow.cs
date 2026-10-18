@@ -29,7 +29,7 @@ namespace DXVKCompanion.UI
 
             Text = $"Game Details — {_profile.ExeName}";
             Width = 560;
-            Height = 580;
+            Height = 650;
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false;
             StartPosition = FormStartPosition.CenterParent;
@@ -289,6 +289,57 @@ namespace DXVKCompanion.UI
             Controls.Add(policyCombo);
             top += 35;
 
+            // Version selection controls
+            var versionLabel = new Label
+            {
+                Text = "DXVK Version:",
+                AutoSize = true,
+                Top = top,
+                Left = 20
+            };
+            Controls.Add(versionLabel);
+            top += 25;
+
+            var versionCombo = new ComboBox
+            {
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                Top = top,
+                Left = 20,
+                Width = 240
+            };
+
+            var localVersions = DxvkLocalReleaseLibrary.GetAvailableVersions(
+                _dxvk.DxvkSourceDir,
+                _profile.Api,
+                _profile.Architecture);
+
+            string? currentPinnedVersion = installation?.ManagementPolicy?.PinnedDxvkVersion;
+            var versionLabels = GameDetailsVersionSelection.GetAvailableLabels(localVersions, currentPinnedVersion);
+            foreach (var label in versionLabels)
+            {
+                versionCombo.Items.Add(label);
+            }
+            versionCombo.SelectedIndex = GameDetailsVersionSelection.GetInitialSelectedIndex(versionLabels, currentPinnedVersion);
+
+            bool hasPendingWork = installation?.PendingAction != null && installation.PendingAction.IsPending;
+            if (hasPendingWork)
+            {
+                versionCombo.Enabled = false;
+
+                var pendingLockLabel = new Label
+                {
+                    Text = "Version selection is locked while pending work is queued.",
+                    AutoSize = true,
+                    Top = top + 4,
+                    Left = 270,
+                    ForeColor = Color.DimGray,
+                    Font = new Font(FontFamily.GenericSansSerif, 8, FontStyle.Italic)
+                };
+                Controls.Add(pendingLockLabel);
+            }
+            Controls.Add(versionCombo);
+            top += 35;
+
             var hideCheckbox = new CheckBox
             {
                 Text = "Hide game from standard library view",
@@ -358,9 +409,26 @@ namespace DXVKCompanion.UI
                 {
                     installation.IsHidden = hideCheckbox.Checked;
 
-                    installation.ManagementPolicy = GameDetailsPolicySelection.ResolvePolicy(
+                    var resolvedPolicy = GameDetailsPolicySelection.ResolvePolicy(
                         policyCombo.SelectedIndex,
                         installation.ManagementPolicy);
+
+                    if (versionCombo.Enabled)
+                    {
+                        string? selectedVer = GameDetailsVersionSelection.ResolveSelectedVersion(
+                            versionCombo.SelectedIndex,
+                            versionLabels,
+                            installation.ManagementPolicy?.PinnedDxvkVersion);
+
+                        GameDetailsVersionSelection.ApplyVersionSelection(resolvedPolicy, selectedVer);
+                    }
+                    else
+                    {
+                        // Retain saved choice when Save Settings is used while pending
+                        resolvedPolicy.PinnedDxvkVersion = installation.ManagementPolicy?.PinnedDxvkVersion;
+                    }
+
+                    installation.ManagementPolicy = resolvedPolicy;
 
                     _gameLibraryStore.Save(installation);
                 }
