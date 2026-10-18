@@ -391,5 +391,199 @@ namespace DXVKCompanion.PhaseA.Tests
             Assert.Equal(3, seenTempPaths.Count);
             Assert.Equal(3, seenTempPaths.Distinct(StringComparer.OrdinalIgnoreCase).Count());
         }
+
+        [Fact]
+        public void CacheStore_RecordFailedAttempt_WithoutExistingCache_SavesAttemptTimestamp_WithoutValidRelease()
+        {
+            using var testDir = new SyntheticTestDirectory();
+            string cacheFile = Path.Combine(testDir.RootPath, "release-cache.json");
+            var store = new CacheStore(cacheFile);
+
+            var attemptTime = new DateTime(2026, 10, 17, 12, 0, 0, DateTimeKind.Utc);
+            store.RecordFailedAttempt(attemptTime);
+
+            Assert.True(File.Exists(cacheFile));
+            var reloaded = store.LoadCachedRelease();
+            Assert.NotNull(reloaded);
+            Assert.Equal(attemptTime, reloaded.LastAttemptAt);
+            Assert.False(reloaded.HasValidRelease);
+            Assert.Null(reloaded.ETag);
+        }
+
+        [Fact]
+        public void CacheStore_RecordFailedAttempt_WithExistingCache_UpdatesAttemptTimestamp_PreservingPriorReleaseAndETag()
+        {
+            using var testDir = new SyntheticTestDirectory();
+            string cacheFile = Path.Combine(testDir.RootPath, "release-cache.json");
+            var store = new CacheStore(cacheFile);
+
+            var originalCachedAt = new DateTime(2026, 10, 16, 10, 0, 0, DateTimeKind.Utc);
+            store.SaveCachedRelease(
+                new ReleaseInfo { Version = "v2.5", DownloadUrl = "https://example.com/v2.5.tar.gz" },
+                "\"etag-2.5\"",
+                cachedAt: originalCachedAt,
+                lastAttemptAt: originalCachedAt);
+
+            var failedAttemptTime = new DateTime(2026, 10, 17, 10, 30, 0, DateTimeKind.Utc);
+            store.RecordFailedAttempt(failedAttemptTime);
+
+            var reloaded = store.LoadCachedRelease();
+            Assert.NotNull(reloaded);
+            Assert.Equal("v2.5", reloaded.Release.Version);
+            Assert.Equal("https://example.com/v2.5.tar.gz", reloaded.Release.DownloadUrl);
+            Assert.Equal("\"etag-2.5\"", reloaded.ETag);
+            Assert.Equal(originalCachedAt, reloaded.CachedAt);
+            Assert.Equal(failedAttemptTime, reloaded.LastAttemptAt);
+            Assert.True(reloaded.HasValidRelease);
+        }
+
+        [Fact]
+        public void CacheStore_LoadCachedRelease_LegacyFormatWithoutLastAttemptAt_LoadsCorrectlyWithNullLastAttempt()
+        {
+            using var testDir = new SyntheticTestDirectory();
+            string cacheFile = Path.Combine(testDir.RootPath, "release-cache.json");
+
+            string legacyJson = @"{
+  ""Release"": {
+    ""Version"": ""v2.4"",
+    ""DownloadUrl"": ""https://example.com/v2.4.tar.gz""
+  },
+  ""CachedAt"": ""2026-10-17T08:00:00Z"",
+  ""ETag"": ""\""etag-legacy\""""
+}";
+            File.WriteAllText(cacheFile, legacyJson);
+
+            var store = new CacheStore(cacheFile);
+            var loaded = store.LoadCachedRelease();
+
+            Assert.NotNull(loaded);
+            Assert.Equal("v2.4", loaded.Release.Version);
+            Assert.Equal("\"etag-legacy\"", loaded.ETag);
+            Assert.Null(loaded.LastAttemptAt);
+            Assert.Equal(DateTime.Parse("2026-10-17T08:00:00Z").ToUniversalTime(), loaded.EffectiveLastAttempt);
+            Assert.True(loaded.HasValidRelease);
+        }
+
+        [Fact]
+        public void CacheStore_RecordFailedAttempt_WhenExistingFileMalformed_PreservesFileWithoutOverwriting()
+        {
+            using var testDir = new SyntheticTestDirectory();
+            string cacheFile = Path.Combine(testDir.RootPath, "release-cache.json");
+
+            string corruptedContent = "<<<CORRUPTED JSON CONTENT>>>";
+            File.WriteAllText(cacheFile, corruptedContent);
+
+            var attemptTime = new DateTime(2026, 10, 17, 18, 0, 0, DateTimeKind.Utc);
+            var store = new CacheStore(cacheFile);
+            store.RecordFailedAttempt(attemptTime);
+
+            // Staged write must not overwrite the unparseable file
+            Assert.Equal(corruptedContent, File.ReadAllText(cacheFile));
+
+            // Preserves recoverable bytes to .corrupt backup
+            Assert.True(File.Exists(store.CorruptBackupFile));
+            Assert.Equal(corruptedContent, File.ReadAllText(store.CorruptBackupFile));
+
+            // Stores attempt in sidecar so that throttle is preserved across reloads
+            Assert.True(File.Exists(store.AttemptFile));
+            var loaded = store.LoadCachedRelease();
+            Assert.NotNull(loaded);
+            Assert.Equal(attemptTime, loaded.LastAttemptAt);
+            Assert.False(loaded.HasValidRelease);
+
+            // Reconstructed store also preserves throttle and corrupt file
+            var reloaded = new CacheStore(cacheFile);
+            var reloadedRecord = reloaded.LoadCachedRelease();
+            Assert.NotNull(reloadedRecord);
+            Assert.Equal(attemptTime, reloadedRecord.LastAttemptAt);
+            Assert.False(reloadedRecord.HasValidRelease);
+            Assert.Equal(corruptedContent, File.ReadAllText(cacheFile));
+        }
+
+        [Fact]
+        public void CacheStore_SaveCachedRelease_WhenExistingFileMalformed_PreservesCorruptBackupAndWritesNewRelease()
+        {
+            using var testDir = new SyntheticTestDirectory();
+            string cacheFile = Path.Combine(testDir.RootPath, "release-cache.json");
+
+            string corruptedContent = "<<<CORRUPTED JSON CONTENT>>>";
+            File.WriteAllText(cacheFile, corruptedContent);
+
+            var store = new CacheStore(cacheFile);
+            var release = new ReleaseInfo { Version = "v2.5", DownloadUrl = "https://example.com/dxvk-2.5.tar.gz" };
+            store.SaveCachedRelease(release, "\"etag-25\"");
+
+            // Preserves recoverable corrupt bytes in .corrupt
+            Assert.True(File.Exists(store.CorruptBackupFile));
+            Assert.Equal(corruptedContent, File.ReadAllText(store.CorruptBackupFile));
+
+            // Primary cache file now contains valid new release
+            var loaded = store.LoadCachedRelease();
+            Assert.NotNull(loaded);
+            Assert.True(loaded.HasValidRelease);
+            Assert.Equal("v2.5", loaded.Release.Version);
+
+            // Attempt file is cleaned up if present
+            Assert.False(File.Exists(store.AttemptFile));
+        }
+
+        [Fact]
+        public void CacheStore_SaveCachedRelease_WhenDistinctCorruptBackupExists_PreservesPriorBackupAndCreatesUniqueBackup()
+        {
+            using var testDir = new SyntheticTestDirectory();
+            string cacheFile = Path.Combine(testDir.RootPath, "release-cache.json");
+
+            var store = new CacheStore(cacheFile);
+
+            string priorCorruptContent = "<<<PRIOR DISTINCT RECOVERY BYTES>>>";
+            File.WriteAllText(store.CorruptBackupFile, priorCorruptContent);
+
+            string newCorruptContent = "<<<NEW DISTINCT CORRUPT PRIMARY BYTES>>>";
+            File.WriteAllText(cacheFile, newCorruptContent);
+
+            var release = new ReleaseInfo { Version = "v2.5", DownloadUrl = "https://example.com/dxvk-2.5.tar.gz" };
+            store.SaveCachedRelease(release, "\"etag-25\"");
+
+            // Prior distinct backup remains completely immutable
+            Assert.True(File.Exists(store.CorruptBackupFile));
+            Assert.Equal(priorCorruptContent, File.ReadAllText(store.CorruptBackupFile));
+
+            // New corrupt primary is preserved in a unique additional backup file
+            string additionalBackup = store.CorruptBackupFile + ".1";
+            Assert.True(File.Exists(additionalBackup));
+            Assert.Equal(newCorruptContent, File.ReadAllText(additionalBackup));
+
+            // Primary cache file now contains valid new release
+            var loaded = store.LoadCachedRelease();
+            Assert.NotNull(loaded);
+            Assert.True(loaded.HasValidRelease);
+            Assert.Equal("v2.5", loaded.Release.Version);
+        }
+
+        [Fact]
+        public void CacheStore_SaveCachedRelease_WhenPreservationFails_LeavesPrimaryAndPriorBackupsUnchangedAndThrows()
+        {
+            using var testDir = new SyntheticTestDirectory();
+            string cacheFile = Path.Combine(testDir.RootPath, "release-cache.json");
+
+            var store = new CacheStore(cacheFile);
+
+            string corruptPrimaryContent = "<<<ONLY CORRUPT EVIDENCE - DO NOT CLOBBER>>>";
+            File.WriteAllText(cacheFile, corruptPrimaryContent);
+
+            // Induce backup-copy failure by creating a directory at the intended backup path
+            Directory.CreateDirectory(store.CorruptBackupFile);
+
+            var release = new ReleaseInfo { Version = "v2.5", DownloadUrl = "https://example.com/dxvk-2.5.tar.gz" };
+
+            // Save must throw and refuse to overwrite primary when preservation cannot complete
+            Assert.Throws<IOException>(() => store.SaveCachedRelease(release, "\"etag-25\""));
+
+            // Primary cache file is completely unchanged and contains original corrupt bytes
+            Assert.Equal(corruptPrimaryContent, File.ReadAllText(cacheFile));
+
+            // Attempt file is not created by SaveCachedRelease
+            Assert.False(File.Exists(store.AttemptFile));
+        }
     }
 }
