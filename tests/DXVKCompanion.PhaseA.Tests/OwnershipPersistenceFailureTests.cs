@@ -1448,7 +1448,7 @@ public sealed class OwnershipPersistenceFailureTests
             initialConfLock = new FileStream(confPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
             bool initialApplyFailed = await installer.ApplyToGameAsync(profile, new ReleaseInfo { Version = "2.4", DownloadUrl = "" });
             Assert.False(initialApplyFailed);
-            Assert.Contains("Unexpected error deploying DXVK", installer.LastRefusalReason);
+            Assert.Contains("Unexpected error applying DXVK", installer.LastRefusalReason);
         }
         finally
         {
