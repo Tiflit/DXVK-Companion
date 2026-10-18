@@ -415,23 +415,34 @@ namespace DXVKCompanion.Storage
         }
 
         internal OwnershipSaveResult RecordUnexpectedCommitCallbackException(
+            string reason,
+            GameInstallation? installation = null)
+        {
+            lock (_sync)
+            {
+                ActivateUncertainPersistenceLocked(reason);
+                if (installation != null)
+                {
+                    installation.RestorationState = RestorationState.AttentionRequired;
+                    installation.LastRefusalReason = reason;
+                }
+                return new OwnershipSaveResult(
+                    OwnershipPersistenceOutcome.Unknown,
+                    Exception: new InvalidOperationException(reason),
+                    DiagnosticMessage: reason,
+                    PreWriteBytes: _lastCommittedLibraryBytes,
+                    PreWriteExisted: _lastCommittedExisted);
+            }
+        }
+
+        internal OwnershipSaveResult RecordUnexpectedCommitCallbackException(
             Exception callbackEx,
             bool expectedPreWriteExisted,
             byte[]? expectedPreWriteBytes)
         {
             ArgumentNullException.ThrowIfNull(callbackEx);
-
-            lock (_sync)
-            {
-                string reason = $"Ownership metadata commit outcome is unknown: unexpected exception in ownership commit callback ({callbackEx.GetType().Name}: {callbackEx.Message}).";
-                ActivateUncertainPersistenceLocked(reason);
-                return new OwnershipSaveResult(
-                    OwnershipPersistenceOutcome.Unknown,
-                    Exception: callbackEx,
-                    DiagnosticMessage: reason,
-                    PreWriteBytes: expectedPreWriteBytes,
-                    PreWriteExisted: expectedPreWriteExisted);
-            }
+            string reason = $"Ownership metadata commit outcome is unknown: unexpected exception in ownership commit callback ({callbackEx.GetType().Name}: {callbackEx.Message}).";
+            return RecordUnexpectedCommitCallbackException(reason, null);
         }
 
         internal OwnershipSaveResult TrySaveWithOutcome(GameInstallation installation)
@@ -934,92 +945,117 @@ namespace DXVKCompanion.Storage
 
         private void EnsureNotRefusedLocked()
         {
+            if (!VerifyDiskMatchesAuthoritativeBaselineLocked(
+                    out _,
+                    out _,
+                    out var error,
+                    out var diagMessage,
+                    out _))
+            {
+                throw error ?? new InvalidOperationException(diagMessage ?? "Cannot modify game library: on-disk library does not match the current store baseline.");
+            }
+        }
+
+        private bool VerifyDiskMatchesAuthoritativeBaselineLocked(
+            out byte[]? diskBytes,
+            out bool preWriteExisted,
+            out Exception? baselineError,
+            out string? diagMessage,
+            out bool isPreWriteUnreadableOrSchemaRefused)
+        {
+            diskBytes = null;
+            preWriteExisted = false;
+            baselineError = null;
+            diagMessage = null;
+            isPreWriteUnreadableOrSchemaRefused = false;
+
             if (_hasUncertainPersistence)
             {
-                throw new InvalidOperationException(
-                    _uncertainPersistenceReason ?? "Cannot modify game library: ownership persistence is in an uncertain state for this session.");
+                diagMessage = _uncertainPersistenceReason ?? "Cannot modify game library: ownership persistence is in an uncertain state for this session.";
+                baselineError = new InvalidOperationException(diagMessage);
+                return false;
             }
 
             if (_hasInaccessibleLibraryOnLoad)
             {
-                throw new IOException(
-                    _inaccessibleLibraryReason ?? "Cannot modify game library: existing library file could not be read on startup.");
+                diagMessage = _inaccessibleLibraryReason ?? "Cannot modify game library: existing library file could not be read on startup.";
+                baselineError = new IOException(diagMessage);
+                isPreWriteUnreadableOrSchemaRefused = true;
+                return false;
             }
 
             if (_isRefused)
             {
-                throw new IncompatibleLibrarySchemaException(
-                    _refusedSchemaText,
-                    GameLibrary.CurrentSchemaVersion,
-                    $"Cannot modify game library: file on disk declares schema {_refusedSchemaText}, which is newer than supported schema {GameLibrary.CurrentSchemaVersion}.");
+                diagMessage = $"Cannot modify game library: file on disk declares schema {_refusedSchemaText}, which is newer than supported schema {GameLibrary.CurrentSchemaVersion}.";
+                baselineError = new IncompatibleLibrarySchemaException(_refusedSchemaText, GameLibrary.CurrentSchemaVersion, diagMessage);
+                isPreWriteUnreadableOrSchemaRefused = true;
+                return false;
             }
 
-            if (!TryReadFileBytesOrConfirmAbsent(_libraryFilePath, out var diskBytes, out bool positivelyAbsent, out var readEx))
+            if (!TryReadFileBytesOrConfirmAbsent(_libraryFilePath, out diskBytes, out bool positivelyAbsent, out var readEx))
             {
-                throw new IOException($"Cannot read game library file '{_libraryFilePath}' before write: {readEx?.Message}", readEx);
+                diagMessage = $"Cannot read game library file '{_libraryFilePath}' before write: {readEx?.Message}";
+                baselineError = readEx ?? new IOException(diagMessage);
+                isPreWriteUnreadableOrSchemaRefused = true;
+                return false;
             }
 
             if (!positivelyAbsent && diskBytes != null)
             {
+                preWriteExisted = true;
                 var assessment = GameLibrarySchemaCompatibility.AssessJson(diskBytes);
                 if (assessment.IsRefused)
                 {
                     _isRefused = true;
                     _refusedSchemaText = assessment.FoundSchemaVersionText;
-                    throw new IncompatibleLibrarySchemaException(
-                        _refusedSchemaText,
-                        GameLibrary.CurrentSchemaVersion,
-                        $"Cannot modify game library: file on disk declares schema {_refusedSchemaText}, which is newer than supported schema {GameLibrary.CurrentSchemaVersion}.");
+                    diagMessage = $"Cannot modify game library: file on disk declares schema {_refusedSchemaText}, which is newer than supported schema {GameLibrary.CurrentSchemaVersion}.";
+                    baselineError = new IncompatibleLibrarySchemaException(_refusedSchemaText, GameLibrary.CurrentSchemaVersion, diagMessage);
+                    isPreWriteUnreadableOrSchemaRefused = true;
+                    return false;
                 }
             }
-
-            if (!VerifyDiskMatchesAuthoritativeBaselineLocked(diskBytes, positivelyAbsent, out var baselineRefusalReason))
+            else
             {
-                throw new InvalidOperationException(
-                    baselineRefusalReason ?? "Cannot modify game library: on-disk library does not match the current store baseline.");
+                preWriteExisted = false;
             }
-        }
 
-        private bool VerifyDiskMatchesAuthoritativeBaselineLocked(
-            byte[]? diskBytes,
-            bool positivelyAbsent,
-            out string? refusalReason)
-        {
             if (!_lastCommittedExisted)
             {
                 if (!positivelyAbsent)
                 {
-                    refusalReason = $"Cannot modify game library: '{Path.GetFileName(_libraryFilePath)}' appeared on disk unexpectedly after store initialization.";
-                    ActivateUncertainPersistenceLocked(refusalReason);
+                    diagMessage = $"Cannot modify game library: '{Path.GetFileName(_libraryFilePath)}' appeared on disk unexpectedly after store initialization.";
+                    baselineError = new InvalidOperationException(diagMessage);
+                    ActivateUncertainPersistenceLocked(diagMessage);
                     return false;
                 }
 
-                refusalReason = null;
                 return true;
             }
 
             if (positivelyAbsent || diskBytes == null)
             {
-                refusalReason = $"Cannot modify game library: previously loaded or committed '{Path.GetFileName(_libraryFilePath)}' is missing on disk.";
-                ActivateUncertainPersistenceLocked(refusalReason);
+                diagMessage = $"Cannot modify game library: previously loaded or committed '{Path.GetFileName(_libraryFilePath)}' is missing on disk.";
+                baselineError = new InvalidOperationException(diagMessage);
+                ActivateUncertainPersistenceLocked(diagMessage);
                 return false;
             }
 
             if (_lastCommittedLibraryBytes == null || !diskBytes.AsSpan().SequenceEqual(_lastCommittedLibraryBytes))
             {
-                refusalReason = $"Cannot modify game library: on-disk '{Path.GetFileName(_libraryFilePath)}' was modified outside the current store baseline.";
-                ActivateUncertainPersistenceLocked(refusalReason);
+                diagMessage = $"Cannot modify game library: on-disk '{Path.GetFileName(_libraryFilePath)}' was modified outside the current store baseline.";
+                baselineError = new InvalidOperationException(diagMessage);
+                ActivateUncertainPersistenceLocked(diagMessage);
                 return false;
             }
 
             if (!_loadedFromBrokenFileRecovery && !IsValidCurrentSchemaLibraryJson(diskBytes))
             {
-                refusalReason = $"Cannot modify game library: on-disk '{Path.GetFileName(_libraryFilePath)}' contains malformed or unparseable JSON.";
-                ActivateUncertainPersistenceLocked(refusalReason);
+                diagMessage = $"Cannot modify game library: on-disk '{Path.GetFileName(_libraryFilePath)}' contains malformed or unparseable JSON.";
+                baselineError = new InvalidOperationException(diagMessage);
+                ActivateUncertainPersistenceLocked(diagMessage);
                 return false;
             }
 
-            refusalReason = null;
             return true;
         }
 
