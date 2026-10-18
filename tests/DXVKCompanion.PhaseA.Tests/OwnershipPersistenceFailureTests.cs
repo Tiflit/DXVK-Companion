@@ -1007,9 +1007,10 @@ public sealed class OwnershipPersistenceFailureTests
             });
 
         using var http = new HttpClient();
+        var cacheStore = new CacheStore(Path.Combine(storageDir.RootPath, "cache.json"));
         var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
         var rollback = new DxvkRollback(engine, store);
-        var github = new DxvkGithubClient(http);
+        var github = new DxvkGithubClient(http, cacheStore);
         var manager = new DxvkManager(installer, rollback, github, profileStore, store);
 
         var profile = profileStore.GetOrCreate(exePath);
@@ -1050,7 +1051,7 @@ public sealed class OwnershipPersistenceFailureTests
         Assert.Throws<InvalidOperationException>(() => store.GetOrCreateInstallation(otherGameDir, "OtherGame"));
 
         // 2. ManagedFileInspector must NOT overwrite game-library.json or clear AttentionRequired in memory
-        var inspector = new ManagedFileInspector(store, backupsDir);
+        var inspector = new ManagedFileInspector(store);
         inspector.InspectAll();
         inspector.InspectInstallation(inMemoryInst);
         Assert.Equal(RestorationState.AttentionRequired, inMemoryInst.RestorationState);
@@ -1087,11 +1088,12 @@ public sealed class OwnershipPersistenceFailureTests
 
         var store = new GameLibraryStore(libraryFile, backupsDir);
         var profileStore = new ProfileStore(profilesFile);
+        var cacheStore = new CacheStore(Path.Combine(storageDir.RootPath, "cache.json"));
         var engine = new MultiFileTransactionEngine(backupsDir);
         using var http = new HttpClient();
         var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
         var rollback = new DxvkRollback(engine, store);
-        var github = new DxvkGithubClient(http);
+        var github = new DxvkGithubClient(http, cacheStore);
         var manager = new DxvkManager(installer, rollback, github, profileStore, store);
 
         var profile = profileStore.GetOrCreate(exePath);
