@@ -49,12 +49,67 @@ public sealed class PerGameVersionSelectionTests : IDisposable
         _gameDir.Dispose();
     }
 
+    private static readonly byte[] X32D3D11 = new byte[] { 0x32, 0x11, 0x01 };
+    private static readonly byte[] X32Dxgi = new byte[] { 0x32, 0x00, 0x02 };
+
     private static void SeedLocalRelease(string sourceRoot, string version, byte[] d3d11, byte[] dxgi)
     {
         string archDir = Path.Combine(sourceRoot, version, "x64");
         Directory.CreateDirectory(archDir);
         File.WriteAllBytes(Path.Combine(archDir, "d3d11.dll"), d3d11);
         File.WriteAllBytes(Path.Combine(archDir, "dxgi.dll"), dxgi);
+    }
+
+    private static void SeedDualArchRelease(string sourceRoot, string version, byte[] x32D3d11, byte[] x32Dxgi, byte[] x64D3d11, byte[] x64Dxgi)
+    {
+        string x32Dir = Path.Combine(sourceRoot, version, "x32");
+        Directory.CreateDirectory(x32Dir);
+        File.WriteAllBytes(Path.Combine(x32Dir, "d3d11.dll"), x32D3d11);
+        File.WriteAllBytes(Path.Combine(x32Dir, "dxgi.dll"), x32Dxgi);
+
+        string x64Dir = Path.Combine(sourceRoot, version, "x64");
+        Directory.CreateDirectory(x64Dir);
+        File.WriteAllBytes(Path.Combine(x64Dir, "d3d11.dll"), x64D3d11);
+        File.WriteAllBytes(Path.Combine(x64Dir, "dxgi.dll"), x64Dxgi);
+    }
+
+    private static bool TryCreateDirectoryLink(string linkPath, string targetPath)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            try
+            {
+                var psi = new ProcessStartInfo
+                {
+                    FileName = "cmd.exe",
+                    Arguments = $"/c mklink /J \"{linkPath}\" \"{targetPath}\"",
+                    CreateNoWindow = true,
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true
+                };
+                using var proc = Process.Start(psi);
+                if (proc != null)
+                {
+                    proc.WaitForExit(5000);
+                    if (proc.ExitCode == 0 && Directory.Exists(linkPath))
+                        return true;
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        try
+        {
+            Directory.CreateSymbolicLink(linkPath, targetPath);
+            return Directory.Exists(linkPath);
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private sealed class RecordingFakeHttpMessageHandler : HttpMessageHandler
@@ -437,5 +492,266 @@ public sealed class PerGameVersionSelectionTests : IDisposable
         Assert.True(File.Exists(Path.Combine(v23Dir, "dxgi.dll")));
         Assert.True(File.Exists(Path.Combine(v24Dir, "d3d11.dll")));
         Assert.True(File.Exists(Path.Combine(v24Dir, "dxgi.dll")));
+    }
+
+    [Fact]
+    public async Task ArchitectureDirectoryJunction_PointingOutsideRoot_RefusesDeploymentAndLeavesExternalAndGameFilesUnchanged()
+    {
+        string externalDir = Path.Combine(Path.GetTempPath(), "dxvk_ext_mgr_" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            Directory.CreateDirectory(externalDir);
+            byte[] sentinelD3D11 = new byte[] { 0xEE, 0x11, 0xEE };
+            byte[] sentinelDxgi = new byte[] { 0xEE, 0x00, 0xEE };
+            File.WriteAllBytes(Path.Combine(externalDir, "d3d11.dll"), sentinelD3D11);
+            File.WriteAllBytes(Path.Combine(externalDir, "dxgi.dll"), sentinelDxgi);
+
+            string releaseDir = Path.Combine(_sourceDir.RootPath, "v2.4_external");
+            Directory.CreateDirectory(releaseDir);
+
+            string archLink = Path.Combine(releaseDir, "x64");
+            bool linkCreated = TryCreateDirectoryLink(archLink, externalDir);
+            if (!linkCreated)
+            {
+                return;
+            }
+
+            using var client = new HttpClient(new RecordingFakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.NotFound)));
+            var (manager, libraryStore, profileStore, _) = CreateTestManager(client);
+
+            var profile = SetupGame("EscapeTargetGame", OriginalD3D11);
+            profileStore.Save(profile);
+
+            var inst = libraryStore.GetOrCreateInstallation(Path.GetDirectoryName(profile.ExePath)!, "EscapeTargetGame");
+            inst.ManagementPolicy.PinnedDxvkVersion = "v2.4_external";
+            libraryStore.Save(inst);
+
+            var result = await manager.RequestEnableByPathAsync(profile);
+
+            Assert.Equal(DxvkActionResult.Failed, result);
+            Assert.False(profile.DxvkEnabled);
+            Assert.Null(profile.DxvkVersion);
+            Assert.Contains("is not available locally", manager.LastRefusalReason);
+
+            // Game target files untouched
+            string gameD3D11 = Path.Combine(Path.GetDirectoryName(profile.ExePath)!, "d3d11.dll");
+            string gameDxgi = Path.Combine(Path.GetDirectoryName(profile.ExePath)!, "dxgi.dll");
+            Assert.Equal(OriginalD3D11, File.ReadAllBytes(gameD3D11));
+            Assert.False(File.Exists(gameDxgi));
+
+            // External files untouched
+            Assert.Equal(sentinelD3D11, File.ReadAllBytes(Path.Combine(externalDir, "d3d11.dll")));
+            Assert.Equal(sentinelDxgi, File.ReadAllBytes(Path.Combine(externalDir, "dxgi.dll")));
+        }
+        finally
+        {
+            try
+            {
+                if (Directory.Exists(externalDir))
+                {
+                    Directory.Delete(externalDir, recursive: true);
+                }
+            }
+            catch
+            {
+            }
+        }
+    }
+
+    [Theory]
+    [InlineData("x86", "x32", true)]
+    [InlineData("win32", "x32", true)]
+    [InlineData("amd64", "x64", false)]
+    [InlineData("win64", "x64", false)]
+    public async Task AcceptedArchitectureAliases_DeployCorrectDistinctArchitectureBytes_AndRecordMatchingArchitecture(
+        string alias,
+        string expectedNormalizedArch,
+        bool expectX32Bytes)
+    {
+        SeedDualArchRelease(_sourceDir.RootPath, "v2.7_dual", X32D3D11, X32Dxgi, V24D3D11, V24Dxgi);
+
+        using var client = new HttpClient(new RecordingFakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.NotFound)));
+        var (manager, libraryStore, profileStore, _) = CreateTestManager(client);
+
+        var profile = SetupGame("AliasGame_" + alias, OriginalD3D11);
+        profile.Architecture = alias;
+        profileStore.Save(profile);
+
+        var inst = libraryStore.GetOrCreateInstallation(Path.GetDirectoryName(profile.ExePath)!, "AliasGame_" + alias);
+        inst.ManagementPolicy.PinnedDxvkVersion = "v2.7_dual";
+        libraryStore.Save(inst);
+
+        var result = await manager.RequestEnableByPathAsync(profile);
+
+        Assert.Equal(DxvkActionResult.Applied, result);
+        Assert.True(profile.DxvkEnabled);
+        Assert.Equal("v2.7_dual", profile.DxvkVersion);
+        Assert.Equal(expectedNormalizedArch, profile.Architecture);
+
+        var reloadedInst = libraryStore.FindByInstallationPath(Path.GetDirectoryName(profile.ExePath)!);
+        Assert.NotNull(reloadedInst);
+        Assert.Equal(expectedNormalizedArch, reloadedInst!.ManagedDxvkArchitecture);
+
+        string gameD3D11 = Path.Combine(Path.GetDirectoryName(profile.ExePath)!, "d3d11.dll");
+        string gameDxgi = Path.Combine(Path.GetDirectoryName(profile.ExePath)!, "dxgi.dll");
+
+        if (expectX32Bytes)
+        {
+            Assert.Equal(X32D3D11, File.ReadAllBytes(gameD3D11));
+            Assert.Equal(X32Dxgi, File.ReadAllBytes(gameDxgi));
+        }
+        else
+        {
+            Assert.Equal(V24D3D11, File.ReadAllBytes(gameD3D11));
+            Assert.Equal(V24Dxgi, File.ReadAllBytes(gameDxgi));
+        }
+    }
+
+    [Fact]
+    public async Task AcceptedX32Alias_WhenOnlyX32PayloadExists_DeploysSuccessfully()
+    {
+        string x32OnlyDir = Path.Combine(_sourceDir.RootPath, "v2.8_x32only", "x32");
+        Directory.CreateDirectory(x32OnlyDir);
+        File.WriteAllBytes(Path.Combine(x32OnlyDir, "d3d11.dll"), X32D3D11);
+        File.WriteAllBytes(Path.Combine(x32OnlyDir, "dxgi.dll"), X32Dxgi);
+
+        using var client = new HttpClient(new RecordingFakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.NotFound)));
+        var (manager, libraryStore, profileStore, _) = CreateTestManager(client);
+
+        var profile = SetupGame("X86OnlyGame", OriginalD3D11);
+        profile.Architecture = "x86";
+        profileStore.Save(profile);
+
+        var inst = libraryStore.GetOrCreateInstallation(Path.GetDirectoryName(profile.ExePath)!, "X86OnlyGame");
+        inst.ManagementPolicy.PinnedDxvkVersion = "v2.8_x32only";
+        libraryStore.Save(inst);
+
+        var result = await manager.RequestEnableByPathAsync(profile);
+
+        Assert.Equal(DxvkActionResult.Applied, result);
+        Assert.True(profile.DxvkEnabled);
+        Assert.Equal("x32", profile.Architecture);
+
+        var reloadedInst = libraryStore.FindByInstallationPath(Path.GetDirectoryName(profile.ExePath)!);
+        Assert.Equal("x32", reloadedInst?.ManagedDxvkArchitecture);
+
+        string gameD3D11 = Path.Combine(Path.GetDirectoryName(profile.ExePath)!, "d3d11.dll");
+        Assert.Equal(X32D3D11, File.ReadAllBytes(gameD3D11));
+    }
+
+    [Fact]
+    public async Task StaleProfile_Direction1_ManagedV24_ProfileV23_CorrectlySkipped()
+    {
+        var rejectingHandler = new RecordingFakeHttpMessageHandler(_ =>
+        {
+            throw new InvalidOperationException("Zero HTTP requests expected for local managed install check.");
+        });
+
+        using var client = new HttpClient(rejectingHandler);
+        var (manager, libraryStore, profileStore, _) = CreateTestManager(client);
+
+        var profile = SetupGame("StaleGame1", OriginalD3D11);
+        profileStore.Save(profile);
+
+        var inst = libraryStore.GetOrCreateInstallation(Path.GetDirectoryName(profile.ExePath)!, "StaleGame1");
+        inst.ManagementPolicy.PinnedDxvkVersion = "v2.4";
+        libraryStore.Save(inst);
+
+        var deployRes = await manager.RequestEnableByPathAsync(profile);
+        Assert.Equal(DxvkActionResult.Applied, deployRes);
+        Assert.Equal("v2.4", profile.DxvkVersion);
+
+        var reloadedInst = libraryStore.FindByInstallationPath(Path.GetDirectoryName(profile.ExePath)!);
+        Assert.NotNull(reloadedInst);
+        Assert.Equal(RestorationState.Managed, reloadedInst!.RestorationState);
+        Assert.Equal("v2.4", reloadedInst.ManagedDxvkVersion);
+
+        // Introduce stale profile field: profile.DxvkVersion = "v2.3" while installation is actively Managed v2.4
+        profile.DxvkVersion = "v2.3";
+        profileStore.Save(profile);
+
+        // Target is v2.4 (pinned to v2.4).
+        // Since active managed installation is already v2.4, UpdateAvailable must be FALSE despite stale profile!
+        Assert.False(manager.UpdateAvailable(profile));
+
+        // UpdateAllEnabledAsync must also skip this game and perform 0 updates
+        var updateAllResults = await manager.UpdateAllEnabledAsync();
+        Assert.Empty(updateAllResults);
+        Assert.Empty(rejectingHandler.Requests);
+
+        // Deployed files and baseline backup remain unchanged
+        string gameD3D11 = Path.Combine(Path.GetDirectoryName(profile.ExePath)!, "d3d11.dll");
+        string gameDxgi = Path.Combine(Path.GetDirectoryName(profile.ExePath)!, "dxgi.dll");
+        Assert.Equal(V24D3D11, File.ReadAllBytes(gameD3D11));
+        Assert.Equal(V24Dxgi, File.ReadAllBytes(gameDxgi));
+
+        // Disable / rollback cleanly returns to baseline
+        var disableResult = await manager.DisableDxvkAsync(profile);
+        Assert.True(disableResult);
+        Assert.Equal(OriginalD3D11, File.ReadAllBytes(gameD3D11));
+        Assert.False(File.Exists(gameDxgi));
+    }
+
+    [Fact]
+    public async Task StaleProfile_Direction2_ManagedV23_ProfileV24_CorrectlyUpdated()
+    {
+        var rejectingHandler = new RecordingFakeHttpMessageHandler(_ =>
+        {
+            throw new InvalidOperationException("Zero HTTP requests expected for local managed install check.");
+        });
+
+        using var client = new HttpClient(rejectingHandler);
+        var (manager, libraryStore, profileStore, _) = CreateTestManager(client);
+
+        var profile = SetupGame("StaleGame2", OriginalD3D11);
+        profileStore.Save(profile);
+
+        var inst = libraryStore.GetOrCreateInstallation(Path.GetDirectoryName(profile.ExePath)!, "StaleGame2");
+        inst.ManagementPolicy.PinnedDxvkVersion = "v2.3";
+        libraryStore.Save(inst);
+
+        var deployRes = await manager.RequestEnableByPathAsync(profile);
+        Assert.Equal(DxvkActionResult.Applied, deployRes);
+        Assert.Equal("v2.3", profile.DxvkVersion);
+
+        var reloadedInst = libraryStore.FindByInstallationPath(Path.GetDirectoryName(profile.ExePath)!);
+        Assert.NotNull(reloadedInst);
+        Assert.Equal(RestorationState.Managed, reloadedInst!.RestorationState);
+        Assert.Equal("v2.3", reloadedInst.ManagedDxvkVersion);
+
+        // Introduce stale profile field: profile.DxvkVersion = "v2.4", but installation is still v2.3!
+        profile.DxvkVersion = "v2.4";
+        profileStore.Save(profile);
+
+        // Target version changed to v2.4 in management policy
+        inst.ManagementPolicy.PinnedDxvkVersion = "v2.4";
+        libraryStore.Save(inst);
+
+        // Since active managed installation is v2.3 and target is v2.4, UpdateAvailable must be TRUE!
+        Assert.True(manager.UpdateAvailable(profile));
+
+        // UpdateAllEnabledAsync must update this game to v2.4
+        var updateAllResults = await manager.UpdateAllEnabledAsync();
+        Assert.Single(updateAllResults);
+        Assert.True(updateAllResults.ContainsKey(profile.ExePath));
+        Assert.Equal(DxvkActionResult.Applied, updateAllResults[profile.ExePath]);
+        Assert.Empty(rejectingHandler.Requests);
+
+        // Deployed files and recorded installation version are now v2.4
+        string gameD3D11 = Path.Combine(Path.GetDirectoryName(profile.ExePath)!, "d3d11.dll");
+        string gameDxgi = Path.Combine(Path.GetDirectoryName(profile.ExePath)!, "dxgi.dll");
+        Assert.Equal(V24D3D11, File.ReadAllBytes(gameD3D11));
+        Assert.Equal(V24Dxgi, File.ReadAllBytes(gameDxgi));
+
+        var updatedInst = libraryStore.FindByInstallationPath(Path.GetDirectoryName(profile.ExePath)!);
+        Assert.Equal("v2.4", updatedInst?.ManagedDxvkVersion);
+        var updatedProfile = profileStore.GetOrCreate(profile.ExePath);
+        Assert.Equal("v2.4", updatedProfile.DxvkVersion);
+
+        // Disable / rollback cleanly returns to baseline, proving backup data was preserved
+        var disableResult = await manager.DisableDxvkAsync(updatedProfile);
+        Assert.True(disableResult);
+        Assert.Equal(OriginalD3D11, File.ReadAllBytes(gameD3D11));
+        Assert.False(File.Exists(gameDxgi));
     }
 }

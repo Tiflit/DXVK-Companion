@@ -97,16 +97,45 @@ namespace DXVKCompanion.DXVK
         /// </summary>
         private void ReassessEffectiveApi(GameInstallation? installation, GameProfile profile)
         {
-            if (installation == null) return;
+            bool profileChanged = false;
+            bool installationChanged = false;
+
+            // Normalize profile architecture alias if recognized (e.g. x86/win32 -> x32, amd64/win64 -> x64)
+            string? normProfileArch = DxvkLocalReleaseLibrary.NormalizeArchitecture(profile.Architecture);
+            if (normProfileArch != null && !string.Equals(profile.Architecture, normProfileArch, StringComparison.Ordinal))
+            {
+                profile.Architecture = normProfileArch;
+                profileChanged = true;
+            }
+
+            if (installation == null)
+            {
+                if (profileChanged)
+                {
+                    _profiles.Save(profile);
+                }
+                return;
+            }
 
             string relExe = Path.GetRelativePath(installation.InstallationPath, profile.ExePath);
             var recordedExe = installation.FindExecutable(relExe);
 
-            bool profileChanged = false;
-            bool installationChanged = false;
+            string? normManagedArch = DxvkLocalReleaseLibrary.NormalizeArchitecture(installation.ManagedDxvkArchitecture);
+            if (normManagedArch != null && !string.Equals(installation.ManagedDxvkArchitecture, normManagedArch, StringComparison.Ordinal))
+            {
+                installation.ManagedDxvkArchitecture = normManagedArch;
+                installationChanged = true;
+            }
 
             if (recordedExe != null)
             {
+                string? normExeArch = DxvkLocalReleaseLibrary.NormalizeArchitecture(recordedExe.LastKnownArchitecture);
+                if (normExeArch != null && !string.Equals(recordedExe.LastKnownArchitecture, normExeArch, StringComparison.Ordinal))
+                {
+                    recordedExe.LastKnownArchitecture = normExeArch;
+                    installationChanged = true;
+                }
+
                 // Synchronize architecture if unknown
                 if (string.Equals(profile.Architecture, "Unknown", StringComparison.OrdinalIgnoreCase) &&
                     !string.IsNullOrWhiteSpace(recordedExe.LastKnownArchitecture) &&
@@ -187,19 +216,23 @@ namespace DXVKCompanion.DXVK
             if (!DxvkCompatibility.IsInstallationSupported(installation, profile.Api, profile.ExeName, out _))
                 return false;
 
+            string? currentVersion = (installation != null && !string.IsNullOrWhiteSpace(installation.ManagedDxvkVersion))
+                ? installation.ManagedDxvkVersion.Trim()
+                : profile.DxvkVersion;
+
             string? pinned = installation?.ManagementPolicy?.PinnedDxvkVersion;
             if (!string.IsNullOrWhiteSpace(pinned))
             {
-                return !string.Equals(profile.DxvkVersion, pinned.Trim(), StringComparison.OrdinalIgnoreCase);
+                return !string.Equals(currentVersion, pinned.Trim(), StringComparison.OrdinalIgnoreCase);
             }
 
             if (latest == null)
                 return false;
 
-            if (string.IsNullOrWhiteSpace(profile.DxvkVersion))
+            if (string.IsNullOrWhiteSpace(currentVersion))
                 return true;
 
-            return !string.Equals(profile.DxvkVersion, latest.Version, StringComparison.OrdinalIgnoreCase);
+            return !string.Equals(currentVersion, latest.Version, StringComparison.OrdinalIgnoreCase);
         }
 
         private static bool IsStillRunning(Process process)
@@ -403,7 +436,19 @@ namespace DXVKCompanion.DXVK
         public async Task<Dictionary<string, DxvkActionResult>> UpdateAllEnabledAsync()
         {
             var results = new Dictionary<string, DxvkActionResult>();
-            var enabledProfiles = _profiles.GetAll().Where(p => p.DxvkEnabled).ToList();
+            var allProfiles = _profiles.GetAll().ToList();
+            var enabledProfiles = allProfiles.Where(p =>
+            {
+                var inst = ResolveInstallation(p.ExePath);
+                if (inst != null && inst.IsHidden)
+                    return false;
+                if (inst != null && inst.RestorationState == RestorationState.Restored && string.IsNullOrWhiteSpace(inst.ManagedDxvkVersion))
+                    return false;
+                return p.DxvkEnabled
+                    || (inst != null && (
+                        inst.RestorationState == RestorationState.Managed
+                        || (inst.RestorationState == RestorationState.AttentionRequired && !string.IsNullOrWhiteSpace(inst.ManagedDxvkVersion))));
+            }).ToList();
             if (enabledProfiles.Count == 0)
                 return results;
 

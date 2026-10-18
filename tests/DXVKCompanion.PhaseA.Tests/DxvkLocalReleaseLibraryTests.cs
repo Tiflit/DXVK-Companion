@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.IO;
 using DXVKCompanion.DXVK;
 using DXVKCompanion.Models;
@@ -188,5 +189,121 @@ public sealed class DxvkLocalReleaseLibraryTests : IDisposable
         // Check Unknown arch returns empty
         var emptyArch = DxvkLocalReleaseLibrary.GetAvailableVersions(_tempRoot, GraphicsApi.DX11, "Unknown");
         Assert.Empty(emptyArch);
+    }
+
+    private static bool TryCreateDirectoryLink(string linkPath, string targetPath)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            try
+            {
+                var psi = new ProcessStartInfo
+                {
+                    FileName = "cmd.exe",
+                    Arguments = $"/c mklink /J \"{linkPath}\" \"{targetPath}\"",
+                    CreateNoWindow = true,
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true
+                };
+                using var proc = Process.Start(psi);
+                if (proc != null)
+                {
+                    proc.WaitForExit(5000);
+                    if (proc.ExitCode == 0 && Directory.Exists(linkPath))
+                        return true;
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        try
+        {
+            Directory.CreateSymbolicLink(linkPath, targetPath);
+            return Directory.Exists(linkPath);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    [Fact]
+    public void ArchitectureDirectoryReparsePoint_PointingOutsideRoot_IsExcludedFromListingAndAvailability()
+    {
+        string externalRoot = Path.Combine(Path.GetTempPath(), "dxvk_ext_" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            Directory.CreateDirectory(externalRoot);
+            byte[] sentinelD3D11 = new byte[] { 0xEE, 0x11, 0xEE };
+            byte[] sentinelDxgi = new byte[] { 0xEE, 0x00, 0xEE };
+            File.WriteAllBytes(Path.Combine(externalRoot, "d3d11.dll"), sentinelD3D11);
+            File.WriteAllBytes(Path.Combine(externalRoot, "dxgi.dll"), sentinelDxgi);
+
+            string releaseDir = Path.Combine(_tempRoot, "v2.4");
+            Directory.CreateDirectory(releaseDir);
+
+            string archLink = Path.Combine(releaseDir, "x64");
+            bool linkCreated = TryCreateDirectoryLink(archLink, externalRoot);
+            if (!linkCreated)
+            {
+                return;
+            }
+
+            Assert.True(Directory.Exists(archLink));
+            Assert.True(File.Exists(Path.Combine(archLink, "d3d11.dll")));
+
+            // Availability must reject the release whose arch directory escapes root
+            bool available = DxvkLocalReleaseLibrary.IsVersionAvailable(_tempRoot, "v2.4", GraphicsApi.DX11, "x64");
+            Assert.False(available);
+
+            // Discovery / GetAvailableVersions must also exclude the escaping release
+            var list = DxvkLocalReleaseLibrary.GetAvailableVersions(_tempRoot, GraphicsApi.DX11, "x64");
+            Assert.DoesNotContain("v2.4", list);
+
+            // External files remain unchanged
+            Assert.Equal(sentinelD3D11, File.ReadAllBytes(Path.Combine(externalRoot, "d3d11.dll")));
+            Assert.Equal(sentinelDxgi, File.ReadAllBytes(Path.Combine(externalRoot, "dxgi.dll")));
+        }
+        finally
+        {
+            try
+            {
+                if (Directory.Exists(externalRoot))
+                {
+                    Directory.Delete(externalRoot, recursive: true);
+                }
+            }
+            catch
+            {
+            }
+        }
+    }
+
+    [Fact]
+    public void ArchitectureDirectoryReparsePoint_PointingInsideRoot_IsAccepted()
+    {
+        string internalShared = Path.Combine(_tempRoot, "shared_x64");
+        Directory.CreateDirectory(internalShared);
+        File.WriteAllBytes(Path.Combine(internalShared, "d3d11.dll"), new byte[] { 1, 2 });
+        File.WriteAllBytes(Path.Combine(internalShared, "dxgi.dll"), new byte[] { 3, 4 });
+
+        string releaseDir = Path.Combine(_tempRoot, "v2.4");
+        Directory.CreateDirectory(releaseDir);
+
+        string archLink = Path.Combine(releaseDir, "x64");
+        bool linkCreated = TryCreateDirectoryLink(archLink, internalShared);
+        if (!linkCreated)
+        {
+            return;
+        }
+
+        bool available = DxvkLocalReleaseLibrary.IsVersionAvailable(_tempRoot, "v2.4", GraphicsApi.DX11, "x64");
+        Assert.True(available);
+
+        var list = DxvkLocalReleaseLibrary.GetAvailableVersions(_tempRoot, GraphicsApi.DX11, "x64");
+        Assert.Contains("v2.4", list);
     }
 }

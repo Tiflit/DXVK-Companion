@@ -39,6 +39,91 @@ namespace DXVKCompanion.DXVK
             return null;
         }
 
+        private static bool IsPathWithinRoot(string path, string fullSourceRootWithSlash)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+                return false;
+
+            try
+            {
+                string full = Path.GetFullPath(path);
+                string root = fullSourceRootWithSlash.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                string fullTrimmed = full.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
+                if (string.Equals(fullTrimmed, root, StringComparison.OrdinalIgnoreCase))
+                    return true;
+
+                string rootWithSlash = root + Path.DirectorySeparatorChar;
+                return full.StartsWith(rootWithSlash, StringComparison.OrdinalIgnoreCase);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        internal static bool ValidateReleasePayload(string fullSource, string versionDir, string arch, string[] requiredDlls)
+        {
+            try
+            {
+                if (!Directory.Exists(versionDir))
+                    return false;
+
+                var vDirInfo = new DirectoryInfo(versionDir);
+                if (!IsPathWithinRoot(vDirInfo.FullName, fullSource))
+                    return false;
+
+                if ((vDirInfo.Attributes & FileAttributes.ReparsePoint) != 0)
+                {
+                    var target = vDirInfo.ResolveLinkTarget(returnFinalTarget: true);
+                    if (target == null || !IsPathWithinRoot(target.FullName, fullSource))
+                        return false;
+                }
+
+                string archDir = Path.Combine(versionDir, arch);
+                if (!Directory.Exists(archDir))
+                    return false;
+
+                var archDirInfo = new DirectoryInfo(archDir);
+                if (!IsPathWithinRoot(archDirInfo.FullName, fullSource))
+                    return false;
+
+                if ((archDirInfo.Attributes & FileAttributes.ReparsePoint) != 0)
+                {
+                    var target = archDirInfo.ResolveLinkTarget(returnFinalTarget: true);
+                    if (target == null || !IsPathWithinRoot(target.FullName, fullSource))
+                        return false;
+                }
+
+                foreach (var dll in requiredDlls)
+                {
+                    string dllPath = Path.Combine(archDir, dll);
+                    if (!File.Exists(dllPath))
+                        return false;
+
+                    var fi = new FileInfo(dllPath);
+                    if (fi.Length == 0)
+                        return false;
+
+                    if (!IsPathWithinRoot(fi.FullName, fullSource))
+                        return false;
+
+                    if ((fi.Attributes & FileAttributes.ReparsePoint) != 0)
+                    {
+                        var target = fi.ResolveLinkTarget(returnFinalTarget: true);
+                        if (target == null || !IsPathWithinRoot(target.FullName, fullSource))
+                            return false;
+                    }
+                }
+
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
         public static string? GetVersionDirectory(string sourceRoot, string? versionTag)
         {
             if (string.IsNullOrWhiteSpace(sourceRoot) || !IsSafeReleaseDirectoryName(versionTag))
@@ -50,7 +135,7 @@ namespace DXVKCompanion.DXVK
                 string candidate = Path.Combine(sourceRoot, versionTag!.Trim());
                 string fullCandidate = Path.GetFullPath(candidate);
 
-                if (!fullCandidate.StartsWith(fullSource, StringComparison.OrdinalIgnoreCase))
+                if (!IsPathWithinRoot(fullCandidate, fullSource))
                     return null;
 
                 if (!Directory.Exists(fullCandidate))
@@ -60,7 +145,7 @@ namespace DXVKCompanion.DXVK
                 if ((dirInfo.Attributes & FileAttributes.ReparsePoint) != 0)
                 {
                     var target = dirInfo.ResolveLinkTarget(returnFinalTarget: true);
-                    if (target != null && !target.FullName.StartsWith(fullSource, StringComparison.OrdinalIgnoreCase))
+                    if (target == null || !IsPathWithinRoot(target.FullName, fullSource))
                         return null;
                 }
 
@@ -92,32 +177,7 @@ namespace DXVKCompanion.DXVK
             try
             {
                 string fullSource = Path.GetFullPath(sourceRoot).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
-                string archDir = Path.Combine(versionDir, arch);
-                if (!Directory.Exists(archDir))
-                    return false;
-
-                foreach (var dll in requiredDlls)
-                {
-                    string dllPath = Path.Combine(archDir, dll);
-                    if (!File.Exists(dllPath))
-                        return false;
-
-                    var fi = new FileInfo(dllPath);
-                    if (fi.Length == 0)
-                        return false;
-
-                    if ((fi.Attributes & FileAttributes.ReparsePoint) != 0)
-                    {
-                        var target = fi.ResolveLinkTarget(returnFinalTarget: true);
-                        if (target != null && !target.FullName.StartsWith(fullSource, StringComparison.OrdinalIgnoreCase))
-                            return false;
-                    }
-
-                    if (!Path.GetFullPath(dllPath).StartsWith(fullSource, StringComparison.OrdinalIgnoreCase))
-                        return false;
-                }
-
-                return true;
+                return ValidateReleasePayload(fullSource, versionDir, arch, requiredDlls);
             }
             catch
             {
@@ -155,59 +215,10 @@ namespace DXVKCompanion.DXVK
                         continue;
 
                     string fullDir = Path.GetFullPath(dir);
-                    if (!fullDir.StartsWith(fullSource, StringComparison.OrdinalIgnoreCase))
+                    if (!ValidateReleasePayload(fullSource, fullDir, arch, requiredDlls))
                         continue;
 
-                    var dirInfo = new DirectoryInfo(fullDir);
-                    if ((dirInfo.Attributes & FileAttributes.ReparsePoint) != 0)
-                    {
-                        var target = dirInfo.ResolveLinkTarget(returnFinalTarget: true);
-                        if (target != null && !target.FullName.StartsWith(fullSource, StringComparison.OrdinalIgnoreCase))
-                            continue;
-                    }
-
-                    string archDir = Path.Combine(fullDir, arch);
-                    if (!Directory.Exists(archDir))
-                        continue;
-
-                    bool allDllsPresent = true;
-                    foreach (var dll in requiredDlls)
-                    {
-                        string dllPath = Path.Combine(archDir, dll);
-                        if (!File.Exists(dllPath))
-                        {
-                            allDllsPresent = false;
-                            break;
-                        }
-
-                        var fi = new FileInfo(dllPath);
-                        if (fi.Length == 0)
-                        {
-                            allDllsPresent = false;
-                            break;
-                        }
-
-                        if ((fi.Attributes & FileAttributes.ReparsePoint) != 0)
-                        {
-                            var target = fi.ResolveLinkTarget(returnFinalTarget: true);
-                            if (target != null && !target.FullName.StartsWith(fullSource, StringComparison.OrdinalIgnoreCase))
-                            {
-                                allDllsPresent = false;
-                                break;
-                            }
-                        }
-
-                        if (!Path.GetFullPath(dllPath).StartsWith(fullSource, StringComparison.OrdinalIgnoreCase))
-                        {
-                            allDllsPresent = false;
-                            break;
-                        }
-                    }
-
-                    if (allDllsPresent)
-                    {
-                        results.Add(tag);
-                    }
+                    results.Add(tag);
                 }
             }
             catch

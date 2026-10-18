@@ -108,3 +108,29 @@ Issue [#163](https://github.com/Tiflit/DXVK-Companion/issues/163) delivers per-i
   - `UnpinnedHistoricalOlderProfile_QueuesLatestIntent_NotMistakenForPin`: proves unpinned game with historical version queues `"latest"` rather than mistaking historical version as a pin.
   - `UnavailableVersion_FailsClearlyWithoutTargetMutation`: proves missing payload fails with clear refusal reason without mutating game directory or silently reverting policy.
   - `SavePreferenceWithoutMutatingInstalledVersion_AndDeployOnlyOnExplicitAction`: proves saving preference does not mutate disk DLLs, explicit update deploys target, and rollback restores original baseline while older source payloads remain intact.
+
+---
+
+### 4. Codex Grouped Review P2 Repairs
+
+Codex reviewed PR #164 at head `858bd2ccd1bc0eb56c9ae9e67651b563149d24c0` with 3 P2 findings addressed in this grouped repair cycle:
+
+1. **[P2 - 1] Architecture-directory links:**
+   - **Fix:** In `DxvkLocalReleaseLibrary.cs`, extracted `ValidateReleasePayload(string fullSource, string versionDir, string arch, string[] requiredDlls)` and `IsPathWithinRoot(string path, string fullSourceRootWithSlash)`. Shared this validation across `IsVersionAvailable` and `GetAvailableVersions`, ensuring no drift. Both `versionDir`, `archDir`, and leaf DLL paths must be within `sourceRoot`, and if any are reparse points (junctions/symlinks), their resolved link targets are verified to reside strictly within `sourceRoot`.
+   - **Regressions:**
+     - `DxvkLocalReleaseLibraryTests.ArchitectureDirectoryReparsePoint_PointingOutsideRoot_IsExcludedFromListingAndAvailability`: verifies that an architecture directory junction pointing outside `sourceRoot` is excluded from both `GetAvailableVersions` and `IsVersionAvailable`, and external sentinel bytes are untouched.
+     - `DxvkLocalReleaseLibraryTests.ArchitectureDirectoryReparsePoint_PointingInsideRoot_IsAccepted`: verifies that internal reparse targets remain available and listed.
+     - `PerGameVersionSelectionTests.ArchitectureDirectoryJunction_PointingOutsideRoot_RefusesDeploymentAndLeavesExternalAndGameFilesUnchanged`: tests manager-level deployment refusal when an architecture directory escapes `sourceRoot`, leaving game baseline files and external directory files completely untouched.
+
+2. **[P2 - 2] Consistent architecture alias deployment:**
+   - **Fix:** In `DxvkManager.cs`, updated `ReassessEffectiveApi` to normalize `profile.Architecture`, `recordedExe.LastKnownArchitecture`, and `installation.ManagedDxvkArchitecture` using `DxvkLocalReleaseLibrary.NormalizeArchitecture`. When `profile.Architecture` contains accepted aliases (`x86`, `win32`, `amd64`, `win64`), it is normalized to canonical `"x32"` or `"x64"`. This ensures `DxvkInstaller` selects the matching `"x32"` or `"x64"` directory, copies the correct architecture DLLs, and records matching architecture metadata.
+   - **Regressions:**
+     - `PerGameVersionSelectionTests.AcceptedArchitectureAliases_DeployCorrectDistinctArchitectureBytes_AndRecordMatchingArchitecture`: Theory testing `"x86"`, `"win32"`, `"amd64"`, and `"win64"` with distinct x32 and x64 bytes, proving that deployed DLL bytes and recorded architecture agree.
+     - `PerGameVersionSelectionTests.AcceptedX32Alias_WhenOnlyX32PayloadExists_DeploysSuccessfully`: proves that when only an x32 payload exists, a profile with `"x86"` deploys x32 successfully instead of failing after claiming local availability.
+
+3. **[P2 - 3] Authoritative installation version comparison:**
+   - **Fix:** In `DxvkManager.UpdateAvailable`, resolved `currentVersion = (installation != null && !string.IsNullOrWhiteSpace(installation.ManagedDxvkVersion)) ? installation.ManagedDxvkVersion.Trim() : profile.DxvkVersion`. Pinned and latest version comparisons are now made against the active recorded installation version when present, falling back to historical profile for legacy/untracked profiles. In `UpdateAllEnabledAsync`, `enabledProfiles` checks both `p.DxvkEnabled` and actively managed installations (`installation.RestorationState == RestorationState.Managed`), ensuring games with stale profile flags are appropriately updated or skipped.
+   - **Regressions:**
+     - `PerGameVersionSelectionTests.StaleProfile_Direction1_ManagedV24_ProfileV23_CorrectlySkipped`: sets up a real synthetic managed install with `ManagedDxvkVersion = "v2.4"` and stale `profile.DxvkVersion = "v2.3"`. With target pinned to v2.4, asserts `UpdateAvailable` is false, `UpdateAllEnabledAsync` performs 0 updates, zero HTTP requests are issued, and deployed DLLs and baseline backup are preserved.
+     - `PerGameVersionSelectionTests.StaleProfile_Direction2_ManagedV23_ProfileV24_CorrectlyUpdated`: sets up a real synthetic managed install with `ManagedDxvkVersion = "v2.3"` and stale `profile.DxvkVersion = "v2.4"`. With target pinned to v2.4, asserts `UpdateAvailable` is true, `UpdateAllEnabledAsync` updates to v2.4, zero HTTP requests are issued, deployed DLLs and `ManagedDxvkVersion` are updated to v2.4, and subsequent rollback restores original baseline bytes cleanly.
+
