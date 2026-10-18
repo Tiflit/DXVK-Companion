@@ -334,6 +334,101 @@ public sealed class MultiFileTransactionEngineTests
         Assert.Equal("valid-original-d3d11", File.ReadAllText(bBackup));
     }
 
+    [Fact]
+    public void RepeatedUpdateFailure_PreservesSuppliedNativeBackupAndPreUpdateTargets()
+    {
+        using var game = new SyntheticTestDirectory();
+        using var storage = new SyntheticTestDirectory();
+
+        var d3d11Target = game.CreateFile("d3d11.dll", "native-d3d11");
+        var dxgiTarget = Path.Combine(game.RootPath, "dxgi.dll");
+        var nativeD3d11Identity = FileIdentity.Capture(d3d11Target);
+
+        var v1D3d11 = game.CreateFile("v1-d3d11.dll", "dxvk-v1-d3d11");
+        var v1Dxgi = game.CreateFile("v1-dxgi.dll", "dxvk-v1-dxgi");
+        var v2D3d11 = game.CreateFile("v2-d3d11.dll", "dxvk-v2-d3d11");
+        var v2Dxgi = game.CreateFile("v2-dxgi.dll", "dxvk-v2-dxgi");
+
+        var cleanEngine = new MultiFileTransactionEngine(storage.RootPath);
+        var backupRelD3d11 = Path.Combine("install-1", "d3d11.dll");
+
+        var installResult = cleanEngine.Execute(new MultiFileTransactionRequest
+        {
+            InstallationRoot = game.RootPath,
+            Operation = TransactionOperation.Install,
+            Files = new[]
+            {
+                new MultiFileTransactionFile
+                {
+                    RelativePath = "d3d11.dll",
+                    SourceFilePath = v1D3d11,
+                    ExpectedSourceIdentity = FileIdentity.Capture(v1D3d11),
+                    ExpectedTargetIdentity = nativeD3d11Identity,
+                    OriginalState = OriginalFileState.Existing,
+                    BackupRelativePath = backupRelD3d11
+                },
+                new MultiFileTransactionFile
+                {
+                    RelativePath = "dxgi.dll",
+                    SourceFilePath = v1Dxgi,
+                    ExpectedSourceIdentity = FileIdentity.Capture(v1Dxgi),
+                    ExpectedTargetIdentity = null,
+                    OriginalState = OriginalFileState.DidNotExist,
+                    BackupRelativePath = null
+                }
+            }
+        });
+
+        Assert.Equal(TransactionOutcome.Success, installResult.Outcome);
+        var v1D3d11Identity = FileIdentity.Capture(d3d11Target);
+        var v1DxgiIdentity = FileIdentity.Capture(dxgiTarget);
+        var nativeBackupFullPath = Path.Combine(storage.RootPath, backupRelD3d11);
+        Assert.Equal(nativeD3d11Identity, FileIdentity.Capture(nativeBackupFullPath));
+
+        var failingUpdateEngine = new MultiFileTransactionEngine(storage.RootPath, new MultiFileTransactionTestHooks
+        {
+            AfterApply = (_, index) =>
+            {
+                if (index == 1)
+                    throw new IOException("synthetic failure on second file during update");
+            }
+        });
+
+        var failedUpdate = failingUpdateEngine.Execute(new MultiFileTransactionRequest
+        {
+            InstallationRoot = game.RootPath,
+            Operation = TransactionOperation.Update,
+            Files = new[]
+            {
+                new MultiFileTransactionFile
+                {
+                    RelativePath = "d3d11.dll",
+                    SourceFilePath = v2D3d11,
+                    ExpectedSourceIdentity = FileIdentity.Capture(v2D3d11),
+                    ExpectedTargetIdentity = v1D3d11Identity,
+                    OriginalState = OriginalFileState.Existing,
+                    BackupRelativePath = backupRelD3d11
+                },
+                new MultiFileTransactionFile
+                {
+                    RelativePath = "dxgi.dll",
+                    SourceFilePath = v2Dxgi,
+                    ExpectedSourceIdentity = FileIdentity.Capture(v2Dxgi),
+                    ExpectedTargetIdentity = v1DxgiIdentity,
+                    OriginalState = OriginalFileState.DidNotExist,
+                    BackupRelativePath = null
+                }
+            }
+        });
+
+        Assert.Equal(TransactionState.FailedSafely, failedUpdate.State);
+        Assert.Equal(TransactionOutcome.SafeFailure, failedUpdate.Outcome);
+        Assert.Equal(v1D3d11Identity, FileIdentity.Capture(d3d11Target));
+        Assert.True(File.Exists(dxgiTarget));
+        Assert.Equal(v1DxgiIdentity, FileIdentity.Capture(dxgiTarget));
+        Assert.Equal(nativeD3d11Identity, FileIdentity.Capture(nativeBackupFullPath));
+    }
+
     private static MultiFileTransactionRequest UpdateRequest(string root, params (string RelativePath, string? Target, string Source, OriginalFileState State, SafetyFileIdentity? ExpectedTarget)[] items)
         => new()
         {
