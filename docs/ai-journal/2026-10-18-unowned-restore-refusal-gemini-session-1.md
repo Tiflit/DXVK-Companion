@@ -63,9 +63,11 @@
 
 - **Initial Reproducer CI:** Run `39169251599` (Job `117798676953`) — 898 passed, 9 failed (8 real behavioral regressions on unpatched code, 1 assertion formatting calibration).
 - **Production Fix CI:** Run `39169620373` (Job `117799766101`) — 906 passed, 1 failed (the single failure was line 234 in `PhaseCManualManagementTests.cs` authorized for correction in Issue #175).
-- **PR Hygiene & Scope Checks on PR #174:**
-  - `AI task scope`: PASS (`39169935605`)
-  - `PR hygiene`: PASS (`39169935540`)
-  - `Run Python workflow tests`: PASS (`39169620393`)
-  - `Acquire Facts and Render Snapshot`: PASS (`39169935840`)
-  - `Publish Dashboard to Dedicated Issue`: PASS (`39169618488`)
+- **Final Green Review Repairs CI:** Run `39170748698` (Job `117803073501`) on head `3269c9a009da20a8d462479e000aeae9e7351659`:
+  - **907 passed, 0 failed** across `DXVKCompanion.PhaseA.Tests` (100% green).
+- **PR Hygiene & Scope Checks on PR #174 (Commit `3269c9a`):**
+  - `AI task scope`: PASS (`39170748645`)
+  - `PR hygiene`: PASS (`39170748724`)
+  - `Run Python workflow tests`: PASS (`39170748635`)
+  - `Acquire Facts and Render Snapshot`: PASS (`39170746865`)
+  - `Publish Dashboard to Dedicated Issue`: PASS (`39170746865`)
