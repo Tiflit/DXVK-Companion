@@ -67,6 +67,8 @@ namespace DXVKCompanion.DXVK
             }
         }
 
+        private int _processingPendingBatchDepth;
+
         private void TrySaveProfileNonFatal(GameProfile profile, string context)
         {
             try
@@ -76,6 +78,10 @@ namespace DXVKCompanion.DXVK
             catch (Exception ex)
             {
                 Logger.Log($"DxvkManager: non-fatal ProfileStore.Save failure during {context} for {profile.ExeName}: {ex.GetType().Name} - {ex.Message}");
+                if (_processingPendingBatchDepth > 0 && !string.Equals(context, "reconciliation", StringComparison.Ordinal))
+                {
+                    throw;
+                }
             }
         }
 
@@ -737,18 +743,26 @@ namespace DXVKCompanion.DXVK
                     }
 
                     bool success = false;
-                    switch (installation.PendingAction.Type)
+                    _processingPendingBatchDepth++;
+                    try
                     {
-                        case PendingActionType.Install:
-                        case PendingActionType.Update:
-                            success = await EnableDxvkAsync(profile, installation.PendingAction.TargetDxvkVersion);
-                            break;
-                        case PendingActionType.Reapply:
-                            success = await ReapplyAsync(profile, updateBaseline: true);
-                            break;
-                        case PendingActionType.Restore:
-                            success = await DisableDxvkAsync(profile);
-                            break;
+                        switch (installation.PendingAction.Type)
+                        {
+                            case PendingActionType.Install:
+                            case PendingActionType.Update:
+                                success = await EnableDxvkAsync(profile, installation.PendingAction.TargetDxvkVersion);
+                                break;
+                            case PendingActionType.Reapply:
+                                success = await ReapplyAsync(profile, updateBaseline: true);
+                                break;
+                            case PendingActionType.Restore:
+                                success = await DisableDxvkAsync(profile);
+                                break;
+                        }
+                    }
+                    finally
+                    {
+                        _processingPendingBatchDepth--;
                     }
 
                     if (success)
