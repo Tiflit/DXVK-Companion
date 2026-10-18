@@ -868,7 +868,7 @@ public sealed class OwnershipPersistenceFailureTests
         Assert.Null(inst.ManagedDxvkVersion);
         Assert.Empty(inst.ManagedFiles);
         Assert.False(inst.Configuration.HudEnabled);
-        Assert.Equal(0, inst.Configuration.FrameLimit);
+        Assert.Equal(120, inst.Configuration.FrameLimit);
 
         // Direct check: TrySaveHealthAfterFailedCompensation must refuse when no pre-existing library file existed
         Assert.False(store.TrySaveHealthAfterFailedCompensation(inst, expectedPreWriteBytes: null, preWriteExisted: false));
