@@ -32,6 +32,7 @@ namespace DXVKCompanion.Storage
         internal Action<string, string>? CustomTempWriter { get; set; }
         internal Action<string, string>? CustomCommitReplace { get; set; }
         internal Action<string>? CustomTempCleaner { get; set; }
+        internal Action<GameInstallation>? CustomSaveOutcomeHook { get; set; }
 
         private static readonly JsonSerializerOptions JsonOptions = new()
         {
@@ -448,6 +449,8 @@ namespace DXVKCompanion.Storage
         internal OwnershipSaveResult TrySaveWithOutcome(GameInstallation installation)
         {
             if (installation == null) throw new ArgumentNullException(nameof(installation));
+
+            CustomSaveOutcomeHook?.Invoke(installation);
 
             lock (_sync)
             {

@@ -827,14 +827,18 @@ public sealed class OwnershipPersistenceFailureTests
                 {
                     if (index == 1)
                     {
-                        // Simulate external baseline change before post-file metadata save
-                        File.WriteAllText(libraryFile, "{\"SchemaVersion\": 1, \"Installations\": [{\"InstallationPath\": \"C:\\\\External\", \"DisplayName\": \"External\"}]}");
+                        store.CustomCommitReplace = (_, _) =>
+                        {
+                            throw new IOException("Simulated pre-replacement failure before compensation.");
+                        };
                     }
                 },
                 DuringRecovery = index =>
                 {
                     if (index == 0)
                     {
+                        // Simulate external baseline change before TrySaveHealthAfterFailedCompensation
+                        File.WriteAllText(libraryFile, "{\"SchemaVersion\": 1, \"Installations\": [{\"InstallationPath\": \"C:\\\\External\", \"DisplayName\": \"External\"}]}");
                         throw new IOException("Simulated compensation failure when baseline changed.");
                     }
                 }
@@ -851,6 +855,7 @@ public sealed class OwnershipPersistenceFailureTests
         };
 
         bool installOk = await installer.ApplyToGameAsync(profile, new ReleaseInfo { Version = "2.4", DownloadUrl = "" });
+        store.CustomCommitReplace = null;
 
         Assert.False(installOk);
         // Because the on-disk library file was modified externally, TrySaveHealthAfterFailedCompensation
@@ -1374,9 +1379,9 @@ public sealed class OwnershipPersistenceFailureTests
                 {
                     if (index == 1)
                     {
-                        store.CustomTempWriter = (_, _) =>
+                        store.CustomSaveOutcomeHook = _ =>
                         {
-                            throw new OutOfMemoryException("Simulated unexpected exception during store preparation.");
+                            throw new OutOfMemoryException("Simulated unexpected exception during store commit callback.");
                         };
                     }
                 }
@@ -1387,11 +1392,21 @@ public sealed class OwnershipPersistenceFailureTests
         var profile = new GameProfile(exePath) { Api = GraphicsApi.DX11, Architecture = "x64" };
 
         bool ok = await installer.ApplyToGameAsync(profile, new ReleaseInfo { Version = "2.4", DownloadUrl = "" });
-        store.CustomTempWriter = null;
+        store.CustomSaveOutcomeHook = null;
 
         Assert.False(ok);
+        Assert.True(store.HasUncertainPersistence);
         Assert.Equal(RestorationState.AttentionRequired, inst.RestorationState);
         Assert.False(string.IsNullOrWhiteSpace(inst.LastRefusalReason));
+
+        string txRoot = Path.Combine(backupsDir, ".transactions");
+        Assert.True(Directory.Exists(txRoot) && Directory.GetDirectories(txRoot).Length > 0,
+            "Expected transaction recovery evidence to be retained when unexpected commit callback exception occurs.");
+
+        // Direct method check: RecordUnexpectedCommitCallbackException latches uncertain persistence and sets AttentionRequired
+        var directResult = store.RecordUnexpectedCommitCallbackException("Direct unexpected callback failure", inst);
+        Assert.Equal(OwnershipPersistenceOutcome.Unknown, directResult.Outcome);
+        Assert.Throws<InvalidOperationException>(() => store.SaveAll());
     }
 
     [Fact]
@@ -1486,7 +1501,8 @@ public sealed class OwnershipPersistenceFailureTests
         var store = new GameLibraryStore(libraryFile, backupsDir);
 
         using var http = new HttpClient();
-        var installer = new DxvkInstaller(http, null, store, sourceDir.RootPath);
+        var initialEngine = new MultiFileTransactionEngine(backupsDir);
+        var installer = new DxvkInstaller(http, initialEngine, store, sourceDir.RootPath);
         var profile = new GameProfile(exePath) { Api = GraphicsApi.DX11, Architecture = "x64" };
 
         // 1. Install 2.4 over native v1 baseline

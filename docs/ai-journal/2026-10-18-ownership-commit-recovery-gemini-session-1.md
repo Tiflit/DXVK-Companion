@@ -47,6 +47,10 @@
      - Added regression test `PreparationException_WhenDxvkConfLocked_RestoresEntrySnapshotsInApplyAndReapply_AndPreventsPublishingSpeculativeSettings` verifying `dxvk.conf` lock during preparation restores in-memory configuration, does not publish rejected settings via `SaveAll()`, and subsequent retry succeeds.
    - **Prior Backup Compensation Failure Verification:**
      - Added regression test `ReapplyUpdateBaseline_WhenPriorBackupCompensationFails_RetainsPriorBackupEvidenceAndTransitionsToAttentionRequired` verifying retained `.transactions/<txId>/prior-backups/` evidence and transition to `AttentionRequired`.
+   - **Test Calibration & Diagnostic Hook:**
+     - Calibrated `UnexpectedCommitCallbackException_LatchesUncertainPersistence_AndRetainsRecoveryEvidence` with `store.CustomSaveOutcomeHook` to verify unexpected callback exceptions latch `HasUncertainPersistence`, record `AttentionRequired`, and retain `.transactions/` evidence.
+     - Calibrated `UnresolvedRecovery_WhenNoPriorLibraryFileExistedOrBaselineChanged_PreservesInMemoryHealthWithoutWritingIncompleteLibraryFile` to arm `store.CustomCommitReplace` before replace, modify baseline during `DuringRecovery`, and verify in-memory snapshot restoration with disk overwrite refusal.
+     - Calibrated `ReapplyUpdateBaseline_WhenPriorBackupCompensationFails_RetainsPriorBackupEvidenceAndTransitionsToAttentionRequired` to pass `initialEngine` configured with `backupsDir`.
 
 ---
 
