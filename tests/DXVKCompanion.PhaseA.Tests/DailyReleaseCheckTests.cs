@@ -11,6 +11,7 @@ using DXVKCompanion.DXVK;
 using DXVKCompanion.Models;
 using DXVKCompanion.PhaseATests;
 using DXVKCompanion.Storage;
+using DXVKCompanion.Safety;
 using DXVKCompanion.Utils;
 using Xunit;
 
@@ -132,7 +133,7 @@ namespace DXVKCompanion.PhaseA.Tests
             var store = new CacheStore(cacheFile);
 
             int networkCallCount = 0;
-            var handler = new RecordingHttpMessageHandler(async _ =>
+            var handler = RecordingHttpMessageHandler.CreateAsync(async _ =>
             {
                 Interlocked.Increment(ref networkCallCount);
                 // Introduce artificial latency to ensure all concurrent callers overlap inside gate
@@ -461,12 +462,12 @@ namespace DXVKCompanion.PhaseA.Tests
             File.WriteAllBytes(exePath, new byte[] { 0x4D, 0x5A });
             var profile = profileStore.GetOrCreate(exePath);
             profile.Architecture = "x64";
-            profile.Api = GraphicsApi.Direct3D11;
+            profile.Api = GraphicsApi.DX11;
             profileStore.Save(profile);
 
             // Enable profile with targetVersion = null (latest release intent)
             var enableRes = await dxvkManager.EnableDxvkAsync(profile);
-            Assert.Equal(OperationResult.Applied, enableRes);
+            Assert.True(enableRes);
             Assert.Equal(1, networkCallCount); // Exactly 1 failed check attempt
 
             // Assert deployment succeeded offline using cached v3.1.1 files
@@ -619,7 +620,12 @@ namespace DXVKCompanion.PhaseA.Tests
                 _handler = req => Task.FromResult(handler(req));
             }
 
-            public RecordingHttpMessageHandler(Func<HttpRequestMessage, Task<HttpResponseMessage>> handler)
+            public static RecordingHttpMessageHandler CreateAsync(Func<HttpRequestMessage, Task<HttpResponseMessage>> asyncHandler)
+            {
+                return new RecordingHttpMessageHandler(asyncHandler, isAsync: true);
+            }
+
+            private RecordingHttpMessageHandler(Func<HttpRequestMessage, Task<HttpResponseMessage>> handler, bool isAsync)
             {
                 _handler = handler;
             }
