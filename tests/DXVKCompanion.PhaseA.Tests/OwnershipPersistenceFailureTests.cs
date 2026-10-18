@@ -96,7 +96,7 @@ public sealed class OwnershipPersistenceFailureTests
 
         Assert.NotNull(inMemoryInst);
         Assert.NotNull(reconstructedInst);
-        Assert.Equal(RestorationState.NeverManaged, reconstructedInst!.RestorationState);
+        Assert.Equal(RestorationState.None, reconstructedInst!.RestorationState);
         Assert.Null(reconstructedInst.ManagedDxvkVersion);
         Assert.Empty(reconstructedInst.ManagedFiles);
 
