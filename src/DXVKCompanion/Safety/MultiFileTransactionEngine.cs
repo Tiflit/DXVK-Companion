@@ -26,6 +26,8 @@ public sealed record MultiFileTransactionTestHooks
     public Action<string, int>? AfterApply { get; init; }
     public Action<string>? BeforeRecovery { get; init; }
     public Action<int>? DuringRecovery { get; init; }
+    internal Action<string, string, int>? AfterStageNativeBackup { get; init; }
+    internal Action<string, string, int>? BeforePublishNativeBackup { get; init; }
 }
 
 public sealed class MultiFileTransactionEngine
@@ -56,6 +58,7 @@ public sealed class MultiFileTransactionEngine
         var operationRoot = ResolveInsideRoot(transactionsRoot, transactionId);
         var planPath = ResolveInsideRoot(operationRoot, "plan.json");
         var undoRoot = ResolveInsideRoot(operationRoot, "undo");
+        var nativeBackupStagingRoot = ResolveInsideRoot(operationRoot, "native-backups");
         var anyMutationAttempted = false;
         var lastAttemptedIndex = -1;
 
@@ -90,11 +93,13 @@ public sealed class MultiFileTransactionEngine
                 }
 
                 string? backupPath = null;
+                string? stagedNativeBackupPath = null;
                 SafetyFileIdentity? backupIdentity = null;
                 if ((request.Operation is TransactionOperation.Install or TransactionOperation.Update or TransactionOperation.Reapply)
                     && file.OriginalState == OriginalFileState.Existing)
                 {
                     backupPath = ResolveBackupPath(file.BackupRelativePath, transactionId, file.RelativePath);
+                    stagedNativeBackupPath = ResolveInsideRoot(nativeBackupStagingRoot, file.RelativePath);
                 }
                 else if (request.Operation == TransactionOperation.Restore)
                 {
@@ -134,15 +139,17 @@ public sealed class MultiFileTransactionEngine
                     currentState,
                     currentIdentity,
                     undoPath,
+                    stagedNativeBackupPath,
                     backupPath,
                     backupIdentity));
             }
 
-            // Phase 2: Capture per-operation undo copies in the isolated operation namespace and create missing native backups.
+            // Phase 2: Capture per-operation undo copies in the isolated operation namespace and stage/publish missing native backups.
             Directory.CreateDirectory(operationRoot);
 
-            foreach (var item in validated)
+            for (var index = 0; index < validated.Count; index++)
             {
+                var item = validated[index];
                 string? undoPath = item.UndoPath;
                 if (item.PreOperationState == OriginalFileState.Existing)
                 {
@@ -164,8 +171,30 @@ public sealed class MultiFileTransactionEngine
                     var backupPath = item.BackupPath!;
                     if (!File.Exists(backupPath))
                     {
+                        var stagedBackupPath = item.StagedNativeBackupPath!;
+                        Directory.CreateDirectory(Path.GetDirectoryName(stagedBackupPath)!);
+                        File.Copy(item.TargetPath, stagedBackupPath, overwrite: true);
+                        _hooks.AfterStageNativeBackup?.Invoke(stagedBackupPath, backupPath, index);
+                        var stagedBackupIdentity = FileIdentity.Capture(stagedBackupPath);
+                        if (stagedBackupIdentity != item.PreOperationIdentity)
+                        {
+                            CleanupOperationArtifacts(operationRoot, transactionsRoot);
+                            CleanupCreatedNativeBackups(createdNativeBackups);
+                            return SafeFailure(transactionId, request.Operation, affected, $"The backup could not be verified: {item.File.RelativePath}");
+                        }
+
+                        _hooks.BeforePublishNativeBackup?.Invoke(stagedBackupPath, backupPath, index);
                         Directory.CreateDirectory(Path.GetDirectoryName(backupPath)!);
-                        File.Copy(item.TargetPath, backupPath, overwrite: false);
+                        try
+                        {
+                            File.Move(stagedBackupPath, backupPath, overwrite: false);
+                        }
+                        catch
+                        {
+                            PruneEmptyParentDirectories(Path.GetDirectoryName(backupPath), _transactionStoreRoot);
+                            throw;
+                        }
+
                         createdNativeBackups.Add(backupPath);
                         backupIdentity = FileIdentity.Capture(backupPath);
                         if (backupIdentity != item.PreOperationIdentity)
@@ -530,6 +559,7 @@ public sealed class MultiFileTransactionEngine
         OriginalFileState PreOperationState,
         SafetyFileIdentity? PreOperationIdentity,
         string? UndoPath,
+        string? StagedNativeBackupPath,
         string? BackupPath,
         SafetyFileIdentity? BackupIdentity);
 

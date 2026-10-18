@@ -1076,4 +1076,205 @@ public sealed class FailedOperationRecoveryTests
         AssertSnapshotsEqual(initialGameSnapshot, CaptureSnapshot(game.RootPath));
         AssertSnapshotsEqual(initialStorageSnapshot, CaptureSnapshot(storage.RootPath));
     }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void InterruptedNativeBackupPreparation_ThrowOrCorruptStagedBackup_DoesNotPublishPartialBackup_ThenRetryAndRestoreSucceed(bool throwDuringStaging)
+    {
+        using var game = new SyntheticTestDirectory();
+        using var source = new SyntheticTestDirectory();
+        using var storage = new SyntheticTestDirectory();
+
+        var d3d11Target = game.CreateFile("d3d11.dll", "native-d3d11-full-payload");
+        var dxgiTarget = game.CreateFile("dxgi.dll", "native-dxgi-full-payload");
+        game.CreateFile("Game.exe", "native-exe-sentinel");
+        var initialGameSnapshot = CaptureSnapshot(game.RootPath);
+
+        storage.CreateFile("existing-baseline/other.dll", "preserved-existing-backup");
+        storage.CreateFile(".transactions/earlier-tx/plan.json", "{\"unresolved\":true}");
+        var initialStorageSnapshot = CaptureSnapshot(storage.RootPath);
+
+        var srcAD3d11 = source.CreateFile("vA/d3d11.dll", "dxvk-A-d3d11");
+        var srcADxgi = source.CreateFile("vA/dxgi.dll", "dxvk-A-dxgi");
+
+        var installRequest = new MultiFileTransactionRequest
+        {
+            InstallationRoot = game.RootPath,
+            Operation = TransactionOperation.Install,
+            Files = new[]
+            {
+                new MultiFileTransactionFile
+                {
+                    RelativePath = "d3d11.dll",
+                    SourceFilePath = srcAD3d11,
+                    ExpectedTargetIdentity = FileIdentity.Capture(d3d11Target),
+                    ExpectedSourceIdentity = FileIdentity.Capture(srcAD3d11),
+                    OriginalState = OriginalFileState.Existing,
+                    BackupRelativePath = "inst-interrupted/d3d11.dll"
+                },
+                new MultiFileTransactionFile
+                {
+                    RelativePath = "dxgi.dll",
+                    SourceFilePath = srcADxgi,
+                    ExpectedTargetIdentity = FileIdentity.Capture(dxgiTarget),
+                    ExpectedSourceIdentity = FileIdentity.Capture(srcADxgi),
+                    OriginalState = OriginalFileState.Existing,
+                    BackupRelativePath = "inst-interrupted/dxgi.dll"
+                }
+            }
+        };
+
+        // 1. Interrupt native-backup staging on second file (after first file was staged and published in this attempt)
+        var interruptedEngine = new MultiFileTransactionEngine(storage.RootPath, new MultiFileTransactionTestHooks
+        {
+            AfterStageNativeBackup = (stagedPath, _, index) =>
+            {
+                if (index == 1)
+                {
+                    File.WriteAllText(stagedPath, "partial-corrupted-native-bytes");
+                    if (throwDuringStaging)
+                        throw new IOException("Simulated I/O interruption while staging native backup");
+                }
+            }
+        });
+
+        var interruptedResult = interruptedEngine.Execute(installRequest);
+        if (throwDuringStaging)
+        {
+            Assert.Equal(TransactionState.Aborted, interruptedResult.State);
+            Assert.Equal(TransactionOutcome.SafeAbort, interruptedResult.Outcome);
+        }
+        else
+        {
+            Assert.Equal(TransactionState.FailedSafely, interruptedResult.State);
+            Assert.Equal(TransactionOutcome.SafeFailure, interruptedResult.Outcome);
+        }
+
+        // Neither partial backup nor earlier file's backup from the interrupted attempt may remain at final paths;
+        // pre-existing backups and earlier unresolved evidence must remain intact.
+        Assert.False(File.Exists(storage.GetPath("inst-interrupted/d3d11.dll")));
+        Assert.False(File.Exists(storage.GetPath("inst-interrupted/dxgi.dll")));
+        AssertSnapshotsEqual(initialGameSnapshot, CaptureSnapshot(game.RootPath));
+        AssertSnapshotsEqual(initialStorageSnapshot, CaptureSnapshot(storage.RootPath));
+
+        // 2. Retry Install with a clean engine: must stage and publish full verified native backups and deploy DXVK
+        var cleanEngine = new MultiFileTransactionEngine(storage.RootPath);
+        var retryResult = cleanEngine.Execute(installRequest);
+        Assert.Equal(TransactionState.Committed, retryResult.State);
+        Assert.Equal(TransactionOutcome.Success, retryResult.Outcome);
+
+        Assert.Equal("dxvk-A-d3d11", File.ReadAllText(d3d11Target));
+        Assert.Equal("dxvk-A-dxgi", File.ReadAllText(dxgiTarget));
+        Assert.Equal(initialGameSnapshot["d3d11.dll"].Identity, FileIdentity.Capture(storage.GetPath("inst-interrupted/d3d11.dll")));
+        Assert.Equal(initialGameSnapshot["dxgi.dll"].Identity, FileIdentity.Capture(storage.GetPath("inst-interrupted/dxgi.dll")));
+        Assert.Equal("preserved-existing-backup", File.ReadAllText(storage.GetPath("existing-baseline/other.dll")));
+        Assert.Equal("{\"unresolved\":true}", File.ReadAllText(storage.GetPath(".transactions/earlier-tx/plan.json")));
+
+        // 3. Subsequent Restore returns to exact initial native game state
+        var restoreResult = cleanEngine.Execute(new MultiFileTransactionRequest
+        {
+            InstallationRoot = game.RootPath,
+            Operation = TransactionOperation.Restore,
+            Files = new[]
+            {
+                new MultiFileTransactionFile
+                {
+                    RelativePath = "d3d11.dll",
+                    ExpectedTargetIdentity = FileIdentity.Capture(d3d11Target),
+                    OriginalState = OriginalFileState.Existing,
+                    BackupRelativePath = "inst-interrupted/d3d11.dll",
+                    ExpectedOriginalSha256 = initialGameSnapshot["d3d11.dll"].Identity.Sha256,
+                    ExpectedManagedSha256 = FileIdentity.Capture(srcAD3d11).Sha256
+                },
+                new MultiFileTransactionFile
+                {
+                    RelativePath = "dxgi.dll",
+                    ExpectedTargetIdentity = FileIdentity.Capture(dxgiTarget),
+                    OriginalState = OriginalFileState.Existing,
+                    BackupRelativePath = "inst-interrupted/dxgi.dll",
+                    ExpectedOriginalSha256 = initialGameSnapshot["dxgi.dll"].Identity.Sha256,
+                    ExpectedManagedSha256 = FileIdentity.Capture(srcADxgi).Sha256
+                }
+            }
+        });
+
+        Assert.Equal(TransactionState.Committed, restoreResult.State);
+        Assert.Equal(TransactionOutcome.Success, restoreResult.Outcome);
+        AssertSnapshotsEqual(initialGameSnapshot, CaptureSnapshot(game.RootPath));
+    }
+
+    [Fact]
+    public void NativeBackupPublicationCollision_AbortsWithoutDeletingOrAdoptingCompetingDestination_AndPreservesGameAndStorageSentinels()
+    {
+        using var game = new SyntheticTestDirectory();
+        using var source = new SyntheticTestDirectory();
+        using var storage = new SyntheticTestDirectory();
+
+        var d3d11Target = game.CreateFile("d3d11.dll", "native-d3d11-collision-test");
+        var dxgiTarget = game.CreateFile("dxgi.dll", "native-dxgi-collision-test");
+        game.CreateFile("Game.exe", "native-exe-sentinel");
+        var initialGameSnapshot = CaptureSnapshot(game.RootPath);
+
+        storage.CreateFile("existing-baseline/other.dll", "preserved-existing-backup");
+        storage.CreateFile(".transactions/earlier-tx/plan.json", "{\"unresolved\":true}");
+
+        var srcAD3d11 = source.CreateFile("vA/d3d11.dll", "dxvk-A-d3d11");
+        var srcADxgi = source.CreateFile("vA/dxgi.dll", "dxvk-A-dxgi");
+
+        var engine = new MultiFileTransactionEngine(storage.RootPath, new MultiFileTransactionTestHooks
+        {
+            BeforePublishNativeBackup = (_, finalBackupPath, index) =>
+            {
+                if (index == 1)
+                {
+                    Directory.CreateDirectory(Path.GetDirectoryName(finalBackupPath)!);
+                    File.WriteAllText(finalBackupPath, "competing-writer-dxgi-backup");
+                }
+            }
+        });
+
+        var result = engine.Execute(new MultiFileTransactionRequest
+        {
+            InstallationRoot = game.RootPath,
+            Operation = TransactionOperation.Install,
+            Files = new[]
+            {
+                new MultiFileTransactionFile
+                {
+                    RelativePath = "d3d11.dll",
+                    SourceFilePath = srcAD3d11,
+                    ExpectedTargetIdentity = FileIdentity.Capture(d3d11Target),
+                    ExpectedSourceIdentity = FileIdentity.Capture(srcAD3d11),
+                    OriginalState = OriginalFileState.Existing,
+                    BackupRelativePath = "inst-collision/d3d11.dll"
+                },
+                new MultiFileTransactionFile
+                {
+                    RelativePath = "dxgi.dll",
+                    SourceFilePath = srcADxgi,
+                    ExpectedTargetIdentity = FileIdentity.Capture(dxgiTarget),
+                    ExpectedSourceIdentity = FileIdentity.Capture(srcADxgi),
+                    OriginalState = OriginalFileState.Existing,
+                    BackupRelativePath = "inst-collision/dxgi.dll"
+                }
+            }
+        });
+
+        Assert.Equal(TransactionState.Aborted, result.State);
+        Assert.Equal(TransactionOutcome.SafeAbort, result.Outcome);
+
+        // Game targets are completely unchanged (competing backup was not adopted to deploy DXVK)
+        AssertSnapshotsEqual(initialGameSnapshot, CaptureSnapshot(game.RootPath));
+
+        // Competing writer's destination file is preserved untouched, while File 0's backup created by this attempt was cleaned up
+        var competingPath = storage.GetPath("inst-collision/dxgi.dll");
+        Assert.True(File.Exists(competingPath));
+        Assert.Equal("competing-writer-dxgi-backup", File.ReadAllText(competingPath));
+        Assert.False(File.Exists(storage.GetPath("inst-collision/d3d11.dll")));
+
+        // Pre-existing backups and earlier unresolved evidence remain untouched
+        Assert.Equal("preserved-existing-backup", File.ReadAllText(storage.GetPath("existing-baseline/other.dll")));
+        Assert.Equal("{\"unresolved\":true}", File.ReadAllText(storage.GetPath(".transactions/earlier-tx/plan.json")));
+    }
 }
