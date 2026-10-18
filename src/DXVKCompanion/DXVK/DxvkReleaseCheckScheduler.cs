@@ -104,7 +104,14 @@ namespace DXVKCompanion.DXVK
             }
             finally
             {
-                _tickLock.Release();
+                try
+                {
+                    _tickLock.Release();
+                }
+                catch (ObjectDisposedException)
+                {
+                    // Suppressed: scheduler was disposed while check was in-flight
+                }
             }
         }
 

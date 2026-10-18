@@ -94,4 +94,8 @@ Issue [#161](https://github.com/Tiflit/DXVK-Companion/issues/161) implements the
 - Verified exact base: `ff4f02c537955b5e7fd2d417a59d5aa3ba438e9c` (`origin/main`).
 - Verified policy checkpoint: `f3e9974371cb08d1dd99192bd314a135010594ed`.
 - Strictly 10 authorized paths modified/created.
-- Cloud CI runs via GitHub Actions Windows runners.
+- Initial CI runs demonstrated:
+  - Initial run `39082710006`: failed on WinForms/Threading `Timer` ambiguity in `DxvkReleaseCheckScheduler.cs`. Repaired via explicit `System.Threading.Timer` qualification.
+  - Second run `39082832206`: failed on test compilation in `DailyReleaseCheckTests.cs` (namespace import and API mapping). Repaired via `using DXVKCompanion.Safety;`, `GraphicsApi.DX11`, `Assert.True(enableRes)`, and `CreateAsync` factory.
+  - Third run `39083019385`: 787/788 tests passed! Exactly 1 test (`DailyReleaseCheck_Scheduler_StopAndDisposal_CancelsOwnedWorkWithoutCallbacks`) threw `ObjectDisposedException` when `Dispose()` disposed `_tickLock` while an in-flight test check was completing. Repaired by safely catching `ObjectDisposedException` during teardown.
+- Repaired head commit pushed to `feat/daily-release-check-161`.
