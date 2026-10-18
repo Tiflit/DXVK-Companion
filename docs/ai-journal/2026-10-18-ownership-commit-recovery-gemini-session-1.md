@@ -85,6 +85,13 @@
   - **`AI PR Hygiene` ([Run `39164475745`](https://github.com/Tiflit/DXVK-Companion/actions/runs/39164475745)):** `success`
   - **`AI Workflow Tests` ([Run `39164475743`](https://github.com/Tiflit/DXVK-Companion/actions/runs/39164475743)):** `success`
 
+- **Repaired Production Head Delta ([PR #172](https://github.com/Tiflit/DXVK-Companion/pull/172)):**
+  - Addressed coordinator delta review finding ([comment #6255005303](https://github.com/Tiflit/DXVK-Companion/pull/172#issuecomment-6255005303)):
+    - In `ReapplyUpdateBaseline_WhenPriorBackupCompensationFails_RetainsPriorBackupEvidenceAndTransitionsToAttentionRequired`, acquired the canonical-backup blocker only once via null check inside `DuringRecovery`, preserving the blocker through all target recovery steps (`d3d11.dll` and `dxgi.dll`).
+    - Allowed target recovery to complete and verify pre-operation targets (`native-v2-game-update-d3d11` and `dxvk-2.4-dxgi`), then let the attempted prior-backup restore in `CompensateBackups` fail on that blocker.
+    - Asserted `reapplyOk == false`, `recoveryInvocations == 2`, `RestorationState.AttentionRequired`, refusal reason identifies backup compensation failure on `fullBackupD3d11` (not a duplicate-open error), canonical backup remains in locked new-baseline state until release, and retained prior backup in `.transactions/<txId>/prior-backups/d3d11.dll` retains verified original identity (`native-v1-original-d3d11`).
+    - Updated `PreparationException_WhenDxvkConfLocked_RestoresEntrySnapshotsInApplyAndReapply_AndPreventsPublishingSpeculativeSettings` to exercise both `ApplyToGameAsync` and `ReapplyAsync` preparation failures when `dxvk.conf` is locked.
+
 ---
 
 ## Open Findings and Decisions
@@ -102,5 +109,5 @@
 ## Next Owner and Action
 
 - **Next Owner:** Codex / Coordinator.
-- **Next Action:** Grouped review of the repaired production PR #172 for [Issue #171](https://github.com/Tiflit/DXVK-Companion/issues/171), while keeping `#165` queued and `#94` paused.
+- **Next Action:** Final focused delta review of the repaired test fixtures on PR #172 for [Issue #171](https://github.com/Tiflit/DXVK-Companion/issues/171), while keeping `#165` queued and `#94` paused.
 

@@ -1430,8 +1430,28 @@ public sealed class OwnershipPersistenceFailureTests
         using var http = new HttpClient();
         var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
 
+        // 0. Exercise ApplyToGameAsync failure during preparation when dxvk.conf is locked with speculative settings
+        profile.HudEnabled = true;
+        profile.FrameLimit = 144;
+        File.WriteAllText(confPath, "dxvk.hud = compiler");
+        FileStream? initialConfLock = null;
+        try
+        {
+            initialConfLock = new FileStream(confPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+            bool initialApplyFailed = await installer.ApplyToGameAsync(profile, new ReleaseInfo { Version = "2.4", DownloadUrl = "" });
+            Assert.False(initialApplyFailed);
+            Assert.Contains("Unexpected error deploying DXVK", installer.LastRefusalReason);
+        }
+        finally
+        {
+            initialConfLock?.Dispose();
+            File.Delete(confPath);
+            profile.HudEnabled = false;
+            profile.FrameLimit = 0;
+        }
+
         // 1. Initial clean install with HudEnabled=false, FrameLimit=0
-        var profile = new GameProfile(exePath)
+        var profileClean = new GameProfile(exePath)
         {
             Api = GraphicsApi.DX11,
             Architecture = "x64",
@@ -1439,7 +1459,7 @@ public sealed class OwnershipPersistenceFailureTests
             FrameLimit = 0
         };
 
-        bool installOk = await installer.ApplyToGameAsync(profile, new ReleaseInfo { Version = "2.4", DownloadUrl = "" });
+        bool installOk = await installer.ApplyToGameAsync(profileClean, new ReleaseInfo { Version = "2.4", DownloadUrl = "" });
         Assert.True(installOk);
 
         var inst = store.FindByInstallationPath(gameDir.RootPath)!;
@@ -1447,8 +1467,8 @@ public sealed class OwnershipPersistenceFailureTests
         Assert.Equal(0, inst.Configuration.FrameLimit);
 
         // 2. Prepare new speculative settings
-        profile.HudEnabled = true;
-        profile.FrameLimit = 144;
+        profileClean.HudEnabled = true;
+        profileClean.FrameLimit = 144;
 
         // Create dxvk.conf and lock it with FileShare.None so reading/capturing it throws during preparation
         File.WriteAllText(confPath, "dxvk.hud = compiler");
@@ -1458,7 +1478,7 @@ public sealed class OwnershipPersistenceFailureTests
             confLock = new FileStream(confPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
 
             // ReapplyAsync fails during preparation
-            bool reapplyOk = await installer.ReapplyAsync(profile);
+            bool reapplyOk = await installer.ReapplyAsync(profileClean);
             Assert.False(reapplyOk);
 
             // In-memory snapshot must be restored, not mutated with speculative settings
@@ -1478,7 +1498,7 @@ public sealed class OwnershipPersistenceFailureTests
         Assert.Equal(0, reloadedInst.Configuration.FrameLimit);
 
         // 3. Retry ReapplyAsync after lock is released succeeds and persists new settings
-        bool retryOk = await installer.ReapplyAsync(profile);
+        bool retryOk = await installer.ReapplyAsync(profileClean);
         Assert.True(retryOk);
         Assert.True(inst.Configuration.HudEnabled);
         Assert.Equal(144, inst.Configuration.FrameLimit);
@@ -1518,6 +1538,7 @@ public sealed class OwnershipPersistenceFailureTests
         File.WriteAllText(targetD3d11, "native-v2-game-update-d3d11");
 
         FileStream? backupLock = null;
+        int recoveryInvocations = 0;
         var hookEngine = new MultiFileTransactionEngine(
             backupsDir,
             new MultiFileTransactionTestHooks
@@ -1534,8 +1555,13 @@ public sealed class OwnershipPersistenceFailureTests
                 },
                 DuringRecovery = _ =>
                 {
-                    // Lock the canonical backup destination so compensation restoring prior backup fails
-                    backupLock = new FileStream(fullBackupD3d11, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+                    recoveryInvocations++;
+                    if (backupLock is null)
+                    {
+                        // Acquire canonical-backup blocker only once so all target recovery steps succeed,
+                        // while the subsequent prior-backup restore compensation fails on this blocker.
+                        backupLock = new FileStream(fullBackupD3d11, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+                    }
                 }
             });
 
@@ -1553,14 +1579,30 @@ public sealed class OwnershipPersistenceFailureTests
         }
 
         Assert.False(reapplyOk);
+        Assert.Equal(2, recoveryInvocations);
         Assert.Equal(RestorationState.AttentionRequired, inst.RestorationState);
         Assert.False(string.IsNullOrWhiteSpace(inst.LastRefusalReason));
+        Assert.Contains("Simulated pre-replacement save failure during Reapply(updateBaseline: true)", inst.LastRefusalReason);
+        Assert.Contains("Recovery failed", inst.LastRefusalReason);
+        Assert.Contains(fullBackupD3d11, inst.LastRefusalReason);
 
+        // Pre-operation target identities were successfully recovered
+        Assert.Equal("native-v2-game-update-d3d11", File.ReadAllText(targetD3d11));
+        string targetDxgi = Path.Combine(gameDir.RootPath, "dxgi.dll");
+        Assert.Equal("dxvk-2.4-dxgi", File.ReadAllText(targetDxgi));
+
+        // Canonical backup remains in its expected locked/new-baseline state until release
+        Assert.Equal("native-v2-game-update-d3d11", File.ReadAllText(fullBackupD3d11));
+
+        // Retained prior-backup file has original verified bytes/identity in .transactions
         string txRoot = Path.Combine(backupsDir, ".transactions");
         Assert.True(Directory.Exists(txRoot));
         var txDirs = Directory.GetDirectories(txRoot);
         Assert.NotEmpty(txDirs);
         string priorBackupsDir = Path.Combine(txDirs[0], "prior-backups");
         Assert.True(Directory.Exists(priorBackupsDir), "Expected prior-backups directory to be retained on prior-backup compensation failure.");
+        string priorBackupFile = Path.Combine(priorBackupsDir, "d3d11.dll");
+        Assert.True(File.Exists(priorBackupFile));
+        Assert.Equal("native-v1-original-d3d11", File.ReadAllText(priorBackupFile));
     }
 }
