@@ -28,9 +28,13 @@ namespace DXVKCompanion.DXVK
 
         public static string? NormalizeArchitecture(string? architecture)
         {
-            if (string.Equals(architecture, "x32", StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(architecture, "x32", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(architecture, "x86", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(architecture, "win32", StringComparison.OrdinalIgnoreCase))
                 return "x32";
-            if (string.Equals(architecture, "x64", StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(architecture, "x64", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(architecture, "amd64", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(architecture, "win64", StringComparison.OrdinalIgnoreCase))
                 return "x64";
             return null;
         }
