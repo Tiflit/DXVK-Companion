@@ -200,6 +200,14 @@ public sealed class UnownedRestoreRefusalTests
         inst.RestorationState = initialState;
         inst.ManagedDxvkVersion = initialState == RestorationState.Managed ? "2.5" : null;
         inst.ManagedFiles = new List<ManagedFileRecord>(); // Empty ownership evidence
+        inst.Configuration = new DxvkConfiguration
+        {
+            FrameLimit = 144,
+            FrameLimitEnabled = true,
+            HudEnabled = true
+        };
+        inst.ManagementPolicy = ManagementPolicy.PinVersion("2.4");
+        inst.PendingAction = PendingAction.Install("2.4", "Pending test install");
         store.Save(inst);
 
         var profile = new GameProfile(exePath)
@@ -221,11 +229,24 @@ public sealed class UnownedRestoreRefusalTests
 
         AssertDirectoryUnchanged(gameDir.RootPath, baseline);
 
-        // Installation in store must be transitioned to AttentionRequired with refusal reason
-        var reloadedInst = store.FindByInstallationPath(gameDir.RootPath)!;
+        // Reconstruct GameLibraryStore from disk to assert persistence without relying on in-memory store cache
+        var reloadedStore = new GameLibraryStore(storePath, backupsPath);
+        var reloadedInst = reloadedStore.FindByInstallationPath(gameDir.RootPath)!;
+        Assert.NotNull(reloadedInst);
         Assert.Equal(RestorationState.AttentionRequired, reloadedInst.RestorationState);
         Assert.NotNull(reloadedInst.LastRefusalReason);
         Assert.Contains("missing ownership", reloadedInst.LastRefusalReason, StringComparison.OrdinalIgnoreCase);
+
+        // Non-default seeded fields survive across store reload
+        Assert.True(reloadedInst.Configuration.FrameLimitEnabled);
+        Assert.Equal(144, reloadedInst.Configuration.FrameLimit);
+        Assert.True(reloadedInst.Configuration.HudEnabled);
+        Assert.Equal(ManagementMode.PinnedVersion, reloadedInst.ManagementPolicy.Mode);
+        Assert.Equal("2.4", reloadedInst.ManagementPolicy.PinnedDxvkVersion);
+        Assert.NotNull(reloadedInst.PendingAction);
+        Assert.Equal(PendingActionType.Install, reloadedInst.PendingAction.Type);
+        Assert.Equal("2.4", reloadedInst.PendingAction.TargetDxvkVersion);
+        Assert.Equal("Pending test install", reloadedInst.PendingAction.Reason);
     }
 
     [Fact]
@@ -294,7 +315,8 @@ public sealed class UnownedRestoreRefusalTests
             Path.Combine(storageDir.RootPath, "backups"));
         var engine = new MultiFileTransactionEngine(Path.Combine(storageDir.RootPath, "backups"));
         var rollback = new DxvkRollback(engine, store);
-        var profileStore = new ProfileStore(Path.Combine(storageDir.RootPath, "profiles.json"));
+        var profilesPath = Path.Combine(storageDir.RootPath, "profiles.json");
+        var profileStore = new ProfileStore(profilesPath);
 
         var profile = profileStore.GetOrCreate(exePath);
         profile.Api = GraphicsApi.DX11;
@@ -317,8 +339,9 @@ public sealed class UnownedRestoreRefusalTests
         Assert.NotNull(manager.LastRefusalReason);
         Assert.Contains("missing ownership", manager.LastRefusalReason, StringComparison.OrdinalIgnoreCase);
 
-        // Profile remains enabled and unchanged
-        var reloadedProfile = profileStore.GetOrCreate(exePath);
+        // Profile remains enabled and unchanged: reload from disk to verify persistence without relying on in-memory store cache
+        var reloadedProfileStore = new ProfileStore(profilesPath);
+        var reloadedProfile = reloadedProfileStore.GetOrCreate(exePath);
         Assert.True(reloadedProfile.DxvkEnabled);
         Assert.Equal("2.5", reloadedProfile.DxvkVersion);
 
@@ -415,16 +438,17 @@ public sealed class UnownedRestoreRefusalTests
         File.WriteAllText(Path.Combine(dxvkArchDir, "d3d11.dll"), "dxvk-2.5-d3d11");
         File.WriteAllText(Path.Combine(dxvkArchDir, "dxgi.dll"), "dxvk-2.5-dxgi");
 
-        var store = new GameLibraryStore(
-            Path.Combine(storageDir.RootPath, "game-library.json"),
-            Path.Combine(storageDir.RootPath, "backups"));
-        var engine = new MultiFileTransactionEngine(Path.Combine(storageDir.RootPath, "backups"));
+        var storePath = Path.Combine(storageDir.RootPath, "game-library.json");
+        var backupsPath = Path.Combine(storageDir.RootPath, "backups");
+        var store = new GameLibraryStore(storePath, backupsPath);
+        var engine = new MultiFileTransactionEngine(backupsPath);
         using var http = new HttpClient();
         var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
         var rollback = new DxvkRollback(engine, store);
 
         var exePath = gameDir.CreateFile("Game.exe", "synthetic-binary");
         var d3d11Path = gameDir.CreateFile("d3d11.dll", "native-original-d3d11");
+        var confPath = gameDir.CreateFile("dxvk.conf", "dxvk.hud = compiler\ncustom.user.setting = true\n");
         var customSettingPath = gameDir.CreateFile("settings.ini", "[Settings]\nResolution=1080p");
 
         var profile = new GameProfile(exePath)
@@ -440,29 +464,39 @@ public sealed class UnownedRestoreRefusalTests
         // Deployed DXVK files are present
         Assert.Equal("dxvk-2.5-d3d11", File.ReadAllText(d3d11Path));
         Assert.True(File.Exists(Path.Combine(gameDir.RootPath, "dxgi.dll")));
-        Assert.True(File.Exists(Path.Combine(gameDir.RootPath, "dxvk.conf")));
+        Assert.True(File.Exists(confPath));
         Assert.True(File.Exists(customSettingPath));
 
+        // Reconstruct store, engine, and rollback from disk before restoration
+        var reconstructedStore = new GameLibraryStore(storePath, backupsPath);
+        var reconstructedEngine = new MultiFileTransactionEngine(backupsPath);
+        var reconstructedRollback = new DxvkRollback(reconstructedEngine, reconstructedStore);
+
         // Act 1: Initial rollback on legitimately owned installation
-        var ok1 = await rollback.RestoreOriginalDllsAsync(profile);
+        var ok1 = await reconstructedRollback.RestoreOriginalDllsAsync(profile);
         Assert.True(ok1);
 
-        // Native baseline restored, DXVK-added files removed, unrelated config retained
+        // Native baseline restored, DXVK-added files removed, pre-existing dxvk.conf custom user lines and unrelated config retained
         Assert.Equal("native-original-d3d11", File.ReadAllText(d3d11Path));
         Assert.False(File.Exists(Path.Combine(gameDir.RootPath, "dxgi.dll")));
-        Assert.False(File.Exists(Path.Combine(gameDir.RootPath, "dxvk.conf")));
+        Assert.True(File.Exists(confPath));
+        var restoredConf = File.ReadAllText(confPath);
+        Assert.Contains("dxvk.hud = compiler", restoredConf);
+        Assert.Contains("custom.user.setting = true", restoredConf);
         Assert.True(File.Exists(customSettingPath));
         Assert.Equal("[Settings]\nResolution=1080p", File.ReadAllText(customSettingPath));
 
-        var restoredInst = store.FindByInstallationPath(gameDir.RootPath)!;
+        var restoredInst = reconstructedStore.FindByInstallationPath(gameDir.RootPath)!;
         Assert.Equal(RestorationState.Restored, restoredInst.RestorationState);
         Assert.Null(restoredInst.ManagedDxvkVersion);
 
         // Act 2: Idempotent second rollback call on already-restored installation
-        var ok2 = await rollback.RestoreOriginalDllsAsync(profile);
+        var ok2 = await reconstructedRollback.RestoreOriginalDllsAsync(profile);
         Assert.True(ok2);
         Assert.Equal(RestorationState.Restored, restoredInst.RestorationState);
         Assert.Equal("native-original-d3d11", File.ReadAllText(d3d11Path));
+        Assert.True(File.Exists(confPath));
+        Assert.Contains("dxvk.hud = compiler", File.ReadAllText(confPath));
         Assert.True(File.Exists(customSettingPath));
     }
 }

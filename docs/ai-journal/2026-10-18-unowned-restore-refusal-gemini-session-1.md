@@ -1,8 +1,8 @@
-# Session Journal: Issue #173 — Refuse Unowned Restore Attempts Without Mutating Files or Reporting Success (Session 1)
+# Session Journal: Issue #173 / #175 — Refuse Unowned Restore Attempts Without Mutating Files or Reporting Success (Session 1)
 
 - **Date:** 2026-10-18
 - **Agent:** Gemini / Antigravity
-- **Task:** [Issue #173](https://github.com/Tiflit/DXVK-Companion/issues/173) — *Refuse unowned restore attempts without mutating files or reporting success*
+- **Task:** [Issue #175](https://github.com/Tiflit/DXVK-Companion/issues/175) (follow-up completing [Issue #173](https://github.com/Tiflit/DXVK-Companion/issues/173)) — *Refuse unowned restore attempts without mutating files or reporting success*
 - **Base `main` SHA:** `f77bb1743ec93bbe7b8d1ae53282c11b2b79734d`
 - **Trusted Policy SHA (`AGENTS.md`, `docs/AI-WORKFLOW-KERNEL.md`, `docs/AI-ENFORCEMENT-REGISTER.md`, `docs/AI-DEVELOPMENT-WORKFLOW.md`):** `f3e9974371cb08d1dd99192bd314a135010594ed`
 - **Branch:** `fix/issue-173-unowned-restore-refusal`
@@ -27,7 +27,9 @@
      - Manager `DisableDxvkAsync` integration: verifies refusal return `false`, propagation of refusal reason, and preservation of `profile.DxvkEnabled` without mutation.
      - Manager `RestoreAllAsync` batch integration: verifies unowned active profile in mixed batch is counted in `TotalManaged` and reported as `FailedOrAttentionRequired` while valid managed games restore successfully, preserving error isolation.
      - Positive control: verifies legitimate install restore restores baseline and remains idempotent on subsequent calls.
-   - Pushed initial reproducer commit and verified expected red cloud CI run `39169251599` (898 passed, 9 failed with exact expected assertion failures).
+   - Initial reproducer Cloud CI run `39169251599` (898 passed, 9 failed):
+     - **8 real behavioral regressions** on unpatched code: unowned restore proceeding/succeeding/mutating without ownership records.
+     - **1 assertion string calibration**: on `RestoreOriginalDllsAsync_WhenInstallationHasEmptyManagedFiles_AndStoreHasUncertainPersistence_RefusesWithoutSaving`, calibrated `Assert.Contains` rather than exact match against store diagnostic formatting.
 
 3. **Rollback Service Boundary Hardening (`DxvkRollback.cs`):**
    - Added early ownership guards in `RestoreOriginalDllsAsync`:
@@ -37,14 +39,13 @@
    - Completely removed private helper `RestoreLegacyBakIfExists`.
    - Preserved all public constructors, signatures, and `FileUtils` compatibility.
 
-4. **Test Oracle Correction (`SafeDeploymentIntegrationTests.cs`):**
-   - Corrected obsolete test `DxvkRollback_CleansUpDxvkConfFile` -> renamed to `DxvkRollback_UnownedDxvkConf_RefusesRollbackAndPreservesConfFile`.
-   - Replaced previous unsafe expectation (`Assert.True(rollbackOk); Assert.False(File.Exists(confPath));`) with strict safety verification:
-     - `Assert.False(rollbackOk);`
-     - `Assert.NotNull(rollback.LastRefusalReason);`
-     - `Assert.Contains("missing ownership", rollback.LastRefusalReason, StringComparison.OrdinalIgnoreCase);`
-     - `Assert.True(File.Exists(confPath));`
-     - `Assert.Equal(confContent, File.ReadAllText(confPath));`
+4. **Test Oracle Corrections & Review Test Strengthening (Issue #175):**
+   - Corrected obsolete test in `SafeDeploymentIntegrationTests.cs`: `DxvkRollback_CleansUpDxvkConfFile` -> renamed to `DxvkRollback_UnownedDxvkConf_RefusesRollbackAndPreservesConfFile`, asserting `false`, refusal reason citing missing ownership, and file preservation.
+   - Corrected legacy unmanaged-success assertion in `PhaseCManualManagementTests.cs`: in `DxvkInstaller_AdoptExisting_MixedDlls_RefusesAdoption_LeavesFilesAndOwnershipUnchanged_AndRollbackPreservesUnrelatedFile` (line 234), changed `Assert.True(rollbackOk)` to `Assert.False(rollbackOk)` and asserted `Assert.Contains("missing ownership", rollback.LastRefusalReason, StringComparison.OrdinalIgnoreCase)` while preserving all adoption-refusal and file preservation assertions.
+   - Strengthened `UnownedRestoreRefusalTests.cs`:
+     - In `RestoreOriginalDllsAsync_WhenInstallationExistsWithEmptyManagedFiles_RefusesAndTransitionsToAttentionRequired`: seeded non-default configuration (`DxvkConfiguration`), pinned version (`ManagementPolicy`), and pending action (`PendingAction`); reloaded `GameLibraryStore` from disk; asserted seeded fields survive while `RestorationState.AttentionRequired` and `LastRefusalReason` persist.
+     - In `DisableDxvkAsync_WhenUnownedProfile_RefusesAndLeavesProfileEnabledWithoutMutatingFiles`: reloaded `ProfileStore` from disk to verify profile state persistence without relying on in-memory store cache.
+     - In `RestoreOriginalDllsAsync_WhenLegitimatelyOwned_RestoresBaselineAndRemainsIdempotent`: seeded pre-existing user `dxvk.conf` with custom user lines (`dxvk.hud = compiler\ncustom.user.setting = true\n`) before install; deployed DXVK; reconstructed store, engine, and rollback from disk; verified native baseline and custom user config lines survive restoration alongside `settings.ini`; verified repeated owned restore succeeds idempotently.
 
 ---
 
@@ -53,31 +54,18 @@
 - `src/DXVKCompanion/DXVK/DxvkRollback.cs`
 - `tests/DXVKCompanion.PhaseA.Tests/UnownedRestoreRefusalTests.cs`
 - `tests/DXVKCompanion.PhaseA.Tests/SafeDeploymentIntegrationTests.cs`
+- `tests/DXVKCompanion.PhaseA.Tests/PhaseCManualManagementTests.cs`
 - `docs/ai-journal/2026-10-18-unowned-restore-refusal-gemini-session-1.md`
 
 ---
 
 ## Cloud CI & Verification Status
 
-- **Initial Reproducer CI:** Run `39169251599` (Job `117798676953`) — 898 passed, 9 failed, confirming the exact bug boundary on the unpatched codebase.
-- **Fix Commit CI:** Run `39169620373` (Job `117799766101`) — 906 passed, 1 failed:
-  - All 10 tests in `UnownedRestoreRefusalTests.cs` passed.
-  - The corrected test oracle `DxvkRollback_UnownedDxvkConf_RefusesRollbackAndPreservesConfFile` in `SafeDeploymentIntegrationTests.cs` passed.
-  - 896 existing tests passed.
-  - Single remaining failure: `DxvkInstaller_AdoptExisting_MixedDlls_RefusesAdoption_LeavesFilesAndOwnershipUnchanged_AndRollbackPreservesUnrelatedFile` in `tests/DXVKCompanion.PhaseA.Tests/PhaseCManualManagementTests.cs` (line 234: `Assert.True(rollbackOk); // Existing successful unmanaged no-op restore`). This test was written under the prior behavior when unmanaged/unowned restore returned `true`. Under Issue #173 Requirement 1, `RestoreOriginalDllsAsync` now strictly refuses unowned restores with `false`, causing line 234 to fail.
-- **Workflow Checks on PR #174:**
+- **Initial Reproducer CI:** Run `39169251599` (Job `117798676953`) — 898 passed, 9 failed (8 real behavioral regressions on unpatched code, 1 assertion formatting calibration).
+- **Production Fix CI:** Run `39169620373` (Job `117799766101`) — 906 passed, 1 failed (the single failure was line 234 in `PhaseCManualManagementTests.cs` authorized for correction in Issue #175).
+- **PR Hygiene & Scope Checks on PR #174:**
   - `AI task scope`: PASS (`39169935605`)
   - `PR hygiene`: PASS (`39169935540`)
   - `Run Python workflow tests`: PASS (`39169620393`)
   - `Acquire Facts and Render Snapshot`: PASS (`39169935840`)
   - `Publish Dashboard to Dedicated Issue`: PASS (`39169618488`)
-
----
-
-## Exact Minimum Additional Path Report
-
-Per the task contract ("*Report exact minimum additional paths if an unmet acceptance actually needs them*"):
-- **Additional Path Needed:** `tests/DXVKCompanion.PhaseA.Tests/PhaseCManualManagementTests.cs`
-- **Location:** Line 234 in `DxvkInstaller_AdoptExisting_MixedDlls_RefusesAdoption_LeavesFilesAndOwnershipUnchanged_AndRollbackPreservesUnrelatedFile`
-- **Rationale:** Similar to `SafeDeploymentIntegrationTests.DxvkRollback_CleansUpDxvkConfFile` which was authorized for oracle correction in Issue #173, `PhaseCManualManagementTests.cs` line 234 asserts `Assert.True(rollbackOk); // Existing successful unmanaged no-op restore` on an unowned directory. Updating this line to assert `Assert.False(rollbackOk);` (and verifying `LastRefusalReason`) aligns it with Issue #173 Requirement 1 and will bring the test suite to 907/907 passing (100% green).
-- **Status:** Paused dependent modification pending authorized task scope expansion to add `tests/DXVKCompanion.PhaseA.Tests/PhaseCManualManagementTests.cs` to Issue #173 `### Allowed paths`.
