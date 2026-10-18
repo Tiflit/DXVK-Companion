@@ -636,7 +636,7 @@ namespace DXVKCompanion.DXVK
             }
 
             ReleaseInfo? release;
-            if (!string.IsNullOrWhiteSpace(targetVersion))
+            if (!string.IsNullOrWhiteSpace(targetVersion) && !string.Equals(targetVersion, "latest", StringComparison.OrdinalIgnoreCase))
             {
                 release = new ReleaseInfo { Version = targetVersion, DownloadUrl = "" };
             }
