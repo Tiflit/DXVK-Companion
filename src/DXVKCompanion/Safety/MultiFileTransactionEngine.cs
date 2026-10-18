@@ -436,7 +436,7 @@ public sealed class MultiFileTransactionEngine
     {
         var root = Path.GetFullPath(installationRoot);
         var candidate = Path.GetFullPath(Path.Combine(root, relativePath));
-        var comparison = OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
+        var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
         var prefix = root.EndsWith(Path.DirectorySeparatorChar) ? root : root + Path.DirectorySeparatorChar;
         if (!candidate.StartsWith(prefix, comparison))
             throw new UnauthorizedAccessException("The target path escapes the installation root.");
