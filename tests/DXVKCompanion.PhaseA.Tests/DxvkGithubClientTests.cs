@@ -122,6 +122,7 @@ namespace DXVKCompanion.PhaseA.Tests
             // Synthetically expire cache file by writing expired CachedAt
             var expiredCache = store.LoadCachedRelease()!;
             expiredCache.CachedAt = DateTime.UtcNow.AddDays(-2);
+            expiredCache.LastAttemptAt = expiredCache.CachedAt;
             File.WriteAllText(cacheFile, JsonSerializer.Serialize(expiredCache, new JsonSerializerOptions { WriteIndented = true }));
             Assert.True(store.LoadCachedRelease()!.IsExpired());
 
@@ -171,6 +172,7 @@ namespace DXVKCompanion.PhaseA.Tests
             // Expire cache
             var expired = store.LoadCachedRelease()!;
             expired.CachedAt = DateTime.UtcNow.AddDays(-3);
+            expired.LastAttemptAt = expired.CachedAt;
             File.WriteAllText(cacheFile, JsonSerializer.Serialize(expired));
 
             var trackingResponse = CreateJsonResponse(HttpStatusCode.InternalServerError, "{\"message\":\"Server Error\"}");
@@ -227,6 +229,7 @@ namespace DXVKCompanion.PhaseA.Tests
 
             var expired = store.LoadCachedRelease()!;
             expired.CachedAt = DateTime.UtcNow.AddDays(-2);
+            expired.LastAttemptAt = expired.CachedAt;
             File.WriteAllText(cacheFile, JsonSerializer.Serialize(expired));
 
             var trackingResponse = CreateJsonResponse(HttpStatusCode.OK, "<<<NOT JSON>>>");
@@ -283,6 +286,7 @@ namespace DXVKCompanion.PhaseA.Tests
 
             var expired = store.LoadCachedRelease()!;
             expired.CachedAt = DateTime.UtcNow.AddDays(-2);
+            expired.LastAttemptAt = expired.CachedAt;
             File.WriteAllText(cacheFile, JsonSerializer.Serialize(expired));
 
             // JSON missing "tag_name" or "assets"
@@ -316,6 +320,7 @@ namespace DXVKCompanion.PhaseA.Tests
 
             var expired = store.LoadCachedRelease()!;
             expired.CachedAt = DateTime.UtcNow.AddDays(-2);
+            expired.LastAttemptAt = expired.CachedAt;
             File.WriteAllText(cacheFile, JsonSerializer.Serialize(expired));
 
             // Inject failure on staging write
@@ -353,6 +358,7 @@ namespace DXVKCompanion.PhaseA.Tests
 
             var expired = store.LoadCachedRelease()!;
             expired.CachedAt = DateTime.UtcNow.AddDays(-2);
+            expired.LastAttemptAt = expired.CachedAt;
             File.WriteAllText(cacheFile, JsonSerializer.Serialize(expired));
 
             // Inject failure during commit replacement on 304 save
@@ -389,6 +395,7 @@ namespace DXVKCompanion.PhaseA.Tests
 
             var expired = store.LoadCachedRelease()!;
             expired.CachedAt = DateTime.UtcNow.AddDays(-2);
+            expired.LastAttemptAt = expired.CachedAt;
             File.WriteAllText(cacheFile, JsonSerializer.Serialize(expired));
 
             var handler = new FakeHttpMessageHandler(req =>
@@ -420,6 +427,7 @@ namespace DXVKCompanion.PhaseA.Tests
 
             var expired = store.LoadCachedRelease()!;
             expired.CachedAt = DateTime.UtcNow.AddDays(-2);
+            expired.LastAttemptAt = expired.CachedAt;
             File.WriteAllText(cacheFile, JsonSerializer.Serialize(expired));
 
             var handler = new FakeHttpMessageHandler(req =>
@@ -480,6 +488,7 @@ namespace DXVKCompanion.PhaseA.Tests
             // Synthetically expire cache to force second network call
             var cached = store.LoadCachedRelease()!;
             cached.CachedAt = DateTime.UtcNow.AddDays(-2);
+            cached.LastAttemptAt = cached.CachedAt;
             File.WriteAllText(cacheFile, JsonSerializer.Serialize(cached));
 
             // Second call: 304 Not Modified

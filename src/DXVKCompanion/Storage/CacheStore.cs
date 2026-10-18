@@ -38,16 +38,18 @@ namespace DXVKCompanion.Storage
             }
         }
 
-        public void SaveCachedRelease(ReleaseInfo release, string? etag)
+        public void SaveCachedRelease(ReleaseInfo release, string? etag, DateTime? cachedAt = null, DateTime? lastAttemptAt = null)
         {
             var dir = Path.GetDirectoryName(_cacheFile);
             if (!string.IsNullOrEmpty(dir))
                 Directory.CreateDirectory(dir);
 
+            var now = DateTime.UtcNow;
             var cached = new CachedRelease
             {
                 Release = release,
-                CachedAt = DateTime.UtcNow,
+                CachedAt = cachedAt ?? now,
+                LastAttemptAt = lastAttemptAt ?? cachedAt ?? now,
                 ETag = etag
             };
 
@@ -56,6 +58,44 @@ namespace DXVKCompanion.Storage
                 WriteIndented = true
             });
 
+            CommitStagedJson(json);
+        }
+
+        public void RecordFailedAttempt(DateTime? attemptAt = null)
+        {
+            var dir = Path.GetDirectoryName(_cacheFile);
+            if (!string.IsNullOrEmpty(dir))
+                Directory.CreateDirectory(dir);
+
+            var existing = LoadCachedRelease();
+            if (existing == null && File.Exists(_cacheFile))
+            {
+                // The cache file exists on disk but could not be parsed.
+                // To prevent overwriting a recoverable corrupted file after a parse failure,
+                // do not overwrite the existing file.
+                return;
+            }
+
+            var now = attemptAt ?? DateTime.UtcNow;
+            var toSave = existing ?? new CachedRelease
+            {
+                Release = new ReleaseInfo(),
+                CachedAt = default,
+                ETag = null
+            };
+
+            toSave.LastAttemptAt = now;
+
+            var json = JsonSerializer.Serialize(toSave, new JsonSerializerOptions
+            {
+                WriteIndented = true
+            });
+
+            CommitStagedJson(json);
+        }
+
+        private void CommitStagedJson(string json)
+        {
             string tempPath = _cacheFile + ".tmp." + Guid.NewGuid().ToString("N");
             bool committed = false;
             try

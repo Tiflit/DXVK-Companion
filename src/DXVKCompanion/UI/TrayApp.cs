@@ -14,7 +14,7 @@ using DXVKCompanion.Utils;
 
 namespace DXVKCompanion.UI
 {
-    public class TrayApp
+    public class TrayApp : IDisposable
     {
         private readonly NotifyIcon _trayIcon;
         private readonly TrayMenu _menu;
@@ -29,8 +29,13 @@ namespace DXVKCompanion.UI
         private readonly GameLibraryStore _gameLibraryStore;
         private readonly ManagedFileInspector _inspector;
         private readonly SynchronizationContext _syncContext;
+        private readonly DxvkReleaseCheckScheduler _releaseScheduler;
 
         private string? _pendingUpdateUrl;
+        private string? _lastNotifiedDxvkVersion;
+        private bool _disposed;
+
+        internal DxvkReleaseCheckScheduler ReleaseScheduler => _releaseScheduler;
 
         public TrayApp(
             ProcessMonitor monitor,
@@ -39,7 +44,8 @@ namespace DXVKCompanion.UI
             ApiClassifier classifier,
             SettingsStore settings,
             HttpClient httpClient,
-            GameLibraryStore? gameLibraryStore = null)
+            GameLibraryStore? gameLibraryStore = null,
+            DxvkReleaseCheckScheduler? releaseScheduler = null)
         {
             _monitor = monitor;
             _profiles = profiles;
@@ -76,6 +82,7 @@ namespace DXVKCompanion.UI
                     : Path.GetFileName(installation.InstallationPath);
                 _syncContext.Post(_ =>
                 {
+                    if (_disposed) return;
                     _trayIcon.ShowBalloonTip(5000, "DXVK Operation Cancelled",
                         $"Pending {action.Type} for {name} was cancelled as incompatible:\n{reason}", ToolTipIcon.Warning);
                 }, null);
@@ -90,15 +97,19 @@ namespace DXVKCompanion.UI
                 {
                     _syncContext.Post(_ =>
                     {
+                        if (_disposed) return;
                         _trayIcon.ShowBalloonTip(4000, "DXVK Companion",
                             $"Operation completed safely after game exit for {Path.GetFileName(exePath)}.", ToolTipIcon.Info);
                     }, null);
                 }
             };
 
+            _releaseScheduler = releaseScheduler ?? new DxvkReleaseCheckScheduler(
+                async ct => await _dxvk.GetLatestReleaseAsync(),
+                async latest => await NotifyIfDxvkUpdateAvailableAsync(latest));
+
             // Startup tasks: inspect all installations and process pending actions
             _ = InitializeStartupStateAsync();
-            _ = CheckDxvkUpdateOnStartup();
             _ = CheckCompanionUpdateOnStartup();
         }
 
@@ -119,10 +130,13 @@ namespace DXVKCompanion.UI
             }
         }
 
-        private async Task CheckDxvkUpdateOnStartup()
+        internal Task NotifyIfDxvkUpdateAvailableAsync(ReleaseInfo latest)
         {
-            var latest = await _dxvk.GetLatestReleaseAsync();
-            if (latest == null) return;
+            if (_disposed || latest == null || string.IsNullOrWhiteSpace(latest.Version))
+                return Task.CompletedTask;
+
+            if (string.Equals(latest.Version, _lastNotifiedDxvkVersion, StringComparison.OrdinalIgnoreCase))
+                return Task.CompletedTask;
 
             bool anyOutdated = false;
             foreach (var profile in _profiles.GetAll())
@@ -136,12 +150,16 @@ namespace DXVKCompanion.UI
 
             if (anyOutdated)
             {
+                _lastNotifiedDxvkVersion = latest.Version;
                 _syncContext.Post(_ =>
                 {
+                    if (_disposed) return;
                     _trayIcon.ShowBalloonTip(5000, "DXVK Update Available",
                         $"A new DXVK version ({latest.Version}) is available. Open Manage Games to update.", ToolTipIcon.Info);
                 }, null);
             }
+
+            return Task.CompletedTask;
         }
 
         private async Task CheckCompanionUpdateOnStartup()
@@ -316,6 +334,16 @@ namespace DXVKCompanion.UI
                 msg += "⚠ Anti-cheat components detected. Do NOT use DXVK in online/multiplayer modes.\n";
 
             return msg;
+        }
+
+        public void Dispose()
+        {
+            if (_disposed) return;
+            _disposed = true;
+
+            _releaseScheduler?.Dispose();
+            _trayIcon.Visible = false;
+            _trayIcon.Dispose();
         }
     }
 }

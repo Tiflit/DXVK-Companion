@@ -58,7 +58,8 @@ namespace DXVKCompanion
             var dxvkManager = new DxvkManager(installer, rollback, github, profiles, gameLibraryStore);
 
             // UI
-            var trayApp = new TrayApp(monitor, profiles, dxvkManager, classifier, settings, httpClient, gameLibraryStore);
+            using var trayApp = new TrayApp(monitor, profiles, dxvkManager, classifier, settings, httpClient, gameLibraryStore);
+            Application.ApplicationExit += (_, _) => trayApp.Dispose();
 
             Application.Run();
         }

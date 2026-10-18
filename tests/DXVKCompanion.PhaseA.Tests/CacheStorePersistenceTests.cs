@@ -391,5 +391,93 @@ namespace DXVKCompanion.PhaseA.Tests
             Assert.Equal(3, seenTempPaths.Count);
             Assert.Equal(3, seenTempPaths.Distinct(StringComparer.OrdinalIgnoreCase).Count());
         }
+
+        [Fact]
+        public void CacheStore_RecordFailedAttempt_WithoutExistingCache_SavesAttemptTimestamp_WithoutValidRelease()
+        {
+            using var testDir = new SyntheticTestDirectory();
+            string cacheFile = Path.Combine(testDir.RootPath, "release-cache.json");
+            var store = new CacheStore(cacheFile);
+
+            var attemptTime = new DateTime(2026, 10, 17, 12, 0, 0, DateTimeKind.Utc);
+            store.RecordFailedAttempt(attemptTime);
+
+            Assert.True(File.Exists(cacheFile));
+            var reloaded = store.LoadCachedRelease();
+            Assert.NotNull(reloaded);
+            Assert.Equal(attemptTime, reloaded.LastAttemptAt);
+            Assert.False(reloaded.HasValidRelease);
+            Assert.Null(reloaded.ETag);
+        }
+
+        [Fact]
+        public void CacheStore_RecordFailedAttempt_WithExistingCache_UpdatesAttemptTimestamp_PreservingPriorReleaseAndETag()
+        {
+            using var testDir = new SyntheticTestDirectory();
+            string cacheFile = Path.Combine(testDir.RootPath, "release-cache.json");
+            var store = new CacheStore(cacheFile);
+
+            var originalCachedAt = new DateTime(2026, 10, 16, 10, 0, 0, DateTimeKind.Utc);
+            store.SaveCachedRelease(
+                new ReleaseInfo { Version = "v2.5", DownloadUrl = "https://example.com/v2.5.tar.gz" },
+                "\"etag-2.5\"",
+                cachedAt: originalCachedAt,
+                lastAttemptAt: originalCachedAt);
+
+            var failedAttemptTime = new DateTime(2026, 10, 17, 10, 30, 0, DateTimeKind.Utc);
+            store.RecordFailedAttempt(failedAttemptTime);
+
+            var reloaded = store.LoadCachedRelease();
+            Assert.NotNull(reloaded);
+            Assert.Equal("v2.5", reloaded.Release.Version);
+            Assert.Equal("https://example.com/v2.5.tar.gz", reloaded.Release.DownloadUrl);
+            Assert.Equal("\"etag-2.5\"", reloaded.ETag);
+            Assert.Equal(originalCachedAt, reloaded.CachedAt);
+            Assert.Equal(failedAttemptTime, reloaded.LastAttemptAt);
+            Assert.True(reloaded.HasValidRelease);
+        }
+
+        [Fact]
+        public void CacheStore_LoadCachedRelease_LegacyFormatWithoutLastAttemptAt_LoadsCorrectlyWithNullLastAttempt()
+        {
+            using var testDir = new SyntheticTestDirectory();
+            string cacheFile = Path.Combine(testDir.RootPath, "release-cache.json");
+
+            string legacyJson = @"{
+  ""Release"": {
+    ""Version"": ""v2.4"",
+    ""DownloadUrl"": ""https://example.com/v2.4.tar.gz""
+  },
+  ""CachedAt"": ""2026-10-17T08:00:00Z"",
+  ""ETag"": ""\""etag-legacy\""""
+}";
+            File.WriteAllText(cacheFile, legacyJson);
+
+            var store = new CacheStore(cacheFile);
+            var loaded = store.LoadCachedRelease();
+
+            Assert.NotNull(loaded);
+            Assert.Equal("v2.4", loaded.Release.Version);
+            Assert.Equal("\"etag-legacy\"", loaded.ETag);
+            Assert.Null(loaded.LastAttemptAt);
+            Assert.Equal(DateTime.Parse("2026-10-17T08:00:00Z").ToUniversalTime(), loaded.EffectiveLastAttempt);
+            Assert.True(loaded.HasValidRelease);
+        }
+
+        [Fact]
+        public void CacheStore_RecordFailedAttempt_WhenExistingFileMalformed_PreservesFileWithoutOverwriting()
+        {
+            using var testDir = new SyntheticTestDirectory();
+            string cacheFile = Path.Combine(testDir.RootPath, "release-cache.json");
+
+            string corruptedContent = "<<<CORRUPTED JSON CONTENT>>>";
+            File.WriteAllText(cacheFile, corruptedContent);
+
+            var store = new CacheStore(cacheFile);
+            store.RecordFailedAttempt(DateTime.UtcNow);
+
+            // Staged write must not overwrite the unparseable file
+            Assert.Equal(corruptedContent, File.ReadAllText(cacheFile));
+        }
     }
 }
