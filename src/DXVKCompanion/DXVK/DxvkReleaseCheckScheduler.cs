@@ -11,7 +11,7 @@ namespace DXVKCompanion.DXVK
         private readonly Func<CancellationToken, Task<ReleaseInfo?>> _checkAction;
         private readonly Func<ReleaseInfo, Task>? _onUpdateChecked;
         private readonly TimeSpan _checkInterval;
-        private readonly Timer? _timer;
+        private readonly System.Threading.Timer? _timer;
         private readonly CancellationTokenSource _cts = new();
         private readonly SemaphoreSlim _tickLock = new(1, 1);
         private bool _disposed;
@@ -28,7 +28,7 @@ namespace DXVKCompanion.DXVK
 
             if (startImmediately)
             {
-                _timer = new Timer(OnTimerTick, null, TimeSpan.Zero, _checkInterval);
+                _timer = new System.Threading.Timer(OnTimerTick, null, TimeSpan.Zero, _checkInterval);
             }
         }
 
