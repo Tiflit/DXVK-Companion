@@ -134,3 +134,17 @@ Codex reviewed PR #164 at head `858bd2ccd1bc0eb56c9ae9e67651b563149d24c0` with 3
      - `PerGameVersionSelectionTests.StaleProfile_Direction1_ManagedV24_ProfileV23_CorrectlySkipped`: sets up a real synthetic managed install with `ManagedDxvkVersion = "v2.4"` and stale `profile.DxvkVersion = "v2.3"`. With target pinned to v2.4, asserts `UpdateAvailable` is false, `UpdateAllEnabledAsync` performs 0 updates, zero HTTP requests are issued, and deployed DLLs and baseline backup are preserved.
      - `PerGameVersionSelectionTests.StaleProfile_Direction2_ManagedV23_ProfileV24_CorrectlyUpdated`: sets up a real synthetic managed install with `ManagedDxvkVersion = "v2.3"` and stale `profile.DxvkVersion = "v2.4"`. With target pinned to v2.4, asserts `UpdateAvailable` is true, `UpdateAllEnabledAsync` updates to v2.4, zero HTTP requests are issued, deployed DLLs and `ManagedDxvkVersion` are updated to v2.4, and subsequent rollback restores original baseline bytes cleanly.
 
+---
+
+### 5. Codex Delta Review P2 Repair (Test-Only)
+
+Codex reviewed PR #164 at head `b4f9e4a8e48a92935ed1d3a1c4eedfb15326b013` (run `39090838491`), accepting all three original production repairs. One P2 test-only finding was raised:
+- **Finding:** In `DxvkLocalReleaseLibraryTests.cs` (lines 250, 298) and `PerGameVersionSelectionTests.cs` (line 514), tests returned early when `TryCreateDirectoryLink` failed (`if (!linkCreated) return;`). Under Windows CI runners, swallowed exceptions or failure return codes produced `Passed` rather than a setup failure, leaving junction execution unproven in TRX.
+- **Repair:**
+  - Updated `TryCreateDirectoryLink(string linkPath, string targetPath, out string? diagnostics)` across both test suites to capture stdout, stderr, exit code, and exceptions when creating junctions via `cmd.exe /c mklink /J`, and to assert that the created directory has `FileAttributes.ReparsePoint`.
+  - Replaced early `return;` with:
+    - `Assert.True(linkCreated, $"... Diagnostics: {diag}")`
+    - `Assert.True(Directory.Exists(archLink), ...)`
+    - `Assert.True((linkInfo.Attributes & FileAttributes.ReparsePoint) != 0, ...)`
+  - Retained all existing negative/positive behavior assertions and fixture cleanup in `finally` blocks.
+  - No production code, dependency, or workflow modifications.

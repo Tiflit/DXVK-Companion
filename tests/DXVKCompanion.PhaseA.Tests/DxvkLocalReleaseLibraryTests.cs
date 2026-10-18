@@ -191,8 +191,9 @@ public sealed class DxvkLocalReleaseLibraryTests : IDisposable
         Assert.Empty(emptyArch);
     }
 
-    private static bool TryCreateDirectoryLink(string linkPath, string targetPath)
+    private static bool TryCreateDirectoryLink(string linkPath, string targetPath, out string? diagnostics)
     {
+        diagnostics = null;
         if (OperatingSystem.IsWindows())
         {
             try
@@ -209,23 +210,51 @@ public sealed class DxvkLocalReleaseLibraryTests : IDisposable
                 using var proc = Process.Start(psi);
                 if (proc != null)
                 {
+                    string stdout = proc.StandardOutput.ReadToEnd();
+                    string stderr = proc.StandardError.ReadToEnd();
                     proc.WaitForExit(5000);
                     if (proc.ExitCode == 0 && Directory.Exists(linkPath))
-                        return true;
+                    {
+                        var di = new DirectoryInfo(linkPath);
+                        if ((di.Attributes & FileAttributes.ReparsePoint) != 0)
+                        {
+                            return true;
+                        }
+                        diagnostics = $"mklink exited 0 but DirectoryInfo lacks ReparsePoint attribute: {di.Attributes}";
+                        return false;
+                    }
+                    diagnostics = $"mklink exited with code {proc.ExitCode}. stdout: {stdout.Trim()}, stderr: {stderr.Trim()}";
+                }
+                else
+                {
+                    diagnostics = "Failed to launch cmd.exe process.";
                 }
             }
-            catch
+            catch (Exception ex)
             {
+                diagnostics = $"Exception invoking mklink /J: {ex.Message}";
             }
         }
 
         try
         {
             Directory.CreateSymbolicLink(linkPath, targetPath);
-            return Directory.Exists(linkPath);
+            if (Directory.Exists(linkPath))
+            {
+                var di = new DirectoryInfo(linkPath);
+                if ((di.Attributes & FileAttributes.ReparsePoint) != 0)
+                {
+                    return true;
+                }
+                diagnostics ??= $"Directory.CreateSymbolicLink succeeded but DirectoryInfo lacks ReparsePoint attribute: {di.Attributes}";
+                return false;
+            }
+            diagnostics ??= "Directory.CreateSymbolicLink completed but Directory.Exists is false.";
+            return false;
         }
-        catch
+        catch (Exception ex)
         {
+            diagnostics ??= $"Directory.CreateSymbolicLink failed: {ex.Message}";
             return false;
         }
     }
@@ -246,14 +275,13 @@ public sealed class DxvkLocalReleaseLibraryTests : IDisposable
             Directory.CreateDirectory(releaseDir);
 
             string archLink = Path.Combine(releaseDir, "x64");
-            bool linkCreated = TryCreateDirectoryLink(archLink, externalRoot);
-            if (!linkCreated)
-            {
-                return;
-            }
+            bool linkCreated = TryCreateDirectoryLink(archLink, externalRoot, out var diag);
+            Assert.True(linkCreated, $"Failed to create architecture link/junction at '{archLink}' pointing to '{externalRoot}'. Diagnostics: {diag}");
 
-            Assert.True(Directory.Exists(archLink));
-            Assert.True(File.Exists(Path.Combine(archLink, "d3d11.dll")));
+            Assert.True(Directory.Exists(archLink), $"Expected directory to exist at '{archLink}'");
+            var linkInfo = new DirectoryInfo(archLink);
+            Assert.True((linkInfo.Attributes & FileAttributes.ReparsePoint) != 0, $"Expected '{archLink}' to be a ReparsePoint. Actual attributes: {linkInfo.Attributes}");
+            Assert.True(File.Exists(Path.Combine(archLink, "d3d11.dll")), $"Expected leaf file to be accessible through link at '{Path.Combine(archLink, "d3d11.dll")}'");
 
             // Availability must reject the release whose arch directory escapes root
             bool available = DxvkLocalReleaseLibrary.IsVersionAvailable(_tempRoot, "v2.4", GraphicsApi.DX11, "x64");
@@ -294,11 +322,12 @@ public sealed class DxvkLocalReleaseLibraryTests : IDisposable
         Directory.CreateDirectory(releaseDir);
 
         string archLink = Path.Combine(releaseDir, "x64");
-        bool linkCreated = TryCreateDirectoryLink(archLink, internalShared);
-        if (!linkCreated)
-        {
-            return;
-        }
+        bool linkCreated = TryCreateDirectoryLink(archLink, internalShared, out var diag);
+        Assert.True(linkCreated, $"Failed to create internal architecture link/junction at '{archLink}' pointing to '{internalShared}'. Diagnostics: {diag}");
+
+        Assert.True(Directory.Exists(archLink), $"Expected directory to exist at '{archLink}'");
+        var linkInfo = new DirectoryInfo(archLink);
+        Assert.True((linkInfo.Attributes & FileAttributes.ReparsePoint) != 0, $"Expected '{archLink}' to be a ReparsePoint. Actual attributes: {linkInfo.Attributes}");
 
         bool available = DxvkLocalReleaseLibrary.IsVersionAvailable(_tempRoot, "v2.4", GraphicsApi.DX11, "x64");
         Assert.True(available);
