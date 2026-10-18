@@ -234,4 +234,18 @@ public sealed class GameDetailsPolicySelectionTests
         Assert.Equal(ManagementMode.PinnedVersion, policy.Mode);
         Assert.Equal("2.3.1", policy.PinnedDxvkVersion);
     }
+
+    [Fact]
+    public void LegacyPinnedMode_PreservesAutomaticEligibility_AndKeepsPin()
+    {
+        var legacyPolicy = ManagementPolicy.PinVersion("2.3");
+        Assert.Equal(ManagementMode.PinnedVersion, legacyPolicy.Mode);
+        Assert.Equal("2.3", legacyPolicy.PinnedDxvkVersion);
+        Assert.True(legacyPolicy.IsAutomated(GlobalManagementPolicy.Manual));
+        Assert.True(legacyPolicy.IsAutomated(GlobalManagementPolicy.Automated));
+
+        var resolved = GameDetailsPolicySelection.ResolvePolicy(3, legacyPolicy);
+        Assert.Same(legacyPolicy, resolved);
+        Assert.True(resolved.IsAutomated(GlobalManagementPolicy.Manual));
+    }
 }
