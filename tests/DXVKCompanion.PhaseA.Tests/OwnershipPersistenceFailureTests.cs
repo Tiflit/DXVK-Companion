@@ -715,8 +715,9 @@ public sealed class OwnershipPersistenceFailureTests
 
         string exePath = gameDir.CreateFile("Game.exe", "synthetic-game-exe");
         string targetD3d11 = gameDir.CreateFile("d3d11.dll", "native-v1-original-d3d11");
-        string targetDxgi = Path.Combine(gameDir.RootPath, "dxgi.dll");
+        string targetDxgi = gameDir.CreateFile("dxgi.dll", "native-v1-original-dxgi");
         var nativeV1Identity = FileIdentity.Capture(targetD3d11);
+        var nativeV1DxgiIdentity = FileIdentity.Capture(targetDxgi);
 
         string libraryFile = Path.Combine(storageDir.RootPath, "game-library.json");
         string backupsDir = Path.Combine(storageDir.RootPath, "backups");
@@ -729,14 +730,14 @@ public sealed class OwnershipPersistenceFailureTests
             backupsDir,
             new MultiFileTransactionTestHooks
             {
-                AfterPublishNativeBackup = (_, index) =>
+                AfterPublishNativeBackup = (_, _, index) =>
                 {
                     if (failAfterPublishBackup && index == 0)
                     {
                         throw new IOException("Simulated pre-target fault immediately after replacing canonical backup for file 0.");
                     }
                 },
-                BeforeStage = (_, index) =>
+                AfterStageNativeBackup = (_, _, index) =>
                 {
                     if (failDuringSecondFileStaging && index == 1)
                     {
@@ -755,12 +756,14 @@ public sealed class OwnershipPersistenceFailureTests
 
         Assert.True(await installer.ApplyToGameAsync(profile, new ReleaseInfo { Version = "2.4", DownloadUrl = "" }));
 
-        // Simulate external game update replacing d3d11.dll with v2 native DLL
+        // Simulate external game update replacing d3d11.dll and dxgi.dll with v2 native DLLs
         File.WriteAllText(targetD3d11, "game-update-v2-d3d11");
+        File.WriteAllText(targetDxgi, "game-update-v2-dxgi");
         var gameUpdateV2Identity = FileIdentity.Capture(targetD3d11);
 
         var instBeforeReapply = store.FindByInstallationPath(gameDir.RootPath)!;
         string canonicalBackupD3d11 = Path.Combine(backupsDir, instBeforeReapply.FindManagedFile("d3d11.dll")!.BackupRelativePath!);
+        string canonicalBackupDxgi = Path.Combine(backupsDir, instBeforeReapply.FindManagedFile("dxgi.dll")!.BackupRelativePath!);
         byte[] libraryBytesBeforeReapply = File.ReadAllBytes(libraryFile);
 
         // Sub-case A: Fault in AfterPublishNativeBackup on file 0 (before any target file is modified)
@@ -770,21 +773,25 @@ public sealed class OwnershipPersistenceFailureTests
 
         Assert.False(reapplyA);
         Assert.Equal("game-update-v2-d3d11", File.ReadAllText(targetD3d11));
+        Assert.Equal("game-update-v2-dxgi", File.ReadAllText(targetDxgi));
         Assert.Equal(gameUpdateV2Identity, FileIdentity.Capture(targetD3d11));
         Assert.Equal("native-v1-original-d3d11", File.ReadAllText(canonicalBackupD3d11));
         Assert.Equal(nativeV1Identity, FileIdentity.Capture(canonicalBackupD3d11));
         Assert.Equal(libraryBytesBeforeReapply, File.ReadAllBytes(libraryFile));
         Assert.Equal(nativeV1Identity.Sha256, store.FindByInstallationPath(gameDir.RootPath)!.FindManagedFile("d3d11.dll")!.OriginalSha256);
 
-        // Sub-case B: Fault in BeforeStage on file 1 (after file 0 backup replacement completed, before ApplyPlan)
+        // Sub-case B: Fault in AfterStageNativeBackup on file 1 (after file 0 backup replacement completed, before ApplyPlan)
         failDuringSecondFileStaging = true;
         bool reapplyB = await installer.ReapplyAsync(profile, updateBaseline: true);
         failDuringSecondFileStaging = false;
 
         Assert.False(reapplyB);
         Assert.Equal("game-update-v2-d3d11", File.ReadAllText(targetD3d11));
+        Assert.Equal("game-update-v2-dxgi", File.ReadAllText(targetDxgi));
         Assert.Equal("native-v1-original-d3d11", File.ReadAllText(canonicalBackupD3d11));
+        Assert.Equal("native-v1-original-dxgi", File.ReadAllText(canonicalBackupDxgi));
         Assert.Equal(nativeV1Identity, FileIdentity.Capture(canonicalBackupD3d11));
+        Assert.Equal(nativeV1DxgiIdentity, FileIdentity.Capture(canonicalBackupDxgi));
         Assert.Equal(libraryBytesBeforeReapply, File.ReadAllBytes(libraryFile));
 
         string transactionsRoot = Path.Combine(backupsDir, ".transactions");
@@ -828,7 +835,7 @@ public sealed class OwnershipPersistenceFailureTests
                         };
                     }
                 },
-                BeforeCompensate = (_, index) =>
+                DuringRecovery = index =>
                 {
                     if (index == 0)
                     {
@@ -861,7 +868,7 @@ public sealed class OwnershipPersistenceFailureTests
         Assert.Null(inst.ManagedDxvkVersion);
         Assert.Empty(inst.ManagedFiles);
         Assert.False(inst.Configuration.HudEnabled);
-        Assert.Equal(0, inst.Configuration.FrameLimit);
+        Assert.Equal(120, inst.Configuration.FrameLimit);
     }
 
     [Fact]
@@ -1035,8 +1042,8 @@ public sealed class OwnershipPersistenceFailureTests
         Assert.Throws<InvalidOperationException>(() => store.RecordDetectionSnapshot(new DetectionSnapshot
         {
             ExecutablePath = exePath,
-            DetectedApi = GraphicsApi.DX11,
-            Architecture = "x64"
+            InstallationRoot = gameDir.RootPath,
+            ExecutableRelativePath = "Game.exe"
         }));
         string otherGameDir = Path.Combine(storageDir.RootPath, "OtherGame");
         Directory.CreateDirectory(otherGameDir);

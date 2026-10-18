@@ -650,70 +650,9 @@ namespace DXVKCompanion.Storage
         {
             if (source == null) throw new ArgumentNullException(nameof(source));
 
-            return new GameInstallation
-            {
-                Id = source.Id,
-                InstallationPath = source.InstallationPath,
-                DisplayName = source.DisplayName,
-                IsHidden = source.IsHidden,
-                ManagementPolicy = new ManagementPolicy
-                {
-                    Mode = source.ManagementPolicy?.Mode ?? ManagementMode.FollowGlobal,
-                    PinnedDxvkVersion = source.ManagementPolicy?.PinnedDxvkVersion
-                },
-                ManagedDxvkVersion = source.ManagedDxvkVersion,
-                ManagedDxvkArchitecture = source.ManagedDxvkArchitecture,
-                RestorationState = source.RestorationState,
-                ConflictFlags = source.ConflictFlags,
-                Configuration = new DxvkConfiguration
-                {
-                    HudEnabled = source.Configuration?.HudEnabled ?? false,
-                    AsyncShaderCompiler = source.Configuration?.AsyncShaderCompiler ?? false,
-                    FrameLimit = source.Configuration?.FrameLimit ?? 0,
-                    FrameLimitEnabled = source.Configuration?.FrameLimitEnabled ?? false,
-                    MaxFrameLatency = source.Configuration?.MaxFrameLatency ?? 0,
-                    MaxFrameLatencyEnabled = source.Configuration?.MaxFrameLatencyEnabled ?? false,
-                    ForceVsync = source.Configuration?.ForceVsync ?? false,
-                    CustomConfigLines = source.Configuration?.CustomConfigLines ?? string.Empty
-                },
-                Executables = source.Executables?.Select(e => new ExecutableProfile
-                {
-                    RelativeExecutablePath = e.RelativeExecutablePath,
-                    DisplayName = e.DisplayName,
-                    LastKnownArchitecture = e.LastKnownArchitecture,
-                    LastKnownApi = e.LastKnownApi,
-                    ApiConfidence = e.ApiConfidence,
-                    DetectionEvidence = e.DetectionEvidence != null ? new List<string>(e.DetectionEvidence) : new List<string>(),
-                    LastSeenUtc = e.LastSeenUtc
-                }).ToList() ?? new List<ExecutableProfile>(),
-                ManagedFiles = source.ManagedFiles?.Select(m => new ManagedFileRecord
-                {
-                    RelativePath = m.RelativePath,
-                    OriginalState = m.OriginalState,
-                    BackupRelativePath = m.BackupRelativePath,
-                    OriginalSha256 = m.OriginalSha256,
-                    ExpectedManagedSha256 = m.ExpectedManagedSha256,
-                    ManagedDxvkVersion = m.ManagedDxvkVersion,
-                    CurrentState = m.CurrentState,
-                    LastVerifiedUtc = m.LastVerifiedUtc
-                }).ToList() ?? new List<ManagedFileRecord>(),
-                PendingAction = source.PendingAction == null ? null : new PendingActionRecord
-                {
-                    Type = source.PendingAction.Type,
-                    Reason = source.PendingAction.Reason,
-                    TargetDxvkVersion = source.PendingAction.TargetDxvkVersion,
-                    DetectedApi = source.PendingAction.DetectedApi,
-                    PreviousApi = source.PendingAction.PreviousApi,
-                    CreatedUtc = source.PendingAction.CreatedUtc,
-                    IsPending = source.PendingAction.IsPending
-                },
-                LastCancelledAction = source.LastCancelledAction,
-                LastCancellationReason = source.LastCancellationReason,
-                LastCancellationOutcome = source.LastCancellationOutcome,
-                LastRefusalReason = source.LastRefusalReason,
-                CreatedUtc = source.CreatedUtc,
-                LastSeenUtc = source.LastSeenUtc
-            };
+            string json = JsonSerializer.Serialize(source, _jsonOptions);
+            return JsonSerializer.Deserialize<GameInstallation>(json, _jsonOptions)
+                ?? throw new InvalidOperationException("Failed to deserialize GameInstallation snapshot.");
         }
 
         internal void RestoreSnapshot(GameInstallation target, GameInstallation snapshot)
