@@ -9,210 +9,330 @@
 
 ## 1. Executive Summary & Problem Statement
 
-DXVK Companion performs multi-file operations (`Install`, `Update`, `Reapply`, `Restore`, and `AdoptExisting`) that span target game directories, canonical backup directories (`backups/<instId>/`), and the whole-library metadata store (`game-library.json`). While Issue #171 established in-process compensation and Issue #173 established strict unowned-restore refusal, **zero operational mutual exclusion exists across concurrent operations targeting the same game installation root**.
+DXVK Companion performs multi-file filesystem operations (`Install`, `Update`, `Reapply`, `Restore`, and `AdoptExisting`) that span target game directories, canonical backup directories (`backups/<instId>/`), and the shared whole-library metadata store (`game-library.json`). While Issue #171 established in-process compensation and Issue #173 established strict unowned-restore refusal, **zero operational mutual exclusion exists across concurrent operations targeting the same game installation root**.
 
 Furthermore, process activity checking is currently fragmented, incomplete, and decoupled from the actual point of mutation.
 
 ### 1.1 Observed Concurrency Failure Modes on `main`
 
 1. **Rollback Undoing Another Operation's Committed Bytes (Silent Data Reversion):**
-   When Operation 1 (e.g. Update to 2.6) begins applying target files, it creates an operation-scoped undo copy in `.transactions/<Op1_Id>/undo/`. If Operation 1 pauses or interleaves, and Operation 2 (e.g. Update to 2.7) executes on the same game directory, Operation 2 applies its files and commits to `game-library.json`. If Operation 1 subsequently encounters an error (e.g. disk write fault, permission issue, or store persistence failure), Operation 1 triggers `RecoverAttempted`. Its undo copy contains the pre-operation bytes (version 2.5), which it blindly copies over `d3d11.dll`. Operation 1's rollback **silently destroys Operation 2's committed version 2.7 files**, leaving the disk in a corrupt, split-brain state where metadata indicates 2.7 but the filesystem has 2.5.
+   When Operation 1 (e.g. Update to 2.6) begins applying target files, it creates an operation-scoped undo copy in `.transactions/<Op1_Id>/undo/`. If Operation 1 pauses or interleaves, and Operation 2 (e.g. Update to 2.7) executes concurrently on the same game directory, Operation 2 applies its files and commits to `game-library.json`. If Operation 1 subsequently encounters an error (e.g. simulated disk fault or network failure), Operation 1 triggers `RecoverAttempted`. Its undo copy contains pre-operation bytes (version 2.5), which it blindly copies back over `d3d11.dll`. Operation 1's rollback **silently destroys Operation 2's committed version 2.7 files**, leaving the filesystem reverted to 2.5 while `game-library.json` claims version 2.7.
 2. **Concurrent Mutation & Mixed Payload Infiltration:**
-   When two deploy operations (e.g. Update to 2.6 and Update to 2.7) run concurrently on the same installation, file mutations interleave at the operating system level. Because `MultiFileTransactionEngine` prepares and copies files sequentially (`d3d11.dll`, then `dxgi.dll`, then `dxvk.conf`), an interleaving can leave `d3d11.dll` from Version 2.7 and `dxgi.dll` from Version 2.6.
-3. **Split-Brain Store Metadata Overwrites:**
-   Each `GameLibraryStore` instance holds an internal in-memory dictionary protected only by an instance-scoped `lock (_sync)`. Two separate application instances, or two independently constructed service graphs within the same process, hold distinct `_sync` instances. When both save, the second staged replacement overwrites the first, discarding recorded managed file records or pending actions.
+   When two deploy operations run concurrently on the same installation without an operational lease, file mutations interleave at the operating system level. Because `MultiFileTransactionEngine` prepares and copies files sequentially (`d3d11.dll`, then `dxgi.dll`, then `dxvk.conf`), an unexcluded interleaving risks deploying mixed version files into the game directory.
+3. **Shared Metadata Baseline Conflicts & Stale Store Rejections:**
+   `GameLibraryStore` utilizes whole-file optimistic serialization (`VerifyDiskMatchesAuthoritativeBaselineLocked`) backed by `lock (_sync)`. When two separate operations (even on independent installations) concurrently attempt to commit to the same shared `game-library.json`, the second commit observes a modified baseline and legitimately refuses the write. If multiple service graphs or processes hold stale in-memory store instances, operations fail with baseline mismatch errors rather than coordinating orderly metadata updates.
 4. **False Inactivity & Activity Check Bypasses:**
-   `DxvkManager.IsPathCurrentlyRunning` inspects only `Process.GetProcesses()` matching a single `exePath`. If any process cannot be inspected (e.g. `Win32Exception` on `MainModule` due to elevated games or anti-cheat), it catches and ignores the exception, treating the process as inactive (`false`). Direct entry points (`EnableDxvkAsync`, `DisableDxvkAsync`, `ReapplyAsync`, `ApplyToGameAsync`, `RestoreOriginalDllsAsync`) perform **no activity check whatsoever**.
+   `DxvkManager.IsPathCurrentlyRunning` inspects `Process.GetProcesses()` matching a single `exePath`. If any process throws `Win32Exception` (e.g. access denied on `MainModule` due to anti-cheat or elevated privileges), it catches and swallows the exception, erroneously reporting that the game is inactive (`false`). Direct entry points (`EnableDxvkAsync`, `DisableDxvkAsync`, `ReapplyAsync`, `ApplyToGameAsync`, `RestoreAsync`) perform **no activity check whatsoever**.
 5. **TOCTOU Gap in Queued Execution (`ApplyPendingAsync`):**
-   `RequestEnableByPathAsync` checks activity before downloading releases. During the seconds required to fetch network archives and stage files, the game can launch. `ApplyPendingAsync` removes the transient intent from `_pending` and executes mutations on exit of one process instance without verifying whether other instances or sibling executables remain running.
+   `RequestEnableByPathAsync` checks activity before downloading releases. During the seconds required to fetch network archives and stage files, the game can launch. `ApplyPendingAsync` removes the transient intent from `_pending` before execution; if mutation fails or is deferred, the intent is lost unless preserved.
 
 ---
 
 ## 2. Comprehensive Entry-Point Inventory
 
-The table below catalogs every public, requested, batch, startup, exit, and direct mutation entry point in DXVK Companion, its current activity check, its locking behavior, and the proposed single exclusion owner.
+The table below catalogs every public, requested, batch, startup, exit, and direct mutation entry point in DXVK Companion against the actual source implementation, detailing current activity checks, locking behaviors, and proposed lease boundaries.
 
 | Entry Point | Trigger / Caller | Target Scope | Current Activity Check | Current Exclusion / Locking | Staged vs Direct Mutation | Proposed Lease Boundary & Revalidation |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **`RequestEnableByPathAsync`** | UI (Manage Games) / CLI | Single Game Profile | `IsPathCurrentlyRunning(profile.ExePath)` at start | None | Direct if inactive; Queued in `_pending` & Store if active | Acquire installation lease **before** mutation; revalidate activity under lease |
-| **`RequestEnableAsync`** | UI (Tray running-game menu) | Single Game Profile | `IsStillRunning(process)` on supplied handle | None | Direct if inactive; Queued if active | Acquire installation lease **before** mutation; revalidate activity under lease |
-| **`EnableDxvkAsync`** | Direct public / programmatic | Single Game Profile | **None** | None | Direct mutation via `DxvkInstaller.ApplyToGameAsync` | Acquire installation lease; reject/queue if lease unavailable or game active |
-| **`RequestDisableByPathAsync`** | UI (Manage Games) / CLI | Single Game Profile | `IsPathCurrentlyRunning(profile.ExePath)` at start | None | Direct if inactive; Queued in `_pending` & Store if active | Acquire installation lease **before** mutation; revalidate activity under lease |
-| **`RequestDisableAsync`** | UI (Tray running-game menu) | Single Game Profile | `IsStillRunning(process)` on supplied handle | None | Direct if inactive; Queued if active | Acquire installation lease **before** mutation; revalidate activity under lease |
-| **`DisableDxvkAsync`** | Direct public / programmatic | Single Game Profile | **None** | None | Direct mutation via `DxvkRollback.RestoreOriginalDllsAsync` | Acquire installation lease; reject if lease held by another operation |
-| **`RequestUpdateByPathAsync`** | UI (Update button) / CLI | Single Game Profile | `IsPathCurrentlyRunning(profile.ExePath)` at start | None | Delegates to `RequestEnableByPathAsync` | Same as `RequestEnableByPathAsync` |
-| **`RequestReapplyByPathAsync`** | UI (Reapply button) | Single Game Profile | `IsPathCurrentlyRunning(profile.ExePath)` at start | None | Direct if inactive; Queued in `_pending` & Store if active | Acquire installation lease **before** mutation; revalidate activity under lease |
-| **`ReapplyAsync`** | Direct public / programmatic | Single Game Profile | **None** | None | Direct mutation via `DxvkInstaller.ReapplyAsync` | Acquire installation lease; reject if lease unavailable |
-| **`ApplyPendingAsync`** | Tray process exit handler | Single Executable Path | **None** (assumes exit event proves total inactivity) | None | Direct mutation via `EnableDxvkAsync` / `ReapplyAsync` / `DisableDxvkAsync` | Revalidate **all** installation executables; acquire lease before mutation |
-| **`ProcessAllPendingActionsAsync`** | Tray startup / resume scan | All Library Installations | Per-profile `IsPathCurrentlyRunning` loop | None | Sequentially calls `ApplyPendingAsync` | Sequential per-installation lease acquisition; skips busy/active installations |
-| **`UpdateAllEnabledAsync`** | Scheduler / Daily release check | All Enabled Profiles | Per-profile `RequestUpdateByPathAsync` | None | Iterative execution | Sequential per-installation lease acquisition; isolates batch failures |
-| **`RestoreAllAsync`** | Emergency / Reset All | All Library Installations | None | None | Iterative execution via `DisableDxvkAsync` | Per-installation lease; failure on one does not block others |
-| **`AdoptExisting` / `AdoptExistingAsync`**| Manual adoption wizard | Target Directory & Profile | **None** | None | Direct ownership creation & profile enable | Acquire installation lease to prevent concurrent installer execution |
+| **`RequestEnableByPathAsync`** | UI (Manage Games) / CLI | Single Game Profile | `IsPathCurrentlyRunning(profile.ExePath)` at entry | None | Direct if inactive; Queued in `_pending` & Store if active | Prepares release payload unleased; acquires installation lease; revalidates activity under lease before calling `EnableDxvkAsync` |
+| **`RequestEnableAsync`** | UI (Tray running-game menu) | Single Game Profile | `IsStillRunning(process)` on supplied handle | None | Direct if inactive; Queued in `_pending` & Store if active | Same as `RequestEnableByPathAsync` |
+| **`EnableDxvkAsync`** | Direct public / programmatic | Single Game Profile | **None** | None | Direct mutation via `DxvkInstaller.ApplyToGameAsync` | Acquires installation lease; validates activity is `ConfirmedNotRunning`; passes lease token to `DxvkInstaller` |
+| **`RequestDisableByPathAsync`** | UI (Manage Games) / CLI | Single Game Profile | `IsPathCurrentlyRunning(profile.ExePath)` at entry | None | Direct if inactive; Queued in `_pending` & Store if active | Acquires installation lease; revalidates activity under lease before calling `DisableDxvkAsync` |
+| **`RequestDisableAsync`** | UI (Tray running-game menu) | Single Game Profile | `IsStillRunning(process)` on supplied handle | None | Direct if inactive; Queued in `_pending` & Store if active | Same as `RequestDisableByPathAsync` |
+| **`DisableDxvkAsync`** | Direct public / programmatic | Single Game Profile | **None** | None | Direct mutation via `DxvkRollback.RestoreAsync` | Acquires installation lease; validates activity is `ConfirmedNotRunning`; passes lease token to `DxvkRollback` |
+| **`RequestUpdateByPathAsync`** | UI (Update button) / CLI | Single Game Profile | `IsPathCurrentlyRunning(profile.ExePath)` at entry | None | Delegates to `RequestEnableByPathAsync` | Same as `RequestEnableByPathAsync` |
+| **`RequestReapplyByPathAsync`** | UI (Reapply button) | Single Game Profile | `IsPathCurrentlyRunning(profile.ExePath)` at entry | None | Direct if inactive; Queued in `_pending` & Store if active | Acquires installation lease; revalidates activity under lease before calling `ReapplyAsync` |
+| **`ReapplyAsync`** | Direct public / programmatic | Single Game Profile | **None** | None | Direct mutation via `DxvkInstaller.ReapplyAsync` | Acquires installation lease; passes lease token to `DxvkInstaller.ReapplyAsync` |
+| **`ApplyPendingAsync`** | Tray process exit handler | Single Executable Path | **None** (assumes exit event proves total inactivity) | None | Direct mutation via `EnableDxvkAsync` / `ReapplyAsync` / `DisableDxvkAsync` | Retains transient intent in `_pending` until successful completion; acquires lease; revalidates **all** installation executables |
+| **`ProcessAllPendingActionsAsync`** | Tray startup / resume scan | All Library Installations | Per-profile `IsPathCurrentlyRunning` loop | None | Directly dispatches to `EnableDxvkAsync` / `ReapplyAsync` / `DisableDxvkAsync` | Sequentially acquires per-installation lease; defers busy/running installations without dropping pending intents from store |
+| **`UpdateAllEnabledAsync`** | Daily scheduler / release check | All Enabled Profiles | Per-profile `RequestUpdateByPathAsync` | None | Iterative execution | Iteratively acquires per-installation lease; isolates batch failures; continues to next game on lease refusal |
+| **`RestoreAllAsync`** | Global emergency restore | All Library Installations | `IsPathCurrentlyRunning(profile.ExePath)` before queueing | None | Directly calls `DisableDxvkAsync` if inactive; queues if active | Iteratively acquires per-installation lease; failure on one does not block or taint others |
+| **`AdoptExisting` / `AdoptExistingAsync`** | Manual adoption wizard | Target Directory & Profile | **None** | None | Direct ownership creation via `DxvkInstaller.AdoptExisting` | Acquires installation lease to prevent concurrent installer execution during baseline capture |
+| **`DxvkInstaller.ApplyToGameAsync`** | Direct installer entry point | Single Profile & Release | **None** | None | Direct multi-file transaction | Accepts optional `IOperationLease`; acquires lease if null; split payload extraction from mutation; acquires storage lock at commit |
+| **`DxvkInstaller.AdoptExisting`** | Direct installer entry point | Single Profile & Assessment | **None** | None | Synchronous baseline capture & commit | Accepts optional `IOperationLease`; acquires lease if null; acquires storage lock to commit initial ownership record |
+| **`DxvkRollback.RestoreAsync`** | Direct rollback entry point | Single Profile | **None** | None | Direct multi-file restoration | Accepts optional `IOperationLease`; acquires lease if null; acquires storage lock at commit |
+| **`DxvkRollback.RestoreFromLibraryAsync`** | Library-driven restore | Single Installation Record | **None** | None | Direct multi-file restoration | Accepts optional `IOperationLease`; acquires lease if null; acquires storage lock at commit |
 
 ---
 
-## 3. Operation Lease Resource Identity, Lifetime & Architecture
+## 3. Two-Tier Resource & Lock Hierarchy
 
-To prevent simultaneous mutation, split-brain metadata, and rollback collisions, operations must acquire an **exclusive operation lease** over the target installation.
+To prevent both same-installation mutation races and whole-library metadata collisions without creating global bottlenecks, we define a strict **Two-Tier Resource & Lock Hierarchy**:
 
 ```
-       [Caller: UI / CLI / Scheduler / Process-Exit]
-                           │
-                           ▼
-            [1. Resolve Target Installation Root]
-                           │
-                           ▼
-          [2. Asynchronous Preparation & Download]
-          (Network acquisition, staging in cache)
-                           │
-                           ▼
-          [3. Acquire Operation Lease (Exclusive)]
-     (Named system mutex: Global\DXVKCompanion_<Sha256>)
-               ├── Acquired ───► [4. Revalidate Process Activity]
-               │                         │
-               │                   [Active / Unknown]
-               │                         ├── Yes ──► Queue Pending Intent & Release Lease
-               │                         │
-               │                         └── No ───► [5. Execute Multi-File Transaction]
-               │                                           │
-               │                                     (Target Mutation, Native Backups,
-               │                                      Undo Staging, Commit Callback)
-               │                                           │
-               │                                           ▼
-               │                                     [6. Release Operation Lease]
-               │                                           │
-               └── Busy (Lease Held by Other Op)           ▼
-                         │                          [7. Return Result]
-                         ▼
-             [Refuse with OperationBusy]
+┌────────────────────────────────────────────────────────────────────────┐
+│                        TIER 1: INSTALLATION LEASE                      │
+│            (Fine-Grained, per Normalized Installation Root)            │
+│  - Held throughout the entire mutation lifecycle:                      │
+│    Pre-validation -> Process Activity Check -> Target Mutation ->       │
+│    Metadata Commit / Recovery Verification                             │
+└───────────────────────────────────┬────────────────────────────────────┘
+                                    │
+                        Requires Metadata Commit
+                                    │
+                                    ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│                     TIER 2: STORAGE DIRECTORY LOCK                     │
+│               (Coarse-Grained, per Storage Root Directory)             │
+│  - Held briefly only during whole-file read-modify-write phases:       │
+│    Authoritative Baseline Read -> In-Memory Mutation -> Atomic Save     │
+└────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 3.1 Lease Resource Identity
-The lease must be identified by the **normalized installation root path**:
-$$\text{LeaseKey} = \text{GameInstallation.NormalizeInstallationPath}(\text{installationDirectory})$$
-- All sibling executables residing within the same game root (e.g. `Game.exe`, `Game_x64.exe`, `bin/Launcher.exe`) map to the exact same installation root and therefore compete for the exact same lease.
-- Normalization strips trailing directory separators, resolves symbolic links/junctions to canonical physical paths, and handles case-insensitivity on Windows (`OrdinalIgnoreCase`).
+### 3.1 Lock Ordering & Deadlock Prevention
+- **Strict Order:** An operation acquiring both tiers must ALWAYS acquire the **Tier 1 Installation Lease FIRST**, and the **Tier 2 Storage Directory Lock SECOND**.
+- **No Inversion:** Code holding the Tier 2 Storage Lock must NEVER attempt to acquire a Tier 1 Installation Lease, await external I/O, or perform long-running transactions.
+- **Short Duration:** Tier 2 Storage Lock is held exclusively during atomic in-memory update and disk commit (`ExecuteClassifiedCommitLocked`).
+- **Independent Roots:** Distinct storage directories (e.g. in test suites or separate profiles) operate with independent Tier 2 locks and never contend.
 
-### 3.2 Lease Lifetime & Phase Boundary
-Holding a lock across seconds of network downloads degrades user responsiveness and risks timeouts. Therefore, the lease lifetime is strictly bounded:
-1. **Source Acquisition (Unleased):** GitHub release metadata query, archive download, asset verification, and local unpack staging occur outside the lease.
-2. **Lease Acquisition:** Acquired immediately prior to the pre-mutation boundary.
-3. **In-Lease Activity Revalidation:** Under the lease, the system performs a fresh, definitive process activity check across all known executables in the installation. If any game process is running or activity is `Unknown`, the operation transitions to `Queued` (for requests) or refuses (for direct calls), releasing the lease immediately without file mutation.
-4. **Protected Mutation & Commit:** The lease is held continuously through:
-   - Target undo snapshot capture (`.transactions/<txId>/undo/`),
-   - Baseline backup verification and staging (`.transactions/<txId>/native-backups/`),
-   - Target file replacement,
-   - In-process ownership commit callback (`GameLibraryStore.TrySaveWithOutcome`), and
-   - Compensation/recovery in the event of `ProvenNotCommitted`.
-5. **Lease Release:** The lease is released in a mandatory `finally` block after transaction finalization or rollback.
-
-### 3.3 Cross-Process Synchronization vs. Single-Instance Application
-Two design alternatives exist for operational exclusion:
-
-| Criterion | Option A: Per-Installation Cross-Process Lease (Recommended) | Option B: Single-Instance Application Mutex |
-| :--- | :--- | :--- |
-| **Mechanism** | Named OS Mutex per installation root: `Global\DXVK_Lease_<Hash>` + in-process `SemaphoreSlim` | Single `Global\DXVKCompanion_AppMutex` at process startup |
-| **Concurrency** | Independent games can be updated in parallel (CLI + Tray + Background) | Entire application is single-instance; second launcher exits or forwards command |
-| **CLI / Tool Interop** | Headless CLI commands can safely operate alongside running Tray App | CLI cannot run while Tray App is active; requires IPC pipe |
-| **Granularity** | Scoped strictly to the target game directory | Global application-wide lock |
-| **Failure Blast Radius** | If an operation crashes, only that installation's mutex is abandoned | If the app crashes, global lock state requires cleanup |
-| **Complexity** | Requires path hashing and per-root mutex management | Trivial process-level check |
-
-**Recommendation:** Adopt **Option A (Per-Installation Cross-Process Lease)**. It preserves non-conflicting parallel operations on independent games, supports CLI and Tray co-existence, and eliminates the root cause of the observed collisions without restricting multi-window application workflows.
+### 3.2 Stale Store Handling & Evidence Preservation
+When an operation holding a Tier 1 Installation Lease acquires the Tier 2 Storage Lock to commit:
+- `GameLibraryStore` rechecks disk freshness via `VerifyDiskMatchesAuthoritativeBaselineLocked`.
+- If another installation was committed while this operation was staging, `GameLibraryStore` incorporates the disk changes for other installations without overwriting them.
+- **Preservation Invariant:** A store refresh must **never erase retained uncertainty or recovery evidence** (`AttentionRequired`, `ActiveRecovery`, or recorded refusal reasons). If disk state indicates external unowned tampering, the operation conservatively refuses rather than silently clearing safety markers.
 
 ---
 
-## 4. Process Activity Evidence Model
+## 4. Async-Safe Operation Lease Primitive & Enforceable Ownership
 
-Current production equates `IsPathCurrentlyRunning == false` with permission to mutate files. In reality, process inspection can fail due to Windows security boundaries. We define an explicit three-state evidence model:
+### 4.1 The Thread-Affinity Flaw of `System.Threading.Mutex`
+In .NET on Windows, `System.Threading.Mutex` enforces **strict OS thread affinity**. The exact OS thread that calls `WaitOne()` must be the thread that calls `ReleaseMutex()`; otherwise, `ReleaseMutex()` throws `ApplicationException: Object synchronization method was called from an unsynchronized block of code`.
 
-```
-                  [Process Inspection Request]
-                               │
-                               ▼
-                [1. Enumerate System Processes]
-                               │
-               ┌───────────────┴───────────────┐
-               ▼                               ▼
-       [Exception / Access Denied]    [Processes Available]
-               │                               │
-               ▼                               ▼
-      [State: Unknown]           [2. Check All Installation Executables]
-      (Conservative Refusal)                   │
-                               ┌───────────────┴───────────────┐
-                               ▼                               ▼
-                      [Matching PID Found]           [No Matches Found]
-                               │                               │
-                               ▼                               ▼
-                        [State: Running]        [State: ConfirmedNotRunning]
-                       (Queue / Refuse)             (Safe to Mutate)
-```
+In modern asynchronous C# code (`async` / `await`), execution continuations after an `await` (such as `await _engine.ExecuteTransactionAsync(...)`) resume on arbitrary thread pool threads. Therefore, a standard `System.Threading.Mutex` **cannot safely protect asynchronous operations across await boundaries**.
 
-### 4.1 Evidence States
-1. **`Running`:** One or more running processes are positively identified whose main module path matches any registered executable or discovered executable within the installation root.
-2. **`ConfirmedNotRunning`:** System process enumeration completed successfully without security or enumeration barriers, and zero running processes match any installation executable.
-3. **`Unknown`:** System process enumeration failed, or an individual process returned `Win32Exception` (Access Denied / elevated process / Protected Process Light) such that its executable path could not be verified.
+### 4.2 Viable Async-Safe Lease Primitive: Lock FileStream (`FileShare.None`)
+To provide robust, cross-process and in-process mutual exclusion without thread affinity, the Tier 1 Installation Lease is implemented via an exclusive OS file handle:
 
-### 4.2 Sibling Executables & Multi-Instance Handling
-Games frequently employ multi-process architectures (e.g. `Launcher.exe` spawning `Game.exe`, or 32-bit crash-reporters alongside 64-bit binaries).
-- The activity inspector must query `GameInstallation.Executables` and inspect **all** registered executables for the installation, not merely the single executable associated with the invoking profile.
-- If any executable within the installation directory is `Running` or `Unknown`, the entire installation is treated as active.
+1. **Primitive:** An exclusive, non-shared `FileStream` opened on a lease marker file:
+   ```csharp
+   new FileStream(
+       leaseFilePath,
+       FileMode.OpenOrCreate,
+       FileAccess.ReadWrite,
+       FileShare.None,
+       4096,
+       FileOptions.DeleteOnClose);
+   ```
+2. **Zero Thread Affinity:** Unlike a `Mutex`, a `FileStream` can be safely closed or disposed from **any thread pool thread** in a `finally` block or asynchronous continuation.
+3. **Kernel Enforced Across All Processes:** Windows kernel filesystem semantics enforce `FileShare.None` across all processes, preventing CLI, Tray, and third-party tools from acquiring overlapping leases on the same installation.
+4. **Crash-Proof Cleanup:** If a process crashes or is forcefully terminated, the Windows kernel automatically closes all open file handles, releasing the lock immediately and removing the file (`FileOptions.DeleteOnClose`). No abandoned mutex states or orphaned locks can occur.
+5. **No Special Privileges Required:** Lease files reside in the user's local storage directory (`%LOCALAPPDATA%\DXVKCompanion\leases\<Hash>.lease`). This requires zero administrative privileges and avoids the security DACL complexities of `Global\` kernel objects.
+6. **In-Process Coordination:** Combined with an in-process `ConcurrentDictionary<string, SemaphoreSlim>` to eliminate unnecessary disk contention for concurrent tasks within the same process.
 
-### 4.3 Windows Kernel Limits & The External Start Race (TOCTOU)
-It is essential to state the limits of user-mode software honestly:
-- **No user-mode mutex or check can prevent a user or external launcher from double-clicking `Game.exe` during the 50 milliseconds that DXVK Companion is writing `d3d11.dll`.**
-- Windows does not provide transactional directory locking across arbitrary third-party process creation without specialized filesystem filter drivers (minifilters).
-- Attempting to suspend or terminate external processes violates non-invasive application safety and anti-cheat policies.
-- **Contract Boundary:** The activity boundary guarantees that DXVK Companion will never **knowingly initiate** or **permit** mutations while a game is observable or uncertain. By revalidating activity under the lease immediately before file copy, the window of vulnerability is reduced to the absolute physical minimum.
+### 4.3 Single Enforceable Owner: `IOperationLeaseCoordinator` & Lease Tokens
+To ensure that direct calls to `DxvkInstaller` or `DxvkRollback` cannot bypass exclusion, while `DxvkManager -> DxvkInstaller -> MultiFileTransactionEngine` does not attempt duplicate nested acquisitions:
 
----
+- Introduce `IOperationLeaseCoordinator`:
+  ```csharp
+  public interface IOperationLeaseCoordinator
+  {
+      ValueTask<IOperationLease?> TryAcquireAsync(string installationRoot, TimeSpan timeout, CancellationToken ct = default);
+  }
 
-## 5. Integration with Ownership Commit & Recovery (Issue #171)
-
-The operation lease must integrate seamlessly with the five-phase commit and recovery pipeline from Issue #171:
-
-1. **Lease Extends Through Commit Verification:**
-   The lease is **not** released upon file copy completion. It remains held while `GameLibraryStore.TrySaveWithOutcome` replaces `game-library.json` and verifies readback.
-2. **Lease Retained During Compensation:**
-   If `TrySaveWithOutcome` returns `ProvenNotCommitted`, `MultiFileTransactionEngine` invokes `RecoverAttempted`. Because the lease is still held, no concurrent operation can start or observe the intermediate state while files are being restored to the pre-operation baseline.
-3. **Deadlock Prevention with Store Locks:**
-   `GameLibraryStore` utilizes an internal `lock (_sync)` for in-memory collections and staged saves. The lock hierarchy is strictly ordered:
-   $$\text{Operation Lease (Outermost)} \longrightarrow \text{Store } \_sync \text{ (Innermost / Leaf)}$$
-   The store lock is never held while awaiting an operation lease or performing I/O outside `ExecuteClassifiedCommitLocked`.
-4. **Preservation of Queued Intents & Terminal Cancellation:**
-   If an operation encounters `Running` or `Unknown` activity, or if the lease is busy, existing persisted intents (`PendingAction`) and terminal compatibility cancellations are preserved byte-for-byte. A busy lease must return `DxvkActionResult.Failed` with `LastRefusalReason = "Operation in progress on this installation."` without overwriting prior refusal diagnostics.
+  public interface IOperationLease : IAsyncDisposable, IDisposable
+  {
+      string InstallationRoot { get; }
+      string LeaseKey { get; }
+      bool IsAcquired { get; }
+  }
+  ```
+- **Internal Lease Token Passing:**
+  - `DxvkManager` acquires the `IOperationLease` token before initiating pre-validation.
+  - `DxvkInstaller.ApplyToGameAsync` and `DxvkRollback.RestoreAsync` accept an optional `IOperationLease? leaseToken = null`.
+  - If a token is provided: The installer/rollback verifies that `leaseToken.IsAcquired` is true and `leaseToken.InstallationRoot` matches the target directory. It proceeds without re-acquiring.
+  - If no token is provided (direct external call): The installer/rollback acquires the lease directly from `IOperationLeaseCoordinator` and disposes it upon completion.
+  - This architecture guarantees 100% enforcement with zero bypass vectors and zero reentrancy deadlocks.
 
 ---
 
-## 6. Minimal Production File Impact & Internal Test Seams
+## 5. Path Identity, Alias Handling & Sibling Resolution
 
-To implement this design in the subsequent implementation task without architectural creep, the following minimal changes are planned:
+### 5.1 Factual Correction on `GameInstallation.NormalizeInstallationPath`
+Inspection of `src/DXVKCompanion/Models/GameInstallation.cs` reveals:
+```csharp
+public static string NormalizeInstallationPath(string path)
+{
+    if (string.IsNullOrWhiteSpace(path))
+        throw new ArgumentException("Installation path is required.", nameof(path));
+    var fullPath = Path.GetFullPath(path);
+    var root = Path.GetPathRoot(fullPath);
+    if (!string.IsNullOrEmpty(root) && string.Equals(fullPath, root, StringComparison.OrdinalIgnoreCase))
+        return root;
+    return fullPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+}
+```
+`NormalizeInstallationPath` performs lexical resolution via `Path.GetFullPath` and trims trailing separators; **it does not resolve NTFS junctions, directory symbolic links, or normalize letter casing**.
+
+### 5.2 Canonical Lease Key & Case-Normalized Hashing
+To prevent split-brain lease locking on Windows (where `C:\Games\Doom` and `c:\games\doom` refer to the same folder):
+1. **Case Normalization:** The installation root path is canonicalized using invariant uppercase:
+   $$\text{CanonicalRoot} = \text{GameInstallation.NormalizeInstallationPath}(path).\text{ToUpperInvariant}()$$
+2. **Stable Hash Key:** The lease key is computed via SHA256 over the UTF-8 bytes of `CanonicalRoot`:
+   $$\text{LeaseKey} = \text{SHA256}(\text{CanonicalRoot})$$
+   Lease file path: `Path.Combine(storageDir, "leases", $"{LeaseKey}.lease")`.
+
+### 5.3 Physical Alias Handling & Conservative Refusal
+- If a target directory is an NTFS reparse point (junction or directory symlink), `Directory.ResolveLinkTarget(path, returnFinalTarget: true)` is queried.
+- If the target path resolves to a physical volume path, the resolved physical path is used for lease key computation.
+- **Conservative Refusal Invariant:** If directory link resolution fails, or if the path uses unsupported aliasing (e.g. `subst` virtual drives or network shares with indeterminate physical identities), DXVK Companion **conservatively refuses mutation** with a clear refusal diagnostic: `"Installation path utilizes an unsupported directory alias or junction that cannot be verified."`
+
+### 5.4 Sibling & Subdirectory Executable Resolution
+Games often place executables in subdirectories (e.g. `<Root>\bin\x64\Game.exe` alongside `<Root>\Launcher.exe`).
+- All operations resolve the primary installation root using `_gameLibraryStore.FindInstallationForExecutable(exePath)` or directory traversal.
+- The Tier 1 Lease is **always acquired on the canonical installation root**, never on an individual executable file or subdirectory.
+- All sibling executables belonging to the same installation share the same installation root and are covered by the same lease.
+
+---
+
+## 6. Process Activity Evidence Model & Realistic Windows Limits
+
+### 6.1 Three-State Evidence Model with Candidate Filtering
+To prevent unrelated elevated system processes (`services.exe`, `csrss.exe`, background services) from causing false `Unknown` states and blocking normal Windows usage, process inspection uses **Candidate Relevance Filtering**:
+
+```
+                  [Process Inspection Request for Installation]
+                                       │
+                                       ▼
+                     [1. Identify Candidate Executables]
+                  (Primary Exe + Registered Siblings in Profile)
+                                       │
+                                       ▼
+                     [2. Enumerate Running OS Processes]
+                                       │
+                    ┌──────────────────┴──────────────────┐
+                    ▼                                     ▼
+        [Enumeration Throws Exception]          [Process List Obtained]
+                    │                                     │
+                    ▼                                     ▼
+             [State: Unknown]                [Filter by Candidate Image Name]
+                                                          │
+                             ┌────────────────────────────┴────────────────────────────┐
+                             ▼                                                         ▼
+                 [No Matching Process Names]                              [Matching Process Name Found]
+                             │                                                         │
+                             ▼                                                         ▼
+               [State: ConfirmedNotRunning]                              [Query Process Full Image Path]
+                     (Safe to Mutate)                                                  │
+                                                          ┌────────────────────────────┴────────────────────────────┐
+                                                          ▼                                                         ▼
+                                               [Path Matches Install Root]                             [Access Denied / Query Fault]
+                                                          │                                                         │
+                                                          ▼                                                         ▼
+                                                   [State: Running]                                          [State: Unknown]
+                                                  (Refuse / Defer)                                      (Candidate Access Denied)
+```
+
+### 6.2 Evidence State Definitions
+1. **`ConfirmedNotRunning`:** Process enumeration completed successfully. Zero running processes match the candidate executable image names, OR matching processes positively resolved to completely different directories (e.g. a different game with the same executable name).
+2. **`Running`:** One or more running processes with matching candidate names were positively confirmed to execute from the target installation root directory.
+3. **`Unknown`:**
+   - Process enumeration itself failed (`Process.GetProcesses()` threw an OS exception), OR
+   - A running process matching a **candidate game executable name** returned `Win32Exception: Access is denied` when querying its image path (e.g. running under anti-cheat protection or elevated administrator context). Unrelated processes with access denied do NOT cause `Unknown`.
+
+### 6.3 Tracked PID Lifetime & Identity
+To prevent false matches from PID reuse on Windows:
+- The inspector captures `process.Id` alongside `process.StartTime`.
+- When tracking a running process across time (e.g. waiting for exit), both PID and `StartTime` are compared. A PID match with a different `StartTime` indicates that the original process exited and the PID was reassigned by the OS.
+
+### 6.4 Realistic Limits & Honest TOCTOU Boundary
+- **Cooperative Software Exclusion:** DXVK Companion guarantees that all cooperating operations (UI, CLI, background tasks, scheduler) are mutually excluded by the Tier 1 Installation Lease.
+- **External User/Launcher Start Race (TOCTOU):** No user-mode software can physically prevent an external user or external game launcher from executing `Game.exe` at the exact millisecond files are being copied to disk, unless an invasive kernel minifilter driver is installed.
+- **Anti-Cheat & Non-Invasive Stance:** DXVK Companion strictly refuses to terminate, suspend, or inject code into game processes.
+- **Honest Invariant:** DXVK Companion guarantees it will never initiate or permit a mutation when an installation is actively observed running or in an `Unknown` state. Revalidating activity under the Tier 1 Lease immediately prior to file replacement minimizes the external race window to the absolute minimum duration of the atomic filesystem copy.
+
+---
+
+## 7. Preservation of Queued Intents & Refusal Semantics
+
+When an operation cannot proceed due to `Busy` (lease held), `Running` (game active), or `Unknown` (candidate access denied), the return and persistence behaviors are strictly differentiated:
+
+### 7.1 Fresh Explicit User Requests (`EnableDxvkAsync`, `DisableDxvkAsync`)
+- Immediate return: `false` or `DxvkActionResult.Failed`.
+- Sets `LastRefusalReason` with clear diagnostic:
+  - If Busy: `"Operation in progress for installation: <path>. Please retry shortly."`
+  - If Running: `"Game is currently running: <path>. Close the game before modifying files."`
+  - If Unknown: `"Cannot verify game activity: candidate process access denied (protected or elevated)."`
+- **State Preservation:** Profile and installation records remain completely unchanged. No spurious `AttentionRequired` status is set.
+
+### 7.2 Queued Pending Actions (`ProcessAllPendingActionsAsync`, `ApplyPendingAsync`)
+- When batch or background processing encounters `Busy`, `Running`, or `Unknown`:
+  - **Preserve Pending Intent:** The persisted `PendingAction` in `game-library.json` is **preserved intact**. It is NOT deleted, cleared, or marked failed.
+  - **Preserve Transient Intent:** In `ApplyPendingAsync`, the transient action in `_pending` is NOT dropped if the operation is deferred.
+  - The installation is skipped in the current cycle and will be retried automatically on the next cycle, tray resume, or application restart.
+- **Terminal Incompatibility vs. Deferred Refusal:**
+  - Only permanent compatibility violations (e.g. game reclassified to unsupported DX12/Vulkan API) trigger `CancelIncompatiblePendingAction`, recording durable cancellation evidence.
+  - Transient busy/running conditions never cancel pending actions.
+
+---
+
+## 8. Deterministic Fake-Inspector Test Scenarios (Internal Test Seams)
+
+To verify the process evidence model deterministically in Cloud CI without spawning real processes or violating no-child-process rules:
+
+Introduce internal test seam `IProcessActivityInspector`:
+```csharp
+public interface IProcessActivityInspector
+{
+    ProcessActivityEvidence InspectActivity(GameInstallation installation);
+}
+```
+
+The subsequent implementation task will verify the following 7 test scenarios via mock/fake implementations:
+1. **Multiple Game Instances:** Two processes running from the same game folder -> returns `Running`.
+2. **Known Sibling Executable Running:** Primary `Game.exe` inactive, but registered sibling `bin/x64/Game.exe` running -> returns `Running`.
+3. **Relaunch After Exit:** Game process exits, but relaunch occurs before lease acquisition -> caught by in-lease revalidation.
+4. **Relevant Candidate Access Denial:** Process named `Game.exe` running elevated returns `Access is denied` -> returns `Unknown`.
+5. **Unrelated Inaccessible Process:** Elevated system process (`svchost.exe`) returns `Access is denied` -> safely ignored; returns `ConfirmedNotRunning`.
+6. **Enumeration Failure:** `Process.GetProcesses()` throws `Win32Exception` -> returns `Unknown`.
+7. **PID Reuse Detection:** Process with same PID but different `StartTime` -> detected as exited / not the original process.
+
+---
+
+## 9. Concrete Implementation Plan & Exact Production File List
+
+The following exact files will be added or modified in Phase B:
 
 ```
 src/DXVKCompanion/
 ├── Safety/
-│   ├── IOperationLeaseCoordinator.cs     <-- Internal interface: TryAcquire(path, out lease)
-│   ├── OperationLeaseCoordinator.cs      <-- Named system mutex + in-process SemaphoreSlim
-│   ├── IProcessActivityInspector.cs      <-- Internal interface: InspectActivity(installation)
-│   └── ProcessActivityInspector.cs       <-- 3-state Windows process enumeration
+│   ├── IOperationLeaseCoordinator.cs     <-- [NEW] Internal lease coordinator interface
+│   ├── OperationLeaseCoordinator.cs      <-- [NEW] FileStream-based cross-process & in-process lease
+│   ├── IOperationLease.cs                <-- [NEW] Disposable lease token interface
+│   ├── IProcessActivityInspector.cs      <-- [NEW] Internal process activity inspection seam
+│   ├── ProcessActivityInspector.cs       <-- [NEW] Candidate-filtered Windows process inspection
+│   └── ProcessActivityEvidence.cs        <-- [NEW] 3-state evidence enum (Running, ConfirmedNotRunning, Unknown)
+├── Storage/
+│   └── GameLibraryStore.cs               <-- [MOD] Tier 2 Storage Lock ordering & stale refresh validation
 └── DXVK/
-    ├── DxvkManager.cs                    <-- Injects lease & activity inspector; wraps mutations
-    ├── DxvkInstaller.cs                  <-- Validates lease assertion prior to transaction
-    └── DxvkRollback.cs                   <-- Validates lease assertion prior to transaction
+    ├── DxvkManager.cs                    <-- [MOD] Acquires Tier 1 lease; passes lease tokens; preserves pending intents
+    ├── DxvkInstaller.cs                  <-- [MOD] Accepts optional IOperationLease; enforces lease before transaction
+    └── DxvkRollback.cs                   <-- [MOD] Accepts optional IOperationLease; enforces lease before restoration
 ```
-
-### 6.1 Testability Seams (No Child Processes Required)
-- **`IProcessActivityInspector`:** Allows unit tests in Cloud CI to inject simulated `Running`, `ConfirmedNotRunning`, and `Unknown` process states without spawning real OS processes or triggering security alerts.
-- **`IOperationLeaseCoordinator`:** Allows unit tests to verify that `DxvkManager` correctly refuses or queues operations when a simulated lease conflict occurs, while the real implementation uses OS named mutexes.
 
 ---
 
-## 7. Architectural Decision Brief for Human Authority
+## 10. Architectural Decision Brief for Human Authority
 
-The following architectural decision is submitted for human merge authority consideration:
+The following architectural decision questions are submitted for human merge authority consideration:
 
-### Decision Question: Cross-Process Lease Scope & Contention Behavior
-**Context:** When a second operation (e.g. a second CLI invocation or rapid UI click) targets an installation root that is currently undergoing mutation:
-- **Option 1 (Recommended — Bounded Refusal / Busy Signal):** The second operation attempts to acquire the lease with a short, bounded timeout (e.g. 500 ms). If the lease is held, it immediately returns `false` / `DxvkActionResult.Failed` with a clear diagnostic: `"Another operation is currently modifying this installation. Please retry shortly."`
-- **Option 2 (Blocking Wait):** The second operation blocks synchronously or asynchronously until the first operation completes, then executes.
-- **Trade-off Analysis:** Option 2 risks executing stale intents (e.g. user clicked "Disable" then "Enable", and both run sequentially instead of canceling), and risks UI freezes if a lock is abandoned. Option 1 provides immediate, deterministic feedback, honors safety invariants, and avoids hidden queuing.
+### Decision 1: Contention Policy on Busy Installation Lease
+- **Option A (Recommended — Immediate Refusal with Retryable Diagnostic):**
+  When an operation attempts to acquire an installation lease that is held by another operation, it attempts acquisition with a short, bounded timeout (e.g. 500 ms). If unavailable, it immediately returns `false` / `DxvkActionResult.Failed` with: `"Another operation is currently modifying this installation. Please retry shortly."`
+  *Rationale:* Deterministic, zero UI hang, avoids queueing conflicting sequential user clicks.
+- **Option B (Asynchronous Wait Queue):**
+  Operations wait in an async queue until the in-flight operation completes.
+  *Risk:* High risk of user intent confusion (e.g. user toggles Disable then Enable rapidly, causing both to execute in sequence).
+
+### Decision 2: Cross-Process Application Instance Policy
+- **Option A (Recommended — Per-Installation Lease with Parallel Companion Processes):**
+  Allow separate DXVK Companion processes (e.g. CLI tool and Tray application) to run simultaneously, using per-installation leases to coordinate file access.
+  *Rationale:* Maximizes developer and scripting flexibility; non-conflicting games can be managed simultaneously.
+- **Option B (Strict Single-Instance Application Mutex):**
+  Enforce a single global application mutex (`Global\DXVKCompanion_AppMutex`) at process startup. Second processes immediately exit or send commands via named pipes.
+
+### Decision 3: Unresolved Process Evidence (`Unknown`) Policy
+- **Option A (Recommended — Strict Conservative Refusal):**
+  If process activity cannot be verified due to access denial on a candidate game executable, refuse mutation unconditionally.
+  *Rationale:* Prevents corrupting protected or anti-cheat enabled games.
+- **Option B (Refusal with Explicit User Override):**
+  Refuse by default, but allow an explicit CLI flag (`--force-ignore-activity`) or UI confirmation dialog.

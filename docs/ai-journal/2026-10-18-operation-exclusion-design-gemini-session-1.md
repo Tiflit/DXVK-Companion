@@ -35,16 +35,45 @@
 
 ---
 
-## Cloud CI Verification & Calibration
+## Response to Codex Grouped Review (Repairs R1–R4)
+
+Codex provided a detailed grouped review on PR #177 ([Comment 6256230302](https://github.com/Tiflit/DXVK-Companion/pull/177#issuecomment-6256230302)). All four review findings were addressed:
+
+### R1: Test Oracle Consistency, Cleanup & Concurrency Handshake
+- **Fixture 1 (`RollbackUndoingCommittedBytes`):** Eliminated the contradictory assertion demanding both `Assert.False(op2Result)` and version 2.7 bytes. Defined a clean, consistent oracle: under the safe exclusion design, Operation 2 is refused at the lease boundary, Operation 1 recovers to pre-operation 2.5, and disk/metadata remain consistent at 2.5. On unpatched production, Operation 2 is not refused (`op2Result == true`), deterministically failing as expected-red. Added verification that the deliberate injected fault (`IOException`) was processed and verified by Operation 1.
+- **Fixture 2 (`ConcurrentApply`):** Established a real committed baseline (version 2.5) before constructing both concurrent service graphs/stores. This ensures Operation 2 does not fail on stale baseline creation, but genuinely attempts concurrent target mutation. On unpatched production, it fails on missing "in progress" lease refusal.
+- **Fixture 3 (`ManagerLevel_ConcurrentDisableAndEnable`):** Honestly labeled the observed protection on unpatched code (mid-transaction tamper detection / hash mismatch) and structured the oracle around entry-boundary lease refusal.
+- **Fixture 4 (`IndependentInstallations`):** Instrumented a deterministic two-way bounded handshake via `MultiFileTransactionTestHooks.AfterApply` verifying that both independent operations actively mutate files simultaneously without mutual blocking.
+- **Cleanup & Safety:** All fixtures guarantee barrier release in `finally` blocks, bound all task waits with 10-second timeouts, avoid blanket exception swallows, and ensure zero background tasks leak.
+
+### R2: Two-Tier Lock Hierarchy & Async-Safe Lease Primitive
+- Defined a strict Two-Tier Hierarchy:
+  - **Tier 1 Installation Lease (Fine-Grained):** Held across pre-validation, activity check, target mutation, and metadata commit/recovery.
+  - **Tier 2 Storage Directory Lock (Coarse-Grained):** Held briefly only during atomic read-modify-write phases on `game-library.json`.
+  - Acquisition order is strictly `Tier 1 -> Tier 2`, preventing deadlocks.
+- Resolved the thread-affinity flaw of `System.Threading.Mutex` across `await` boundaries by specifying an exclusive OS `FileStream` lock (`FileShare.None`, `FileOptions.DeleteOnClose`) on `<storageDir>/leases/<hash>.lease`. This primitive is thread-agnostic, kernel-enforced across all processes, privilege-free, and automatically cleaned up on crash.
+- Defined `IOperationLeaseCoordinator` as the single enforceable lease owner with internal `IOperationLease` token passing to prevent bypass or nested reentrancy deadlocks.
+
+### R3: Path Identity, Realistic Process Model & Accurate Boundary
+- Corrected factual claim regarding `GameInstallation.NormalizeInstallationPath` (it does not resolve junctions or change case); defined uppercase canonicalization and SHA256 hashing.
+- Specified Candidate Relevance Filtering in the process evidence model: only processes matching registered game executables are evaluated; unrelated elevated system processes (`services.exe`, `svchost.exe`) are ignored and do not trigger false `Unknown` states.
+- Defined 7 deterministic fake-inspector test scenarios for the internal test seam.
+- Removed unmeasured timing claims ("50 ms", "physical minimum") and honestly bounded cooperative exclusion versus external process start races.
+
+### R4: Source Call Flows, Preservation & File List
+- Corrected inventory against actual source: `ProcessAllPendingActionsAsync` directly dispatches operations; `RestoreAllAsync` checks running state before queueing.
+- Specified preservation of persisted `PendingAction` in the store and transient intents in `_pending` when operations are deferred due to busy/running/unknown states.
+- Enumerated the exact production files to add and modify in Phase B.
+- Separated delegated internal choices from human authority decisions (contention policy, single-instance policy, and `Unknown` evidence policy).
+
+---
+
+## Cloud CI Verification History
 
 - **PR:** [#177](https://github.com/Tiflit/DXVK-Companion/pull/177) — `[Draft] [Do not merge] test(safety): reproduce overlapping operations and design installation activity/exclusion boundary (#176)`
-- **Initial Cloud CI Run:** `39172485694` (Job `117808277752`)
-  - Baseline 907 existing tests: Unchanged and passing.
-  - Hygiene, scope, and workflow test checks: Passing.
-  - Calibration notes:
-    - `OverlappingOperations_IndependentInstallations_ProceedConcurrentlyWithoutMutualInterference`: Calibrated with independent storage roots (`storageDir1` and `storageDir2`). As analyzed in the design doc, `GameLibraryStore` enforces whole-file optimistic serialization (`VerifyDiskMatchesAuthoritativeBaselineLocked`). Providing separate storage directories isolates the installation-level concurrency test, verifying that independent installations proceed concurrently without mutual blocking.
-    - `OverlappingOperations_SameInstallation_ConcurrentApply_MustRefuseSecondOperationToPreventMixedPayload`: Explicitly asserts `installer2.LastRefusalReason` contains `"in progress"`, ensuring that the test fails as expected-red on missing operation exclusion rather than inadvertently passing on an unhandled mid-mutation file collision.
-  - Expected-Red Status: 3 failing tests demonstrating missing operation lease boundaries on unchanged production; 1 passing positive control demonstrating concurrent independent installation operations.
+- **Run 1:** `39172485694` (Job `117808277752`) — Initial draft test suite.
+- **Run 2:** `39172910470` (Job `117809521101`) — Baseline 907 tests pass; 1 positive control passes; 3 expected-red tests fail.
+- **Current Head:** Calibrated fixtures and refined technical design addressing Codex R1–R4 review findings.
 
 ---
 

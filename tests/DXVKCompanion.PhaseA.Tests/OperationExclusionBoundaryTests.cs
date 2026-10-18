@@ -91,44 +91,52 @@ public sealed class OperationExclusionBoundaryTests
         var release27 = new ReleaseInfo { Version = "2.7", DownloadUrl = "" };
 
         // 3. Launch Operation 1 (Update to 2.6) in background
-        var op1Task = Task.Run(async () =>
-        {
-            try
-            {
-                return await installer1.ApplyToGameAsync(profile, release26);
-            }
-            catch
-            {
-                return false;
-            }
-        });
+        var op1Task = Task.Run(async () => await installer1.ApplyToGameAsync(profile, release26));
 
-        // 4. Wait until Operation 1 has applied d3d11.dll (v2.6 bytes now on disk)
-        var reached = await Task.WhenAny(op1AppliedD3d11.Task, Task.Delay(testTimeout));
-        Assert.True(reached == op1AppliedD3d11.Task, "Operation 1 failed to reach AfterApply hook within timeout.");
-
-        // 5. While Operation 1 holds in-flight mutations, launch Operation 2 (Update to 2.7)
-        bool op2Result;
+        bool op2Result = false;
         try
         {
-            op2Result = await installer2.ApplyToGameAsync(profile, release27);
+            // 4. Wait until Operation 1 has applied d3d11.dll (v2.6 bytes now on disk)
+            var reached = await Task.WhenAny(op1AppliedD3d11.Task, Task.Delay(testTimeout));
+            Assert.True(reached == op1AppliedD3d11.Task, "Operation 1 failed to reach AfterApply hook within timeout.");
+
+            // 5. While Operation 1 holds in-flight mutations, launch Operation 2 (Update to 2.7) with bounded wait
+            var op2Task = Task.Run(async () => await installer2.ApplyToGameAsync(profile, release27));
+            var op2Completed = await Task.WhenAny(op2Task, Task.Delay(testTimeout));
+            Assert.True(op2Completed == op2Task, "Operation 2 timed out during execution.");
+            op2Result = await op2Task;
         }
         finally
         {
+            // Ensure op2Finished barrier is always released so op1Task never hangs
             op2Finished.TrySetResult(true);
         }
 
+        var op1Completed = await Task.WhenAny(op1Task, Task.Delay(testTimeout));
+        Assert.True(op1Completed == op1Task, "Operation 1 timed out during recovery.");
         var op1Result = await op1Task;
-        Assert.False(op1Result); // Op 1 failed and rolled back
 
-        // 6. Assert intended safety invariants:
-        // Invariant A: Overlapping Operation 2 on the same installation root must be refused while Op 1 holds the exclusion boundary.
+        // Verify Operation 1 failed and handled the deliberate injected fault
+        Assert.False(op1Result);
+        Assert.NotNull(installer1.LastRefusalReason);
+        Assert.Contains("Simulated fault", installer1.LastRefusalReason);
+
+        // Intended Safe Invariant:
+        // 1. Operation 2 must be refused at the lease boundary while Operation 1 is in-flight.
         Assert.False(op2Result, "Overlapping operation on the same installation root must be refused while another operation holds the exclusion boundary.");
+        Assert.NotNull(installer2.LastRefusalReason);
+        Assert.Contains("in progress", installer2.LastRefusalReason, StringComparison.OrdinalIgnoreCase);
 
-        // Invariant B: Even if Operation 2 committed, an overlapping operation's rollback must NEVER
-        // silently overwrite another operation's committed bytes on disk.
-        var finalD3d11 = File.ReadAllText(d3d11Path);
-        Assert.Equal("dxvk-2.7-d3d11", finalD3d11);
+        // 2. Because Operation 2 is refused, Operation 1's safe rollback restores the installation to its pre-operation 2.5 baseline.
+        Assert.Equal("dxvk-2.5-d3d11", File.ReadAllText(d3d11Path));
+        Assert.Equal("dxvk-2.5-dxgi", File.ReadAllText(Path.Combine(gameDir.RootPath, "dxgi.dll")));
+
+        // 3. Reloaded store state confirms the installation remains at 2.5 with its native backup preserved.
+        var reloadedStore = new GameLibraryStore(storePath, backupsPath);
+        var reloadedInst = reloadedStore.FindByInstallationPath(gameDir.RootPath);
+        Assert.NotNull(reloadedInst);
+        Assert.Equal("2.5", reloadedInst.ManagedDxvkVersion);
+        Assert.Equal(RestorationState.Managed, reloadedInst.RestorationState);
     }
 
     [Fact]
@@ -140,6 +148,7 @@ public sealed class OperationExclusionBoundaryTests
 
         CreateDxvkReleasePayload(sourceDir.RootPath, "2.5", "dxvk-2.5-d3d11", "dxvk-2.5-dxgi");
         CreateDxvkReleasePayload(sourceDir.RootPath, "2.6", "dxvk-2.6-d3d11", "dxvk-2.6-dxgi");
+        CreateDxvkReleasePayload(sourceDir.RootPath, "2.7", "dxvk-2.7-d3d11", "dxvk-2.7-dxgi");
 
         var storePath = Path.Combine(storageDir.RootPath, "game-library.json");
         var backupsPath = Path.Combine(storageDir.RootPath, "backups");
@@ -153,7 +162,14 @@ public sealed class OperationExclusionBoundaryTests
             Architecture = "x64"
         };
 
+        // 1. Establish a real committed baseline (2.5) before constructing concurrent service graphs
         using var http = new HttpClient();
+        var initialEngine = new MultiFileTransactionEngine(backupsPath);
+        var initialStore = new GameLibraryStore(storePath, backupsPath);
+        var initialInstaller = new DxvkInstaller(http, initialEngine, initialStore, sourceDir.RootPath);
+        var release25 = new ReleaseInfo { Version = "2.5", DownloadUrl = "" };
+        Assert.True(await initialInstaller.ApplyToGameAsync(profile, release25));
+
         var testTimeout = TimeSpan.FromSeconds(10);
         var op1AppliedD3d11 = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         var op2Finished = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -181,34 +197,44 @@ public sealed class OperationExclusionBoundaryTests
         var store2 = new GameLibraryStore(storePath, backupsPath);
         var installer2 = new DxvkInstaller(http, engine2, store2, sourceDir.RootPath);
 
-        var release25 = new ReleaseInfo { Version = "2.5", DownloadUrl = "" };
         var release26 = new ReleaseInfo { Version = "2.6", DownloadUrl = "" };
+        var release27 = new ReleaseInfo { Version = "2.7", DownloadUrl = "" };
 
-        // Launch Op 1 (Install 2.5)
-        var op1Task = Task.Run(async () => await installer1.ApplyToGameAsync(profile, release25));
+        // Launch Op 1 (Update to 2.6)
+        var op1Task = Task.Run(async () => await installer1.ApplyToGameAsync(profile, release26));
 
-        var reached = await Task.WhenAny(op1AppliedD3d11.Task, Task.Delay(testTimeout));
-        Assert.True(reached == op1AppliedD3d11.Task, "Operation 1 failed to reach AfterApply hook.");
-
-        // While Op 1 has partially mutated the installation, Op 2 attempts to install 2.6
-        bool op2Result;
+        bool op2Result = false;
         try
         {
-            op2Result = await installer2.ApplyToGameAsync(profile, release26);
+            var reached = await Task.WhenAny(op1AppliedD3d11.Task, Task.Delay(testTimeout));
+            Assert.True(reached == op1AppliedD3d11.Task, "Operation 1 failed to reach AfterApply hook.");
+
+            // While Op 1 has partially mutated the installation, Op 2 attempts to update to 2.7
+            var op2Task = Task.Run(async () => await installer2.ApplyToGameAsync(profile, release27));
+            var op2Completed = await Task.WhenAny(op2Task, Task.Delay(testTimeout));
+            Assert.True(op2Completed == op2Task, "Operation 2 timed out during execution.");
+            op2Result = await op2Task;
         }
         finally
         {
             op2Finished.TrySetResult(true);
         }
 
+        var op1Completed = await Task.WhenAny(op1Task, Task.Delay(testTimeout));
+        Assert.True(op1Completed == op1Task, "Operation 1 timed out during execution.");
         var op1Result = await op1Task;
 
         // Intended Safe Invariant:
-        // Concurrent mutations to the same installation root must be mutually excluded to prevent mixed file payloads
-        // and must refuse with a clean operation-in-progress reason rather than a mid-mutation validation error.
+        // Concurrent mutations to the same installation root must be mutually excluded at the operation boundary.
+        // Operation 2 must be cleanly refused with an "in progress" reason before attempting mutation.
         Assert.False(op2Result, "Concurrent install/update on the same installation root must be refused while another operation is in flight.");
         Assert.NotNull(installer2.LastRefusalReason);
         Assert.Contains("in progress", installer2.LastRefusalReason, StringComparison.OrdinalIgnoreCase);
+
+        // Operation 1 completes its update to 2.6 safely without interference from refused Operation 2.
+        Assert.True(op1Result);
+        Assert.Equal("dxvk-2.6-d3d11", File.ReadAllText(d3d11Path));
+        Assert.Equal("dxvk-2.6-dxgi", File.ReadAllText(Path.Combine(gameDir.RootPath, "dxgi.dll")));
     }
 
     [Fact]
@@ -284,27 +310,36 @@ public sealed class OperationExclusionBoundaryTests
         // Launch Manager 1 Enable/Update to 2.6
         var m1Task = Task.Run(async () => await manager1.EnableDxvkAsync(profile, "2.6"));
 
-        var reached = await Task.WhenAny(manager1AppliedD3d11.Task, Task.Delay(testTimeout));
-        Assert.True(reached == manager1AppliedD3d11.Task, "Manager 1 failed to reach AfterApply hook.");
-
-        // While Manager 1 is in-flight, Manager 2 attempts DisableDxvkAsync on the same profile
-        bool m2Result;
+        bool m2Result = false;
         try
         {
-            m2Result = await manager2.DisableDxvkAsync(profile);
+            var reached = await Task.WhenAny(manager1AppliedD3d11.Task, Task.Delay(testTimeout));
+            Assert.True(reached == manager1AppliedD3d11.Task, "Manager 1 failed to reach AfterApply hook.");
+
+            // While Manager 1 is in-flight, Manager 2 attempts DisableDxvkAsync on the same profile
+            var m2Task = Task.Run(async () => await manager2.DisableDxvkAsync(profile));
+            var m2Completed = await Task.WhenAny(m2Task, Task.Delay(testTimeout));
+            Assert.True(m2Completed == m2Task, "Manager 2 timed out during execution.");
+            m2Result = await m2Task;
         }
         finally
         {
             manager2Finished.TrySetResult(true);
         }
 
+        var m1Completed = await Task.WhenAny(m1Task, Task.Delay(testTimeout));
+        Assert.True(m1Completed == m1Task, "Manager 1 timed out during execution.");
         var m1Result = await m1Task;
 
         // Intended Safe Invariant:
-        // Manager 2 must refuse operation because Manager 1 holds an active operation on this installation root.
+        // Manager 2 must refuse the operation before entering rollback execution because Manager 1 holds an active operation lease.
+        // It must cleanly refuse with an "in progress" diagnostic rather than proceeding to inspect disk and failing mid-flight with a hash mismatch.
         Assert.False(m2Result, "Concurrent manager operation on the same game profile must be refused while another operation is in flight.");
         Assert.NotNull(manager2.LastRefusalReason);
         Assert.Contains("in progress", manager2.LastRefusalReason, StringComparison.OrdinalIgnoreCase);
+
+        // Manager 1 completes successfully
+        Assert.True(m1Result);
     }
 
     [Fact]
@@ -330,25 +365,80 @@ public sealed class OperationExclusionBoundaryTests
         var profile1 = new GameProfile(exe1) { Api = GraphicsApi.DX11, Architecture = "x64" };
         var profile2 = new GameProfile(exe2) { Api = GraphicsApi.DX11, Architecture = "x64" };
 
+        var testTimeout = TimeSpan.FromSeconds(10);
+        var op1AppliedD3d11 = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var op2AppliedD3d11 = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var testFinished = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        // Hook for Installation 1: pauses after applying d3d11.dll until Installation 2 also reaches d3d11.dll
+        var hooks1 = new MultiFileTransactionTestHooks
+        {
+            AfterApply = (targetPath, index) =>
+            {
+                if (targetPath.EndsWith("d3d11.dll", StringComparison.OrdinalIgnoreCase))
+                {
+                    op1AppliedD3d11.TrySetResult(true);
+                    if (!Task.WaitAny(new[] { op2AppliedD3d11.Task, testFinished.Task }, testTimeout).Equals(0))
+                    {
+                        throw new TimeoutException("Installation 1 timed out waiting for concurrent Installation 2 to reach AfterApply.");
+                    }
+                }
+            }
+        };
+
+        // Hook for Installation 2: pauses after applying d3d11.dll until Installation 1 also reaches d3d11.dll
+        var hooks2 = new MultiFileTransactionTestHooks
+        {
+            AfterApply = (targetPath, index) =>
+            {
+                if (targetPath.EndsWith("d3d11.dll", StringComparison.OrdinalIgnoreCase))
+                {
+                    op2AppliedD3d11.TrySetResult(true);
+                    if (!Task.WaitAny(new[] { op1AppliedD3d11.Task, testFinished.Task }, testTimeout).Equals(0))
+                    {
+                        throw new TimeoutException("Installation 2 timed out waiting for concurrent Installation 1 to reach AfterApply.");
+                    }
+                }
+            }
+        };
+
         using var http = new HttpClient();
         var store1 = new GameLibraryStore(storePath1, backupsPath1);
-        var engine1 = new MultiFileTransactionEngine(backupsPath1);
+        var engine1 = new MultiFileTransactionEngine(backupsPath1, hooks1);
         var installer1 = new DxvkInstaller(http, engine1, store1, sourceDir.RootPath);
 
         var store2 = new GameLibraryStore(storePath2, backupsPath2);
-        var engine2 = new MultiFileTransactionEngine(backupsPath2);
+        var engine2 = new MultiFileTransactionEngine(backupsPath2, hooks2);
         var installer2 = new DxvkInstaller(http, engine2, store2, sourceDir.RootPath);
 
         var release25 = new ReleaseInfo { Version = "2.5", DownloadUrl = "" };
         var release26 = new ReleaseInfo { Version = "2.6", DownloadUrl = "" };
 
-        // Act: Run both independent installs concurrently
-        var task1 = Task.Run(async () => await installer1.ApplyToGameAsync(profile1, release25));
-        var task2 = Task.Run(async () => await installer2.ApplyToGameAsync(profile2, release26));
+        Task<bool> task1;
+        Task<bool> task2;
+        try
+        {
+            // Act: Run both independent installs concurrently
+            task1 = Task.Run(async () => await installer1.ApplyToGameAsync(profile1, release25));
+            task2 = Task.Run(async () => await installer2.ApplyToGameAsync(profile2, release26));
 
-        await Task.WhenAll(task1, task2);
+            var bothReached = await Task.WhenAll(
+                Task.WhenAny(op1AppliedD3d11.Task, Task.Delay(testTimeout)),
+                Task.WhenAny(op2AppliedD3d11.Task, Task.Delay(testTimeout))
+            );
 
-        // Assert: Both succeed independently without interference
+            Assert.True(bothReached[0] == op1AppliedD3d11.Task, "Installation 1 failed to reach AfterApply handshake.");
+            Assert.True(bothReached[1] == op2AppliedD3d11.Task, "Installation 2 failed to reach AfterApply handshake.");
+
+            var allCompleted = await Task.WhenAny(Task.WhenAll(task1, task2), Task.Delay(testTimeout));
+            Assert.True(allCompleted != Task.Delay(testTimeout), "Concurrent independent installations timed out completing execution.");
+        }
+        finally
+        {
+            testFinished.TrySetResult(true);
+        }
+
+        // Assert: Both succeed independently without mutual interference
         Assert.True(await task1);
         Assert.True(await task2);
 
