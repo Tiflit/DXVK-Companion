@@ -13,9 +13,9 @@ namespace DXVKCompanion.PhaseATests;
 
 public sealed class UnownedRestoreRefusalTests
 {
-    private static Dictionary<string, FileIdentity> SnapshotDirectory(string directory)
+    private static Dictionary<string, SafetyFileIdentity> SnapshotDirectory(string directory)
     {
-        var snapshot = new Dictionary<string, FileIdentity>(StringComparer.OrdinalIgnoreCase);
+        var snapshot = new Dictionary<string, SafetyFileIdentity>(StringComparer.OrdinalIgnoreCase);
         if (!Directory.Exists(directory)) return snapshot;
         foreach (var file in Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories))
         {
@@ -25,7 +25,7 @@ public sealed class UnownedRestoreRefusalTests
         return snapshot;
     }
 
-    private static void AssertDirectoryUnchanged(string directory, Dictionary<string, FileIdentity> baseline)
+    private static void AssertDirectoryUnchanged(string directory, Dictionary<string, SafetyFileIdentity> baseline)
     {
         var current = SnapshotDirectory(directory);
         Assert.Equal(baseline.Count, current.Count);
