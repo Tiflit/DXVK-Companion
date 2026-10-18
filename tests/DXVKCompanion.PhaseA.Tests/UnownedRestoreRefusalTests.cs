@@ -250,7 +250,8 @@ public sealed class UnownedRestoreRefusalTests
         store.Save(inst);
 
         // Simulate uncertain persistence on store
-        store.HasUncertainPersistence = true;
+        store.RecordUnexpectedCommitCallbackException("Simulated uncertain persistence");
+        Assert.True(store.HasUncertainPersistence);
 
         var profile = new GameProfile(exePath)
         {
