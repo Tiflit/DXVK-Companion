@@ -2,12 +2,27 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using DXVKCompanion.Models;
 
 namespace DXVKCompanion.Storage
 {
+    internal enum OwnershipPersistenceOutcome
+    {
+        Unknown = 0,
+        Committed = 1,
+        ProvenNotCommitted = 2
+    }
+
+    internal readonly record struct OwnershipSaveResult(
+        OwnershipPersistenceOutcome Outcome,
+        Exception? Exception = null,
+        string? DiagnosticMessage = null,
+        byte[]? PreWriteBytes = null,
+        bool PreWriteExisted = false);
+
     public sealed class GameLibraryStore
     {
         private readonly object _sync = new();
@@ -17,6 +32,7 @@ namespace DXVKCompanion.Storage
         internal Action<string, string>? CustomTempWriter { get; set; }
         internal Action<string, string>? CustomCommitReplace { get; set; }
         internal Action<string>? CustomTempCleaner { get; set; }
+        internal Action<GameInstallation>? CustomSaveOutcomeHook { get; set; }
 
         private static readonly JsonSerializerOptions JsonOptions = new()
         {
@@ -32,6 +48,16 @@ namespace DXVKCompanion.Storage
 
         private bool _isRefused;
         private string? _refusedSchemaText;
+
+        private bool _hasUncertainPersistence;
+        private string? _uncertainPersistenceReason;
+
+        private bool _hasInaccessibleLibraryOnLoad;
+        private string? _inaccessibleLibraryReason;
+
+        private bool _loadedFromBrokenFileRecovery;
+        private bool _lastCommittedExisted;
+        private byte[]? _lastCommittedLibraryBytes;
 
         internal bool IsRefused
         {
@@ -51,6 +77,28 @@ namespace DXVKCompanion.Storage
                 lock (_sync)
                 {
                     return _refusedSchemaText;
+                }
+            }
+        }
+
+        internal bool HasUncertainPersistence
+        {
+            get
+            {
+                lock (_sync)
+                {
+                    return _hasUncertainPersistence;
+                }
+            }
+        }
+
+        internal string? UncertainPersistenceReason
+        {
+            get
+            {
+                lock (_sync)
+                {
+                    return _uncertainPersistenceReason;
                 }
             }
         }
@@ -138,9 +186,21 @@ namespace DXVKCompanion.Storage
                         : displayName
                 };
 
-                _installations[normalized] = installation;
-                WriteAllLocked();
-                return installation;
+                var result = ExecuteClassifiedCommitLocked(
+                    applyInMemoryMutation: () => _installations[normalized] = installation,
+                    rollbackInMemoryMutationOnProvenNotCommitted: () => _installations.Remove(normalized),
+                    markAttentionOnUnknown: reason =>
+                    {
+                        installation.RestorationState = RestorationState.AttentionRequired;
+                        installation.LastRefusalReason = reason;
+                    });
+
+                if (result.Outcome == OwnershipPersistenceOutcome.Committed)
+                {
+                    return installation;
+                }
+
+                throw result.Exception ?? new IOException(result.DiagnosticMessage ?? "Failed to persist new installation record.");
             }
         }
 
@@ -152,27 +212,88 @@ namespace DXVKCompanion.Storage
             {
                 EnsureNotRefusedLocked();
 
-                var installation = GetOrCreateInstallation(snapshot.InstallationRoot, Path.GetFileName(snapshot.InstallationRoot));
-                var profile = installation.GetOrAddExecutable(snapshot.ExecutableRelativePath, snapshot.ProcessName);
+                var normalized = GameInstallation.NormalizeInstallationPath(snapshot.InstallationRoot);
+                bool hadExisting = _installations.TryGetValue(normalized, out var existingInstallation);
+                GameInstallation? existingSnapshot = hadExisting && existingInstallation != null
+                    ? CreateSnapshot(existingInstallation)
+                    : null;
+                bool prevHasApiChanged = snapshot.HasApiChanged;
+                var prevPreviousApi = snapshot.PreviousApi;
 
-                if (profile.LastKnownApi != GraphicsApi.Unknown &&
-                    snapshot.Classification.PrimaryApi != GraphicsApi.Unknown &&
-                    profile.LastKnownApi != snapshot.Classification.PrimaryApi)
+                GameInstallation? targetInstallation = null;
+
+                var result = ExecuteClassifiedCommitLocked(
+                    applyInMemoryMutation: () =>
+                    {
+                        if (hadExisting && existingInstallation != null)
+                        {
+                            targetInstallation = existingInstallation;
+                        }
+                        else
+                        {
+                            targetInstallation = new GameInstallation
+                            {
+                                InstallationPath = normalized,
+                                DisplayName = string.IsNullOrWhiteSpace(Path.GetFileName(snapshot.InstallationRoot))
+                                    ? new DirectoryInfo(normalized).Name
+                                    : Path.GetFileName(snapshot.InstallationRoot)
+                            };
+                            _installations[normalized] = targetInstallation;
+                        }
+
+                        var profile = targetInstallation.GetOrAddExecutable(snapshot.ExecutableRelativePath, snapshot.ProcessName);
+
+                        if (profile.LastKnownApi != GraphicsApi.Unknown &&
+                            snapshot.Classification.PrimaryApi != GraphicsApi.Unknown &&
+                            profile.LastKnownApi != snapshot.Classification.PrimaryApi)
+                        {
+                            snapshot.HasApiChanged = true;
+                            snapshot.PreviousApi = profile.LastKnownApi;
+                            Log($"GameLibraryStore: API transition detected for {snapshot.ExecutableRelativePath}: {profile.LastKnownApi} -> {snapshot.Classification.PrimaryApi}");
+                        }
+
+                        profile.LastKnownApi = snapshot.Classification.PrimaryApi;
+                        profile.ApiConfidence = snapshot.Classification.Confidence;
+                        profile.LastKnownArchitecture = snapshot.Classification.Architecture;
+                        profile.DetectionEvidence = snapshot.Classification.Evidence.ToList();
+                        profile.LastSeenUtc = snapshot.TimestampUtc;
+
+                        targetInstallation.LastSeenUtc = snapshot.TimestampUtc;
+                    },
+                    rollbackInMemoryMutationOnProvenNotCommitted: () =>
+                    {
+                        snapshot.HasApiChanged = prevHasApiChanged;
+                        snapshot.PreviousApi = prevPreviousApi;
+                        if (hadExisting && existingInstallation != null && existingSnapshot != null)
+                        {
+                            RestoreSnapshot(existingInstallation, existingSnapshot);
+                            _installations[normalized] = existingInstallation;
+                        }
+                        else
+                        {
+                            _installations.Remove(normalized);
+                        }
+                    },
+                    markAttentionOnUnknown: reason =>
+                    {
+                        if (targetInstallation != null)
+                        {
+                            targetInstallation.RestorationState = RestorationState.AttentionRequired;
+                            targetInstallation.LastRefusalReason = reason;
+                        }
+                        if (existingInstallation != null && !ReferenceEquals(existingInstallation, targetInstallation))
+                        {
+                            existingInstallation.RestorationState = RestorationState.AttentionRequired;
+                            existingInstallation.LastRefusalReason = reason;
+                        }
+                    });
+
+                if (result.Outcome == OwnershipPersistenceOutcome.Committed && targetInstallation != null)
                 {
-                    snapshot.HasApiChanged = true;
-                    snapshot.PreviousApi = profile.LastKnownApi;
-                    Log($"GameLibraryStore: API transition detected for {snapshot.ExecutableRelativePath}: {profile.LastKnownApi} -> {snapshot.Classification.PrimaryApi}");
+                    return targetInstallation;
                 }
 
-                profile.LastKnownApi = snapshot.Classification.PrimaryApi;
-                profile.ApiConfidence = snapshot.Classification.Confidence;
-                profile.LastKnownArchitecture = snapshot.Classification.Architecture;
-                profile.DetectionEvidence = snapshot.Classification.Evidence.ToList();
-                profile.LastSeenUtc = snapshot.TimestampUtc;
-
-                installation.LastSeenUtc = snapshot.TimestampUtc;
-                WriteAllLocked();
-                return installation;
+                throw result.Exception ?? new IOException(result.DiagnosticMessage ?? "Failed to persist detection snapshot.");
             }
         }
 
@@ -184,14 +305,55 @@ namespace DXVKCompanion.Storage
             {
                 EnsureNotRefusedLocked();
 
-                installation.InstallationPath =
-                    GameInstallation.NormalizeInstallationPath(installation.InstallationPath);
+                var normalizedPath = GameInstallation.NormalizeInstallationPath(installation.InstallationPath);
+                bool hadPrevious = _installations.TryGetValue(normalizedPath, out var previousEntry);
+                GameInstallation? previousSnapshot = hadPrevious && previousEntry != null
+                    ? CreateSnapshot(previousEntry)
+                    : null;
+                var previousId = installation.Id;
 
-                if (string.IsNullOrWhiteSpace(installation.Id))
-                    installation.Id = Guid.NewGuid().ToString("N");
+                var result = ExecuteClassifiedCommitLocked(
+                    applyInMemoryMutation: () =>
+                    {
+                        installation.InstallationPath = normalizedPath;
+                        if (string.IsNullOrWhiteSpace(installation.Id))
+                            installation.Id = Guid.NewGuid().ToString("N");
 
-                _installations[installation.InstallationPath] = installation;
-                WriteAllLocked();
+                        _installations[normalizedPath] = installation;
+                    },
+                    rollbackInMemoryMutationOnProvenNotCommitted: () =>
+                    {
+                        if (hadPrevious && previousEntry != null)
+                        {
+                            if (previousSnapshot != null)
+                            {
+                                RestoreSnapshot(previousEntry, previousSnapshot);
+                            }
+                            _installations[normalizedPath] = previousEntry;
+                        }
+                        else
+                        {
+                            _installations.Remove(normalizedPath);
+                        }
+                        installation.Id = previousId;
+                    },
+                    markAttentionOnUnknown: reason =>
+                    {
+                        installation.RestorationState = RestorationState.AttentionRequired;
+                        installation.LastRefusalReason = reason;
+                        if (previousEntry != null && !ReferenceEquals(previousEntry, installation))
+                        {
+                            previousEntry.RestorationState = RestorationState.AttentionRequired;
+                            previousEntry.LastRefusalReason = reason;
+                        }
+                    });
+
+                if (result.Outcome == OwnershipPersistenceOutcome.Committed)
+                {
+                    return;
+                }
+
+                throw result.Exception ?? new IOException(result.DiagnosticMessage ?? "Failed to save installation record.");
             }
         }
 
@@ -200,40 +362,722 @@ namespace DXVKCompanion.Storage
             lock (_sync)
             {
                 EnsureNotRefusedLocked();
-                WriteAllLocked();
+
+                var result = ExecuteClassifiedCommitLocked(
+                    applyInMemoryMutation: static () => { },
+                    rollbackInMemoryMutationOnProvenNotCommitted: static () => { },
+                    markAttentionOnUnknown: reason =>
+                    {
+                        foreach (var inst in _installations.Values)
+                        {
+                            inst.RestorationState = RestorationState.AttentionRequired;
+                            inst.LastRefusalReason = reason;
+                        }
+                    });
+
+                if (result.Outcome == OwnershipPersistenceOutcome.Committed)
+                {
+                    return;
+                }
+
+                throw result.Exception ?? new IOException(result.DiagnosticMessage ?? "Failed to save game library.");
+            }
+        }
+
+        internal bool TryCheckCanModifyLibrary(out string? refusalReason)
+        {
+            lock (_sync)
+            {
+                if (!VerifyDiskMatchesAuthoritativeBaselineLocked(
+                        out _,
+                        out _,
+                        out _,
+                        out var diagMessage,
+                        out _))
+                {
+                    refusalReason = diagMessage ?? "Refused operation: game library cannot be safely modified.";
+                    return false;
+                }
+
+                refusalReason = null;
+                return true;
+            }
+        }
+
+        internal void CaptureCurrentLibraryBaseline(out byte[]? baselineBytes, out bool baselineExisted)
+        {
+            lock (_sync)
+            {
+                baselineExisted = _lastCommittedExisted;
+                baselineBytes = _lastCommittedLibraryBytes != null
+                    ? (byte[])_lastCommittedLibraryBytes.Clone()
+                    : null;
+            }
+        }
+
+        internal OwnershipSaveResult RecordUnexpectedCommitCallbackException(
+            string reason,
+            GameInstallation? installation = null)
+        {
+            lock (_sync)
+            {
+                ActivateUncertainPersistenceLocked(reason);
+                if (installation != null)
+                {
+                    installation.RestorationState = RestorationState.AttentionRequired;
+                    installation.LastRefusalReason = reason;
+                }
+                return new OwnershipSaveResult(
+                    OwnershipPersistenceOutcome.Unknown,
+                    Exception: new InvalidOperationException(reason),
+                    DiagnosticMessage: reason,
+                    PreWriteBytes: _lastCommittedLibraryBytes,
+                    PreWriteExisted: _lastCommittedExisted);
+            }
+        }
+
+        internal OwnershipSaveResult RecordUnexpectedCommitCallbackException(
+            Exception callbackEx,
+            bool expectedPreWriteExisted,
+            byte[]? expectedPreWriteBytes)
+        {
+            ArgumentNullException.ThrowIfNull(callbackEx);
+            string reason = $"Ownership metadata commit outcome is unknown: unexpected exception in ownership commit callback ({callbackEx.GetType().Name}: {callbackEx.Message}).";
+            return RecordUnexpectedCommitCallbackException(reason, null);
+        }
+
+        internal OwnershipSaveResult TrySaveWithOutcome(GameInstallation installation)
+        {
+            if (installation == null) throw new ArgumentNullException(nameof(installation));
+
+            CustomSaveOutcomeHook?.Invoke(installation);
+
+            lock (_sync)
+            {
+                var normalizedPath = GameInstallation.NormalizeInstallationPath(installation.InstallationPath);
+                bool hadPrevious = _installations.TryGetValue(normalizedPath, out var previousEntry);
+                var previousId = installation.Id;
+
+                return ExecuteClassifiedCommitLocked(
+                    applyInMemoryMutation: () =>
+                    {
+                        installation.InstallationPath = normalizedPath;
+                        if (string.IsNullOrWhiteSpace(installation.Id))
+                            installation.Id = Guid.NewGuid().ToString("N");
+
+                        _installations[normalizedPath] = installation;
+                    },
+                    rollbackInMemoryMutationOnProvenNotCommitted: () =>
+                    {
+                        if (hadPrevious && previousEntry != null)
+                        {
+                            _installations[normalizedPath] = previousEntry;
+                        }
+                        else
+                        {
+                            _installations.Remove(normalizedPath);
+                        }
+                        installation.Id = previousId;
+                    },
+                    markAttentionOnUnknown: reason =>
+                    {
+                        installation.RestorationState = RestorationState.AttentionRequired;
+                        installation.LastRefusalReason = reason;
+                        if (previousEntry != null && !ReferenceEquals(previousEntry, installation))
+                        {
+                            previousEntry.RestorationState = RestorationState.AttentionRequired;
+                            previousEntry.LastRefusalReason = reason;
+                        }
+                    });
+            }
+        }
+
+        private OwnershipSaveResult ExecuteClassifiedCommitLocked(
+            Action applyInMemoryMutation,
+            Action rollbackInMemoryMutationOnProvenNotCommitted,
+            Action<string>? markAttentionOnUnknown)
+        {
+            if (!VerifyDiskMatchesAuthoritativeBaselineLocked(
+                    out var preWriteBytes,
+                    out bool preWriteExisted,
+                    out var baselineError,
+                    out var baselineDiag,
+                    out bool isPreWriteUnreadableOrSchemaRefused))
+            {
+                if (isPreWriteUnreadableOrSchemaRefused)
+                {
+                    return new OwnershipSaveResult(
+                        OwnershipPersistenceOutcome.ProvenNotCommitted,
+                        Exception: baselineError,
+                        DiagnosticMessage: baselineDiag,
+                        PreWriteBytes: _lastCommittedLibraryBytes,
+                        PreWriteExisted: _lastCommittedExisted);
+                }
+
+                string uncertainReason = baselineDiag
+                    ?? _uncertainPersistenceReason
+                    ?? "Ownership persistence refused: on-disk library state no longer matches the authoritative store baseline.";
+                markAttentionOnUnknown?.Invoke(uncertainReason);
+                return new OwnershipSaveResult(
+                    OwnershipPersistenceOutcome.Unknown,
+                    Exception: baselineError ?? new InvalidOperationException(uncertainReason),
+                    DiagnosticMessage: uncertainReason,
+                    PreWriteBytes: _lastCommittedLibraryBytes,
+                    PreWriteExisted: _lastCommittedExisted);
+            }
+
+            string? tempPath = null;
+            byte[] expectedPostWriteBytes;
+
+            try
+            {
+                applyInMemoryMutation();
+
+                Paths.EnsureDirectories();
+                Directory.CreateDirectory(_backupsDirectoryPath);
+
+                var library = new GameLibrary
+                {
+                    SchemaVersion = GameLibrary.CurrentSchemaVersion,
+                    Installations = _installations.Values
+                        .OrderBy(x => x.DisplayName, StringComparer.OrdinalIgnoreCase)
+                        .ThenBy(x => x.InstallationPath, StringComparer.OrdinalIgnoreCase)
+                        .ToList()
+                };
+
+                var json = JsonSerializer.Serialize(library, JsonOptions);
+                expectedPostWriteBytes = Encoding.UTF8.GetBytes(json);
+                tempPath = _libraryFilePath + ".tmp." + Guid.NewGuid().ToString("N");
+
+                if (CustomTempWriter != null)
+                {
+                    CustomTempWriter(tempPath, json);
+                }
+                else
+                {
+                    File.WriteAllText(tempPath, json);
+                }
+            }
+            catch (Exception prepOrStageEx)
+            {
+                if (tempPath != null)
+                {
+                    TryCleanTempFile(tempPath);
+                }
+
+                if (TryVerifyPreWriteIntact(preWriteExisted, preWriteBytes, out var verifyDiag))
+                {
+                    try { rollbackInMemoryMutationOnProvenNotCommitted(); } catch { }
+                    return new OwnershipSaveResult(
+                        OwnershipPersistenceOutcome.ProvenNotCommitted,
+                        Exception: prepOrStageEx,
+                        DiagnosticMessage: $"Ownership metadata preparation or staging failed before replacement ({prepOrStageEx.GetType().Name}: {prepOrStageEx.Message}). Pre-operation library state verified intact.",
+                        PreWriteBytes: preWriteBytes,
+                        PreWriteExisted: preWriteExisted);
+                }
+
+                string stageUncertainReason = $"Ownership metadata preparation or staging failed ({prepOrStageEx.GetType().Name}: {prepOrStageEx.Message}) and pre-operation library state could not be verified ({verifyDiag}).";
+                ActivateUncertainPersistenceLocked(stageUncertainReason);
+                markAttentionOnUnknown?.Invoke(stageUncertainReason);
+                return new OwnershipSaveResult(
+                    OwnershipPersistenceOutcome.Unknown,
+                    Exception: prepOrStageEx,
+                    DiagnosticMessage: stageUncertainReason,
+                    PreWriteBytes: preWriteBytes,
+                    PreWriteExisted: preWriteExisted);
+            }
+
+            Exception? replaceEx = null;
+            try
+            {
+                if (CustomCommitReplace != null)
+                {
+                    CustomCommitReplace(tempPath, _libraryFilePath);
+                }
+                else
+                {
+                    if (File.Exists(_libraryFilePath))
+                    {
+                        File.Move(tempPath, _libraryFilePath, overwrite: true);
+                    }
+                    else
+                    {
+                        File.Move(tempPath, _libraryFilePath);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                replaceEx = ex;
+            }
+
+            if (!TryReadFileBytesOrConfirmAbsent(_libraryFilePath, out var postBytes, out bool postAbsent, out var postReadEx))
+            {
+                TryCleanTempFile(tempPath);
+                string reason = $"Ownership metadata commit outcome is unknown: post-replace readback of '{Path.GetFileName(_libraryFilePath)}' failed ({postReadEx?.GetType().Name}: {postReadEx?.Message})"
+                    + (replaceEx != null ? $" after replace error ({replaceEx.GetType().Name}: {replaceEx.Message})." : ".");
+                ActivateUncertainPersistenceLocked(reason);
+                markAttentionOnUnknown?.Invoke(reason);
+                return new OwnershipSaveResult(
+                    OwnershipPersistenceOutcome.Unknown,
+                    Exception: replaceEx ?? postReadEx,
+                    DiagnosticMessage: reason,
+                    PreWriteBytes: preWriteBytes,
+                    PreWriteExisted: preWriteExisted);
+            }
+
+            if (postAbsent)
+            {
+                if (!preWriteExisted && IsTempFileUnappliedWithExpectedBytes(tempPath, expectedPostWriteBytes))
+                {
+                    TryCleanTempFile(tempPath);
+                    try { rollbackInMemoryMutationOnProvenNotCommitted(); } catch { }
+                    return new OwnershipSaveResult(
+                        OwnershipPersistenceOutcome.ProvenNotCommitted,
+                        Exception: replaceEx,
+                        DiagnosticMessage: $"Ownership metadata replacement did not commit ({replaceEx?.GetType().Name ?? "NoReplace"}: {replaceEx?.Message ?? "Target absent"}); verified no prior library existed and staged temp file remained unapplied.",
+                        PreWriteBytes: null,
+                        PreWriteExisted: false);
+                }
+
+                TryCleanTempFile(tempPath);
+                string missingReason = preWriteExisted
+                    ? $"Ownership metadata commit outcome is unknown: '{Path.GetFileName(_libraryFilePath)}' existed before replacement but is missing after replacement."
+                    : $"Ownership metadata commit outcome is unknown: '{Path.GetFileName(_libraryFilePath)}' is missing after replacement without proof that the staged temp file remained unapplied.";
+                ActivateUncertainPersistenceLocked(missingReason);
+                markAttentionOnUnknown?.Invoke(missingReason);
+                return new OwnershipSaveResult(
+                    OwnershipPersistenceOutcome.Unknown,
+                    Exception: replaceEx ?? new IOException(missingReason),
+                    DiagnosticMessage: missingReason,
+                    PreWriteBytes: preWriteBytes,
+                    PreWriteExisted: preWriteExisted);
+            }
+
+            if (postBytes != null &&
+                postBytes.AsSpan().SequenceEqual(expectedPostWriteBytes) &&
+                IsValidCurrentSchemaLibraryJson(postBytes))
+            {
+                TryCleanTempFile(tempPath);
+                _lastCommittedExisted = true;
+                _lastCommittedLibraryBytes = expectedPostWriteBytes;
+                _loadedFromBrokenFileRecovery = false;
+
+                if (replaceEx != null)
+                {
+                    Log($"GameLibraryStore: post-replace exception ({replaceEx.GetType().Name}: {replaceEx.Message}) occurred after target library was already durably replaced; verified on-disk bytes match expected commit.");
+                }
+
+                return new OwnershipSaveResult(
+                    OwnershipPersistenceOutcome.Committed,
+                    Exception: replaceEx,
+                    DiagnosticMessage: replaceEx != null
+                        ? $"Ownership metadata verified committed on disk despite post-replace exception ({replaceEx.GetType().Name}: {replaceEx.Message})."
+                        : null,
+                    PreWriteBytes: preWriteBytes,
+                    PreWriteExisted: preWriteExisted);
+            }
+
+            if (preWriteExisted &&
+                preWriteBytes != null &&
+                postBytes != null &&
+                postBytes.AsSpan().SequenceEqual(preWriteBytes))
+            {
+                TryCleanTempFile(tempPath);
+                try { rollbackInMemoryMutationOnProvenNotCommitted(); } catch { }
+                return new OwnershipSaveResult(
+                    OwnershipPersistenceOutcome.ProvenNotCommitted,
+                    Exception: replaceEx,
+                    DiagnosticMessage: $"Ownership metadata replacement did not commit ({replaceEx?.GetType().Name ?? "ReplaceIncomplete"}: {replaceEx?.Message ?? "Target unchanged"}); verified pre-write library bytes remain intact on disk.",
+                    PreWriteBytes: preWriteBytes,
+                    PreWriteExisted: true);
+            }
+
+            TryCleanTempFile(tempPath);
+
+            string mismatchReason;
+            if (postBytes != null)
+            {
+                var postAssessment = GameLibrarySchemaCompatibility.AssessJson(postBytes);
+                if (postAssessment.IsRefused)
+                {
+                    _isRefused = true;
+                    _refusedSchemaText = postAssessment.FoundSchemaVersionText;
+                    mismatchReason = $"Ownership metadata commit outcome is unknown: on-disk '{Path.GetFileName(_libraryFilePath)}' declares newer schema {postAssessment.FoundSchemaVersionText} (supported: {GameLibrary.CurrentSchemaVersion}).";
+                }
+                else if (postAssessment.Status == SchemaCompatibilityStatus.Malformed || !IsValidCurrentSchemaLibraryJson(postBytes))
+                {
+                    mismatchReason = $"Ownership metadata commit outcome is unknown: on-disk '{Path.GetFileName(_libraryFilePath)}' contains malformed or unparseable JSON after replacement.";
+                }
+                else
+                {
+                    mismatchReason = $"Ownership metadata commit outcome is unknown: on-disk '{Path.GetFileName(_libraryFilePath)}' contains conflicting JSON that matches neither the expected commit nor the pre-write baseline.";
+                }
+            }
+            else
+            {
+                mismatchReason = $"Ownership metadata commit outcome is unknown: on-disk '{Path.GetFileName(_libraryFilePath)}' could not be verified after replacement.";
+            }
+
+            ActivateUncertainPersistenceLocked(mismatchReason);
+            markAttentionOnUnknown?.Invoke(mismatchReason);
+            return new OwnershipSaveResult(
+                OwnershipPersistenceOutcome.Unknown,
+                Exception: replaceEx ?? new InvalidOperationException(mismatchReason),
+                DiagnosticMessage: mismatchReason,
+                PreWriteBytes: preWriteBytes,
+                PreWriteExisted: preWriteExisted);
+        }
+
+        internal bool TrySaveHealthAfterFailedCompensation(
+            GameInstallation installation,
+            byte[]? expectedPreWriteBytes,
+            bool preWriteExisted)
+        {
+            if (installation == null) throw new ArgumentNullException(nameof(installation));
+
+            lock (_sync)
+            {
+                if (_hasUncertainPersistence || _isRefused || _hasInaccessibleLibraryOnLoad)
+                {
+                    return false;
+                }
+
+                if (!preWriteExisted || expectedPreWriteBytes == null)
+                {
+                    return false;
+                }
+
+                var priorAssessment = GameLibrarySchemaCompatibility.AssessJson(expectedPreWriteBytes);
+                if (!priorAssessment.IsCompatible ||
+                    priorAssessment.Status != SchemaCompatibilityStatus.Compatible ||
+                    !IsValidCurrentSchemaLibraryJson(expectedPreWriteBytes))
+                {
+                    return false;
+                }
+
+                if (!TryReadFileBytesOrConfirmAbsent(_libraryFilePath, out var currentDiskBytes, out bool positivelyAbsent, out var readEx) ||
+                    readEx != null ||
+                    positivelyAbsent ||
+                    currentDiskBytes == null ||
+                    !currentDiskBytes.AsSpan().SequenceEqual(expectedPreWriteBytes))
+                {
+                    if (readEx == null && (positivelyAbsent || currentDiskBytes == null || !currentDiskBytes.AsSpan().SequenceEqual(expectedPreWriteBytes)))
+                    {
+                        ActivateUncertainPersistenceLocked(
+                            $"Cannot persist health state after failed compensation: on-disk '{Path.GetFileName(_libraryFilePath)}' no longer matches the pre-operation baseline.");
+                    }
+                    return false;
+                }
+
+                var healthResult = TrySaveWithOutcome(installation);
+                return healthResult.Outcome == OwnershipPersistenceOutcome.Committed;
+            }
+        }
+
+        internal GameInstallation CreateSnapshot(GameInstallation source)
+        {
+            if (source == null) throw new ArgumentNullException(nameof(source));
+
+            string json = JsonSerializer.Serialize(source, JsonOptions);
+            return JsonSerializer.Deserialize<GameInstallation>(json, JsonOptions)
+                ?? throw new InvalidOperationException("Failed to deserialize GameInstallation snapshot.");
+        }
+
+        internal void RestoreSnapshot(GameInstallation target, GameInstallation snapshot)
+        {
+            if (target == null) throw new ArgumentNullException(nameof(target));
+            if (snapshot == null) throw new ArgumentNullException(nameof(snapshot));
+
+            var copy = CreateSnapshot(snapshot);
+            target.Id = copy.Id;
+            target.InstallationPath = copy.InstallationPath;
+            target.DisplayName = copy.DisplayName;
+            target.IsHidden = copy.IsHidden;
+            target.ManagementPolicy = copy.ManagementPolicy;
+            target.ManagedDxvkVersion = copy.ManagedDxvkVersion;
+            target.ManagedDxvkArchitecture = copy.ManagedDxvkArchitecture;
+            target.RestorationState = copy.RestorationState;
+            target.ConflictFlags = copy.ConflictFlags;
+            target.Configuration = copy.Configuration;
+            target.Executables = copy.Executables;
+            target.ManagedFiles = copy.ManagedFiles;
+            target.PendingAction = copy.PendingAction;
+            target.LastCancelledAction = copy.LastCancelledAction;
+            target.LastCancellationReason = copy.LastCancellationReason;
+            target.LastCancellationOutcome = copy.LastCancellationOutcome;
+            target.LastRefusalReason = copy.LastRefusalReason;
+            target.CreatedUtc = copy.CreatedUtc;
+            target.LastSeenUtc = copy.LastSeenUtc;
+        }
+
+        private void ActivateUncertainPersistenceLocked(string reason)
+        {
+            _hasUncertainPersistence = true;
+            _uncertainPersistenceReason = reason;
+            Log($"GameLibraryStore: activated session-scoped uncertain persistence guard: {reason}");
+        }
+
+        private bool TryVerifyPreWriteIntact(bool preWriteExisted, byte[]? preWriteBytes, out string diagnostic)
+        {
+            if (!TryReadFileBytesOrConfirmAbsent(_libraryFilePath, out var currentBytes, out bool positivelyAbsent, out var readEx))
+            {
+                diagnostic = $"readback failed ({readEx?.GetType().Name}: {readEx?.Message})";
+                return false;
+            }
+
+            if (!preWriteExisted)
+            {
+                if (positivelyAbsent)
+                {
+                    diagnostic = "confirmed absent";
+                    return true;
+                }
+
+                diagnostic = "file unexpectedly appeared on disk";
+                return false;
+            }
+
+            if (positivelyAbsent || currentBytes == null || preWriteBytes == null)
+            {
+                diagnostic = "pre-existing file is now missing";
+                return false;
+            }
+
+            if (currentBytes.AsSpan().SequenceEqual(preWriteBytes))
+            {
+                diagnostic = "pre-write bytes verified unchanged";
+                return true;
+            }
+
+            diagnostic = "on-disk bytes no longer match pre-write baseline";
+            return false;
+        }
+
+        private static bool IsTempFileUnappliedWithExpectedBytes(string tempPath, byte[] expectedBytes)
+        {
+            if (!TryReadFileBytesOrConfirmAbsent(tempPath, out var tempBytes, out bool positivelyAbsent, out _) ||
+                positivelyAbsent ||
+                tempBytes == null)
+            {
+                return false;
+            }
+
+            return tempBytes.AsSpan().SequenceEqual(expectedBytes);
+        }
+
+        private static bool IsValidCurrentSchemaLibraryJson(byte[] bytes)
+        {
+            try
+            {
+                var assessment = GameLibrarySchemaCompatibility.AssessJson(bytes);
+                if (!assessment.IsCompatible || assessment.Status != SchemaCompatibilityStatus.Compatible)
+                    return false;
+
+                using var ms = new MemoryStream(bytes);
+                using var reader = new StreamReader(ms, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+                var text = reader.ReadToEnd();
+                var parsed = JsonSerializer.Deserialize<GameLibrary>(text, JsonOptions);
+                return parsed != null && parsed.SchemaVersion <= GameLibrary.CurrentSchemaVersion;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool TryReadFileBytesOrConfirmAbsent(
+            string path,
+            out byte[]? bytes,
+            out bool positivelyAbsent,
+            out Exception? error)
+        {
+            bytes = null;
+            positivelyAbsent = false;
+            error = null;
+
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                positivelyAbsent = true;
+                return true;
+            }
+
+            try
+            {
+                using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+                using var ms = new MemoryStream();
+                stream.CopyTo(ms);
+                bytes = ms.ToArray();
+                return true;
+            }
+            catch (FileNotFoundException)
+            {
+                positivelyAbsent = true;
+                return true;
+            }
+            catch (DirectoryNotFoundException)
+            {
+                positivelyAbsent = true;
+                return true;
+            }
+            catch (Exception ex)
+            {
+                error = ex;
+                return false;
+            }
+        }
+
+        private void TryCleanTempFile(string tempPath)
+        {
+            try
+            {
+                if (CustomTempCleaner != null)
+                {
+                    CustomTempCleaner(tempPath);
+                }
+                else if (File.Exists(tempPath))
+                {
+                    File.Delete(tempPath);
+                }
+            }
+            catch
+            {
+                // Cleanup failure must not mask the primary operation.
             }
         }
 
         private void EnsureNotRefusedLocked()
         {
-            if (_isRefused)
+            if (!VerifyDiskMatchesAuthoritativeBaselineLocked(
+                    out _,
+                    out _,
+                    out var error,
+                    out var diagMessage,
+                    out _))
             {
-                throw new IncompatibleLibrarySchemaException(
-                    _refusedSchemaText,
-                    GameLibrary.CurrentSchemaVersion,
-                    $"Cannot modify game library: file on disk declares schema {_refusedSchemaText}, which is newer than supported schema {GameLibrary.CurrentSchemaVersion}.");
+                throw error ?? new InvalidOperationException(diagMessage ?? "Cannot modify game library: on-disk library does not match the current store baseline.");
+            }
+        }
+
+        private bool VerifyDiskMatchesAuthoritativeBaselineLocked(
+            out byte[]? diskBytes,
+            out bool preWriteExisted,
+            out Exception? baselineError,
+            out string? diagMessage,
+            out bool isPreWriteUnreadableOrSchemaRefused)
+        {
+            diskBytes = null;
+            preWriteExisted = false;
+            baselineError = null;
+            diagMessage = null;
+            isPreWriteUnreadableOrSchemaRefused = false;
+
+            if (_hasUncertainPersistence)
+            {
+                diagMessage = _uncertainPersistenceReason ?? "Cannot modify game library: ownership persistence is in an uncertain state for this session.";
+                baselineError = new InvalidOperationException(diagMessage);
+                return false;
             }
 
-            if (File.Exists(_libraryFilePath))
+            if (_hasInaccessibleLibraryOnLoad)
             {
-                var assessment = GameLibrarySchemaCompatibility.AssessFile(_libraryFilePath);
+                diagMessage = _inaccessibleLibraryReason ?? "Cannot modify game library: existing library file could not be read on startup.";
+                baselineError = new IOException(diagMessage);
+                isPreWriteUnreadableOrSchemaRefused = true;
+                return false;
+            }
+
+            if (_isRefused)
+            {
+                diagMessage = $"Cannot modify game library: file on disk declares schema {_refusedSchemaText}, which is newer than supported schema {GameLibrary.CurrentSchemaVersion}.";
+                baselineError = new IncompatibleLibrarySchemaException(_refusedSchemaText, GameLibrary.CurrentSchemaVersion, diagMessage);
+                isPreWriteUnreadableOrSchemaRefused = true;
+                return false;
+            }
+
+            if (!TryReadFileBytesOrConfirmAbsent(_libraryFilePath, out diskBytes, out bool positivelyAbsent, out var readEx))
+            {
+                diagMessage = $"Cannot read game library file '{_libraryFilePath}' before write: {readEx?.Message}";
+                baselineError = readEx ?? new IOException(diagMessage);
+                isPreWriteUnreadableOrSchemaRefused = true;
+                return false;
+            }
+
+            if (!positivelyAbsent && diskBytes != null)
+            {
+                preWriteExisted = true;
+                var assessment = GameLibrarySchemaCompatibility.AssessJson(diskBytes);
                 if (assessment.IsRefused)
                 {
                     _isRefused = true;
                     _refusedSchemaText = assessment.FoundSchemaVersionText;
-                    throw new IncompatibleLibrarySchemaException(
-                        _refusedSchemaText,
-                        GameLibrary.CurrentSchemaVersion,
-                        $"Cannot modify game library: file on disk declares schema {_refusedSchemaText}, which is newer than supported schema {GameLibrary.CurrentSchemaVersion}.");
+                    diagMessage = $"Cannot modify game library: file on disk declares schema {_refusedSchemaText}, which is newer than supported schema {GameLibrary.CurrentSchemaVersion}.";
+                    baselineError = new IncompatibleLibrarySchemaException(_refusedSchemaText, GameLibrary.CurrentSchemaVersion, diagMessage);
+                    isPreWriteUnreadableOrSchemaRefused = true;
+                    return false;
                 }
             }
+            else
+            {
+                preWriteExisted = false;
+            }
+
+            if (!_lastCommittedExisted)
+            {
+                if (!positivelyAbsent)
+                {
+                    diagMessage = $"Cannot modify game library: '{Path.GetFileName(_libraryFilePath)}' appeared on disk unexpectedly after store initialization.";
+                    baselineError = new InvalidOperationException(diagMessage);
+                    ActivateUncertainPersistenceLocked(diagMessage);
+                    return false;
+                }
+
+                return true;
+            }
+
+            if (positivelyAbsent || diskBytes == null)
+            {
+                diagMessage = $"Cannot modify game library: previously loaded or committed '{Path.GetFileName(_libraryFilePath)}' is missing on disk.";
+                baselineError = new InvalidOperationException(diagMessage);
+                ActivateUncertainPersistenceLocked(diagMessage);
+                return false;
+            }
+
+            if (_lastCommittedLibraryBytes == null || !diskBytes.AsSpan().SequenceEqual(_lastCommittedLibraryBytes))
+            {
+                diagMessage = $"Cannot modify game library: on-disk '{Path.GetFileName(_libraryFilePath)}' was modified outside the current store baseline.";
+                baselineError = new InvalidOperationException(diagMessage);
+                ActivateUncertainPersistenceLocked(diagMessage);
+                return false;
+            }
+
+            if (!_loadedFromBrokenFileRecovery && !IsValidCurrentSchemaLibraryJson(diskBytes))
+            {
+                diagMessage = $"Cannot modify game library: on-disk '{Path.GetFileName(_libraryFilePath)}' contains malformed or unparseable JSON.";
+                baselineError = new InvalidOperationException(diagMessage);
+                ActivateUncertainPersistenceLocked(diagMessage);
+                return false;
+            }
+
+            return true;
         }
 
         private void Load()
         {
-            if (File.Exists(_libraryFilePath))
+            if (!TryReadFileBytesOrConfirmAbsent(_libraryFilePath, out var rawBytes, out bool positivelyAbsent, out var readEx))
             {
-                var assessment = GameLibrarySchemaCompatibility.AssessFile(_libraryFilePath);
+                lock (_sync)
+                {
+                    _hasInaccessibleLibraryOnLoad = true;
+                    _inaccessibleLibraryReason = $"Cannot modify game library: existing library file could not be read on startup ({readEx?.GetType().Name}: {readEx?.Message}).";
+                }
+                Log($"GameLibraryStore: existing library file could not be accessed on startup: {readEx?.GetType().Name} - {readEx?.Message}");
+                return;
+            }
+
+            if (!positivelyAbsent && rawBytes != null)
+            {
+                var assessment = GameLibrarySchemaCompatibility.AssessJson(rawBytes);
                 if (assessment.IsRefused)
                 {
                     lock (_sync)
@@ -250,11 +1094,27 @@ namespace DXVKCompanion.Storage
                 Directory.CreateDirectory(_backupsDirectoryPath);
 
                 var result = TryLoadCurrentFormat();
-                if (result == LoadResult.Success || result == LoadResult.FutureSchema)
+                if (result == LoadResult.Success)
+                {
+                    lock (_sync)
+                    {
+                        _lastCommittedExisted = true;
+                        _lastCommittedLibraryBytes = rawBytes;
+                    }
+                    return;
+                }
+
+                if (result == LoadResult.FutureSchema)
                     return;
 
                 // A current-format file exists but is unreadable. Never silently
                 // fall back to stale legacy data. Preserve it first.
+                lock (_sync)
+                {
+                    _loadedFromBrokenFileRecovery = true;
+                    _lastCommittedExisted = true;
+                    _lastCommittedLibraryBytes = rawBytes;
+                }
                 TryPreserveBrokenCurrentFile();
                 Log($"GameLibraryStore: current library could not be loaded. Preserved a recovery copy.");
                 return;
@@ -329,78 +1189,6 @@ namespace DXVKCompanion.Storage
             }
         }
 
-        private void WriteAllLocked()
-        {
-            EnsureNotRefusedLocked();
-
-            Paths.EnsureDirectories();
-            Directory.CreateDirectory(_backupsDirectoryPath);
-
-            var library = new GameLibrary
-            {
-                SchemaVersion = GameLibrary.CurrentSchemaVersion,
-                Installations = _installations.Values
-                    .OrderBy(x => x.DisplayName, StringComparer.OrdinalIgnoreCase)
-                    .ThenBy(x => x.InstallationPath, StringComparer.OrdinalIgnoreCase)
-                    .ToList()
-            };
-
-            var json = JsonSerializer.Serialize(library, JsonOptions);
-            var tempPath = _libraryFilePath + ".tmp." + Guid.NewGuid().ToString("N");
-            bool committed = false;
-
-            try
-            {
-                if (CustomTempWriter != null)
-                {
-                    CustomTempWriter(tempPath, json);
-                }
-                else
-                {
-                    File.WriteAllText(tempPath, json);
-                }
-
-                if (CustomCommitReplace != null)
-                {
-                    CustomCommitReplace(tempPath, _libraryFilePath);
-                }
-                else
-                {
-                    if (File.Exists(_libraryFilePath))
-                    {
-                        File.Move(tempPath, _libraryFilePath, overwrite: true);
-                    }
-                    else
-                    {
-                        File.Move(tempPath, _libraryFilePath);
-                    }
-                }
-
-                committed = true;
-            }
-            finally
-            {
-                if (!committed)
-                {
-                    try
-                    {
-                        if (CustomTempCleaner != null)
-                        {
-                            CustomTempCleaner(tempPath);
-                        }
-                        else if (File.Exists(tempPath))
-                        {
-                            File.Delete(tempPath);
-                        }
-                    }
-                    catch
-                    {
-                        // Cleanup failure must not mask the primary operation.
-                    }
-                }
-            }
-        }
-
         private static void Log(string message)
         {
             try { Utils.Logger.Log(message); } catch { }
@@ -412,7 +1200,5 @@ namespace DXVKCompanion.Storage
             Success = 1,
             FutureSchema = 2
         }
-
-
     }
 }

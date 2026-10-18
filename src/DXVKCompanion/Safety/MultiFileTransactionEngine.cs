@@ -1,4 +1,5 @@
 using System.Text.Json;
+using DXVKCompanion.Storage;
 
 namespace DXVKCompanion.Safety;
 
@@ -19,6 +20,9 @@ public sealed record MultiFileTransactionFile
     public string? BackupRelativePath { get; init; }
     public string? ExpectedOriginalSha256 { get; init; }
     public string? ExpectedManagedSha256 { get; init; }
+    internal bool ReplaceExistingBackup { get; init; }
+    internal SafetyFileIdentity? ExpectedPriorBackupIdentity { get; init; }
+    internal bool UpdateOriginalSha256OnCommit { get; init; }
 }
 
 public sealed record MultiFileTransactionTestHooks
@@ -28,6 +32,7 @@ public sealed record MultiFileTransactionTestHooks
     public Action<int>? DuringRecovery { get; init; }
     internal Action<string, string, int>? AfterStageNativeBackup { get; init; }
     internal Action<string, string, int>? BeforePublishNativeBackup { get; init; }
+    internal Action<string, string, int>? AfterPublishNativeBackup { get; init; }
 }
 
 public sealed class MultiFileTransactionEngine
@@ -45,7 +50,12 @@ public sealed class MultiFileTransactionEngine
 
     public string TransactionStoreRoot => _transactionStoreRoot;
 
-    public SafetyTransactionResult Execute(MultiFileTransactionRequest request)
+    public SafetyTransactionResult Execute(MultiFileTransactionRequest request) =>
+        ExecuteWithCommitScope(request, commitOwnershipCallback: null);
+
+    internal SafetyTransactionResult ExecuteWithCommitScope(
+        MultiFileTransactionRequest request,
+        Func<IReadOnlyList<MultiFileTransactionFile>, OwnershipSaveResult>? commitOwnershipCallback)
     {
         ArgumentNullException.ThrowIfNull(request);
 
@@ -54,11 +64,13 @@ public sealed class MultiFileTransactionEngine
         var validated = new List<ValidatedFile>(request.Files.Count);
         var prepared = new List<PreparedFile>(request.Files.Count);
         var createdNativeBackups = new List<string>();
+        var replacedPriorBackups = new List<ReplacedBackupRecord>();
         var transactionsRoot = ResolveInsideRoot(_transactionStoreRoot, ".transactions");
         var operationRoot = ResolveInsideRoot(transactionsRoot, transactionId);
         var planPath = ResolveInsideRoot(operationRoot, "plan.json");
         var undoRoot = ResolveInsideRoot(operationRoot, "undo");
         var nativeBackupStagingRoot = ResolveInsideRoot(operationRoot, "native-backups");
+        var priorBackupsStagingRoot = ResolveInsideRoot(operationRoot, "prior-backups");
         var anyMutationAttempted = false;
         var lastAttemptedIndex = -1;
 
@@ -66,7 +78,7 @@ public sealed class MultiFileTransactionEngine
         {
             ValidateRequest(request);
 
-            // Phase 1: Validate all targets, sources, and restore baselines before writing any backup or undo artifact.
+            // Phase 1: Validate all targets, sources, and restore/replacement baselines before writing any backup or undo artifact.
             foreach (var file in request.Files)
             {
                 var targetPath = ResolveInsideRoot(request.InstallationRoot, file.RelativePath);
@@ -94,12 +106,34 @@ public sealed class MultiFileTransactionEngine
 
                 string? backupPath = null;
                 string? stagedNativeBackupPath = null;
+                string? priorBackupCopyPath = null;
                 SafetyFileIdentity? backupIdentity = null;
                 if ((request.Operation is TransactionOperation.Install or TransactionOperation.Update or TransactionOperation.Reapply)
                     && file.OriginalState == OriginalFileState.Existing)
                 {
                     backupPath = ResolveBackupPath(file.BackupRelativePath, transactionId, file.RelativePath);
                     stagedNativeBackupPath = ResolveInsideRoot(nativeBackupStagingRoot, file.RelativePath);
+
+                    if (file.ReplaceExistingBackup)
+                    {
+                        if (file.ExpectedPriorBackupIdentity is null || !file.ExpectedPriorBackupIdentity.IsValid)
+                        {
+                            return SafeFailure(transactionId, request.Operation, affected, $"Prior canonical backup identity is missing or invalid for baseline replacement: {file.RelativePath}");
+                        }
+
+                        if (!File.Exists(backupPath))
+                        {
+                            return SafeFailure(transactionId, request.Operation, affected, $"Prior canonical backup is unavailable for baseline replacement: {file.RelativePath}");
+                        }
+
+                        var currentPriorBackupIdentity = FileIdentity.Capture(backupPath);
+                        if (currentPriorBackupIdentity != file.ExpectedPriorBackupIdentity)
+                        {
+                            return SafeFailure(transactionId, request.Operation, affected, $"Prior canonical backup identity mismatch before baseline replacement: {file.RelativePath}");
+                        }
+
+                        priorBackupCopyPath = ResolveInsideRoot(priorBackupsStagingRoot, file.RelativePath);
+                    }
                 }
                 else if (request.Operation == TransactionOperation.Restore)
                 {
@@ -140,11 +174,12 @@ public sealed class MultiFileTransactionEngine
                     currentIdentity,
                     undoPath,
                     stagedNativeBackupPath,
+                    priorBackupCopyPath,
                     backupPath,
                     backupIdentity));
             }
 
-            // Phase 2: Capture per-operation undo copies in the isolated operation namespace and stage/publish missing native backups.
+            // Phase 2: Capture per-operation undo copies in the isolated operation namespace and stage/publish native backups.
             Directory.CreateDirectory(operationRoot);
 
             for (var index = 0; index < validated.Count; index++)
@@ -158,9 +193,15 @@ public sealed class MultiFileTransactionEngine
                     var undoIdentity = FileIdentity.Capture(undoPath!);
                     if (undoIdentity != item.PreOperationIdentity)
                     {
-                        CleanupOperationArtifacts(operationRoot, transactionsRoot);
-                        CleanupCreatedNativeBackups(createdNativeBackups);
-                        return SafeFailure(transactionId, request.Operation, affected, $"The pre-operation undo copy could not be verified: {item.File.RelativePath}");
+                        return FailPhase2WithBackupCompensation(
+                            transactionId,
+                            request.Operation,
+                            affected,
+                            operationRoot,
+                            transactionsRoot,
+                            createdNativeBackups,
+                            replacedPriorBackups,
+                            $"The pre-operation undo copy could not be verified: {item.File.RelativePath}");
                     }
                 }
 
@@ -169,7 +210,82 @@ public sealed class MultiFileTransactionEngine
                     && item.File.OriginalState == OriginalFileState.Existing)
                 {
                     var backupPath = item.BackupPath!;
-                    if (!File.Exists(backupPath))
+                    if (item.File.ReplaceExistingBackup)
+                    {
+                        var expectedPriorIdentity = item.File.ExpectedPriorBackupIdentity!;
+                        if (!File.Exists(backupPath) || FileIdentity.Capture(backupPath) != expectedPriorIdentity)
+                        {
+                            return FailPhase2WithBackupCompensation(
+                                transactionId,
+                                request.Operation,
+                                affected,
+                                operationRoot,
+                                transactionsRoot,
+                                createdNativeBackups,
+                                replacedPriorBackups,
+                                $"The prior canonical backup changed before staging replacement: {item.File.RelativePath}");
+                        }
+
+                        var priorCopyPath = item.PriorBackupCopyPath!;
+                        Directory.CreateDirectory(Path.GetDirectoryName(priorCopyPath)!);
+                        File.Copy(backupPath, priorCopyPath, overwrite: true);
+                        var priorCopyIdentity = FileIdentity.Capture(priorCopyPath);
+                        if (priorCopyIdentity != expectedPriorIdentity)
+                        {
+                            return FailPhase2WithBackupCompensation(
+                                transactionId,
+                                request.Operation,
+                                affected,
+                                operationRoot,
+                                transactionsRoot,
+                                createdNativeBackups,
+                                replacedPriorBackups,
+                                $"The prior canonical backup undo copy could not be verified: {item.File.RelativePath}");
+                        }
+
+                        var stagedBackupPath = item.StagedNativeBackupPath!;
+                        Directory.CreateDirectory(Path.GetDirectoryName(stagedBackupPath)!);
+                        File.Copy(item.TargetPath, stagedBackupPath, overwrite: true);
+                        _hooks.AfterStageNativeBackup?.Invoke(stagedBackupPath, backupPath, index);
+                        var stagedBackupIdentity = FileIdentity.Capture(stagedBackupPath);
+                        if (stagedBackupIdentity != item.PreOperationIdentity)
+                        {
+                            return FailPhase2WithBackupCompensation(
+                                transactionId,
+                                request.Operation,
+                                affected,
+                                operationRoot,
+                                transactionsRoot,
+                                createdNativeBackups,
+                                replacedPriorBackups,
+                                $"The replacement backup could not be verified: {item.File.RelativePath}");
+                        }
+
+                        _hooks.BeforePublishNativeBackup?.Invoke(stagedBackupPath, backupPath, index);
+                        Directory.CreateDirectory(Path.GetDirectoryName(backupPath)!);
+                        replacedPriorBackups.Add(new ReplacedBackupRecord(
+                            item.File.RelativePath,
+                            backupPath,
+                            priorCopyPath,
+                            expectedPriorIdentity));
+                        File.Move(stagedBackupPath, backupPath, overwrite: true);
+                        _hooks.AfterPublishNativeBackup?.Invoke(stagedBackupPath, backupPath, index);
+
+                        backupIdentity = FileIdentity.Capture(backupPath);
+                        if (backupIdentity != item.PreOperationIdentity)
+                        {
+                            return FailPhase2WithBackupCompensation(
+                                transactionId,
+                                request.Operation,
+                                affected,
+                                operationRoot,
+                                transactionsRoot,
+                                createdNativeBackups,
+                                replacedPriorBackups,
+                                $"The replacement backup could not be verified: {item.File.RelativePath}");
+                        }
+                    }
+                    else if (!File.Exists(backupPath))
                     {
                         var stagedBackupPath = item.StagedNativeBackupPath!;
                         Directory.CreateDirectory(Path.GetDirectoryName(stagedBackupPath)!);
@@ -178,9 +294,15 @@ public sealed class MultiFileTransactionEngine
                         var stagedBackupIdentity = FileIdentity.Capture(stagedBackupPath);
                         if (stagedBackupIdentity != item.PreOperationIdentity)
                         {
-                            CleanupOperationArtifacts(operationRoot, transactionsRoot);
-                            CleanupCreatedNativeBackups(createdNativeBackups);
-                            return SafeFailure(transactionId, request.Operation, affected, $"The backup could not be verified: {item.File.RelativePath}");
+                            return FailPhase2WithBackupCompensation(
+                                transactionId,
+                                request.Operation,
+                                affected,
+                                operationRoot,
+                                transactionsRoot,
+                                createdNativeBackups,
+                                replacedPriorBackups,
+                                $"The backup could not be verified: {item.File.RelativePath}");
                         }
 
                         _hooks.BeforePublishNativeBackup?.Invoke(stagedBackupPath, backupPath, index);
@@ -196,12 +318,19 @@ public sealed class MultiFileTransactionEngine
                         }
 
                         createdNativeBackups.Add(backupPath);
+                        _hooks.AfterPublishNativeBackup?.Invoke(stagedBackupPath, backupPath, index);
                         backupIdentity = FileIdentity.Capture(backupPath);
                         if (backupIdentity != item.PreOperationIdentity)
                         {
-                            CleanupOperationArtifacts(operationRoot, transactionsRoot);
-                            CleanupCreatedNativeBackups(createdNativeBackups);
-                            return SafeFailure(transactionId, request.Operation, affected, $"The backup could not be verified: {item.File.RelativePath}");
+                            return FailPhase2WithBackupCompensation(
+                                transactionId,
+                                request.Operation,
+                                affected,
+                                operationRoot,
+                                transactionsRoot,
+                                createdNativeBackups,
+                                replacedPriorBackups,
+                                $"The backup could not be verified: {item.File.RelativePath}");
                         }
                     }
                     else
@@ -250,6 +379,46 @@ public sealed class MultiFileTransactionEngine
             foreach (var item in prepared)
                 Verify(item, request.Operation);
 
+            if (commitOwnershipCallback is not null)
+            {
+                OwnershipSaveResult saveResult;
+                try
+                {
+                    saveResult = commitOwnershipCallback(request.Files);
+                }
+                catch (Exception callbackEx)
+                {
+                    saveResult = new OwnershipSaveResult(
+                        OwnershipPersistenceOutcome.Unknown,
+                        Exception: callbackEx,
+                        DiagnosticMessage: $"Unexpected exception in ownership commit callback ({callbackEx.GetType().Name}: {callbackEx.Message}).");
+                }
+
+                if (saveResult.Outcome == OwnershipPersistenceOutcome.Unknown)
+                {
+                    return new SafetyTransactionResult
+                    {
+                        TransactionId = transactionId,
+                        Operation = request.Operation,
+                        State = TransactionState.AttentionRequired,
+                        Outcome = TransactionOutcome.UnresolvedRecovery,
+                        Message = saveResult.DiagnosticMessage
+                            ?? saveResult.Exception?.Message
+                            ?? "Ownership metadata commit outcome could not be verified.",
+                        AffectedFiles = affected
+                    };
+                }
+
+                if (saveResult.Outcome == OwnershipPersistenceOutcome.ProvenNotCommitted)
+                {
+                    throw new IOException(
+                        saveResult.DiagnosticMessage
+                            ?? saveResult.Exception?.Message
+                            ?? "Ownership metadata commit did not complete.",
+                        saveResult.Exception);
+                }
+            }
+
             CleanupOperationArtifacts(operationRoot, transactionsRoot);
             return new SafetyTransactionResult
             {
@@ -264,9 +433,26 @@ public sealed class MultiFileTransactionEngine
         {
             if (!anyMutationAttempted)
             {
-                CleanupOperationArtifacts(operationRoot, transactionsRoot);
-                CleanupCreatedNativeBackups(createdNativeBackups);
-                return Abort(transactionId, request.Operation, affected, ex.Message);
+                try
+                {
+                    CompensateBackups(createdNativeBackups, replacedPriorBackups);
+                    CleanupOperationArtifacts(operationRoot, transactionsRoot);
+                    return replacedPriorBackups.Count > 0
+                        ? SafeFailure(transactionId, request.Operation, affected, ex.Message)
+                        : Abort(transactionId, request.Operation, affected, ex.Message);
+                }
+                catch (Exception backupRecoveryEx)
+                {
+                    return new SafetyTransactionResult
+                    {
+                        TransactionId = transactionId,
+                        Operation = request.Operation,
+                        State = TransactionState.AttentionRequired,
+                        Outcome = TransactionOutcome.UnresolvedRecovery,
+                        Message = $"{ex.Message} Backup compensation failed: {backupRecoveryEx.Message}",
+                        AffectedFiles = affected
+                    };
+                }
             }
 
             try
@@ -274,8 +460,8 @@ public sealed class MultiFileTransactionEngine
                 _hooks.BeforeRecovery?.Invoke(Path.GetFullPath(request.InstallationRoot));
                 RecoverAttempted(prepared, lastAttemptedIndex);
                 VerifyPreOperationState(prepared);
+                CompensateBackups(createdNativeBackups, replacedPriorBackups);
                 CleanupOperationArtifacts(operationRoot, transactionsRoot);
-                CleanupCreatedNativeBackups(createdNativeBackups);
                 return new SafetyTransactionResult
                 {
                     TransactionId = transactionId,
@@ -487,19 +673,83 @@ public sealed class MultiFileTransactionEngine
         }
     }
 
-    private void CleanupCreatedNativeBackups(IReadOnlyList<string> createdNativeBackups)
+    private SafetyTransactionResult FailPhase2WithBackupCompensation(
+        string transactionId,
+        TransactionOperation operation,
+        IReadOnlyList<string> affected,
+        string operationRoot,
+        string transactionsRoot,
+        IReadOnlyList<string> createdNativeBackups,
+        IReadOnlyList<ReplacedBackupRecord> replacedPriorBackups,
+        string message)
     {
-        foreach (var backupPath in createdNativeBackups)
+        try
         {
+            CompensateBackups(createdNativeBackups, replacedPriorBackups);
+            CleanupOperationArtifacts(operationRoot, transactionsRoot);
+            return SafeFailure(transactionId, operation, affected, message);
+        }
+        catch (Exception backupRecoveryEx)
+        {
+            return new SafetyTransactionResult
+            {
+                TransactionId = transactionId,
+                Operation = operation,
+                State = TransactionState.AttentionRequired,
+                Outcome = TransactionOutcome.UnresolvedRecovery,
+                Message = $"{message} Backup compensation failed: {backupRecoveryEx.Message}",
+                AffectedFiles = affected
+            };
+        }
+    }
+
+    private void CompensateBackups(
+        IReadOnlyList<string> createdNativeBackups,
+        IReadOnlyList<ReplacedBackupRecord> replacedPriorBackups)
+    {
+        for (var i = replacedPriorBackups.Count - 1; i >= 0; i--)
+        {
+            var replaced = replacedPriorBackups[i];
+            if (!File.Exists(replaced.PriorBackupCopyPath))
+            {
+                throw new IOException($"Prior canonical backup copy is unavailable during compensation: {replaced.RelativePath}");
+            }
+
+            var priorCopyIdentity = FileIdentity.Capture(replaced.PriorBackupCopyPath);
+            if (priorCopyIdentity != replaced.ExpectedPriorBackupIdentity)
+            {
+                throw new IOException($"Prior canonical backup copy failed identity verification during compensation: {replaced.RelativePath}");
+            }
+
+            Directory.CreateDirectory(Path.GetDirectoryName(replaced.BackupPath)!);
+            File.Copy(replaced.PriorBackupCopyPath, replaced.BackupPath, overwrite: true);
+            var restoredBackupIdentity = FileIdentity.Capture(replaced.BackupPath);
+            if (restoredBackupIdentity != replaced.ExpectedPriorBackupIdentity)
+            {
+                throw new IOException($"Restored canonical backup does not match prior backup identity: {replaced.RelativePath}");
+            }
+        }
+
+        for (var i = createdNativeBackups.Count - 1; i >= 0; i--)
+        {
+            var backupPath = createdNativeBackups[i];
+            if (File.Exists(backupPath))
+            {
+                File.Delete(backupPath);
+            }
+
+            if (File.Exists(backupPath))
+            {
+                throw new IOException($"Newly created native backup still exists after compensation deletion: {backupPath}");
+            }
+
             try
             {
-                if (File.Exists(backupPath))
-                    File.Delete(backupPath);
-
                 PruneEmptyParentDirectories(Path.GetDirectoryName(backupPath), _transactionStoreRoot);
             }
             catch
             {
+                // Directory pruning is best-effort after verified file removal.
             }
         }
     }
@@ -551,6 +801,12 @@ public sealed class MultiFileTransactionEngine
             AffectedFiles = affected
         };
 
+    private sealed record ReplacedBackupRecord(
+        string RelativePath,
+        string BackupPath,
+        string PriorBackupCopyPath,
+        SafetyFileIdentity ExpectedPriorBackupIdentity);
+
     private sealed record ValidatedFile(
         MultiFileTransactionFile File,
         string TargetPath,
@@ -560,6 +816,7 @@ public sealed class MultiFileTransactionEngine
         SafetyFileIdentity? PreOperationIdentity,
         string? UndoPath,
         string? StagedNativeBackupPath,
+        string? PriorBackupCopyPath,
         string? BackupPath,
         SafetyFileIdentity? BackupIdentity);
 

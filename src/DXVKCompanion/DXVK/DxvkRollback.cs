@@ -47,6 +47,18 @@ namespace DXVKCompanion.DXVK
                         installation = _gameLibraryStore.FindInstallationForExecutable(profile.ExePath)
                             ?? _gameLibraryStore.FindByInstallationPath(gameDir);
 
+                        if (!_gameLibraryStore.TryCheckCanModifyLibrary(out var storeRefusalReason))
+                        {
+                            LastRefusalReason = storeRefusalReason;
+                            if (installation != null)
+                            {
+                                installation.RestorationState = RestorationState.AttentionRequired;
+                                installation.LastRefusalReason = storeRefusalReason;
+                            }
+                            Logger.Log($"DxvkRollback: {storeRefusalReason}");
+                            return false;
+                        }
+
                         if (installation != null && installation.ConflictFlags != InstallationConflictFlags.None)
                         {
                             var conflictReason = $"Refusing rollback on {installation.DisplayName}; installation has conflict flags: {installation.ConflictFlags}.";
@@ -96,11 +108,30 @@ namespace DXVKCompanion.DXVK
                                     }
                                 }
 
+                                var preCandidateSnapshot = _gameLibraryStore.CreateSnapshot(installation);
                                 installation.RestorationState = RestorationState.Restored;
                                 installation.LastRefusalReason = null;
                                 installation.LastSeenUtc = DateTime.UtcNow;
-                                _gameLibraryStore.Save(installation);
-                                return true;
+
+                                var candidateSave = _gameLibraryStore.TrySaveWithOutcome(installation);
+                                if (candidateSave.Outcome == OwnershipPersistenceOutcome.Committed)
+                                {
+                                    return true;
+                                }
+
+                                LastRefusalReason = candidateSave.DiagnosticMessage
+                                    ?? candidateSave.Exception?.Message
+                                    ?? "Failed to persist already-restored installation state.";
+                                if (candidateSave.Outcome == OwnershipPersistenceOutcome.ProvenNotCommitted)
+                                {
+                                    _gameLibraryStore.RestoreSnapshot(installation, preCandidateSnapshot);
+                                }
+                                else
+                                {
+                                    installation.RestorationState = RestorationState.AttentionRequired;
+                                    installation.LastRefusalReason = LastRefusalReason;
+                                }
+                                return false;
                             }
 
                             var filesToRestore = new List<MultiFileTransactionFile>();
@@ -154,6 +185,9 @@ namespace DXVKCompanion.DXVK
 
                             if (filesToRestore.Count > 0)
                             {
+                                var preOperationSnapshot = _gameLibraryStore.CreateSnapshot(installation);
+                                _gameLibraryStore.CaptureCurrentLibraryBaseline(out var preOperationLibraryBytes, out bool preOperationLibraryExisted);
+
                                 var request = new MultiFileTransactionRequest
                                 {
                                     InstallationRoot = installation.InstallationPath,
@@ -161,25 +195,85 @@ namespace DXVKCompanion.DXVK
                                     Files = filesToRestore
                                 };
 
-                                var result = _transactionEngine.Execute(request);
+                                bool saveCallbackInvoked = false;
+                                OwnershipSaveResult lastSaveResult = new OwnershipSaveResult(
+                                    OwnershipPersistenceOutcome.Unknown,
+                                    DiagnosticMessage: "Ownership commit callback did not complete.");
+
+                                var result = _transactionEngine.ExecuteWithCommitScope(request, _ =>
+                                {
+                                    saveCallbackInvoked = true;
+                                    try
+                                    {
+                                        foreach (var mf in installation.ManagedFiles)
+                                        {
+                                            mf.CurrentState = ManagedFileState.Consistent;
+                                            mf.ManagedDxvkVersion = null;
+                                            mf.LastVerifiedUtc = DateTime.UtcNow;
+                                        }
+
+                                        installation.ManagedDxvkVersion = null;
+                                        installation.RestorationState = RestorationState.Restored;
+                                        installation.LastRefusalReason = null;
+                                        installation.LastSeenUtc = DateTime.UtcNow;
+
+                                        lastSaveResult = _gameLibraryStore.TrySaveWithOutcome(installation);
+                                        return lastSaveResult;
+                                    }
+                                    catch (Exception callbackEx)
+                                    {
+                                        string reason = $"Unexpected exception in ownership commit callback: {callbackEx.GetType().Name} - {callbackEx.Message}";
+                                        _gameLibraryStore.RecordUnexpectedCommitCallbackException(reason, installation);
+                                        lastSaveResult = new OwnershipSaveResult(
+                                            OwnershipPersistenceOutcome.Unknown,
+                                            Exception: callbackEx,
+                                            DiagnosticMessage: reason,
+                                            PreWriteBytes: preOperationLibraryBytes,
+                                            PreWriteExisted: preOperationLibraryExisted);
+                                        throw;
+                                    }
+                                });
+
                                 if (result.State != TransactionState.Committed || result.Outcome != TransactionOutcome.Success)
                                 {
                                     var reason = result.Message ?? $"Restore transaction failed ({result.State}/{result.Outcome})";
+                                    LastRefusalReason = reason;
+
+                                    if (result.State == TransactionState.AttentionRequired || result.Outcome == TransactionOutcome.UnresolvedRecovery)
+                                    {
+                                        if (saveCallbackInvoked && lastSaveResult.Outcome == OwnershipPersistenceOutcome.Unknown)
+                                        {
+                                            installation.RestorationState = RestorationState.AttentionRequired;
+                                            installation.LastRefusalReason = reason;
+                                        }
+                                        else
+                                        {
+                                            _gameLibraryStore.RestoreSnapshot(installation, preOperationSnapshot);
+                                            installation.RestorationState = RestorationState.AttentionRequired;
+                                            installation.LastRefusalReason = reason;
+
+                                            byte[]? expectedPreWriteBytes = saveCallbackInvoked ? lastSaveResult.PreWriteBytes : preOperationLibraryBytes;
+                                            bool expectedPreWriteExisted = saveCallbackInvoked ? lastSaveResult.PreWriteExisted : preOperationLibraryExisted;
+                                            _gameLibraryStore.TrySaveHealthAfterFailedCompensation(installation, expectedPreWriteBytes, expectedPreWriteExisted);
+
+                                            installation.RestorationState = RestorationState.AttentionRequired;
+                                            installation.LastRefusalReason = reason;
+                                        }
+
+                                        Logger.Log($"DxvkRollback: {reason}");
+                                        return false;
+                                    }
+
+                                    if (saveCallbackInvoked && lastSaveResult.Outcome == OwnershipPersistenceOutcome.ProvenNotCommitted)
+                                    {
+                                        _gameLibraryStore.RestoreSnapshot(installation, preOperationSnapshot);
+                                        Logger.Log($"DxvkRollback: {reason}");
+                                        return false;
+                                    }
+
+                                    _gameLibraryStore.RestoreSnapshot(installation, preOperationSnapshot);
                                     return RefuseRollback(installation, reason);
                                 }
-
-                                foreach (var mf in installation.ManagedFiles)
-                                {
-                                    mf.CurrentState = ManagedFileState.Consistent;
-                                    mf.ManagedDxvkVersion = null;
-                                    mf.LastVerifiedUtc = DateTime.UtcNow;
-                                }
-
-                                installation.ManagedDxvkVersion = null;
-                                installation.RestorationState = RestorationState.Restored;
-                                installation.LastRefusalReason = null;
-                                installation.LastSeenUtc = DateTime.UtcNow;
-                                _gameLibraryStore.Save(installation);
 
                                 Logger.Log($"DxvkRollback: successfully restored {filesToRestore.Count} files for {profile.ExeName} via safe transaction {result.TransactionId}.");
                             }
@@ -216,7 +310,14 @@ namespace DXVKCompanion.DXVK
                     {
                         installation.RestorationState = RestorationState.AttentionRequired;
                         installation.LastRefusalReason = reason;
-                        try { _gameLibraryStore.Save(installation); } catch { }
+                        try
+                        {
+                            if (!_gameLibraryStore.HasUncertainPersistence)
+                            {
+                                _gameLibraryStore.Save(installation);
+                            }
+                        }
+                        catch { }
                     }
                     return false;
                 }
@@ -229,7 +330,17 @@ namespace DXVKCompanion.DXVK
             LastRefusalReason = reason;
             installation.RestorationState = RestorationState.AttentionRequired;
             installation.LastRefusalReason = reason;
-            _gameLibraryStore.Save(installation);
+            try
+            {
+                if (!_gameLibraryStore.HasUncertainPersistence)
+                {
+                    _gameLibraryStore.Save(installation);
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"DxvkRollback: could not persist rollback refusal state: {ex.Message}");
+            }
             return false;
         }
 
