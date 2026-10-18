@@ -231,7 +231,9 @@ public sealed class PhaseCManualManagementTests
 
         // 2. Acceptance: If rollback/restore is attempted, the unrelated file is preserved and not deleted
         bool rollbackOk = await rollback.RestoreOriginalDllsAsync(profile);
-        Assert.True(rollbackOk); // Existing successful unmanaged no-op restore
+        Assert.False(rollbackOk);
+        Assert.NotNull(rollback.LastRefusalReason);
+        Assert.Contains("missing ownership", rollback.LastRefusalReason, StringComparison.OrdinalIgnoreCase);
         Assert.True(File.Exists(dxgiPath));
         Assert.Equal(unrelatedContent, File.ReadAllText(dxgiPath));
         Assert.True(File.Exists(d3d11Path));
