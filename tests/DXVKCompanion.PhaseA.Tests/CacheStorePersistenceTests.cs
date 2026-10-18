@@ -526,5 +526,64 @@ namespace DXVKCompanion.PhaseA.Tests
             // Attempt file is cleaned up if present
             Assert.False(File.Exists(store.AttemptFile));
         }
+
+        [Fact]
+        public void CacheStore_SaveCachedRelease_WhenDistinctCorruptBackupExists_PreservesPriorBackupAndCreatesUniqueBackup()
+        {
+            using var testDir = new SyntheticTestDirectory();
+            string cacheFile = Path.Combine(testDir.RootPath, "release-cache.json");
+
+            var store = new CacheStore(cacheFile);
+
+            string priorCorruptContent = "<<<PRIOR DISTINCT RECOVERY BYTES>>>";
+            File.WriteAllText(store.CorruptBackupFile, priorCorruptContent);
+
+            string newCorruptContent = "<<<NEW DISTINCT CORRUPT PRIMARY BYTES>>>";
+            File.WriteAllText(cacheFile, newCorruptContent);
+
+            var release = new ReleaseInfo { Version = "v2.5", DownloadUrl = "https://example.com/dxvk-2.5.tar.gz" };
+            store.SaveCachedRelease(release, "\"etag-25\"");
+
+            // Prior distinct backup remains completely immutable
+            Assert.True(File.Exists(store.CorruptBackupFile));
+            Assert.Equal(priorCorruptContent, File.ReadAllText(store.CorruptBackupFile));
+
+            // New corrupt primary is preserved in a unique additional backup file
+            string additionalBackup = store.CorruptBackupFile + ".1";
+            Assert.True(File.Exists(additionalBackup));
+            Assert.Equal(newCorruptContent, File.ReadAllText(additionalBackup));
+
+            // Primary cache file now contains valid new release
+            var loaded = store.LoadCachedRelease();
+            Assert.NotNull(loaded);
+            Assert.True(loaded.HasValidRelease);
+            Assert.Equal("v2.5", loaded.Release.Version);
+        }
+
+        [Fact]
+        public void CacheStore_SaveCachedRelease_WhenPreservationFails_LeavesPrimaryAndPriorBackupsUnchangedAndThrows()
+        {
+            using var testDir = new SyntheticTestDirectory();
+            string cacheFile = Path.Combine(testDir.RootPath, "release-cache.json");
+
+            var store = new CacheStore(cacheFile);
+
+            string corruptPrimaryContent = "<<<ONLY CORRUPT EVIDENCE - DO NOT CLOBBER>>>";
+            File.WriteAllText(cacheFile, corruptPrimaryContent);
+
+            // Induce backup-copy failure by creating a directory at the intended backup path
+            Directory.CreateDirectory(store.CorruptBackupFile);
+
+            var release = new ReleaseInfo { Version = "v2.5", DownloadUrl = "https://example.com/dxvk-2.5.tar.gz" };
+
+            // Save must throw and refuse to overwrite primary when preservation cannot complete
+            Assert.Throws<IOException>(() => store.SaveCachedRelease(release, "\"etag-25\""));
+
+            // Primary cache file is completely unchanged and contains original corrupt bytes
+            Assert.Equal(corruptPrimaryContent, File.ReadAllText(cacheFile));
+
+            // Attempt file is not created by SaveCachedRelease
+            Assert.False(File.Exists(store.AttemptFile));
+        }
     }
 }

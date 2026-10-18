@@ -129,3 +129,28 @@ Codex provided a grouped review ([PR #162 Comment](https://github.com/Tiflit/DXV
      - `CacheStore_RecordFailedAttempt_WhenExistingFileMalformed_PreservesFileWithoutOverwriting` and `CacheStore_SaveCachedRelease_WhenExistingFileMalformed_PreservesCorruptBackupAndWritesNewRelease` in `CacheStorePersistenceTests.cs`.
      - `DxvkGithubClient_FetchLatestReleaseAsync_WhenExistingCacheCorrupt_OnHttpFailure_PreservesCorruptFileAndThrottlesRepeatedAndReconstructedCalls` and `DxvkGithubClient_FetchLatestReleaseAsync_WhenExistingCacheCorrupt_OnHttp200_PreservesCorruptBackupAndWritesNewRelease` in `DxvkGithubClientTests.cs`.
 
+
+
+---
+
+### 5. Codex Delta Review & Final Integration Repairs (Session 1 Delta 2)
+
+Codex provided a focused delta review ([PR #162 Comment](https://github.com/Tiflit/DXVK-Companion/pull/162#issuecomment-6244051279)) with two remaining P2 items:
+
+1. **WinForms Owner-Thread Dispatcher Bootstrap**:
+   - `Program.cs` / `TrayApp.cs`: Previously, `Program.cs` instantiated `TrayApp` before `Application.Run()` without an explicit context, and `TrayApp` fell back to `new SynchronizationContext()`. On a fresh STA thread where `SynchronizationContext.Current` is initially null, this captured the generic context whose `Post` dispatches to thread pool workers rather than the WinForms UI thread message loop.
+   - *Fix*: In `Program.cs`, explicitly instantiated/installed `WindowsFormsSynchronizationContext` on the main STA thread before constructing `TrayApp`, and passed `uiContext` to `TrayApp`. In `TrayApp.cs`, captured `SynchronizationContext.Current is WindowsFormsSynchronizationContext` or constructed/installed `WindowsFormsSynchronizationContext` on the current thread, ensuring generic `SynchronizationContext` is never used for UI/store dispatching.
+   - *Regression Test*: Added `DailyReleaseCheck_TrayApp_DefaultBootstrap_MarshalsWorkerCallToOwnerStaThread` in `DailyReleaseCheckTests.cs`. Runs a fresh STA thread with `SynchronizationContext.Current = null`, instantiates `TrayApp` without injecting a context (default bootstrap), invokes `NotifyIfDxvkUpdateAvailableAsync` from a background worker thread, pumps `Application.DoEvents()`, and asserts that the notification decision and balloon dispatch executed strictly on the owner STA thread (`ownerThreadId == decisionExecutionThreadId != workerThreadId`).
+
+2. **Immutable Corrupt Recovery Preservation & Preservation Verification Before Overwrite**:
+   - `CacheStore.cs`:
+     - Previously, `PreserveCorruptFile()` overwrote any existing `_corruptFile` (`File.Copy(..., overwrite: true)`) and silently swallowed copy exceptions, allowing `SaveCachedRelease` to clobber the primary corrupt file if backup copy failed.
+     - *Fix*:
+       - If `_corruptFile` already exists with distinct bytes, it is preserved immutably and a unique additional backup file (`_corruptFile.1`, `_corruptFile.2`, etc.) is created.
+       - Verified preservation is required before replacing an unreadable primary. If preservation cannot complete (e.g. backup path is an existing directory, access denied, or verification fails), `PreserveCorruptFile()` throws `IOException`.
+       - In `SaveCachedRelease`, the exception halts execution before `CommitStagedJson`, leaving the primary unreadable file and prior backups completely intact.
+       - In `RecordFailedAttempt`, failed-attempt sidecar throttling in `_attemptFile` is still safely recorded without touching the primary file.
+   - *Regression Tests*:
+     - `CacheStore_SaveCachedRelease_WhenDistinctCorruptBackupExists_PreservesPriorBackupAndCreatesUniqueBackup` in `CacheStorePersistenceTests.cs`: verifies that prior distinct backups remain immutable and new unique backup files are created.
+     - `CacheStore_SaveCachedRelease_WhenPreservationFails_LeavesPrimaryAndPriorBackupsUnchangedAndThrows` in `CacheStorePersistenceTests.cs`: verifies that induced backup-copy failure throws and leaves the unreadable primary file completely intact with no blind overwrite.
+     - `DxvkGithubClient_FetchLatestReleaseAsync_WhenPreservationFails_LeavesPrimaryCorruptFileUntouched_AndRecordsThrottledAttempt` in `DxvkGithubClientTests.cs`: verifies that on HTTP 200 OK where preservation fails, the primary corrupt file is preserved untouched, the failed-attempt sidecar is persisted, and subsequent requests are throttled for 24h.

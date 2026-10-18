@@ -30,6 +30,11 @@ namespace DXVKCompanion
 
             ApplicationConfiguration.Initialize();
 
+            // Install and capture the actual Windows Forms owner-thread dispatcher before constructing TrayApp or starting background scheduling.
+            var uiContext = SynchronizationContext.Current as WindowsFormsSynchronizationContext 
+                ?? new WindowsFormsSynchronizationContext();
+            SynchronizationContext.SetSynchronizationContext(uiContext);
+
             // One shared HttpClient for every GitHub call and download in the app.
             var httpClient = new HttpClient();
             httpClient.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("DXVK-Companion", "1.0"));
@@ -58,7 +63,7 @@ namespace DXVKCompanion
             var dxvkManager = new DxvkManager(installer, rollback, github, profiles, gameLibraryStore);
 
             // UI
-            using var trayApp = new TrayApp(monitor, profiles, dxvkManager, classifier, settings, httpClient, gameLibraryStore, githubClient: github);
+            using var trayApp = new TrayApp(monitor, profiles, dxvkManager, classifier, settings, httpClient, gameLibraryStore, githubClient: github, syncContext: uiContext);
             Application.ApplicationExit += (_, _) => trayApp.Dispose();
 
             Application.Run();

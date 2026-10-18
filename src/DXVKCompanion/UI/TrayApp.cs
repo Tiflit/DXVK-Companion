@@ -60,9 +60,16 @@ namespace DXVKCompanion.UI
             _httpClient = httpClient;
             _gameLibraryStore = gameLibraryStore ?? new GameLibraryStore();
             _inspector = new ManagedFileInspector(_gameLibraryStore);
-
             _detector = new GameDetector();
-            _syncContext = syncContext ?? SynchronizationContext.Current ?? new SynchronizationContext();
+            _syncContext = syncContext
+                ?? (SynchronizationContext.Current is WindowsFormsSynchronizationContext wf ? wf : null)
+                ?? (SynchronizationContext.Current != null && SynchronizationContext.Current.GetType() != typeof(SynchronizationContext) ? SynchronizationContext.Current : null)
+                ?? new WindowsFormsSynchronizationContext();
+
+            if (SynchronizationContext.Current == null || SynchronizationContext.Current.GetType() == typeof(SynchronizationContext))
+            {
+                SynchronizationContext.SetSynchronizationContext(_syncContext);
+            }
 
             _trayIcon = new NotifyIcon
             {

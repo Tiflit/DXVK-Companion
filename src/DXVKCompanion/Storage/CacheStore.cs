@@ -130,11 +130,18 @@ namespace DXVKCompanion.Storage
             if (HasUnreadableCacheFile())
             {
                 // The cache file exists on disk but could not be parsed.
-                // Preserve the unreadable file's recoverable bytes in .corrupt,
+                // Attempt to preserve the unreadable file's recoverable bytes in .corrupt,
                 // and store the attempt timestamp in the attempt sidecar so that
                 // the corrupted file on disk is not overwritten, while throttle state
                 // is reliably persisted across repeated calls and client reconstruction.
-                PreserveCorruptFile();
+                try
+                {
+                    PreserveCorruptFile();
+                }
+                catch (Exception ex)
+                {
+                    Logger.Log($"CacheStore: failed to preserve corrupt cache file during failed attempt recording: {ex.Message}");
+                }
 
                 var attemptRecord = new CachedRelease
                 {
@@ -173,19 +180,53 @@ namespace DXVKCompanion.Storage
 
         private void PreserveCorruptFile()
         {
-            try
+            if (!File.Exists(_cacheFile))
+                return;
+
+            byte[] primaryBytes = File.ReadAllBytes(_cacheFile);
+
+            if (Directory.Exists(_corruptFile))
             {
-                if (File.Exists(_cacheFile))
-                {
-                    if (!File.Exists(_corruptFile) || File.ReadAllText(_corruptFile) != File.ReadAllText(_cacheFile))
-                    {
-                        File.Copy(_cacheFile, _corruptFile, overwrite: true);
-                    }
-                }
+                throw new IOException($"Cannot preserve corrupt cache file: target path '{_corruptFile}' is an existing directory.");
             }
-            catch (Exception ex)
+
+            if (!File.Exists(_corruptFile))
             {
-                Logger.Log($"CacheStore: failed to preserve corrupt cache file: {ex.Message}");
+                File.Copy(_cacheFile, _corruptFile, overwrite: false);
+                if (!File.Exists(_corruptFile) || !File.ReadAllBytes(_corruptFile).AsSpan().SequenceEqual(primaryBytes))
+                {
+                    throw new IOException($"Failed to verify corrupt backup file preservation at '{_corruptFile}'.");
+                }
+                return;
+            }
+
+            // _corruptFile exists as a file. Check if it already contains the identical bytes.
+            byte[] existingBytes = File.ReadAllBytes(_corruptFile);
+            if (existingBytes.AsSpan().SequenceEqual(primaryBytes))
+            {
+                // Already preserved identically in _corruptFile.
+                return;
+            }
+
+            // _corruptFile contains different earlier recovery bytes. Keep it immutable!
+            // Find a unique additional recovery filename that does not exist.
+            int suffix = 1;
+            string targetPath = $"{_corruptFile}.{suffix}";
+            while (File.Exists(targetPath) || Directory.Exists(targetPath))
+            {
+                if (File.Exists(targetPath) && File.ReadAllBytes(targetPath).AsSpan().SequenceEqual(primaryBytes))
+                {
+                    // Already preserved identically in targetPath.
+                    return;
+                }
+                suffix++;
+                targetPath = $"{_corruptFile}.{suffix}";
+            }
+
+            File.Copy(_cacheFile, targetPath, overwrite: false);
+            if (!File.Exists(targetPath) || !File.ReadAllBytes(targetPath).AsSpan().SequenceEqual(primaryBytes))
+            {
+                throw new IOException($"Failed to verify corrupt backup file preservation at '{targetPath}'.");
             }
         }
 

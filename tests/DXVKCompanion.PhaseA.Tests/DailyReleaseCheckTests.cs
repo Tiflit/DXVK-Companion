@@ -664,6 +664,106 @@ namespace DXVKCompanion.PhaseA.Tests
         }
 
         [Fact]
+        public void DailyReleaseCheck_TrayApp_DefaultBootstrap_MarshalsWorkerCallToOwnerStaThread()
+        {
+            Exception? threadException = null;
+            var staThread = new Thread(() =>
+            {
+                try
+                {
+                    // Ensure fresh STA thread starts with no pre-existing ambient synchronization context
+                    SynchronizationContext.SetSynchronizationContext(null);
+
+                    int ownerThreadId = Environment.CurrentManagedThreadId;
+                    int? decisionExecutionThreadId = null;
+                    int? workerCallingThreadId = null;
+
+                    using var testDir = new SyntheticTestDirectory();
+                    string profilesFile = Path.Combine(testDir.RootPath, "profiles.json");
+                    string libFile = Path.Combine(testDir.RootPath, "library.json");
+                    string settingsFile = Path.Combine(testDir.RootPath, "settings.json");
+                    string cacheFile = Path.Combine(testDir.RootPath, "release-cache.json");
+
+                    var profiles = new ProfileStore(profilesFile);
+                    var libStore = new GameLibraryStore(libFile);
+                    var settings = SettingsStore.Load(settingsFile);
+
+                    var exitHandler = new ProcessExitHandler();
+                    var scanner = new ModuleScanner();
+                    var peParser = new PeParser();
+                    var classifier = new ApiClassifier(scanner, peParser);
+                    var monitor = new ProcessMonitor(new GameDetector(), exitHandler, classifier, libStore);
+
+                    var fileUtils = new FileUtils();
+                    var txEngine = new MultiFileTransactionEngine(Path.Combine(testDir.RootPath, "backups"));
+                    var handler = new RecordingHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK));
+                    using var httpClient = new HttpClient(handler);
+                    var installer = new DxvkInstaller(httpClient, txEngine, libStore, null, fileUtils);
+                    var rollback = new DxvkRollback(txEngine, libStore, fileUtils);
+                    var cacheStore = new CacheStore(cacheFile);
+                    var github = new DxvkGithubClient(httpClient, cacheStore);
+                    var dxvk = new DxvkManager(installer, rollback, github, profiles, libStore);
+
+                    // Register game with older Dxvk version so update is detected as available
+                    var game = profiles.GetOrCreate(@"C:\Games\Skyrim\SkyrimSE.exe");
+                    game.DxvkEnabled = true;
+                    game.Api = GraphicsApi.DX11;
+                    game.DxvkVersion = "v2.4";
+                    profiles.Save(game);
+
+                    // Default bootstrap: construct TrayApp without injected syncContext on the fresh STA thread
+                    using var trayApp = new TrayApp(
+                        monitor, profiles, dxvk, classifier, settings, httpClient,
+                        gameLibraryStore: libStore,
+                        githubClient: github);
+
+                    trayApp.CustomBalloonNotifier = (title, msg) =>
+                    {
+                        decisionExecutionThreadId = Environment.CurrentManagedThreadId;
+                    };
+
+                    // Invoke notification check from a background worker thread
+                    var workerTask = Task.Run(async () =>
+                    {
+                        workerCallingThreadId = Environment.CurrentManagedThreadId;
+                        return await trayApp.NotifyIfDxvkUpdateAvailableAsync(new ReleaseInfo { Version = "v2.5" });
+                    });
+
+                    // Pump the Windows message loop on the STA owner thread until the marshaled callback executes
+                    var sw = System.Diagnostics.Stopwatch.StartNew();
+                    while (!workerTask.IsCompleted && sw.ElapsedMilliseconds < 5000)
+                    {
+                        System.Windows.Forms.Application.DoEvents();
+                        Thread.Sleep(10);
+                    }
+
+                    Assert.True(workerTask.IsCompleted, "Worker notification task did not complete within timeout.");
+                    bool notified = workerTask.GetAwaiter().GetResult();
+
+                    Assert.True(notified);
+                    Assert.NotNull(workerCallingThreadId);
+                    Assert.NotNull(decisionExecutionThreadId);
+                    Assert.NotEqual(ownerThreadId, workerCallingThreadId.Value);
+                    Assert.Equal(ownerThreadId, decisionExecutionThreadId.Value);
+                }
+                catch (Exception ex)
+                {
+                    threadException = ex;
+                }
+            });
+
+            staThread.SetApartmentState(ApartmentState.STA);
+            staThread.Start();
+            bool joined = staThread.Join(10000);
+
+            Assert.True(joined, "STA thread timed out.");
+            if (threadException != null)
+            {
+                throw new AggregateException("Fresh STA default bootstrap test failed", threadException);
+            }
+        }
+
+        [Fact]
         public async Task DailyReleaseCheck_DxvkGithubClient_TokenCancellation_AbortsBlockedHttpRequest()
         {
             using var testDir = new SyntheticTestDirectory();
