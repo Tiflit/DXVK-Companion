@@ -883,7 +883,8 @@ public sealed class OperationExclusionBoundaryTests
         var gameDir = Path.Combine(tempDir.RootPath, "Game");
         Directory.CreateDirectory(gameDir);
         var installation = libraryStore.GetOrCreateInstallation(gameDir, "Game");
-        installation.LastCancelledAction = "Install";
+        var cancelledAction = Models.PendingAction.Install("2.5", "Cancelled by user");
+        installation.LastCancelledAction = cancelledAction;
         installation.LastCancellationReason = "Cancelled by user";
         installation.LastCancellationOutcome = "Cancelled";
         installation.LastRefusalReason = "Cancelled pending action";
@@ -897,7 +898,9 @@ public sealed class OperationExclusionBoundaryTests
         manager.ClearCancelledState(installation);
 
         // Assert: live cancellation fields are strictly preserved
-        Assert.Equal("Install", installation.LastCancelledAction);
+        Assert.NotNull(installation.LastCancelledAction);
+        Assert.Equal(cancelledAction.Type, installation.LastCancelledAction.Type);
+        Assert.Equal(cancelledAction.TargetDxvkVersion, installation.LastCancelledAction.TargetDxvkVersion);
         Assert.Equal("Cancelled by user", installation.LastCancellationReason);
         Assert.Equal("Cancelled", installation.LastCancellationOutcome);
         Assert.Equal("Cancelled pending action", installation.LastRefusalReason);
@@ -1005,11 +1008,13 @@ public sealed class OperationExclusionBoundaryTests
         using var compProfileLease = coordinator.TryAcquireStoreLease(profilesPath, TimeSpan.FromMilliseconds(500));
         Assert.NotNull(compProfileLease);
 
-        // Act: QueueOrApplyAsync called while profile lease is held
-        bool result = await manager.QueueOrApplyAsync(profile, new ReleaseInfo { Version = "2.5" });
+        // Act: manager entry points called while profile lease is held
+        var actionResult = await manager.RequestEnableByPathAsync(profile, "2.5");
+        bool enableResult = await manager.EnableDxvkAsync(profile, "2.5");
 
         // Assert: refused, live state untouched
-        Assert.False(result);
+        Assert.Equal(DxvkActionResult.Failed, actionResult);
+        Assert.False(enableResult);
         Assert.Null(installation.PendingAction);
         Assert.Equal(preProfileBytes, File.ReadAllBytes(profilesPath));
         Assert.Equal(preLibraryBytes, File.ReadAllBytes(storePath));

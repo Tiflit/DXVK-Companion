@@ -315,7 +315,7 @@
        - Added `DxvkManager_UpdateAvailable_WhenProfileStoreStale_DoesNotMutateLiveProfileOrInstallation`.
   3. **E3 / D2 (Profile Store Contention & Reverse-Order Store Acquisition Deadlock Prevention):**
      - *Implementation & Regressions:*
-       - In `OperationExclusionBoundaryTests.cs`, added `DxvkManager_WhenCompetingProfileLeaseHeld_QueueOrApplyRefusesAndLeavesLiveStateUntouched` verifying that holding a lease on `_profiles.ProfilesFile` blocks `QueueOrApplyAsync` without mutating live state.
+       - In `OperationExclusionBoundaryTests.cs`, added `DxvkManager_WhenCompetingProfileLeaseHeld_QueueOrApplyRefusesAndLeavesLiveStateUntouched` verifying that holding a lease on `_profiles.ProfilesFile` blocks manager entry points (`RequestEnableByPathAsync`, `EnableDxvkAsync`) without mutating live state.
        - In `OperationLeaseCoordinatorTests.cs`, added `OperationScope_ReverseStoreOrdering_AcquiresDeterministicallyWithoutDeadlock` proving configured store paths provided in reverse alphabetical order are sorted deterministically and acquired without deadlock.
   4. **E5 / D6 (Bounded Cleanup, Aggregated Task Drainage & Journal Retraction):**
      - *Journal Correction / Retraction:* The claim in Section 6.G.5 that an inclusive 20s overall budget was fully enforced across all paths was incomplete. Process cleanup did not have a dedicated reserved allocation within the 20s budget, and process exits were not universally bounded.
