@@ -244,7 +244,7 @@ namespace DXVKCompanion.Safety
                         }
 
                         var currentStartTime = _startTimeResolver != null ? _startTimeResolver(process) : process.StartTime;
-                        if (currentStartTime != initialStartTime)
+                        if (Math.Abs((currentStartTime - initialStartTime).TotalMilliseconds) > 50)
                         {
                             candidateAccessDenied = true;
                             continue;

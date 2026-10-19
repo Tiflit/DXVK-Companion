@@ -71,7 +71,7 @@ namespace DXVKCompanion.DXVK
                 string authoritativeRoot = existingInstallation != null && !string.IsNullOrWhiteSpace(existingInstallation.InstallationPath)
                     ? existingInstallation.InstallationPath
                     : GameInstallation.NormalizeInstallationPath(rawDir);
-                string gameDir = authoritativeRoot;
+                string gameDir = rawDir;
 
                 if (leaseToken != null)
                 {

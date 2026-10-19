@@ -92,7 +92,9 @@ namespace DXVKCompanion.Safety
                 }
 
                 success = true;
-                return new CompositeOperationLease(targetLease, acquiredStoreLeases);
+                return acquiredStoreLeases.Count > 0
+                    ? new CompositeOperationLease(targetLease, acquiredStoreLeases)
+                    : targetLease;
             }
             finally
             {
@@ -174,7 +176,9 @@ namespace DXVKCompanion.Safety
                 }
 
                 success = true;
-                return new CompositeOperationLease(targetLease, acquiredStoreLeases);
+                return acquiredStoreLeases.Count > 0
+                    ? new CompositeOperationLease(targetLease, acquiredStoreLeases)
+                    : targetLease;
             }
             finally
             {
@@ -249,7 +253,7 @@ namespace DXVKCompanion.Safety
                         lockFilePath,
                         FileMode.OpenOrCreate,
                         FileAccess.ReadWrite,
-                        FileShare.Read,
+                        FileShare.Read | FileShare.Delete,
                         bufferSize: 4096,
                         FileOptions.DeleteOnClose);
 
@@ -328,7 +332,7 @@ namespace DXVKCompanion.Safety
                         lockFilePath,
                         FileMode.OpenOrCreate,
                         FileAccess.ReadWrite,
-                        FileShare.Read,
+                        FileShare.Read | FileShare.Delete,
                         bufferSize: 4096,
                         FileOptions.DeleteOnClose);
 
@@ -394,29 +398,30 @@ namespace DXVKCompanion.Safety
                         continue;
                     }
 
-                    try
+                    for (int attempt = 0; attempt < 3; attempt++)
                     {
-                        using var readStream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-                        using var reader = new StreamReader(readStream, System.Text.Encoding.UTF8);
-                        string otherPath = reader.ReadToEnd().Trim();
-                        if (!string.IsNullOrEmpty(otherPath))
+                        try
                         {
-                            if (OperationResourceIdentity.PathEquals(myCanonicalPath, otherPath) ||
-                                OperationResourceIdentity.IsPathInside(myCanonicalPath, otherPath) ||
-                                OperationResourceIdentity.IsPathInside(otherPath, myCanonicalPath))
+                            using var readStream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                            using var reader = new StreamReader(readStream, System.Text.Encoding.UTF8);
+                            string otherPath = reader.ReadToEnd().Trim();
+                            if (!string.IsNullOrEmpty(otherPath))
                             {
-                                return true;
+                                if (OperationResourceIdentity.PathEquals(myCanonicalPath, otherPath) ||
+                                    OperationResourceIdentity.IsPathInside(myCanonicalPath, otherPath) ||
+                                    OperationResourceIdentity.IsPathInside(otherPath, myCanonicalPath))
+                                {
+                                    return true;
+                                }
+                                break;
                             }
                         }
-                    }
-                    catch (IOException)
-                    {
-                        // File currently held/written exclusively by another process
-                        return true;
-                    }
-                    catch
-                    {
-                        // File may have been deleted concurrently
+                        catch
+                        {
+                            // File may be in middle of atomic creation or deletion
+                        }
+
+                        Thread.Sleep(5);
                     }
                 }
             }
