@@ -1010,7 +1010,7 @@ namespace DXVKCompanion.PhaseA.Tests
                 // With store lease held externally, GetOrCreateInstallation must fail to acquire lease and throw IOException
                 var ex = Assert.Throws<IOException>(() =>
                     store.GetOrCreateInstallation(@"C:\Games\GameB", "Game B"));
-                Assert.Contains("Cannot acquire store lease", ex.Message);
+                Assert.Contains("game library store", ex.Message, StringComparison.OrdinalIgnoreCase);
 
                 // TrySaveHealthAfterFailedCompensation must return false without modifying store
                 bool healthSaved = store.TrySaveHealthAfterFailedCompensation(

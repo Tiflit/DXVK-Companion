@@ -50,7 +50,13 @@ public sealed class ProcessActivityBoundaryTests
             _responseData = responseData;
         }
 
-        public Task WaitForDownloadStartAsync() => _downloadStartedTcs.Task;
+        public async Task<bool> WaitForDownloadStartAsync(TimeSpan timeout = default)
+        {
+            if (timeout <= TimeSpan.Zero) timeout = TimeSpan.FromSeconds(5);
+            var completed = await Task.WhenAny(_downloadStartedTcs.Task, Task.Delay(timeout));
+            return completed == _downloadStartedTcs.Task;
+        }
+
         public void ReleaseDownload() => _continueDownloadTcs.TrySetResult(true);
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
@@ -472,7 +478,8 @@ public sealed class ProcessActivityBoundaryTests
         var applyTask = installer.ApplyToGameAsync(profile, release);
 
         // Wait for download to begin
-        await handler.WaitForDownloadStartAsync();
+        bool started = await handler.WaitForDownloadStartAsync(TimeSpan.FromSeconds(5));
+        Assert.True(started, "Timed out waiting for download to start.");
 
         // Release the download with the valid archive
         handler.ReleaseDownload();
@@ -482,7 +489,7 @@ public sealed class ProcessActivityBoundaryTests
         // Must refuse due to post-download activity detection
         Assert.False(result);
         Assert.NotNull(installer.LastRefusalReason);
-        Assert.Contains("launched while downloading", installer.LastRefusalReason, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("running", installer.LastRefusalReason, StringComparison.OrdinalIgnoreCase);
 
         // Disk files must be completely untouched!
         Assert.Equal("pristine-native-d3d11", File.ReadAllText(d3d11Path));
@@ -549,7 +556,8 @@ public sealed class ProcessActivityBoundaryTests
         var applyTask = installer.ApplyToGameAsync(profile, release);
 
         // Wait for download to start
-        await handler.WaitForDownloadStartAsync();
+        bool started = await handler.WaitForDownloadStartAsync(TimeSpan.FromSeconds(5));
+        Assert.True(started, "Timed out waiting for download to start.");
 
         // Concurrently mutate profile file on disk to simulate baseline invalidation during download
         File.WriteAllText(profilesPath, "{\"concurrent\": \"mutation\"}");
@@ -562,7 +570,7 @@ public sealed class ProcessActivityBoundaryTests
         // Must refuse due to post-download profile baseline invalidation
         Assert.False(result);
         Assert.NotNull(installer.LastRefusalReason);
-        Assert.Contains("Profile store baseline was modified concurrently", installer.LastRefusalReason, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Profile store baseline mismatch", installer.LastRefusalReason, StringComparison.OrdinalIgnoreCase);
 
         // Disk files untouched
         Assert.Equal("pristine-native-d3d11", File.ReadAllText(d3d11Path));

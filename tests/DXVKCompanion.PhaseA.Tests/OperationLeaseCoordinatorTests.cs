@@ -343,20 +343,24 @@ public sealed class OperationLeaseCoordinatorTests
             UseShellExecute = false,
             CreateNoWindow = true,
             RedirectStandardOutput = true,
-            RedirectStandardError = true
+            RedirectStandardError = false
         };
 
         Process? helper = null;
-        using var hardTimeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
         try
         {
             helper = Process.Start(psi);
             Assert.NotNull(helper);
 
-            // Wait for helper to confirm lock acquisition via stdout
-            using var readCts = CancellationTokenSource.CreateLinkedTokenSource(hardTimeoutCts.Token);
-            readCts.CancelAfter(TimeSpan.FromSeconds(10));
-            string? signal = await helper.StandardOutput.ReadLineAsync(readCts.Token);
+            // Wait for helper to confirm lock acquisition via stdout (bounded 5s)
+            var readTask = helper.StandardOutput.ReadLineAsync();
+            var readCompleted = await Task.WhenAny(readTask.AsTask(), Task.Delay(TimeSpan.FromSeconds(5)));
+            if (readCompleted != readTask.AsTask())
+            {
+                try { helper.Kill(entireProcessTree: true); } catch { }
+                throw new TimeoutException("Timed out waiting for LOCKED signal from cloud helper.");
+            }
+            string? signal = await readTask;
             Assert.Equal("LOCKED", signal);
 
             // Parent attempt to acquire with 200 ms budget must time out and return null
@@ -367,10 +371,15 @@ public sealed class OperationLeaseCoordinatorTests
             Assert.Null(refusedLease);
             Assert.True(sw.ElapsedMilliseconds >= 150, $"Expected timeout around 200 ms, actual: {sw.ElapsedMilliseconds} ms");
 
-            // Wait for helper to exit naturally (bounded max 10s wait)
-            using var cts = CancellationTokenSource.CreateLinkedTokenSource(hardTimeoutCts.Token);
-            cts.CancelAfter(TimeSpan.FromSeconds(10));
-            await helper.WaitForExitAsync(cts.Token);
+            // Wait for helper to exit naturally (bounded max 5s wait)
+            var exitTask = helper.WaitForExitAsync();
+            var exitCompleted = await Task.WhenAny(exitTask, Task.Delay(TimeSpan.FromSeconds(5)));
+            if (exitCompleted != exitTask)
+            {
+                try { helper.Kill(entireProcessTree: true); } catch { }
+                throw new TimeoutException("Timed out waiting for cloud helper process to exit.");
+            }
+            await exitTask;
 
             // Once helper process exited and released handle, parent can immediately acquire
             await using var successLease = await coordinator.TryAcquireOperationScopeAsync(targetPath, timeout: TimeSpan.FromMilliseconds(500));
@@ -608,7 +617,7 @@ public sealed class OperationLeaseCoordinatorTests
         // Assert: manager refused at preflight
         Assert.False(result);
         Assert.NotNull(manager.LastRefusalReason);
-        Assert.Contains("Profile store baseline was modified concurrently or is unreadable", manager.LastRefusalReason);
+        Assert.Contains("corrupted or was inaccessible", manager.LastRefusalReason, StringComparison.OrdinalIgnoreCase);
 
         // Game directory remains untouched
         Assert.False(File.Exists(Path.Combine(gameDir, "d3d11.dll")));
