@@ -225,3 +225,19 @@
      - *Fix:* Replaced fixed 3-attempt loop with `while (sw.Elapsed < remainingBudget && !ct.IsCancellationRequested)` loop, checking `!File.Exists(file)` or catching `FileNotFoundException`/`DirectoryNotFoundException` to proceed immediately once transient unlinking completes, while preserving fail-closed behavior (`return true`) if the remaining budget expires on persistent unreadable files.
 - **Scope & API Surface Check:** All modified files remain strictly within declared Issue #178 allowed paths (`OperationLeaseCoordinator.cs`, `OperationLeaseCoordinatorTests.cs`, and this journal). Zero public API changes. Strictly 0 host test executions.
 
+### F. Resolution of Cloud CI Run 39297982037 Test Failure (Final Single Failure)
+- **Analysis:** Cloud CI run `39297982037` achieved 950 passed, 0 skipped, and only 1 failed out of 951 tests (`DXVKCompanion.PhaseATests.RestoreBackupIdentityVerificationTests.Restore_MissingBackup_RefusesSafely [901 ms]`).
+- **Root Cause:**
+  1. In `Restore_MissingBackup_RefusesSafely`, `installer.ApplyToGameAsync` installs DXVK and disposes its operation lease. The target lock stream was created with `FileOptions.DeleteOnClose`.
+  2. The test immediately invokes `rollback.RestoreOriginalDllsAsync`, which attempts to acquire the operation scope on the same installation root and library store via `OperationLeaseCoordinator.Default`.
+  3. When `HasConflictingTargetLockAsync` / `Sync` scanned `CoordinationDirectory`, other candidate files from concurrent test suites or the preceding operation undergoing OS `DeleteOnClose` unlinking threw `UnauthorizedAccessException` (`STATUS_DELETE_PENDING` -> Win32 `ERROR_ACCESS_DENIED`).
+  4. The candidate inspection while loop iterated against the full `remainingBudget` (500 ms) with no per-candidate limit. A candidate file could consume the entire 500 ms caller budget and return `true` (false-positive conflict). Consequently, `TryAcquireOperationScopeAsync` returned `null`, causing `RestoreOriginalDllsAsync` to exit at line 97 before calling `_transactionEngine.ExecuteWithCommitScope`, leaving `installation.RestorationState` as `Managed` instead of transitioning to `AttentionRequired`.
+  5. Furthermore, in `TryAcquireFileLockAsync` / `Sync`, if an initial open threw transient `UnauthorizedAccessException` before succeeding on retry, `lastAcquisitionException` was not cleared, potentially polluting `LastAcquisitionError`.
+- **Fix:**
+  1. In `OperationLeaseCoordinator.TryAcquireFileLockAsync` and `TryAcquireFileLockSync`: reset `lastAcquisitionException = null` immediately upon successful `FileStream` creation.
+  2. In `OperationLeaseCoordinator.HasConflictingTargetLockAsync` and `HasConflictingTargetLockSync`:
+     - Bounded per-candidate inspection to a maximum of 50 ms (`var fileBudgetMs = Math.Min(50, Math.Max(10, (int)(remainingBudget - sw.Elapsed).TotalMilliseconds))`) preventing any single candidate from starving the caller's acquisition budget.
+     - Discriminated `UnauthorizedAccessException` as `deletePendingObserved = true` because active locks always grant `FileShare.Read` and `FileShare.Delete`, so `UnauthorizedAccessException` on NTFS exclusively denotes a closed handle in `STATUS_DELETE_PENDING`.
+     - In post-loop resolution, if a candidate was delete-pending (`deletePendingObserved`) or deleted (`!File.Exists(file)`), it is safely skipped as non-conflicting, while real 0-byte publication contention (e.g. `dummyLockPath`) continues to fail-closed as conflict (`return true`).
+- **Scope & API Surface Check:** All modified files remain strictly within declared Issue #178 allowed paths (`OperationLeaseCoordinator.cs` and this journal). Zero public API changes. Strictly 0 host test executions.
+

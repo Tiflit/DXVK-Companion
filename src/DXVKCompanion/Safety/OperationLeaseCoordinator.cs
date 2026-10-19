@@ -259,6 +259,7 @@ namespace DXVKCompanion.Safety
                         bufferSize: 4096,
                         FileOptions.DeleteOnClose);
 
+                    lastAcquisitionException = null;
                     byte[] pathBytes = System.Text.Encoding.UTF8.GetBytes(canonicalPath);
                     stream.SetLength(0);
                     stream.Write(pathBytes, 0, pathBytes.Length);
@@ -354,6 +355,7 @@ namespace DXVKCompanion.Safety
                         bufferSize: 4096,
                         FileOptions.DeleteOnClose);
 
+                    lastAcquisitionException = null;
                     byte[] pathBytes = System.Text.Encoding.UTF8.GetBytes(canonicalPath);
                     stream.SetLength(0);
                     stream.Write(pathBytes, 0, pathBytes.Length);
@@ -445,8 +447,12 @@ namespace DXVKCompanion.Safety
                         continue;
                     }
 
+                    var fileBudgetMs = Math.Min(50, Math.Max(10, (int)(remainingBudget - sw.Elapsed).TotalMilliseconds));
+                    var fileSw = Stopwatch.StartNew();
                     bool fileProcessed = false;
-                    while (sw.Elapsed < remainingBudget && !ct.IsCancellationRequested)
+                    bool deletePendingObserved = false;
+
+                    while (fileSw.ElapsedMilliseconds < fileBudgetMs && sw.Elapsed < remainingBudget && !ct.IsCancellationRequested)
                     {
                         if (!File.Exists(file))
                         {
@@ -481,12 +487,19 @@ namespace DXVKCompanion.Safety
                             fileProcessed = true;
                             break;
                         }
+                        catch (UnauthorizedAccessException)
+                        {
+                            // On Windows NTFS, opening a file whose handle was closed with DeleteOnClose
+                            // throws UnauthorizedAccessException (STATUS_DELETE_PENDING -> ERROR_ACCESS_DENIED).
+                            // The prior lock holder has already relinquished and closed this lock.
+                            deletePendingObserved = true;
+                        }
                         catch
                         {
-                            // Incomplete publication, transient lock, or delete pending
+                            // Incomplete publication, exclusive locking, or transient contention
                         }
 
-                        var delay = Math.Min(10, Math.Max(1, (int)(remainingBudget - sw.Elapsed).TotalMilliseconds));
+                        var delay = Math.Min(10, Math.Max(1, fileBudgetMs - (int)fileSw.ElapsedMilliseconds));
                         if (delay > 0)
                         {
                             await Task.Delay(delay, ct).ConfigureAwait(false);
@@ -495,7 +508,7 @@ namespace DXVKCompanion.Safety
 
                     if (!fileProcessed)
                     {
-                        if (!File.Exists(file))
+                        if (!File.Exists(file) || deletePendingObserved)
                         {
                             continue;
                         }
@@ -538,8 +551,12 @@ namespace DXVKCompanion.Safety
                         continue;
                     }
 
+                    var fileBudgetMs = Math.Min(50, Math.Max(10, (int)(remainingBudget - sw.Elapsed).TotalMilliseconds));
+                    var fileSw = Stopwatch.StartNew();
                     bool fileProcessed = false;
-                    while (sw.Elapsed < remainingBudget)
+                    bool deletePendingObserved = false;
+
+                    while (fileSw.ElapsedMilliseconds < fileBudgetMs && sw.Elapsed < remainingBudget)
                     {
                         if (!File.Exists(file))
                         {
@@ -574,12 +591,19 @@ namespace DXVKCompanion.Safety
                             fileProcessed = true;
                             break;
                         }
+                        catch (UnauthorizedAccessException)
+                        {
+                            // On Windows NTFS, opening a file whose handle was closed with DeleteOnClose
+                            // throws UnauthorizedAccessException (STATUS_DELETE_PENDING -> ERROR_ACCESS_DENIED).
+                            // The prior lock holder has already relinquished and closed this lock.
+                            deletePendingObserved = true;
+                        }
                         catch
                         {
-                            // Incomplete publication, transient lock, or delete pending
+                            // Incomplete publication, exclusive locking, or transient contention
                         }
 
-                        var delay = Math.Min(10, Math.Max(1, (int)(remainingBudget - sw.Elapsed).TotalMilliseconds));
+                        var delay = Math.Min(10, Math.Max(1, fileBudgetMs - (int)fileSw.ElapsedMilliseconds));
                         if (delay > 0)
                         {
                             Thread.Sleep(delay);
@@ -588,7 +612,7 @@ namespace DXVKCompanion.Safety
 
                     if (!fileProcessed)
                     {
-                        if (!File.Exists(file))
+                        if (!File.Exists(file) || deletePendingObserved)
                         {
                             continue;
                         }
