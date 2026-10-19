@@ -617,7 +617,7 @@ public sealed class OperationLeaseCoordinatorTests
         // Assert: manager refused at preflight
         Assert.False(result);
         Assert.NotNull(manager.LastRefusalReason);
-        Assert.Contains("corrupted or was inaccessible", manager.LastRefusalReason, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("corrupted or unreadable", manager.LastRefusalReason, StringComparison.OrdinalIgnoreCase);
 
         // Game directory remains untouched
         Assert.False(File.Exists(Path.Combine(gameDir, "d3d11.dll")));

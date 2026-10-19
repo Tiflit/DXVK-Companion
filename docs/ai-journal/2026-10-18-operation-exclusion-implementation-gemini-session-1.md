@@ -215,3 +215,13 @@
      - *Fix in `DxvkRollback.cs`:* In `RefuseRollback` and restore exception recovery, passed `leaseToken?.StoreLease ?? leaseToken` to `_gameLibraryStore.Save`.
 - **Scope & API Surface Check:** All modified files remain strictly within declared Issue #178 allowed paths (`DxvkInstaller.cs`, `DxvkManager.cs`, `DxvkRollback.cs`, `OperationLeaseCoordinator.cs`, `ProfileStore.cs`, and this journal). Zero public API changes. Strictly 0 host test executions.
 
+### E. Resolution of Cloud CI Run 39296802985 Test Failures (2 Final Failures)
+- **Analysis:** Cloud CI run `39296802985` reached 949 passed, 0 skipped, and only 2 failed out of 951 tests.
+  1. *ProfileStore Preflight Refusal String in OperationLeaseCoordinatorTests:*
+     - `OperationLeaseCoordinatorTests.ProfileStore_BrokenLoad_DxvkManagerPreflightRefusal` asserted `Assert.Contains("corrupted or was inaccessible", manager.LastRefusalReason)`. `ProfileStore.cs` provides `"Cannot modify profile store: existing file is corrupted or unreadable on load ({_brokenLoadReason})."` to satisfy line 547 `ProfileStore_CorruptedJson_MarksBrokenLoad_RefusesSaveAndMutation`.
+     - *Fix:* Aligned assertion in `ProfileStore_BrokenLoad_DxvkManagerPreflightRefusal` to check for `"corrupted or unreadable"`.
+  2. *HasConflictingTargetLock Fixed 3-Attempt Early Abort on Delete-Pending Files:*
+     - In `HasConflictingTargetLockAsync` and `HasConflictingTargetLockSync`, when inspecting candidates in `CoordinationDirectory`, lock files from immediately preceding test operations in the process of `DeleteOnClose` unlinking threw transient `UnauthorizedAccessException`. The inner retry loop was hardcoded to `attempt < 3` (15 ms), after which it returned `true` (conflict) before the file unlinked or before remaining budget expired. This caused `ManagedFileInspectorAttentionTests.ReplacedDll_RepeatedScan...` to falsely detect conflict and timeout after 500 ms.
+     - *Fix:* Replaced fixed 3-attempt loop with `while (sw.Elapsed < remainingBudget && !ct.IsCancellationRequested)` loop, checking `!File.Exists(file)` or catching `FileNotFoundException`/`DirectoryNotFoundException` to proceed immediately once transient unlinking completes, while preserving fail-closed behavior (`return true`) if the remaining budget expires on persistent unreadable files.
+- **Scope & API Surface Check:** All modified files remain strictly within declared Issue #178 allowed paths (`OperationLeaseCoordinator.cs`, `OperationLeaseCoordinatorTests.cs`, and this journal). Zero public API changes. Strictly 0 host test executions.
+

@@ -445,12 +445,13 @@ namespace DXVKCompanion.Safety
                         continue;
                     }
 
-                    bool readSuccess = false;
-                    for (int attempt = 0; attempt < 3; attempt++)
+                    bool fileProcessed = false;
+                    while (sw.Elapsed < remainingBudget && !ct.IsCancellationRequested)
                     {
-                        if (sw.Elapsed >= remainingBudget || ct.IsCancellationRequested)
+                        if (!File.Exists(file))
                         {
-                            return true;
+                            fileProcessed = true;
+                            break;
                         }
 
                         try
@@ -460,29 +461,39 @@ namespace DXVKCompanion.Safety
                             string otherPath = reader.ReadToEnd().Trim();
                             if (!string.IsNullOrEmpty(otherPath))
                             {
-                                readSuccess = true;
                                 if (OperationResourceIdentity.PathEquals(myCanonicalPath, otherPath) ||
                                     OperationResourceIdentity.IsPathInside(myCanonicalPath, otherPath) ||
                                     OperationResourceIdentity.IsPathInside(otherPath, myCanonicalPath))
                                 {
                                     return true;
                                 }
+                                fileProcessed = true;
                                 break;
                             }
                         }
+                        catch (FileNotFoundException)
+                        {
+                            fileProcessed = true;
+                            break;
+                        }
+                        catch (DirectoryNotFoundException)
+                        {
+                            fileProcessed = true;
+                            break;
+                        }
                         catch
                         {
-                            // Incomplete publication or transient lock
+                            // Incomplete publication, transient lock, or delete pending
                         }
 
-                        var delay = Math.Min(5, Math.Max(1, (int)(remainingBudget - sw.Elapsed).TotalMilliseconds));
+                        var delay = Math.Min(10, Math.Max(1, (int)(remainingBudget - sw.Elapsed).TotalMilliseconds));
                         if (delay > 0)
                         {
                             await Task.Delay(delay, ct).ConfigureAwait(false);
                         }
                     }
 
-                    if (!readSuccess)
+                    if (!fileProcessed)
                     {
                         if (!File.Exists(file))
                         {
@@ -527,12 +538,13 @@ namespace DXVKCompanion.Safety
                         continue;
                     }
 
-                    bool readSuccess = false;
-                    for (int attempt = 0; attempt < 3; attempt++)
+                    bool fileProcessed = false;
+                    while (sw.Elapsed < remainingBudget)
                     {
-                        if (sw.Elapsed >= remainingBudget)
+                        if (!File.Exists(file))
                         {
-                            return true;
+                            fileProcessed = true;
+                            break;
                         }
 
                         try
@@ -542,29 +554,39 @@ namespace DXVKCompanion.Safety
                             string otherPath = reader.ReadToEnd().Trim();
                             if (!string.IsNullOrEmpty(otherPath))
                             {
-                                readSuccess = true;
                                 if (OperationResourceIdentity.PathEquals(myCanonicalPath, otherPath) ||
                                     OperationResourceIdentity.IsPathInside(myCanonicalPath, otherPath) ||
                                     OperationResourceIdentity.IsPathInside(otherPath, myCanonicalPath))
                                 {
                                     return true;
                                 }
+                                fileProcessed = true;
                                 break;
                             }
                         }
+                        catch (FileNotFoundException)
+                        {
+                            fileProcessed = true;
+                            break;
+                        }
+                        catch (DirectoryNotFoundException)
+                        {
+                            fileProcessed = true;
+                            break;
+                        }
                         catch
                         {
-                            // Incomplete publication or transient lock
+                            // Incomplete publication, transient lock, or delete pending
                         }
 
-                        var delay = Math.Min(5, Math.Max(1, (int)(remainingBudget - sw.Elapsed).TotalMilliseconds));
+                        var delay = Math.Min(10, Math.Max(1, (int)(remainingBudget - sw.Elapsed).TotalMilliseconds));
                         if (delay > 0)
                         {
                             Thread.Sleep(delay);
                         }
                     }
 
-                    if (!readSuccess)
+                    if (!fileProcessed)
                     {
                         if (!File.Exists(file))
                         {
