@@ -13,9 +13,11 @@ namespace DXVKCompanion.Storage
         // "C:\Games\Game.exe" and "c:\games\game.exe" would create two separate profiles
         // for what is actually the same file.
         private readonly Dictionary<string, GameProfile> _profiles = new(StringComparer.OrdinalIgnoreCase);
+        private readonly object _sync = new();
         private readonly string _profilesFile;
+        private byte[]? _lastCommittedBytes;
 
-        public string ProfilesFile => _profilesFile;
+        internal string ProfilesFile => _profilesFile;
         internal IOperationLeaseCoordinator LeaseCoordinator { get; set; } = OperationLeaseCoordinator.Default;
 
         internal Action<string, string>? CustomTempWriter { get; set; }
@@ -33,11 +35,13 @@ namespace DXVKCompanion.Storage
 
         internal GameProfile GetOrCreate(string exePath, IOperationLease? storeLease)
         {
-            if (_profiles.TryGetValue(exePath, out var profile))
-                return profile;
+            lock (_sync)
+            {
+                if (_profiles.TryGetValue(exePath, out var profile))
+                    return profile;
+            }
 
             var newProfile = new GameProfile(exePath);
-            _profiles[exePath] = newProfile;
             Save(newProfile, storeLease);
 
             return newProfile;
@@ -47,7 +51,7 @@ namespace DXVKCompanion.Storage
 
         internal void Save(GameProfile profile, IOperationLease? storeLease)
         {
-            _profiles[profile.ExePath] = profile;
+            if (profile == null) throw new ArgumentNullException(nameof(profile));
 
             IOperationLease? acquiredLease = null;
             if (storeLease != null)
@@ -69,7 +73,40 @@ namespace DXVKCompanion.Storage
 
             try
             {
-                WriteAll();
+                lock (_sync)
+                {
+                    // Authoritative profile-baseline verification before mutating in-memory dictionary
+                    bool fileExists = File.Exists(_profilesFile);
+                    if (_lastCommittedBytes == null)
+                    {
+                        if (fileExists)
+                        {
+                            HasPendingWriteRetry = true;
+                            throw new IOException($"Profile store baseline mismatch: '{_profilesFile}' was created externally.");
+                        }
+                    }
+                    else
+                    {
+                        if (!fileExists)
+                        {
+                            HasPendingWriteRetry = true;
+                            throw new IOException($"Profile store baseline mismatch: '{_profilesFile}' was deleted externally.");
+                        }
+
+                        byte[] currentDiskBytes = File.ReadAllBytes(_profilesFile);
+                        if (!currentDiskBytes.AsSpan().SequenceEqual(_lastCommittedBytes))
+                        {
+                            HasPendingWriteRetry = true;
+                            throw new IOException($"Profile store baseline mismatch: '{_profilesFile}' has been modified externally.");
+                        }
+                    }
+
+                    // Protected in-memory mutation
+                    _profiles[profile.ExePath] = profile;
+
+                    byte[] committedBytes = WriteAll();
+                    _lastCommittedBytes = committedBytes;
+                }
             }
             finally
             {
@@ -77,7 +114,72 @@ namespace DXVKCompanion.Storage
             }
         }
 
-        public IEnumerable<GameProfile> GetAll() => _profiles.Values;
+        internal bool TryCheckCanModifyProfileStore(out string? refusalReason, IOperationLease? storeLease)
+        {
+            refusalReason = null;
+            IOperationLease? acquiredLease = null;
+            if (storeLease != null)
+            {
+                if (storeLease.IsDisposed || !storeLease.IsAcquired || !storeLease.IsValidForStore(_profilesFile))
+                {
+                    refusalReason = "Invalid, mismatched, or disposed store lease token for profile store.";
+                    return false;
+                }
+            }
+            else
+            {
+                acquiredLease = LeaseCoordinator.TryAcquireStoreLease(_profilesFile, TimeSpan.FromMilliseconds(500));
+                if (acquiredLease == null)
+                {
+                    refusalReason = $"Operation in progress for profile store: {_profilesFile}. Please retry shortly.";
+                    return false;
+                }
+            }
+
+            try
+            {
+                lock (_sync)
+                {
+                    bool fileExists = File.Exists(_profilesFile);
+                    if (_lastCommittedBytes == null)
+                    {
+                        if (fileExists)
+                        {
+                            refusalReason = $"Profile store baseline mismatch: '{_profilesFile}' was created externally.";
+                            return false;
+                        }
+                    }
+                    else
+                    {
+                        if (!fileExists)
+                        {
+                            refusalReason = $"Profile store baseline mismatch: '{_profilesFile}' was deleted externally.";
+                            return false;
+                        }
+
+                        byte[] currentDiskBytes = File.ReadAllBytes(_profilesFile);
+                        if (!currentDiskBytes.AsSpan().SequenceEqual(_lastCommittedBytes))
+                        {
+                            refusalReason = $"Profile store baseline mismatch: '{_profilesFile}' has been modified externally.";
+                            return false;
+                        }
+                    }
+                    return true;
+                }
+            }
+            finally
+            {
+                acquiredLease?.Dispose();
+            }
+        }
+
+        public IEnumerable<GameProfile> GetAll()
+        {
+            lock (_sync)
+            {
+                return new List<GameProfile>(_profiles.Values);
+            }
+        }
 
         private void Load()
         {
@@ -86,12 +188,16 @@ namespace DXVKCompanion.Storage
                 Directory.CreateDirectory(dir);
 
             if (!File.Exists(_profilesFile))
+            {
+                _lastCommittedBytes = null;
                 return;
+            }
 
             try
             {
-                var json = File.ReadAllText(_profilesFile);
-                var list = JsonSerializer.Deserialize<List<GameProfile>>(json);
+                var bytes = File.ReadAllBytes(_profilesFile);
+                _lastCommittedBytes = bytes;
+                var list = JsonSerializer.Deserialize<List<GameProfile>>(bytes);
 
                 if (list == null)
                     return;
@@ -101,11 +207,11 @@ namespace DXVKCompanion.Storage
             }
             catch
             {
-                // Corrupted profile file → ignore and start fresh
+                // Corrupted profile file -> ignore and start fresh
             }
         }
 
-        private void WriteAll()
+        private byte[] WriteAll()
         {
             var dir = Path.GetDirectoryName(_profilesFile);
             if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
@@ -113,7 +219,7 @@ namespace DXVKCompanion.Storage
 
             var list = new List<GameProfile>(_profiles.Values);
 
-            var json = JsonSerializer.Serialize(list, new JsonSerializerOptions
+            var jsonBytes = JsonSerializer.SerializeToUtf8Bytes(list, new JsonSerializerOptions
             {
                 WriteIndented = true
             });
@@ -124,11 +230,12 @@ namespace DXVKCompanion.Storage
             {
                 if (CustomTempWriter != null)
                 {
-                    CustomTempWriter(tempPath, json);
+                    string jsonString = System.Text.Encoding.UTF8.GetString(jsonBytes);
+                    CustomTempWriter(tempPath, jsonString);
                 }
                 else
                 {
-                    File.WriteAllText(tempPath, json);
+                    File.WriteAllBytes(tempPath, jsonBytes);
                 }
 
                 if (CustomCommitReplace != null)
@@ -149,6 +256,7 @@ namespace DXVKCompanion.Storage
 
                 committed = true;
                 HasPendingWriteRetry = false;
+                return jsonBytes;
             }
             finally
             {

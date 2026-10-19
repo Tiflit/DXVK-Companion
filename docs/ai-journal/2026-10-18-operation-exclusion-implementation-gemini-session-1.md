@@ -88,5 +88,39 @@
    - `InterProcessLocking_OwnedCloudHelper_ExcludesParentDuringHold`: Cold-start timing on GitHub runner caused parent check before child helper started locking. Resolved by synchronizing helper lock via stdout (`LOCKED`) signal before parent timeout assertion.
    - `UnresolvedEngineRecovery_OnManagedInstallationWithWritableStore_PersistsAttentionRequiredAndLastRefusalReason`: `DxvkInstaller.TrySaveHealthAfterFailedCompensation` did not receive `leaseToken.StoreLease`, causing non-reentrant lease re-acquisition to time out. Resolved by passing held store lease in `ApplyToGameAsync` and `ReapplyAsync`.
    - `DxvkManager_ApplyPendingAsync_And_ProcessAllPendingActionsAsync_BlocksExecutionForUnsupportedApis`: `DxvkManager.ClearCancelledState` inside `EnableDxvkAsync` did not receive `leaseToken.StoreLease`, causing non-reentrant lock timeout on `GameLibraryStore.Save`. Resolved by adding `ClearCancelledState(installation, storeLease)` overload and passing `leaseToken.StoreLease`.
-8. Committed repairs and pushed to branch `feat/issue-178-operation-exclusion-boundary`.
-9. Monitoring cloud CI.
+9. Completed all grouped repairs across areas R1-R8 in a single repair cycle.
+10. Monitoring cloud CI.
+
+---
+
+## 4. Codex Grouped Review & Complete Repair Cycle (PR #179 Comment 6257405783)
+
+### Review Findings Addressed (R1 - R8):
+- **R1. Target canonicalization & collision semantics:**
+  - `OperationResourceIdentity.ResolveCanonicalPath`: preserved rooted drive paths throughout (never trims `C:\` to `C:`, preventing `Path.Combine` from creating drive-relative paths like `C:Games`), added strict `Path.IsPathFullyQualified` enforcement, refused UNC/network shares consistently for both input and resolved junction targets.
+  - Implemented ancestor/descendant target lock collision detection (`HasConflictingTargetLock` reads active `target_*.lock` files opened with `FileAccess.ReadWrite, FileShare.Read, FileOptions.DeleteOnClose`).
+  - Resolved authoritative installation root (`existingInstallation.InstallationPath` or normalized directory) across `DxvkInstaller`, `DxvkRollback`, and `DxvkManager`.
+- **R2. Authoritative store baseline & partial lease cleanup:**
+  - `ProfileStore`: added authoritative disk baseline tracking (`_lastCommittedBytes`); in `Save`, acquires/validates lease token, verifies disk baseline against `_lastCommittedBytes` under `lock (_sync)` before mutating in-memory dictionary; refuses with `IOException` if file was externally created, modified, or deleted. Added `TryCheckCanModifyProfileStore`. Thread-safe `GetAll()` and `GetOrCreate` prevent premature mutation.
+  - `GameLibraryStore`: added token-aware `GetOrCreateInstallation(installationPath, displayName, storeLease)`, moved lease acquisition outside and before `lock (_sync)`.
+  - Multi-store scope acquisition in `OperationLeaseCoordinator`: deterministic sorted ordering (`StringComparer.OrdinalIgnoreCase`) and deduplication; wrapped partial acquisitions in `try ... finally` to guarantee disposal of all acquired store leases and target lease on any failure or cancellation in both async and sync paths.
+  - Preserved distinct non-busy diagnostics for permanent ACL failures in `LastAcquisitionError`.
+- **R3. Intent transition guarding:**
+  - `ManagedFileInspector.InspectInstallation`: acquires or validates operation scope before inspecting files or mutating live objects (`ManagedFileRecord`, `PendingAction`, `RestorationState`). If busy, skips inspection without mutating or setting `AttentionRequired`.
+  - `DxvkManager.ApplyPendingAsync`: acquires composite operation scope upfront and holds it across execution, clearing `PendingAction`, removing from `_pending`, and saving to store.
+  - `DxvkManager.ProcessAllPendingActionsAsync`: on success, clears the corresponding transient `_pending` entry for all installation executables.
+  - `DxvkManager.QueueOrApplyAsync` / `QueueOrApplyReapplyAsync`: do not latch `AttentionRequired` on busy store contention; acquire store lease safely; pass store lease to `GetOrCreateInstallation` and `Save`.
+- **R4. Post-download activity & store revalidation race:**
+  - `DxvkInstaller.ApplyToGameAsync`: after release download and before file transaction mutations or backup staging, re-evaluates process activity on authoritative root and re-verifies store/profile baselines under the held lease; aborts cleanly leaving target files and store untouched if game launched or store changed during download.
+- **R5. Candidate process inspection boundaries & PID reuse:**
+  - `ProcessActivityInspector`: wrapped process enumeration in `try ... catch` to return `Unknown` on enumeration exceptions; removed implicit directory candidate discovery when candidate set is empty (returns `Unknown`); normalizes candidate and actual image names using `Path.GetFileNameWithoutExtension`; treats `Win32Exception` on process name queries as candidate access denial (`Unknown`); verifies `HasExited` on `InvalidOperationException` before treating as exited; implemented PID and `StartTime` lifetime revalidation before and after module inspection to detect PID reuse/relaunch; catches `IsPathInside` errors and treats as candidate access denial (`Unknown`).
+- **R6. Role-aware token validation:**
+  - `IOperationLease`: added `OperationLeaseKind` enum (`Target`, `Store`, `Composite`) and `OperationLeaseKind Kind { get; }`.
+  - `FileLockLease` and `CompositeOperationLease`: role-aware `IsValidForTarget` and `IsValidForStore` validation rejecting target leases passed as store leases and vice versa.
+- **R7. Visibility audit (zero public surface additions):**
+  - All newly introduced safety primitives and properties made `internal`: `IOperationLease`, `OperationLeaseKind`, `IOperationLeaseCoordinator`, `OperationLeaseCoordinator`, `IProcessActivityInspector`, `ProcessActivityInspector`, `ProcessActivityEvidence`, `OperationResourceIdentity`, and properties on existing types (`LeaseCoordinator`, `ActivityInspector`, `ProfilesFile`, `LibraryFilePath`).
+- **R8. Test fixtures, design doc reconciliation, & regression harness:**
+  - `OperationLeaseCoordinatorTests`: fixed `DifferentTarget_SharedStore_CompetesForStoreOnly` by disposing `leaseTarget2Only` before composite acquisition; hardened `InterProcessLocking_OwnedCloudHelper_ExcludesParentDuringHold` (requires `GITHUB_ACTIONS == "true"`, hard 20s helper lifetime timeout, DeleteOnClose in PowerShell script, exit confirmation after kill); added unit tests for `OperationLeaseKind` token validation rejection, partial acquisition failure cleanup, ancestor/descendant target conflict detection, and deterministic multi-store lock ordering.
+  - `OperationExclusionBoundaryTests`: fixed `allCompleted` `Task.Delay` reference comparison bug using `Assert.Same(allTasks, completed)`; bounded all `finally` draining awaits; added `RootVsSubdirectoryCollision_AcrossSeparateStores_DetectedAndRefused`.
+  - `ProcessActivityBoundaryTests`: added tests for process name query `Win32Exception` fault -> `Unknown`, `InvalidOperationException` with unconfirmed exit -> `Unknown`, PID replacement / relaunch -> `Unknown`, lazy enumeration exception -> `Unknown`, download-stage activity/baseline race (verifying untouched files, backups, and store), and updated `ApplyPendingAsync` test to verify transient dictionary preservation and reloaded store reconstruction.
+  - Reconciled `docs/design/OPERATION-EXCLUSION-AND-ACTIVITY-BOUNDARY.md` removing active references to `pending-actions.json`, env overrides, and automatic orphan compensation.

@@ -1,6 +1,6 @@
 namespace DXVKCompanion.Safety
 {
-    public enum ProcessActivityEvidence
+    internal enum ProcessActivityEvidence
     {
         ConfirmedNotRunning = 0,
         Running = 1,

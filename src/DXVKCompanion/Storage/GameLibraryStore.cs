@@ -47,7 +47,7 @@ namespace DXVKCompanion.Storage
         private readonly string _libraryFilePath;
         private readonly string _backupsDirectoryPath;
 
-        public string LibraryFilePath => _libraryFilePath;
+        internal string LibraryFilePath => _libraryFilePath;
         internal IOperationLeaseCoordinator LeaseCoordinator { get; set; } = OperationLeaseCoordinator.Default;
 
         private bool _isRefused;
@@ -172,39 +172,53 @@ namespace DXVKCompanion.Storage
         }
 
         public GameInstallation GetOrCreateInstallation(string installationPath, string? displayName = null)
+            => GetOrCreateInstallation(installationPath, displayName, storeLease: null);
+
+        internal GameInstallation GetOrCreateInstallation(string installationPath, string? displayName, IOperationLease? storeLease)
         {
             var normalized = GameInstallation.NormalizeInstallationPath(installationPath);
 
-            lock (_sync)
+            var lease = ValidateOrAcquireStoreLease(storeLease, out bool ownsLease);
+            try
             {
-                EnsureNotRefusedLocked();
-
-                if (_installations.TryGetValue(normalized, out var existing))
-                    return existing;
-
-                var installation = new GameInstallation
+                lock (_sync)
                 {
-                    InstallationPath = normalized,
-                    DisplayName = string.IsNullOrWhiteSpace(displayName)
-                        ? new DirectoryInfo(normalized).Name
-                        : displayName
-                };
+                    EnsureNotRefusedLocked();
 
-                var result = ExecuteClassifiedCommitLocked(
-                    applyInMemoryMutation: () => _installations[normalized] = installation,
-                    rollbackInMemoryMutationOnProvenNotCommitted: () => _installations.Remove(normalized),
-                    markAttentionOnUnknown: reason =>
+                    if (_installations.TryGetValue(normalized, out var existing))
+                        return existing;
+
+                    var installation = new GameInstallation
                     {
-                        installation.RestorationState = RestorationState.AttentionRequired;
-                        installation.LastRefusalReason = reason;
-                    });
+                        InstallationPath = normalized,
+                        DisplayName = string.IsNullOrWhiteSpace(displayName)
+                            ? new DirectoryInfo(normalized).Name
+                            : displayName
+                    };
 
-                if (result.Outcome == OwnershipPersistenceOutcome.Committed)
-                {
-                    return installation;
+                    var result = ExecuteClassifiedCommitLocked(
+                        applyInMemoryMutation: () => _installations[normalized] = installation,
+                        rollbackInMemoryMutationOnProvenNotCommitted: () => _installations.Remove(normalized),
+                        markAttentionOnUnknown: reason =>
+                        {
+                            installation.RestorationState = RestorationState.AttentionRequired;
+                            installation.LastRefusalReason = reason;
+                        });
+
+                    if (result.Outcome == OwnershipPersistenceOutcome.Committed)
+                    {
+                        return installation;
+                    }
+
+                    throw result.Exception ?? new IOException(result.DiagnosticMessage ?? "Failed to persist new installation record.");
                 }
-
-                throw result.Exception ?? new IOException(result.DiagnosticMessage ?? "Failed to persist new installation record.");
+            }
+            finally
+            {
+                if (ownsLease)
+                {
+                    lease?.Dispose();
+                }
             }
         }
 
@@ -838,42 +852,53 @@ namespace DXVKCompanion.Storage
         {
             if (installation == null) throw new ArgumentNullException(nameof(installation));
 
-            lock (_sync)
+            var lease = ValidateOrAcquireStoreLease(storeLease, out bool ownsLease);
+            try
             {
-                if (_hasUncertainPersistence || _isRefused || _hasInaccessibleLibraryOnLoad)
+                lock (_sync)
                 {
-                    return false;
-                }
-
-                if (!preWriteExisted || expectedPreWriteBytes == null)
-                {
-                    return false;
-                }
-
-                var priorAssessment = GameLibrarySchemaCompatibility.AssessJson(expectedPreWriteBytes);
-                if (!priorAssessment.IsCompatible ||
-                    priorAssessment.Status != SchemaCompatibilityStatus.Compatible ||
-                    !IsValidCurrentSchemaLibraryJson(expectedPreWriteBytes))
-                {
-                    return false;
-                }
-
-                if (!TryReadFileBytesOrConfirmAbsent(_libraryFilePath, out var currentDiskBytes, out bool positivelyAbsent, out var readEx) ||
-                    readEx != null ||
-                    positivelyAbsent ||
-                    currentDiskBytes == null ||
-                    !currentDiskBytes.AsSpan().SequenceEqual(expectedPreWriteBytes))
-                {
-                    if (readEx == null && (positivelyAbsent || currentDiskBytes == null || !currentDiskBytes.AsSpan().SequenceEqual(expectedPreWriteBytes)))
+                    if (_hasUncertainPersistence || _isRefused || _hasInaccessibleLibraryOnLoad)
                     {
-                        ActivateUncertainPersistenceLocked(
-                            $"Cannot persist health state after failed compensation: on-disk '{Path.GetFileName(_libraryFilePath)}' no longer matches the pre-operation baseline.");
+                        return false;
                     }
-                    return false;
-                }
 
-                var healthResult = TrySaveWithOutcome(installation, storeLease);
-                return healthResult.Outcome == OwnershipPersistenceOutcome.Committed;
+                    if (!preWriteExisted || expectedPreWriteBytes == null)
+                    {
+                        return false;
+                    }
+
+                    var priorAssessment = GameLibrarySchemaCompatibility.AssessJson(expectedPreWriteBytes);
+                    if (!priorAssessment.IsCompatible ||
+                        priorAssessment.Status != SchemaCompatibilityStatus.Compatible ||
+                        !IsValidCurrentSchemaLibraryJson(expectedPreWriteBytes))
+                    {
+                        return false;
+                    }
+
+                    if (!TryReadFileBytesOrConfirmAbsent(_libraryFilePath, out var currentDiskBytes, out bool positivelyAbsent, out var readEx) ||
+                        readEx != null ||
+                        positivelyAbsent ||
+                        currentDiskBytes == null ||
+                        !currentDiskBytes.AsSpan().SequenceEqual(expectedPreWriteBytes))
+                    {
+                        if (readEx == null && (positivelyAbsent || currentDiskBytes == null || !currentDiskBytes.AsSpan().SequenceEqual(expectedPreWriteBytes)))
+                        {
+                            ActivateUncertainPersistenceLocked(
+                                $"Cannot persist health state after failed compensation: on-disk '{Path.GetFileName(_libraryFilePath)}' no longer matches the pre-operation baseline.");
+                        }
+                        return false;
+                    }
+
+                    var healthResult = TrySaveWithOutcome(installation, lease);
+                    return healthResult.Outcome == OwnershipPersistenceOutcome.Committed;
+                }
+            }
+            finally
+            {
+                if (ownsLease)
+                {
+                    lease?.Dispose();
+                }
             }
         }
 

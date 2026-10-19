@@ -507,19 +507,20 @@ public sealed class OperationExclusionBoundaryTests
             Assert.True(bothReached[0] == op1AppliedD3d11.Task, "Installation 1 failed to reach AfterApply handshake.");
             Assert.True(bothReached[1] == op2AppliedD3d11.Task, "Installation 2 failed to reach AfterApply handshake.");
 
-            var allCompleted = await Task.WhenAny(Task.WhenAll(task1, task2), Task.Delay(testTimeout));
-            Assert.True(allCompleted != Task.Delay(testTimeout), "Concurrent independent installations timed out completing execution.");
+            var allTasks = Task.WhenAll(task1, task2);
+            var completed = await Task.WhenAny(allTasks, Task.Delay(testTimeout));
+            Assert.Same(allTasks, completed);
         }
         finally
         {
             testFinished.TrySetResult(true);
             if (task1 != null)
             {
-                await Task.WhenAny(task1, Task.Delay(testTimeout));
+                await Task.WhenAny(task1, Task.Delay(TimeSpan.FromSeconds(5)));
             }
             if (task2 != null)
             {
-                await Task.WhenAny(task2, Task.Delay(testTimeout));
+                await Task.WhenAny(task2, Task.Delay(TimeSpan.FromSeconds(5)));
             }
         }
 
@@ -531,5 +532,106 @@ public sealed class OperationExclusionBoundaryTests
 
         Assert.Equal("dxvk-2.5-d3d11", File.ReadAllText(Path.Combine(gameDir1.RootPath, "d3d11.dll")));
         Assert.Equal("dxvk-2.6-d3d11", File.ReadAllText(Path.Combine(gameDir2.RootPath, "d3d11.dll")));
+    }
+
+    [Fact]
+    public async Task RootVsSubdirectoryCollision_AcrossSeparateStores_DetectedAndRefused()
+    {
+        using var gameDir = new SyntheticTestDirectory();
+        using var storageDir1 = new SyntheticTestDirectory();
+        using var storageDir2 = new SyntheticTestDirectory();
+        using var sourceDir = new SyntheticTestDirectory();
+        using var coordDir = new SyntheticTestDirectory();
+
+        var coordinator = new OperationLeaseCoordinator(coordDir.RootPath);
+
+        CreateDxvkReleasePayload(sourceDir.RootPath, "2.5", "dxvk-2.5-d3d11", "dxvk-2.5-dxgi");
+
+        var storePath1 = Path.Combine(storageDir1.RootPath, "game-library.json");
+        var backupsPath1 = Path.Combine(storageDir1.RootPath, "backups");
+        var storePath2 = Path.Combine(storageDir2.RootPath, "game-library.json");
+        var backupsPath2 = Path.Combine(storageDir2.RootPath, "backups");
+
+        // Root installation: gameDir.RootPath
+        var rootExe = gameDir.CreateFile("RootGame.exe", "root-binary");
+        // Subdirectory installation: gameDir.RootPath\bin\x64
+        var subDirPath = Path.Combine(gameDir.RootPath, "bin", "x64");
+        Directory.CreateDirectory(subDirPath);
+        var subExe = Path.Combine(subDirPath, "SubGame.exe");
+        File.WriteAllText(subExe, "sub-binary");
+
+        var rootProfile = new GameProfile(rootExe) { Api = GraphicsApi.DX11, Architecture = "x64" };
+        var subProfile = new GameProfile(subExe) { Api = GraphicsApi.DX11, Architecture = "x64" };
+
+        var testTimeout = TimeSpan.FromSeconds(10);
+        var rootAppliedD3d11 = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var subFinished = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var rootHooks = new MultiFileTransactionTestHooks
+        {
+            AfterApply = (targetPath, index) =>
+            {
+                if (targetPath.EndsWith("d3d11.dll", StringComparison.OrdinalIgnoreCase))
+                {
+                    rootAppliedD3d11.TrySetResult(true);
+                    if (!subFinished.Task.Wait(testTimeout))
+                    {
+                        throw new TimeoutException("Timed out waiting for sub-operation.");
+                    }
+                }
+            }
+        };
+
+        using var http = new HttpClient();
+        var store1 = new GameLibraryStore(storePath1, backupsPath1) { LeaseCoordinator = coordinator };
+        var engine1 = new MultiFileTransactionEngine(backupsPath1, rootHooks);
+        var installer1 = new DxvkInstaller(http, engine1, store1, sourceDir.RootPath) { LeaseCoordinator = coordinator };
+
+        var store2 = new GameLibraryStore(storePath2, backupsPath2) { LeaseCoordinator = coordinator };
+        var engine2 = new MultiFileTransactionEngine(backupsPath2);
+        var installer2 = new DxvkInstaller(http, engine2, store2, sourceDir.RootPath) { LeaseCoordinator = coordinator };
+
+        var release25 = new ReleaseInfo { Version = "2.5", DownloadUrl = "" };
+
+        Task<bool>? rootTask = null;
+        Task<bool>? subTask = null;
+        bool subResult = false;
+        bool rootResult = false;
+
+        try
+        {
+            rootTask = Task.Run(async () => await installer1.ApplyToGameAsync(rootProfile, release25));
+
+            var reached = await Task.WhenAny(rootAppliedD3d11.Task, Task.Delay(testTimeout));
+            Assert.Same(rootAppliedD3d11.Task, reached);
+
+            // While Root holds in-flight operation, Sub attempts install on bin\x64 with its own store
+            subTask = Task.Run(async () => await installer2.ApplyToGameAsync(subProfile, release25));
+            var subCompleted = await Task.WhenAny(subTask, Task.Delay(testTimeout));
+            Assert.Same(subTask, subCompleted);
+            subResult = await subTask;
+        }
+        finally
+        {
+            subFinished.TrySetResult(true);
+            if (subTask != null)
+            {
+                var drain = await Task.WhenAny(subTask, Task.Delay(TimeSpan.FromSeconds(5)));
+                if (drain == subTask) subResult = await subTask;
+            }
+            if (rootTask != null)
+            {
+                var drain = await Task.WhenAny(rootTask, Task.Delay(TimeSpan.FromSeconds(5)));
+                if (drain == rootTask) rootResult = await rootTask;
+            }
+        }
+
+        // Sub install must be refused because of target ancestor/descendant collision, despite using separate store files
+        Assert.False(subResult);
+        Assert.NotNull(installer2.LastRefusalReason);
+        Assert.Contains("in progress", installer2.LastRefusalReason, StringComparison.OrdinalIgnoreCase);
+
+        // Root succeeds
+        Assert.True(rootResult);
     }
 }

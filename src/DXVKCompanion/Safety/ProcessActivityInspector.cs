@@ -7,7 +7,7 @@ using System.Linq;
 
 namespace DXVKCompanion.Safety
 {
-    public class ProcessActivityInspector : IProcessActivityInspector
+    internal class ProcessActivityInspector : IProcessActivityInspector
     {
         private static ProcessActivityInspector? _default;
         public static ProcessActivityInspector Default => _default ??= new ProcessActivityInspector();
@@ -65,29 +65,10 @@ namespace DXVKCompanion.Safety
                 }
             }
 
-            if (candidateSet.Count == 0 && Directory.Exists(canonicalRoot))
-            {
-                try
-                {
-                    foreach (var exe in Directory.EnumerateFiles(canonicalRoot, "*.exe"))
-                    {
-                        string baseName = Path.GetFileNameWithoutExtension(exe);
-                        if (!string.IsNullOrEmpty(baseName))
-                        {
-                            candidateSet.Add(baseName);
-                        }
-                    }
-                }
-                catch
-                {
-                    // If directory cannot be read, report Unknown
-                    return ProcessActivityEvidence.Unknown;
-                }
-            }
-
+            // Refuse an insufficient candidate boundary: implicit directory discovery is removed per #178
             if (candidateSet.Count == 0)
             {
-                return ProcessActivityEvidence.ConfirmedNotRunning;
+                return ProcessActivityEvidence.Unknown;
             }
 
             IEnumerable<Process> processes;
@@ -115,17 +96,48 @@ namespace DXVKCompanion.Safety
             {
                 foreach (var process in processes)
                 {
-                    string processName;
+                    string? rawName = null;
                     try
                     {
-                        processName = _processNameResolver != null
+                        rawName = _processNameResolver != null
                             ? _processNameResolver(process)
                             : process.ProcessName;
                     }
-                    catch
+                    catch (Win32Exception)
                     {
+                        // Could not query process name due to permission denial: cannot rule out candidate
+                        candidateAccessDenied = true;
                         continue;
                     }
+                    catch (InvalidOperationException)
+                    {
+                        bool confirmedExited = false;
+                        try
+                        {
+                            confirmedExited = _hasExitedResolver != null ? _hasExitedResolver(process) : process.HasExited;
+                        }
+                        catch { }
+
+                        if (!confirmedExited)
+                        {
+                            candidateAccessDenied = true;
+                        }
+                        continue;
+                    }
+                    catch
+                    {
+                        candidateAccessDenied = true;
+                        continue;
+                    }
+
+                    if (string.IsNullOrWhiteSpace(rawName))
+                    {
+                        candidateAccessDenied = true;
+                        continue;
+                    }
+
+                    // Normalize actual image name as well as candidates
+                    string processName = Path.GetFileNameWithoutExtension(rawName);
 
                     // Candidate Relevance Filtering: Ignore completely unrelated processes
                     if (!candidateSet.Contains(processName))
@@ -133,6 +145,7 @@ namespace DXVKCompanion.Safety
                         continue;
                     }
 
+                    // Candidate process detected: verify lifetime and path
                     bool hasExited = false;
                     try
                     {
@@ -140,7 +153,8 @@ namespace DXVKCompanion.Safety
                     }
                     catch
                     {
-                        // Ignore exit check errors
+                        candidateAccessDenied = true;
+                        continue;
                     }
 
                     if (hasExited)
@@ -148,10 +162,12 @@ namespace DXVKCompanion.Safety
                         continue;
                     }
 
-                    // Inspect candidate start time and module path
+                    int initialPid;
+                    DateTime initialStartTime;
                     try
                     {
-                        _ = _startTimeResolver != null ? _startTimeResolver(process) : process.StartTime;
+                        initialPid = process.Id;
+                        initialStartTime = _startTimeResolver != null ? _startTimeResolver(process) : process.StartTime;
                     }
                     catch (Win32Exception)
                     {
@@ -160,7 +176,17 @@ namespace DXVKCompanion.Safety
                     }
                     catch (InvalidOperationException)
                     {
-                        // Process exited mid-check
+                        bool confirmedExited = false;
+                        try
+                        {
+                            confirmedExited = _hasExitedResolver != null ? _hasExitedResolver(process) : process.HasExited;
+                        }
+                        catch { }
+
+                        if (!confirmedExited)
+                        {
+                            candidateAccessDenied = true;
+                        }
                         continue;
                     }
                     catch
@@ -183,7 +209,17 @@ namespace DXVKCompanion.Safety
                     }
                     catch (InvalidOperationException)
                     {
-                        // Process exited mid-check
+                        bool confirmedExited = false;
+                        try
+                        {
+                            confirmedExited = _hasExitedResolver != null ? _hasExitedResolver(process) : process.HasExited;
+                        }
+                        catch { }
+
+                        if (!confirmedExited)
+                        {
+                            candidateAccessDenied = true;
+                        }
                         continue;
                     }
                     catch
@@ -198,12 +234,69 @@ namespace DXVKCompanion.Safety
                         continue;
                     }
 
-                    // Check if candidate process is running from the target installation root
-                    if (OperationResourceIdentity.IsPathInside(mainModulePath, canonicalRoot))
+                    // Recheck lifetime consistently to detect PID reuse/relaunch mid-inspection
+                    try
                     {
-                        return ProcessActivityEvidence.Running;
+                        if (process.Id != initialPid)
+                        {
+                            candidateAccessDenied = true;
+                            continue;
+                        }
+
+                        var currentStartTime = _startTimeResolver != null ? _startTimeResolver(process) : process.StartTime;
+                        if (currentStartTime != initialStartTime)
+                        {
+                            candidateAccessDenied = true;
+                            continue;
+                        }
+
+                        bool exitedAfter = _hasExitedResolver != null ? _hasExitedResolver(process) : process.HasExited;
+                        if (exitedAfter)
+                        {
+                            continue;
+                        }
+                    }
+                    catch (Win32Exception)
+                    {
+                        candidateAccessDenied = true;
+                        continue;
+                    }
+                    catch (InvalidOperationException)
+                    {
+                        bool confirmedExited = false;
+                        try { confirmedExited = _hasExitedResolver != null ? _hasExitedResolver(process) : process.HasExited; } catch { }
+                        if (!confirmedExited)
+                        {
+                            candidateAccessDenied = true;
+                        }
+                        continue;
+                    }
+                    catch
+                    {
+                        candidateAccessDenied = true;
+                        continue;
+                    }
+
+                    // Check if candidate process is running from the target installation root
+                    try
+                    {
+                        if (OperationResourceIdentity.IsPathInside(mainModulePath, canonicalRoot))
+                        {
+                            return ProcessActivityEvidence.Running;
+                        }
+                    }
+                    catch
+                    {
+                        // Path canonicalization or verification failure: do not swallow as safely outside
+                        candidateAccessDenied = true;
+                        continue;
                     }
                 }
+            }
+            catch
+            {
+                // Lazy enumeration failure
+                return ProcessActivityEvidence.Unknown;
             }
             finally
             {

@@ -4,9 +4,10 @@ using System.Threading.Tasks;
 
 namespace DXVKCompanion.Safety
 {
-    public interface IOperationLeaseCoordinator
+    internal interface IOperationLeaseCoordinator
     {
         string CoordinationDirectory { get; }
+        string? LastAcquisitionError { get; }
 
         ValueTask<IOperationLease?> TryAcquireOperationScopeAsync(
             string installationRoot,
@@ -14,9 +15,20 @@ namespace DXVKCompanion.Safety
             TimeSpan timeout = default,
             CancellationToken ct = default);
 
+        ValueTask<IOperationLease?> TryAcquireOperationScopeAsync(
+            string installationRoot,
+            System.Collections.Generic.IEnumerable<string>? storePaths,
+            TimeSpan timeout = default,
+            CancellationToken ct = default);
+
         IOperationLease? TryAcquireOperationScope(
             string installationRoot,
             string? storePath = null,
+            TimeSpan timeout = default);
+
+        IOperationLease? TryAcquireOperationScope(
+            string installationRoot,
+            System.Collections.Generic.IEnumerable<string>? storePaths,
             TimeSpan timeout = default);
 
         ValueTask<IOperationLease?> TryAcquireStoreLeaseAsync(

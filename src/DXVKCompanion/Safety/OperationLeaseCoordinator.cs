@@ -6,7 +6,7 @@ using System.Threading.Tasks;
 
 namespace DXVKCompanion.Safety
 {
-    public class OperationLeaseCoordinator : IOperationLeaseCoordinator
+    internal class OperationLeaseCoordinator : IOperationLeaseCoordinator
     {
         public static readonly TimeSpan DefaultTimeout = TimeSpan.FromMilliseconds(500);
 
@@ -14,6 +14,7 @@ namespace DXVKCompanion.Safety
         public static OperationLeaseCoordinator Default => _default ??= new OperationLeaseCoordinator();
 
         public string CoordinationDirectory { get; }
+        public string? LastAcquisitionError { get; private set; }
 
         public OperationLeaseCoordinator(string? coordinationDirectory = null)
         {
@@ -28,46 +29,82 @@ namespace DXVKCompanion.Safety
             TimeSpan timeout = default,
             CancellationToken ct = default)
         {
+            var storePaths = !string.IsNullOrWhiteSpace(storePath) ? new[] { storePath } : null;
+            return await TryAcquireOperationScopeAsync(installationRoot, storePaths, timeout, ct).ConfigureAwait(false);
+        }
+
+        public async ValueTask<IOperationLease?> TryAcquireOperationScopeAsync(
+            string installationRoot,
+            System.Collections.Generic.IEnumerable<string>? storePaths,
+            TimeSpan timeout = default,
+            CancellationToken ct = default)
+        {
             if (timeout <= TimeSpan.Zero)
             {
                 timeout = DefaultTimeout;
             }
 
+            LastAcquisitionError = null;
             string canonicalTarget = OperationResourceIdentity.ResolveCanonicalPath(installationRoot);
             string targetKey = OperationResourceIdentity.GetTargetLockFileName(canonicalTarget);
 
             var sw = Stopwatch.StartNew();
 
             // Tier 1: Target lease first
-            var targetLease = await TryAcquireFileLockAsync(targetKey, canonicalTarget, timeout, ct).ConfigureAwait(false);
+            var targetLease = await TryAcquireFileLockAsync(targetKey, canonicalTarget, isTarget: true, timeout, ct).ConfigureAwait(false);
             if (targetLease == null)
             {
                 return null;
             }
 
-            // Tier 2: Shared Store Root lease second (if store path provided)
-            IOperationLease? storeLease = null;
-            if (!string.IsNullOrWhiteSpace(storePath))
+            var acquiredStoreLeases = new System.Collections.Generic.List<IOperationLease>();
+            bool success = false;
+            try
             {
-                var remaining = timeout - sw.Elapsed;
-                if (remaining <= TimeSpan.Zero)
+                if (storePaths != null)
                 {
-                    await targetLease.DisposeAsync().ConfigureAwait(false);
-                    return null;
+                    // Deterministically sort and deduplicate canonical store paths to avoid deadlock
+                    var distinctStores = new System.Collections.Generic.SortedSet<string>(StringComparer.OrdinalIgnoreCase);
+                    foreach (var sp in storePaths)
+                    {
+                        if (!string.IsNullOrWhiteSpace(sp))
+                        {
+                            distinctStores.Add(OperationResourceIdentity.ResolveCanonicalPath(sp));
+                        }
+                    }
+
+                    foreach (var canonicalStore in distinctStores)
+                    {
+                        var remaining = timeout - sw.Elapsed;
+                        if (remaining <= TimeSpan.Zero)
+                        {
+                            return null;
+                        }
+
+                        string storeKey = OperationResourceIdentity.GetStoreLockFileName(canonicalStore);
+                        var storeLease = await TryAcquireFileLockAsync(storeKey, canonicalStore, isTarget: false, remaining, ct).ConfigureAwait(false);
+                        if (storeLease == null)
+                        {
+                            return null;
+                        }
+                        acquiredStoreLeases.Add(storeLease);
+                    }
                 }
 
-                string canonicalStore = OperationResourceIdentity.ResolveCanonicalPath(storePath);
-                string storeKey = OperationResourceIdentity.GetStoreLockFileName(canonicalStore);
-
-                storeLease = await TryAcquireFileLockAsync(storeKey, canonicalStore, remaining, ct).ConfigureAwait(false);
-                if (storeLease == null)
+                success = true;
+                return new CompositeOperationLease(targetLease, acquiredStoreLeases);
+            }
+            finally
+            {
+                if (!success)
                 {
-                    await targetLease.DisposeAsync().ConfigureAwait(false);
-                    return null;
+                    for (int i = acquiredStoreLeases.Count - 1; i >= 0; i--)
+                    {
+                        try { await acquiredStoreLeases[i].DisposeAsync().ConfigureAwait(false); } catch { }
+                    }
+                    try { await targetLease.DisposeAsync().ConfigureAwait(false); } catch { }
                 }
             }
-
-            return new CompositeOperationLease(targetLease, storeLease);
         }
 
         public IOperationLease? TryAcquireOperationScope(
@@ -75,46 +112,81 @@ namespace DXVKCompanion.Safety
             string? storePath = null,
             TimeSpan timeout = default)
         {
+            var storePaths = !string.IsNullOrWhiteSpace(storePath) ? new[] { storePath } : null;
+            return TryAcquireOperationScope(installationRoot, storePaths, timeout);
+        }
+
+        public IOperationLease? TryAcquireOperationScope(
+            string installationRoot,
+            System.Collections.Generic.IEnumerable<string>? storePaths,
+            TimeSpan timeout = default)
+        {
             if (timeout <= TimeSpan.Zero)
             {
                 timeout = DefaultTimeout;
             }
 
+            LastAcquisitionError = null;
             string canonicalTarget = OperationResourceIdentity.ResolveCanonicalPath(installationRoot);
             string targetKey = OperationResourceIdentity.GetTargetLockFileName(canonicalTarget);
 
             var sw = Stopwatch.StartNew();
 
             // Tier 1: Target lease first
-            var targetLease = TryAcquireFileLockSync(targetKey, canonicalTarget, timeout);
+            var targetLease = TryAcquireFileLockSync(targetKey, canonicalTarget, isTarget: true, timeout);
             if (targetLease == null)
             {
                 return null;
             }
 
-            // Tier 2: Shared Store Root lease second
-            IOperationLease? storeLease = null;
-            if (!string.IsNullOrWhiteSpace(storePath))
+            var acquiredStoreLeases = new System.Collections.Generic.List<IOperationLease>();
+            bool success = false;
+            try
             {
-                var remaining = timeout - sw.Elapsed;
-                if (remaining <= TimeSpan.Zero)
+                if (storePaths != null)
                 {
-                    targetLease.Dispose();
-                    return null;
+                    // Deterministically sort and deduplicate canonical store paths to avoid deadlock
+                    var distinctStores = new System.Collections.Generic.SortedSet<string>(StringComparer.OrdinalIgnoreCase);
+                    foreach (var sp in storePaths)
+                    {
+                        if (!string.IsNullOrWhiteSpace(sp))
+                        {
+                            distinctStores.Add(OperationResourceIdentity.ResolveCanonicalPath(sp));
+                        }
+                    }
+
+                    foreach (var canonicalStore in distinctStores)
+                    {
+                        var remaining = timeout - sw.Elapsed;
+                        if (remaining <= TimeSpan.Zero)
+                        {
+                            return null;
+                        }
+
+                        string storeKey = OperationResourceIdentity.GetStoreLockFileName(canonicalStore);
+                        var storeLease = TryAcquireFileLockSync(storeKey, canonicalStore, isTarget: false, remaining);
+                        if (storeLease == null)
+                        {
+                            return null;
+                        }
+                        acquiredStoreLeases.Add(storeLease);
+                    }
                 }
 
-                string canonicalStore = OperationResourceIdentity.ResolveCanonicalPath(storePath);
-                string storeKey = OperationResourceIdentity.GetStoreLockFileName(canonicalStore);
-
-                storeLease = TryAcquireFileLockSync(storeKey, canonicalStore, remaining);
-                if (storeLease == null)
+                success = true;
+                return new CompositeOperationLease(targetLease, acquiredStoreLeases);
+            }
+            finally
+            {
+                if (!success)
                 {
-                    targetLease.Dispose();
-                    return null;
+                    for (int i = acquiredStoreLeases.Count - 1; i >= 0; i--)
+                    {
+                        try { acquiredStoreLeases[i].Dispose(); } catch { }
+                    }
+                    try { targetLease.Dispose(); } catch { }
                 }
             }
-
-            return new CompositeOperationLease(targetLease, storeLease);
         }
 
         public async ValueTask<IOperationLease?> TryAcquireStoreLeaseAsync(
@@ -127,10 +199,11 @@ namespace DXVKCompanion.Safety
                 timeout = DefaultTimeout;
             }
 
+            LastAcquisitionError = null;
             string canonicalStore = OperationResourceIdentity.ResolveCanonicalPath(storePath);
             string storeKey = OperationResourceIdentity.GetStoreLockFileName(canonicalStore);
 
-            return await TryAcquireFileLockAsync(storeKey, canonicalStore, timeout, ct).ConfigureAwait(false);
+            return await TryAcquireFileLockAsync(storeKey, canonicalStore, isTarget: false, timeout, ct).ConfigureAwait(false);
         }
 
         public IOperationLease? TryAcquireStoreLease(
@@ -142,20 +215,30 @@ namespace DXVKCompanion.Safety
                 timeout = DefaultTimeout;
             }
 
+            LastAcquisitionError = null;
             string canonicalStore = OperationResourceIdentity.ResolveCanonicalPath(storePath);
             string storeKey = OperationResourceIdentity.GetStoreLockFileName(canonicalStore);
 
-            return TryAcquireFileLockSync(storeKey, canonicalStore, timeout);
+            return TryAcquireFileLockSync(storeKey, canonicalStore, isTarget: false, timeout);
         }
 
         private async ValueTask<IOperationLease?> TryAcquireFileLockAsync(
             string lockKey,
             string canonicalPath,
+            bool isTarget,
             TimeSpan timeout,
             CancellationToken ct)
         {
             string lockFilePath = Path.Combine(CoordinationDirectory, lockKey);
-            Directory.CreateDirectory(CoordinationDirectory);
+            try
+            {
+                Directory.CreateDirectory(CoordinationDirectory);
+            }
+            catch (Exception ex)
+            {
+                LastAcquisitionError = $"Cannot create coordination directory '{CoordinationDirectory}': {ex.Message}";
+                return null;
+            }
 
             var sw = Stopwatch.StartNew();
             while (sw.Elapsed < timeout && !ct.IsCancellationRequested)
@@ -166,19 +249,39 @@ namespace DXVKCompanion.Safety
                         lockFilePath,
                         FileMode.OpenOrCreate,
                         FileAccess.ReadWrite,
-                        FileShare.None,
+                        FileShare.Read,
                         bufferSize: 4096,
                         FileOptions.DeleteOnClose);
 
-                    return new FileLockLease(canonicalPath, lockKey, stream);
+                    byte[] pathBytes = System.Text.Encoding.UTF8.GetBytes(canonicalPath);
+                    stream.SetLength(0);
+                    stream.Write(pathBytes, 0, pathBytes.Length);
+                    stream.Flush();
+
+                    if (isTarget && HasConflictingTargetLock(lockFilePath, canonicalPath))
+                    {
+                        stream.Dispose();
+                    }
+                    else
+                    {
+                        return new FileLockLease(
+                            canonicalPath,
+                            lockKey,
+                            stream,
+                            isTarget ? OperationLeaseKind.Target : OperationLeaseKind.Store);
+                    }
                 }
                 catch (IOException ex) when (IsContentionException(ex))
                 {
                     // Sharing violation or delete pending: retry within budget
                 }
-                catch (UnauthorizedAccessException)
+                catch (UnauthorizedAccessException ex)
                 {
-                    // Delete-pending on Windows can report as access denied
+                    if (!File.Exists(lockFilePath))
+                    {
+                        LastAcquisitionError = $"Access denied to coordination directory or lock file '{lockFilePath}': {ex.Message}";
+                        return null;
+                    }
                 }
 
                 var remaining = timeout - sw.Elapsed;
@@ -202,10 +305,19 @@ namespace DXVKCompanion.Safety
         private IOperationLease? TryAcquireFileLockSync(
             string lockKey,
             string canonicalPath,
+            bool isTarget,
             TimeSpan timeout)
         {
             string lockFilePath = Path.Combine(CoordinationDirectory, lockKey);
-            Directory.CreateDirectory(CoordinationDirectory);
+            try
+            {
+                Directory.CreateDirectory(CoordinationDirectory);
+            }
+            catch (Exception ex)
+            {
+                LastAcquisitionError = $"Cannot create coordination directory '{CoordinationDirectory}': {ex.Message}";
+                return null;
+            }
 
             var sw = Stopwatch.StartNew();
             while (sw.Elapsed < timeout)
@@ -216,19 +328,39 @@ namespace DXVKCompanion.Safety
                         lockFilePath,
                         FileMode.OpenOrCreate,
                         FileAccess.ReadWrite,
-                        FileShare.None,
+                        FileShare.Read,
                         bufferSize: 4096,
                         FileOptions.DeleteOnClose);
 
-                    return new FileLockLease(canonicalPath, lockKey, stream);
+                    byte[] pathBytes = System.Text.Encoding.UTF8.GetBytes(canonicalPath);
+                    stream.SetLength(0);
+                    stream.Write(pathBytes, 0, pathBytes.Length);
+                    stream.Flush();
+
+                    if (isTarget && HasConflictingTargetLock(lockFilePath, canonicalPath))
+                    {
+                        stream.Dispose();
+                    }
+                    else
+                    {
+                        return new FileLockLease(
+                            canonicalPath,
+                            lockKey,
+                            stream,
+                            isTarget ? OperationLeaseKind.Target : OperationLeaseKind.Store);
+                    }
                 }
                 catch (IOException ex) when (IsContentionException(ex))
                 {
                     // Sharing violation or delete pending: retry within budget
                 }
-                catch (UnauthorizedAccessException)
+                catch (UnauthorizedAccessException ex)
                 {
-                    // Delete-pending on Windows can report as access denied
+                    if (!File.Exists(lockFilePath))
+                    {
+                        LastAcquisitionError = $"Access denied to coordination directory or lock file '{lockFilePath}': {ex.Message}";
+                        return null;
+                    }
                 }
 
                 var remaining = timeout - sw.Elapsed;
@@ -247,6 +379,53 @@ namespace DXVKCompanion.Safety
             }
 
             return null;
+        }
+
+        private bool HasConflictingTargetLock(string myLockFilePath, string myCanonicalPath)
+        {
+            try
+            {
+                if (!Directory.Exists(CoordinationDirectory)) return false;
+
+                foreach (var file in Directory.EnumerateFiles(CoordinationDirectory, "target_*.lock"))
+                {
+                    if (string.Equals(file, myLockFilePath, StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    try
+                    {
+                        using var readStream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                        using var reader = new StreamReader(readStream, System.Text.Encoding.UTF8);
+                        string otherPath = reader.ReadToEnd().Trim();
+                        if (!string.IsNullOrEmpty(otherPath))
+                        {
+                            if (OperationResourceIdentity.PathEquals(myCanonicalPath, otherPath) ||
+                                OperationResourceIdentity.IsPathInside(myCanonicalPath, otherPath) ||
+                                OperationResourceIdentity.IsPathInside(otherPath, myCanonicalPath))
+                            {
+                                return true;
+                            }
+                        }
+                    }
+                    catch (IOException)
+                    {
+                        // File currently held/written exclusively by another process
+                        return true;
+                    }
+                    catch
+                    {
+                        // File may have been deleted concurrently
+                    }
+                }
+            }
+            catch
+            {
+                // Directory enumeration issue
+            }
+
+            return false;
         }
 
         private static bool IsContentionException(IOException ex)
@@ -274,30 +453,35 @@ namespace DXVKCompanion.Safety
             private readonly FileStream _stream;
             private readonly string _canonicalPath;
             private readonly string _lockKey;
+            private readonly OperationLeaseKind _kind;
             private bool _isDisposed;
 
-            public FileLockLease(string canonicalPath, string lockKey, FileStream stream)
+            public FileLockLease(string canonicalPath, string lockKey, FileStream stream, OperationLeaseKind kind)
             {
                 _canonicalPath = canonicalPath;
                 _lockKey = lockKey;
                 _stream = stream;
+                _kind = kind;
             }
 
+            public OperationLeaseKind Kind => _kind;
             public string InstallationRoot => _canonicalPath;
             public string LeaseKey => _lockKey;
             public bool IsAcquired => !_isDisposed && _stream != null;
             public bool IsDisposed => _isDisposed;
-            public IOperationLease? StoreLease => null;
+            public IOperationLease? StoreLease => _kind == OperationLeaseKind.Store ? this : null;
 
             public bool IsValidForTarget(string targetPath)
             {
                 if (_isDisposed || !IsAcquired) return false;
+                if (_kind != OperationLeaseKind.Target && _kind != OperationLeaseKind.Composite) return false;
                 return OperationResourceIdentity.PathEquals(_canonicalPath, targetPath);
             }
 
             public bool IsValidForStore(string storePath)
             {
                 if (_isDisposed || !IsAcquired) return false;
+                if (_kind != OperationLeaseKind.Store && _kind != OperationLeaseKind.Composite) return false;
                 return OperationResourceIdentity.PathEquals(_canonicalPath, storePath);
             }
 
@@ -325,20 +509,21 @@ namespace DXVKCompanion.Safety
         private sealed class CompositeOperationLease : IOperationLease
         {
             private readonly IOperationLease _targetLease;
-            private readonly IOperationLease? _storeLease;
+            private readonly System.Collections.Generic.List<IOperationLease> _storeLeases;
             private bool _isDisposed;
 
-            public CompositeOperationLease(IOperationLease targetLease, IOperationLease? storeLease)
+            public CompositeOperationLease(IOperationLease targetLease, System.Collections.Generic.IEnumerable<IOperationLease>? storeLeases)
             {
                 _targetLease = targetLease;
-                _storeLease = storeLease;
+                _storeLeases = storeLeases != null ? new System.Collections.Generic.List<IOperationLease>(storeLeases) : new System.Collections.Generic.List<IOperationLease>();
             }
 
+            public OperationLeaseKind Kind => OperationLeaseKind.Composite;
             public string InstallationRoot => _targetLease.InstallationRoot;
             public string LeaseKey => _targetLease.LeaseKey;
-            public bool IsAcquired => !_isDisposed && _targetLease.IsAcquired && (_storeLease == null || _storeLease.IsAcquired);
+            public bool IsAcquired => !_isDisposed && _targetLease.IsAcquired && _storeLeases.TrueForAll(s => s.IsAcquired);
             public bool IsDisposed => _isDisposed;
-            public IOperationLease? StoreLease => _storeLease;
+            public IOperationLease? StoreLease => _storeLeases.Count > 0 ? _storeLeases[0] : null;
 
             public bool IsValidForTarget(string targetPath)
             {
@@ -348,16 +533,19 @@ namespace DXVKCompanion.Safety
 
             public bool IsValidForStore(string storePath)
             {
-                if (_isDisposed || _storeLease == null) return false;
-                return _storeLease.IsValidForStore(storePath);
+                if (_isDisposed || _storeLeases.Count == 0) return false;
+                return _storeLeases.Exists(s => s.IsValidForStore(storePath));
             }
 
             public void Dispose()
             {
                 if (_isDisposed) return;
                 _isDisposed = true;
-                // Reverse lock order: Store lease first, then Target lease
-                try { _storeLease?.Dispose(); } catch { }
+                // Reverse lock order: Store leases first, then Target lease
+                for (int i = _storeLeases.Count - 1; i >= 0; i--)
+                {
+                    try { _storeLeases[i].Dispose(); } catch { }
+                }
                 try { _targetLease.Dispose(); } catch { }
             }
 
@@ -365,9 +553,9 @@ namespace DXVKCompanion.Safety
             {
                 if (_isDisposed) return;
                 _isDisposed = true;
-                if (_storeLease != null)
+                for (int i = _storeLeases.Count - 1; i >= 0; i--)
                 {
-                    try { await _storeLease.DisposeAsync().ConfigureAwait(false); } catch { }
+                    try { await _storeLeases[i].DisposeAsync().ConfigureAwait(false); } catch { }
                 }
                 try { await _targetLease.DisposeAsync().ConfigureAwait(false); } catch { }
             }

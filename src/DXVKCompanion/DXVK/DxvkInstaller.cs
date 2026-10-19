@@ -142,49 +142,58 @@ namespace DXVKCompanion.DXVK
             IOperationLease? acquiredLease = null;
             try
             {
-                gameDir = Path.GetDirectoryName(profile.ExePath) ?? string.Empty;
-                if (string.IsNullOrWhiteSpace(gameDir) || !Directory.Exists(gameDir))
+                var existingInstallation = _gameLibraryStore.FindInstallationForExecutable(profile.ExePath)
+                    ?? _gameLibraryStore.FindByInstallationPath(Path.GetDirectoryName(profile.ExePath) ?? string.Empty);
+
+                string rawDir = Path.GetDirectoryName(profile.ExePath) ?? string.Empty;
+                if (string.IsNullOrWhiteSpace(rawDir) || !Directory.Exists(rawDir))
                 {
                     LastRefusalReason = $"Could not determine valid game directory for {profile.ExePath}.";
                     Logger.Log($"DxvkInstaller: {LastRefusalReason}");
                     return false;
                 }
 
+                // Resolve authoritative installation root
+                string authoritativeRoot = existingInstallation != null && !string.IsNullOrWhiteSpace(existingInstallation.InstallationPath)
+                    ? existingInstallation.InstallationPath
+                    : GameInstallation.NormalizeInstallationPath(rawDir);
+                gameDir = authoritativeRoot;
+
                 if (leaseToken != null)
                 {
-                    if (leaseToken.IsDisposed || !leaseToken.IsAcquired || !leaseToken.IsValidForTarget(gameDir))
+                    if (leaseToken.IsDisposed || !leaseToken.IsAcquired ||
+                        !leaseToken.IsValidForTarget(authoritativeRoot) ||
+                        (leaseToken.StoreLease == null && !leaseToken.IsValidForStore(_gameLibraryStore.LibraryFilePath)))
                     {
-                        throw new ArgumentException("Invalid, mismatched, or disposed lease token.", nameof(leaseToken));
+                        throw new ArgumentException("Invalid, mismatched, or incomplete lease token for installation and store scope.", nameof(leaseToken));
                     }
                 }
                 else
                 {
                     acquiredLease = await LeaseCoordinator.TryAcquireOperationScopeAsync(
-                        gameDir,
+                        authoritativeRoot,
                         _gameLibraryStore.LibraryFilePath,
                         TimeSpan.FromMilliseconds(500)).ConfigureAwait(false);
 
                     if (acquiredLease == null)
                     {
-                        LastRefusalReason = $"Operation in progress for installation: {gameDir}. Please retry shortly.";
+                        LastRefusalReason = LeaseCoordinator.LastAcquisitionError ??
+                            $"Operation in progress for installation: {authoritativeRoot}. Please retry shortly.";
                         Logger.Log($"DxvkInstaller: {LastRefusalReason}");
                         return false;
                     }
                     leaseToken = acquiredLease;
                 }
 
-                var existingInstallation = _gameLibraryStore.FindInstallationForExecutable(profile.ExePath)
-                    ?? _gameLibraryStore.FindByInstallationPath(gameDir);
-
                 var candidateExes = new List<string> { profile.ExeName };
                 if (existingInstallation?.Executables != null)
                 {
                     candidateExes.AddRange(existingInstallation.Executables.Select(e => e.RelativePath));
                 }
-                var activity = ActivityInspector.GetActivityEvidence(gameDir, candidateExes);
+                var activity = ActivityInspector.GetActivityEvidence(authoritativeRoot, candidateExes);
                 if (activity == ProcessActivityEvidence.Running)
                 {
-                    LastRefusalReason = $"Game is currently running: {gameDir}. Close the game before modifying files.";
+                    LastRefusalReason = $"Game is currently running: {authoritativeRoot}. Close the game before modifying files.";
                     Logger.Log($"DxvkInstaller: {LastRefusalReason}");
                     return false;
                 }
@@ -236,6 +245,28 @@ namespace DXVKCompanion.DXVK
                     if (!ok)
                     {
                         LastRefusalReason = $"Failed to download or extract DXVK {release.Version}.";
+                        return false;
+                    }
+
+                    // R4: Revalidate candidate activity and authoritative metadata baseline after awaited download
+                    var postDownloadActivity = ActivityInspector.GetActivityEvidence(authoritativeRoot, candidateExes);
+                    if (postDownloadActivity == ProcessActivityEvidence.Running)
+                    {
+                        LastRefusalReason = $"Game is currently running: {authoritativeRoot}. Close the game before modifying files.";
+                        Logger.Log($"DxvkInstaller: {LastRefusalReason}");
+                        return false;
+                    }
+                    if (postDownloadActivity == ProcessActivityEvidence.Unknown)
+                    {
+                        LastRefusalReason = "Cannot verify game activity: candidate process access denied (protected or elevated).";
+                        Logger.Log($"DxvkInstaller: {LastRefusalReason}");
+                        return false;
+                    }
+
+                    if (!_gameLibraryStore.TryCheckCanModifyLibrary(out var postDownloadStoreRefusal, leaseToken.StoreLease))
+                    {
+                        LastRefusalReason = postDownloadStoreRefusal;
+                        Logger.Log($"DxvkInstaller: refusing deployment to {profile.ExeName} after download: {postDownloadStoreRefusal}");
                         return false;
                     }
                 }
@@ -563,39 +594,50 @@ namespace DXVKCompanion.DXVK
             IOperationLease? acquiredLease = null;
             try
             {
-                string gameDir = Path.GetDirectoryName(profile.ExePath) ?? string.Empty;
-                if (string.IsNullOrWhiteSpace(gameDir) || !Directory.Exists(gameDir))
+                var existingInstallation = _gameLibraryStore.FindInstallationForExecutable(profile.ExePath)
+                    ?? _gameLibraryStore.FindByInstallationPath(Path.GetDirectoryName(profile.ExePath) ?? string.Empty);
+
+                string rawDir = Path.GetDirectoryName(profile.ExePath) ?? string.Empty;
+                if (string.IsNullOrWhiteSpace(rawDir) || !Directory.Exists(rawDir))
                 {
                     LastRefusalReason = $"Could not determine valid game directory for {profile.ExePath}.";
                     Logger.Log($"DxvkInstaller: {LastRefusalReason}");
                     return false;
                 }
 
+                // Resolve authoritative installation root
+                string authoritativeRoot = existingInstallation != null && !string.IsNullOrWhiteSpace(existingInstallation.InstallationPath)
+                    ? existingInstallation.InstallationPath
+                    : GameInstallation.NormalizeInstallationPath(rawDir);
+                string gameDir = authoritativeRoot;
+
                 if (leaseToken != null)
                 {
-                    if (leaseToken.IsDisposed || !leaseToken.IsAcquired || !leaseToken.IsValidForTarget(gameDir))
+                    if (leaseToken.IsDisposed || !leaseToken.IsAcquired ||
+                        !leaseToken.IsValidForTarget(authoritativeRoot) ||
+                        (leaseToken.StoreLease == null && !leaseToken.IsValidForStore(_gameLibraryStore.LibraryFilePath)))
                     {
-                        throw new ArgumentException("Invalid, mismatched, or disposed lease token.", nameof(leaseToken));
+                        throw new ArgumentException("Invalid, mismatched, or incomplete lease token for installation and store scope.", nameof(leaseToken));
                     }
                 }
                 else
                 {
                     acquiredLease = await LeaseCoordinator.TryAcquireOperationScopeAsync(
-                        gameDir,
+                        authoritativeRoot,
                         _gameLibraryStore.LibraryFilePath,
                         TimeSpan.FromMilliseconds(500)).ConfigureAwait(false);
 
                     if (acquiredLease == null)
                     {
-                        LastRefusalReason = $"Operation in progress for installation: {gameDir}. Please retry shortly.";
+                        LastRefusalReason = LeaseCoordinator.LastAcquisitionError ??
+                            $"Operation in progress for installation: {authoritativeRoot}. Please retry shortly.";
                         Logger.Log($"DxvkInstaller: {LastRefusalReason}");
                         return false;
                     }
                     leaseToken = acquiredLease;
                 }
 
-                installation = _gameLibraryStore.FindInstallationForExecutable(profile.ExePath)
-                    ?? _gameLibraryStore.FindByInstallationPath(gameDir);
+                installation = existingInstallation;
                 if (installation == null || string.IsNullOrEmpty(installation.ManagedDxvkVersion))
                 {
                     LastRefusalReason = $"Installation not managed by Companion for {profile.ExeName}.";
@@ -608,10 +650,10 @@ namespace DXVKCompanion.DXVK
                 {
                     candidateExes.AddRange(installation.Executables.Select(e => e.RelativePath));
                 }
-                var activity = ActivityInspector.GetActivityEvidence(gameDir, candidateExes);
+                var activity = ActivityInspector.GetActivityEvidence(authoritativeRoot, candidateExes);
                 if (activity == ProcessActivityEvidence.Running)
                 {
-                    LastRefusalReason = $"Game is currently running: {gameDir}. Close the game before modifying files.";
+                    LastRefusalReason = $"Game is currently running: {authoritativeRoot}. Close the game before modifying files.";
                     Logger.Log($"DxvkInstaller: {LastRefusalReason}");
                     return false;
                 }
@@ -1076,39 +1118,48 @@ namespace DXVKCompanion.DXVK
                     return false;
                 }
 
-                string gameDir = Path.GetDirectoryName(profile.ExePath) ?? string.Empty;
-                if (string.IsNullOrWhiteSpace(gameDir) || !Directory.Exists(gameDir))
+                var existingInstallation = _gameLibraryStore.FindInstallationForExecutable(profile.ExePath)
+                    ?? _gameLibraryStore.FindByInstallationPath(Path.GetDirectoryName(profile.ExePath) ?? string.Empty);
+
+                string rawDir = Path.GetDirectoryName(profile.ExePath) ?? string.Empty;
+                if (string.IsNullOrWhiteSpace(rawDir) || !Directory.Exists(rawDir))
                 {
                     LastRefusalReason = $"Invalid game directory for {profile.ExePath}.";
                     Logger.Log($"DxvkInstaller: {LastRefusalReason}");
                     return false;
                 }
 
+                // Resolve authoritative installation root
+                string authoritativeRoot = existingInstallation != null && !string.IsNullOrWhiteSpace(existingInstallation.InstallationPath)
+                    ? existingInstallation.InstallationPath
+                    : GameInstallation.NormalizeInstallationPath(rawDir);
+                string gameDir = authoritativeRoot;
+
                 if (leaseToken != null)
                 {
-                    if (leaseToken.IsDisposed || !leaseToken.IsAcquired || !leaseToken.IsValidForTarget(gameDir))
+                    if (leaseToken.IsDisposed || !leaseToken.IsAcquired ||
+                        !leaseToken.IsValidForTarget(authoritativeRoot) ||
+                        (leaseToken.StoreLease == null && !leaseToken.IsValidForStore(_gameLibraryStore.LibraryFilePath)))
                     {
-                        throw new ArgumentException("Invalid, mismatched, or disposed lease token.", nameof(leaseToken));
+                        throw new ArgumentException("Invalid, mismatched, or incomplete lease token for installation and store scope.", nameof(leaseToken));
                     }
                 }
                 else
                 {
                     acquiredLease = LeaseCoordinator.TryAcquireOperationScope(
-                        gameDir,
+                        authoritativeRoot,
                         _gameLibraryStore.LibraryFilePath,
                         TimeSpan.FromMilliseconds(500));
 
                     if (acquiredLease == null)
                     {
-                        LastRefusalReason = $"Operation in progress for installation: {gameDir}. Please retry shortly.";
+                        LastRefusalReason = LeaseCoordinator.LastAcquisitionError ??
+                            $"Operation in progress for installation: {authoritativeRoot}. Please retry shortly.";
                         Logger.Log($"DxvkInstaller: {LastRefusalReason}");
                         return false;
                     }
                     leaseToken = acquiredLease;
                 }
-
-                var existingInstallation = _gameLibraryStore.FindInstallationForExecutable(profile.ExePath)
-                    ?? _gameLibraryStore.FindByInstallationPath(gameDir);
 
                 var candidateExes = new List<string> { profile.ExeName };
                 if (existingInstallation?.Executables != null)

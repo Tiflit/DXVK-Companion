@@ -93,10 +93,10 @@ Rather than attempting a complex late merge of stale in-memory state:
 
 ### 3.3 Full Metadata Writer File List
 The Tier 2 Store Lease serializes all writers touching shared metadata:
-- `src/DXVKCompanion/Storage/GameLibraryStore.cs` (`game-library.json` updates and snapshot saves)
+- `src/DXVKCompanion/Storage/GameLibraryStore.cs` (`game-library.json` updates, pending actions, and snapshot saves)
 - `src/DXVKCompanion/Storage/ProfileStore.cs` (`profiles.json` updates)
-- `src/DXVKCompanion/DXVK/DxvkManager.cs` (`_pending` dictionary and `pending-actions.json` intent tracking)
-- Detection & inspection writes (recording snapshots)
+- `src/DXVKCompanion/DXVK/DxvkManager.cs` (in-memory `_pending` dictionary coordinated with `game-library.json` durable pending action records)
+- Detection & inspection writes (recording snapshots to `game-library.json`)
 
 ---
 
@@ -108,7 +108,7 @@ Placing lease files inside `<storageDir>/leases/` introduces a critical flaw: tw
 To guarantee true target exclusion:
 1. **Canonical Coordination Root:** Cooperating DXVK Companion processes within the current Windows user session share a canonical coordination directory:
    $$\text{CoordinationRoot} = \text{Path.Combine}(\text{Environment.GetFolderPath}(\text{SpecialFolder.LocalApplicationData}), \text{"DXVKCompanion", "locks"})$$
-   *(Note: Test suites and isolated harnesses may inject an environment override `DXVK_COORDINATION_DIR` to sandbox coordination roots cleanly).*
+   *(Note: Test suites and isolated harnesses inject a test-specific coordination root directly via the OperationLeaseCoordinator constructor without environment variable overrides).*
 2. **Target Lock File Identity:** Computed strictly from the canonicalized target installation root:
    $$\text{LockFileName} = \$\text{"target\_" + ComputeSha256(CanonicalTargetPath) + ".lock"}$$
    $$\text{LockFilePath} = \text{Path.Combine}(\text{CoordinationRoot}, \text{LockFileName})$$
@@ -134,7 +134,7 @@ To eliminate the thread-affinity crash flaw of `System.Threading.Mutex` across a
 
 ### 4.3 Crash vs. Recovery Distinction (Honest Invariant)
 - **Lease Release vs. Target State:** When a process crashes, the OS kernel automatically closes open handles, releasing the lease lock. However, **this does NOT restore or heal the filesystem**. If the crash occurred mid-mutation, target files may be partially written, or an uncommitted `.transactions/<txId>/` folder may be left behind.
-- **Pre-Operation Safety Inspection:** When an operation acquires the Tier 1 Lease, it inspects whether an incomplete transaction folder (`.transactions/`) exists from a crashed predecessor. If orphaned transaction state or target hash mismatch is detected, the operation does NOT proceed blindly—it initiates compensation / marks `AttentionRequired` / prompts for restoration.
+- **Pre-Operation Safety Inspection:** When an operation acquires the Tier 1 Lease, it inspects whether an incomplete transaction folder (`.transactions/`) exists from a crashed predecessor. If orphaned transaction state or target hash mismatch is detected, the operation does NOT proceed blindly—it marks `AttentionRequired` and refuses execution, requiring explicit human/administrator action rather than attempting automatic unreviewed orphan compensation.
 
 ### 4.4 Explicit Unsupported Boundaries & Refusals
 DXVK Companion does not claim universal "zero bypass" across unsupported environments:

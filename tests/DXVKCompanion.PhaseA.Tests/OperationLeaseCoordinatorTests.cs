@@ -138,10 +138,12 @@ public sealed class OperationLeaseCoordinatorTests
         Assert.NotNull(lease1);
 
         // Target 2 can acquire target-only lease
-        await using var leaseTarget2Only = await coordinator.TryAcquireOperationScopeAsync(target2, storePath: null, timeout: TimeSpan.FromMilliseconds(100));
-        Assert.NotNull(leaseTarget2Only);
+        await using (var leaseTarget2Only = await coordinator.TryAcquireOperationScopeAsync(target2, storePath: null, timeout: TimeSpan.FromMilliseconds(100)))
+        {
+            Assert.NotNull(leaseTarget2Only);
+        }
 
-        // But Target 2 cannot acquire scope with the shared store while lease1 holds it
+        // Target 2 is now free, but cannot acquire scope with the shared store while lease1 holds it
         await using var leaseTarget2Store = await coordinator.TryAcquireOperationScopeAsync(target2, sharedStore, timeout: TimeSpan.FromMilliseconds(100));
         Assert.Null(leaseTarget2Store);
     }
@@ -188,9 +190,128 @@ public sealed class OperationLeaseCoordinatorTests
     }
 
     [Fact]
+    public void TokenValidation_RoleAndKind_Enforced()
+    {
+        using var tempDir = new SyntheticTestDirectory();
+        using var coordDir = new SyntheticTestDirectory();
+
+        var coordinator = new OperationLeaseCoordinator(coordDir.RootPath);
+        var target = Path.Combine(tempDir.RootPath, "Game");
+        var store = Path.Combine(tempDir.RootPath, "store.json");
+        Directory.CreateDirectory(target);
+        File.WriteAllText(store, "{}");
+
+        using var targetOnlyLease = coordinator.TryAcquireOperationScope(target);
+        Assert.NotNull(targetOnlyLease);
+        Assert.Equal(OperationLeaseKind.Target, targetOnlyLease.Kind);
+        Assert.True(targetOnlyLease.IsValidForTarget(target));
+        Assert.False(targetOnlyLease.IsValidForStore(store));
+
+        using var storeOnlyLease = coordinator.TryAcquireStoreLease(store);
+        Assert.NotNull(storeOnlyLease);
+        Assert.Equal(OperationLeaseKind.Store, storeOnlyLease.Kind);
+        Assert.False(storeOnlyLease.IsValidForTarget(target));
+        Assert.True(storeOnlyLease.IsValidForStore(store));
+
+        using var compositeLease = coordinator.TryAcquireOperationScope(target, store);
+        Assert.NotNull(compositeLease);
+        Assert.Equal(OperationLeaseKind.Composite, compositeLease.Kind);
+        Assert.True(compositeLease.IsValidForTarget(target));
+        Assert.True(compositeLease.IsValidForStore(store));
+        Assert.NotNull(compositeLease.StoreLease);
+        Assert.Equal(OperationLeaseKind.Store, compositeLease.StoreLease.Kind);
+    }
+
+    [Fact]
+    public async Task PartialAcquisitionFailure_DisposesPriorAcquisitions()
+    {
+        using var tempDir = new SyntheticTestDirectory();
+        using var coordDir = new SyntheticTestDirectory();
+
+        var coordinator = new OperationLeaseCoordinator(coordDir.RootPath);
+        var target = Path.Combine(tempDir.RootPath, "Game");
+        var store1 = Path.Combine(tempDir.RootPath, "store1.json");
+        var store2 = Path.Combine(tempDir.RootPath, "store2.json");
+        Directory.CreateDirectory(target);
+        File.WriteAllText(store1, "{}");
+        File.WriteAllText(store2, "{}");
+
+        // Pre-lock store2 with an independent store lease
+        var blockerCoordinator = new OperationLeaseCoordinator(coordDir.RootPath);
+        using var store2Lock = blockerCoordinator.TryAcquireStoreLease(store2);
+        Assert.NotNull(store2Lock);
+
+        // Attempt multi-store acquisition covering target, store1, and store2
+        var lease = await coordinator.TryAcquireOperationScopeAsync(
+            target,
+            new[] { store1, store2 },
+            timeout: TimeSpan.FromMilliseconds(100));
+
+        // Must return null
+        Assert.Null(lease);
+
+        // Target and store1 must NOT remain locked; another coordinator can acquire them immediately
+        using var targetRetry = coordinator.TryAcquireOperationScope(target, store1, timeout: TimeSpan.FromMilliseconds(100));
+        Assert.NotNull(targetRetry);
+        Assert.True(targetRetry.IsAcquired);
+    }
+
+    [Fact]
+    public async Task AncestorDescendantTargetCollision_DetectedAndRefused()
+    {
+        using var tempDir = new SyntheticTestDirectory();
+        using var coordDir = new SyntheticTestDirectory();
+
+        var coordinator = new OperationLeaseCoordinator(coordDir.RootPath);
+        var root = Path.Combine(tempDir.RootPath, "GameRoot");
+        var subDir = Path.Combine(root, "bin", "x64");
+        Directory.CreateDirectory(subDir);
+
+        // Lock root
+        await using var rootLease = await coordinator.TryAcquireOperationScopeAsync(root);
+        Assert.NotNull(rootLease);
+
+        // Attempting to lock subdirectory must be detected as descendant collision and refused
+        await using var subLease = await coordinator.TryAcquireOperationScopeAsync(subDir, timeout: TimeSpan.FromMilliseconds(100));
+        Assert.Null(subLease);
+
+        // Release root
+        await rootLease.DisposeAsync();
+
+        // Lock subdirectory
+        await using var subLease2 = await coordinator.TryAcquireOperationScopeAsync(subDir);
+        Assert.NotNull(subLease2);
+
+        // Attempting to lock root must be detected as ancestor collision and refused
+        await using var rootLease2 = await coordinator.TryAcquireOperationScopeAsync(root, timeout: TimeSpan.FromMilliseconds(100));
+        Assert.Null(rootLease2);
+    }
+
+    [Fact]
+    public void DeterministicMultiStoreLockOrdering_PreventsDeadlock()
+    {
+        using var tempDir = new SyntheticTestDirectory();
+        using var coordDir = new SyntheticTestDirectory();
+
+        var coordinator = new OperationLeaseCoordinator(coordDir.RootPath);
+        var target = Path.Combine(tempDir.RootPath, "Game");
+        var storeA = Path.Combine(tempDir.RootPath, "a_store.json");
+        var storeB = Path.Combine(tempDir.RootPath, "b_store.json");
+        Directory.CreateDirectory(target);
+        File.WriteAllText(storeA, "{}");
+        File.WriteAllText(storeB, "{}");
+
+        // Pass stores in reverse order [B, A] with duplicates
+        using var lease = coordinator.TryAcquireOperationScope(target, new[] { storeB, storeA, storeB });
+        Assert.NotNull(lease);
+        Assert.True(lease.IsValidForStore(storeA));
+        Assert.True(lease.IsValidForStore(storeB));
+    }
+
+    [Fact]
     public async Task InterProcessLocking_OwnedCloudHelper_ExcludesParentDuringHold()
     {
-        if (!OperatingSystem.IsWindows())
+        if (!OperatingSystem.IsWindows() || !string.Equals(Environment.GetEnvironmentVariable("GITHUB_ACTIONS"), "true", StringComparison.OrdinalIgnoreCase))
             return;
 
         using var tempDir = new SyntheticTestDirectory();
@@ -204,11 +325,11 @@ public sealed class OperationLeaseCoordinatorTests
         string lockName = OperationResourceIdentity.GetTargetLockFileName(canonicalTarget);
         string fullLockPath = Path.Combine(coordDir.RootPath, lockName);
 
-        // Prepare child helper process: holds lock exclusively for 1500 ms, then exits
+        // Prepare child helper process: holds lock exclusively for 2000 ms using DeleteOnClose
         var psi = new ProcessStartInfo
         {
             FileName = "powershell.exe",
-            Arguments = $"-NoProfile -NonInteractive -Command \"$f = [System.IO.File]::Open('{fullLockPath.Replace("'", "''")}', [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None); [Console]::Out.WriteLine('LOCKED'); [Console]::Out.Flush(); Start-Sleep -Milliseconds 2000; $f.Dispose()\"",
+            Arguments = $"-NoProfile -NonInteractive -Command \"$f = new-object System.IO.FileStream('{fullLockPath.Replace("'", "''")}', [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None, 4096, [System.IO.FileOptions]::DeleteOnClose); [Console]::Out.WriteLine('LOCKED'); [Console]::Out.Flush(); Start-Sleep -Milliseconds 2000; $f.Dispose()\"",
             UseShellExecute = false,
             CreateNoWindow = true,
             RedirectStandardOutput = true,
@@ -216,13 +337,15 @@ public sealed class OperationLeaseCoordinatorTests
         };
 
         Process? helper = null;
+        using var hardTimeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         try
         {
             helper = Process.Start(psi);
             Assert.NotNull(helper);
 
             // Wait for helper to confirm lock acquisition via stdout
-            using var readCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            using var readCts = CancellationTokenSource.CreateLinkedTokenSource(hardTimeoutCts.Token);
+            readCts.CancelAfter(TimeSpan.FromSeconds(10));
             string? signal = await helper.StandardOutput.ReadLineAsync(readCts.Token);
             Assert.Equal("LOCKED", signal);
 
@@ -235,7 +358,8 @@ public sealed class OperationLeaseCoordinatorTests
             Assert.True(sw.ElapsedMilliseconds >= 150, $"Expected timeout around 200 ms, actual: {sw.ElapsedMilliseconds} ms");
 
             // Wait for helper to exit naturally (bounded max 10s wait)
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(hardTimeoutCts.Token);
+            cts.CancelAfter(TimeSpan.FromSeconds(10));
             await helper.WaitForExitAsync(cts.Token);
 
             // Once helper process exited and released handle, parent can immediately acquire
@@ -245,14 +369,15 @@ public sealed class OperationLeaseCoordinatorTests
         }
         finally
         {
-            // Exact owned child process termination and cleanup
+            // Exact owned child process termination and cleanup with confirmation
             if (helper != null)
             {
                 try
                 {
                     if (!helper.HasExited)
                     {
-                        helper.Kill();
+                        helper.Kill(entireProcessTree: true);
+                        helper.WaitForExit(5000);
                     }
                 }
                 catch { }

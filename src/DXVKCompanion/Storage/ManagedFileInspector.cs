@@ -17,6 +17,9 @@ namespace DXVKCompanion.Storage
         }
 
         public virtual bool InspectInstallation(GameInstallation installation)
+            => InspectInstallation(installation, leaseToken: null);
+
+        internal virtual bool InspectInstallation(GameInstallation installation, IOperationLease? leaseToken)
         {
             if (installation == null) return false;
 
@@ -31,6 +34,42 @@ namespace DXVKCompanion.Storage
                 return false;
             }
 
+            IOperationLease? acquiredLease = null;
+            if (leaseToken != null)
+            {
+                if (leaseToken.IsDisposed || !leaseToken.IsAcquired ||
+                    !leaseToken.IsValidForTarget(installation.InstallationPath) ||
+                    (leaseToken.StoreLease == null && !leaseToken.IsValidForStore(_store.LibraryFilePath)))
+                {
+                    throw new ArgumentException("Invalid, mismatched, or disposed lease token for inspection.", nameof(leaseToken));
+                }
+            }
+            else
+            {
+                acquiredLease = _store.LeaseCoordinator.TryAcquireOperationScope(
+                    installation.InstallationPath,
+                    _store.LibraryFilePath,
+                    TimeSpan.FromMilliseconds(500));
+
+                if (acquiredLease == null)
+                {
+                    Logger.Log($"ManagedFileInspector: skipping inspection for {installation.DisplayName} because installation is currently busy.");
+                    return false;
+                }
+            }
+
+            try
+            {
+                return InspectInstallationUnderLease(installation, leaseToken ?? acquiredLease);
+            }
+            finally
+            {
+                acquiredLease?.Dispose();
+            }
+        }
+
+        private bool InspectInstallationUnderLease(GameInstallation installation, IOperationLease? leaseToken)
+        {
             bool anyExternalChange = false;
             bool allFilesVerifiedConsistent = installation.ManagedFiles.Count > 0;
             bool isRestoredLifecycle = installation.RestorationState == RestorationState.Restored
@@ -195,7 +234,8 @@ namespace DXVKCompanion.Storage
                 }
             }
 
-            _store.Save(installation);
+            var storeLease = leaseToken?.StoreLease ?? (leaseToken?.Kind == OperationLeaseKind.Store ? leaseToken : null);
+            _store.Save(installation, storeLease);
             return anyExternalChange;
         }
 

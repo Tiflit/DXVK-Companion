@@ -3,8 +3,16 @@ using System.Threading.Tasks;
 
 namespace DXVKCompanion.Safety
 {
-    public interface IOperationLease : IAsyncDisposable, IDisposable
+    internal enum OperationLeaseKind
     {
+        Target,
+        Store,
+        Composite
+    }
+
+    internal interface IOperationLease : IAsyncDisposable, IDisposable
+    {
+        OperationLeaseKind Kind { get; }
         string InstallationRoot { get; }
         string LeaseKey { get; }
         bool IsAcquired { get; }
