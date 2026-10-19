@@ -661,7 +661,8 @@ public sealed class OperationExclusionBoundaryTests
         File.WriteAllText(exePath, "bin");
 
         var installation = libraryStore.GetOrCreateInstallation(gameDir, "Game");
-        installation.LastCancelledAction = "Install";
+        var cancelledAction = Models.PendingAction.Install("2.5", "Prior cancel");
+        installation.LastCancelledAction = cancelledAction;
         installation.LastCancellationReason = "Prior cancel";
         installation.LastCancellationOutcome = "Cancelled";
         installation.LastRefusalReason = "Cancelled pending action";
@@ -675,7 +676,9 @@ public sealed class OperationExclusionBoundaryTests
         manager.ClearCancelledState(installation);
 
         // Assert: in-memory live state was NOT mutated because lease was unavailable
-        Assert.Equal("Install", installation.LastCancelledAction);
+        Assert.NotNull(installation.LastCancelledAction);
+        Assert.Equal(cancelledAction.Type, installation.LastCancelledAction.Type);
+        Assert.Equal(cancelledAction.TargetVersion, installation.LastCancelledAction.TargetVersion);
         Assert.Equal("Prior cancel", installation.LastCancellationReason);
         Assert.Equal("Cancelled", installation.LastCancellationOutcome);
         Assert.Equal("Cancelled pending action", installation.LastRefusalReason);
@@ -750,9 +753,12 @@ public sealed class OperationExclusionBoundaryTests
         var installation = libraryStore.GetOrCreateInstallation(gameDir, "Game");
         installation.RestorationState = RestorationState.Managed;
         installation.ManagedDxvkVersion = "2.5";
-        var fileRecord = installation.GetOrAddTrackedFile("d3d11.dll");
-        fileRecord.RecordedSha256 = "dummy-sha";
-        fileRecord.FileSizeBytes = 100;
+        installation.ManagedFiles.Add(new ManagedFileRecord
+        {
+            RelativePath = "d3d11.dll",
+            RecordedSha256 = "dummy-sha",
+            FileSizeBytes = 100
+        });
         libraryStore.Save(installation);
 
         // Lock d3d11.dll exclusively so inspector encounters an exception reading it
@@ -850,8 +856,9 @@ public sealed class OperationExclusionBoundaryTests
 
         var assessment = new ExistingDxvkAssessment
         {
-            ExistingFiles = new List<string> { "d3d11.dll" },
-            IdentifiedVersion = "2.5"
+            Status = ExistingDxvkStatus.OfficialRelease,
+            MatchedVersion = "2.5",
+            DetectedDlls = new List<string> { "d3d11.dll" }
         };
 
         // Act & Assert: Must throw ArgumentException for incomplete scope
