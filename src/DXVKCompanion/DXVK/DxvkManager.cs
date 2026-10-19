@@ -55,7 +55,7 @@ namespace DXVKCompanion.DXVK
 
         public void ClearCancelledState(GameInstallation installation)
         {
-            using var lease = LeaseCoordinator.TryAcquireStoreLeaseSync(_gameLibraryStore.LibraryFilePath, TimeSpan.FromMilliseconds(500));
+            using var lease = LeaseCoordinator.TryAcquireStoreLease(_gameLibraryStore.LibraryFilePath, TimeSpan.FromMilliseconds(500));
             ClearCancelledState(installation, lease);
         }
 
@@ -293,7 +293,7 @@ namespace DXVKCompanion.DXVK
         public bool UpdateAvailable(GameProfile profile, ReleaseInfo? latest = null)
         {
             var installation = ResolveInstallation(profile.ExePath);
-            using var storeLease = LeaseCoordinator.TryAcquireStoreLeaseSync(
+            using var storeLease = LeaseCoordinator.TryAcquireStoreLease(
                 _gameLibraryStore.LibraryFilePath,
                 TimeSpan.FromMilliseconds(500));
             ReassessEffectiveApi(installation, profile, storeLease);
