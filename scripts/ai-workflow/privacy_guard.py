@@ -139,15 +139,15 @@ def redact_unc_paths(text: str) -> str:
             return full
         return "[REDACTED_PATH]"
 
-    # Backslash UNC: \\host\share...
+    # Backslash UNC: \\host\share[\folder...][\file]
     text = re.sub(
-        r"\\\\([A-Za-z0-9_.-]+)\\[A-Za-z0-9_.$]+(?: [A-Za-z0-9_.$]+)*(?:[/\\][A-Za-z0-9_.$]+(?: [A-Za-z0-9_.$]+)*)*[/\\]?",
+        r"\\\\([A-Za-z0-9_.-]+)\\[A-Za-z0-9_.$]+(?:[/\\][A-Za-z0-9_.-]+(?: [A-Za-z0-9_.-]+)*[/\\]+)*(?:[/\\](?:[A-Za-z0-9_.-]+\.[A-Za-z0-9_.-]+|\.\.\.|[A-Za-z0-9_.-]+))?[/\\]?",
         _replace_unc,
         text,
     )
-    # Forward slash UNC: //host/share... (excluding URL schemes like http://)
+    # Forward slash UNC: //host/share[/folder...][/file]
     text = re.sub(
-        r"(?<![A-Za-z0-9+.-]:)//([A-Za-z0-9_.-]+)/[A-Za-z0-9_.$]+(?: [A-Za-z0-9_.$]+)*(?:[/\\][A-Za-z0-9_.$]+(?: [A-Za-z0-9_.$]+)*)*[/\\]?",
+        r"(?<![A-Za-z0-9+.-]:)//([A-Za-z0-9_.-]+)/[A-Za-z0-9_.$]+(?:/[A-Za-z0-9_.-]+(?: [A-Za-z0-9_.-]+)*/+)*(?:/(?:[A-Za-z0-9_.-]+\.[A-Za-z0-9_.-]+|\.\.\.|[A-Za-z0-9_.-]+))?/?",
         _replace_unc,
         text,
     )

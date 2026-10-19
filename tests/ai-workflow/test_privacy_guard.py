@@ -330,7 +330,7 @@ class TestPrivacyRedaction(unittest.TestCase):
 
     def test_sanitize_display_text_redacts_before_truncation(self):
         """Crucial security test: Redaction must occur before display truncation to prevent partial username leaks."""
-        long_prefix = "A" * 80
+        long_prefix = "A" * 90
         # A 120-character path that would be cut right inside the username if truncated before redaction
         sensitive_string = f"{long_prefix} C:\\Users\\PrivateUserIdentifierLongName\\Documents\\file.txt"
         sanitized = sanitize_display_text(sensitive_string, max_len=100)

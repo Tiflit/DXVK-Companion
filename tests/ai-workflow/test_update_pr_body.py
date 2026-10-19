@@ -35,6 +35,7 @@ from update_pr_body import (
     parse_and_validate_review_records,
     prepare_issue_candidate,
     scan_for_privacy_violations,
+    sanitize_privacy_text,
     validate_backup_dir,
 )
 
