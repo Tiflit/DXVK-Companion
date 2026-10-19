@@ -447,11 +447,9 @@ namespace DXVKCompanion.Safety
                         continue;
                     }
 
-                    var fileBudgetMs = Math.Min(50, Math.Max(10, (int)(remainingBudget - sw.Elapsed).TotalMilliseconds));
-                    var fileSw = Stopwatch.StartNew();
                     bool fileProcessed = false;
 
-                    while (fileSw.ElapsedMilliseconds < fileBudgetMs && sw.Elapsed < remainingBudget && !ct.IsCancellationRequested)
+                    while (sw.Elapsed < remainingBudget && !ct.IsCancellationRequested)
                     {
                         if (!File.Exists(file))
                         {
@@ -491,7 +489,7 @@ namespace DXVKCompanion.Safety
                             // Incomplete publication, exclusive locking, or transient contention
                         }
 
-                        var delay = Math.Min(10, Math.Max(1, fileBudgetMs - (int)fileSw.ElapsedMilliseconds));
+                        var delay = Math.Min(10, Math.Max(1, (int)(remainingBudget - sw.Elapsed).TotalMilliseconds));
                         if (delay > 0)
                         {
                             try
@@ -566,11 +564,9 @@ namespace DXVKCompanion.Safety
                         continue;
                     }
 
-                    var fileBudgetMs = Math.Min(50, Math.Max(10, (int)(remainingBudget - sw.Elapsed).TotalMilliseconds));
-                    var fileSw = Stopwatch.StartNew();
                     bool fileProcessed = false;
 
-                    while (fileSw.ElapsedMilliseconds < fileBudgetMs && sw.Elapsed < remainingBudget)
+                    while (sw.Elapsed < remainingBudget)
                     {
                         if (!File.Exists(file))
                         {
@@ -610,7 +606,7 @@ namespace DXVKCompanion.Safety
                             // Incomplete publication, exclusive locking, or transient contention
                         }
 
-                        var delay = Math.Min(10, Math.Max(1, fileBudgetMs - (int)fileSw.ElapsedMilliseconds));
+                        var delay = Math.Min(10, Math.Max(1, (int)(remainingBudget - sw.Elapsed).TotalMilliseconds));
                         if (delay > 0)
                         {
                             Thread.Sleep(delay);

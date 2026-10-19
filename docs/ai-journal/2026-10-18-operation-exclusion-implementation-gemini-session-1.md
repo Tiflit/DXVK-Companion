@@ -277,3 +277,20 @@
   3. *Test Arrangement Cleanup:* In `ProcessActivityBoundaryTests.ProfileStore_StartupWithInaccessibleFile_MarksBrokenLoadAndRefusesModifications`, instantiated `var profile = new GameProfile(...)` directly to test `TryCheckCanModifyProfileStore` and `Save` refusal in isolation without triggering `Save` during setup.
 - **Scope & API Surface Check:** All modified files remain strictly within declared Issue #178 allowed paths (`DxvkInstaller.cs`, `DxvkManager.cs`, `DxvkRollback.cs`, `ProcessActivityBoundaryTests.cs`, and this journal). Zero public API changes. Strictly 0 host test executions.
 
+### I. Resolution of Cloud CI Run 39312126739 Test Failure (Candidate Inspection Timeout Clamp)
+- **Analysis:** Cloud CI run `39312126739` compiled cleanly and executed all 961 tests across both suites, with 960 passed and only 1 failure:
+  `OwnershipPersistenceFailureTests.UpdateAfterInstallA_WhenPostFileOwnershipSaveFailsBeforeReplace_RecoversVersionAFilesAndPreservesRestoreCapability`.
+- **Root Cause:**
+  1. In `UpdateAfterInstallA_...`, Step 1 installs DXVK and disposes its operation lease (`FileOptions.DeleteOnClose`). Step 2 immediately attempts an update on the same target.
+  2. In `OperationLeaseCoordinator.HasConflictingTargetLockAsync` (line 450) and `HasConflictingTargetLockSync` (line 569), candidate inspection was artificially clamped to `Math.Min(50, ...)` (50 ms) per candidate file (`fileBudgetMs` and `fileSw`).
+  3. Under heavy parallel runner load on Windows, an unlinking lock file in NTFS `DeleteOnClose` delete-pending state can take >50 ms to unlink. When `fileSw.ElapsedMilliseconds >= fileBudgetMs` (50 ms), the inner candidate retry loop terminated prematurely with `fileProcessed == false`.
+  4. The subsequent fail-closed fallback probe (`if (!fileProcessed && File.Exists(file))`) caught sharing violation or delete pending and returned `true` (conflict) after only 50 ms, despite >400 ms of caller budget remaining.
+  5. This caused `TryAcquireOperationScopeAsync` to return `null`, aborting `ApplyToGameAsync` before `ExecuteWithCommitScopeAsync` was ever reached, failing the assertion `Assert.True(updateFilesApplied)`.
+- **Fix Applied:**
+  1. In `OperationLeaseCoordinator.cs` (`HasConflictingTargetLockAsync` and `HasConflictingTargetLockSync`):
+     - Removed the 50 ms per-candidate clamp (`fileBudgetMs`, `fileSw`).
+     - Bounded candidate inspection loop directly to caller remaining budget: `while (sw.Elapsed < remainingBudget && !ct.IsCancellationRequested)` (and sync equivalent), with 10 ms polling intervals.
+     - Transient unlinking lock files now cleanly resolve within the caller's acquisition budget (e.g. 500 ms) as non-conflicting once unlinked.
+     - Truly unreadable or contending locks still fail closed (`return true`) if they persist across the entire caller timeout budget, satisfying Finding E1.
+- **Scope & API Surface Check:** All modified files remain strictly within declared Issue #178 allowed paths (`OperationLeaseCoordinator.cs` and this journal). Zero public API changes. Zero local host execution.
+
