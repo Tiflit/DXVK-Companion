@@ -1,8 +1,11 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
+using System.Formats.Tar;
 using System.IO;
+using System.IO.Compression;
 using System.Net.Http;
+using System.Threading;
 using System.Threading.Tasks;
 using DXVKCompanion.DXVK;
 using DXVKCompanion.Models;
@@ -15,13 +18,69 @@ namespace DXVKCompanion.PhaseATests;
 
 public sealed class ProcessActivityBoundaryTests
 {
+    private static readonly DateTime FixedStartTime = new DateTime(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc);
+
+    private static byte[] CreateValidTarGzArchive(string version)
+    {
+        using var ms = new MemoryStream();
+        using (var gz = new GZipStream(ms, CompressionLevel.Optimal, leaveOpen: true))
+        using (var tar = new TarWriter(gz))
+        {
+            var d3d11Entry = new PaxTarEntry(TarEntryType.RegularFile, $"dxvk-{version}/x64/d3d11.dll");
+            byte[] d3d11Bytes = "synthetic-dxvk-d3d11"u8.ToArray();
+            d3d11Entry.DataStream = new MemoryStream(d3d11Bytes);
+            tar.WriteEntry(d3d11Entry);
+
+            var dxgiEntry = new PaxTarEntry(TarEntryType.RegularFile, $"dxvk-{version}/x64/dxgi.dll");
+            byte[] dxgiBytes = "synthetic-dxvk-dxgi"u8.ToArray();
+            dxgiEntry.DataStream = new MemoryStream(dxgiBytes);
+            tar.WriteEntry(dxgiEntry);
+        }
+        return ms.ToArray();
+    }
+
+    private sealed class BlockingHttpMessageHandler : HttpMessageHandler
+    {
+        private readonly byte[] _responseData;
+        private readonly TaskCompletionSource<bool> _downloadStartedTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource<bool> _continueDownloadTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public BlockingHttpMessageHandler(byte[] responseData)
+        {
+            _responseData = responseData;
+        }
+
+        public Task WaitForDownloadStartAsync() => _downloadStartedTcs.Task;
+        public void ReleaseDownload() => _continueDownloadTcs.TrySetResult(true);
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            _downloadStartedTcs.TrySetResult(true);
+            await _continueDownloadTcs.Task.WaitAsync(cancellationToken);
+
+            var response = new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+            {
+                Content = new ByteArrayContent(_responseData)
+            };
+            return response;
+        }
+    }
+
+    private static IEnumerable<System.Diagnostics.Process> ThrowingProcessEnumerable()
+    {
+        throw new Win32Exception(5, "Process enumeration denied during MoveNext().");
+#pragma warning disable CS0162
+        yield break;
+#pragma warning restore CS0162
+    }
+
     private sealed class FakeProcessInfo
     {
         public int Id { get; set; }
         public string ProcessName { get; set; } = string.Empty;
         public string? MainModulePath { get; set; }
         public bool ThrowAccessDeniedOnPath { get; set; }
-        public DateTime StartTime { get; set; } = DateTime.UtcNow;
+        public DateTime StartTime { get; set; } = FixedStartTime;
     }
 
     private static ProcessActivityInspector CreateFakeInspector(
@@ -60,7 +119,7 @@ public sealed class ProcessActivityBoundaryTests
             },
             processNameResolver: p => "svchost",
             mainModulePathResolver: p => throw new Win32Exception(5, "Access is denied."),
-            startTimeResolver: p => DateTime.UtcNow);
+            startTimeResolver: p => FixedStartTime);
 
         var evidence = inspector.GetActivityEvidence(installRoot, new[] { "Game.exe", "Launcher.exe" });
 
@@ -80,7 +139,7 @@ public sealed class ProcessActivityBoundaryTests
             processEnumerator: () => new[] { System.Diagnostics.Process.GetCurrentProcess() },
             processNameResolver: p => "Game",
             mainModulePathResolver: p => throw new Win32Exception(5, "Access is denied."),
-            startTimeResolver: p => DateTime.UtcNow);
+            startTimeResolver: p => FixedStartTime);
 
         var evidence = inspector.GetActivityEvidence(installRoot, new[] { "Game.exe" });
 
@@ -99,7 +158,7 @@ public sealed class ProcessActivityBoundaryTests
             processEnumerator: () => new[] { System.Diagnostics.Process.GetCurrentProcess() },
             processNameResolver: p => "Game",
             mainModulePathResolver: p => exePath,
-            startTimeResolver: p => DateTime.UtcNow);
+            startTimeResolver: p => FixedStartTime);
 
         var evidence = inspector.GetActivityEvidence(installRoot, new[] { "Game.exe" });
 
@@ -120,7 +179,7 @@ public sealed class ProcessActivityBoundaryTests
             processEnumerator: () => new[] { System.Diagnostics.Process.GetCurrentProcess() },
             processNameResolver: p => "Game",
             mainModulePathResolver: p => otherExePath,
-            startTimeResolver: p => DateTime.UtcNow);
+            startTimeResolver: p => FixedStartTime);
 
         var evidence = inspector.GetActivityEvidence(installRoot, new[] { "Game.exe" });
 
@@ -139,7 +198,7 @@ public sealed class ProcessActivityBoundaryTests
             processEnumerator: () => new[] { System.Diagnostics.Process.GetCurrentProcess() },
             processNameResolver: p => "Launcher",
             mainModulePathResolver: p => launcherPath,
-            startTimeResolver: p => DateTime.UtcNow);
+            startTimeResolver: p => FixedStartTime);
 
         // Candidate list contains primary Game.exe and registered sibling Launcher.exe
         var evidence = inspector.GetActivityEvidence(installRoot, new[] { "Game.exe", @"bin\Launcher.exe" });
@@ -169,7 +228,7 @@ public sealed class ProcessActivityBoundaryTests
             processEnumerator: () => new[] { System.Diagnostics.Process.GetCurrentProcess() },
             processNameResolver: p => "Game",
             mainModulePathResolver: p => exePath,
-            startTimeResolver: p => DateTime.UtcNow);
+            startTimeResolver: p => FixedStartTime);
 
         using var http = new HttpClient();
         var store = new GameLibraryStore(storePath, backupsPath) { LeaseCoordinator = coordinator };
@@ -230,7 +289,7 @@ public sealed class ProcessActivityBoundaryTests
             processEnumerator: () => new[] { System.Diagnostics.Process.GetCurrentProcess() },
             processNameResolver: p => "Game",
             mainModulePathResolver: p => throw new Win32Exception(5, "Access is denied."),
-            startTimeResolver: p => DateTime.UtcNow);
+            startTimeResolver: p => FixedStartTime);
 
         using var http = new HttpClient();
         var store = new GameLibraryStore(storePath, backupsPath) { LeaseCoordinator = coordinator };
@@ -258,7 +317,7 @@ public sealed class ProcessActivityBoundaryTests
             processEnumerator: () => new[] { System.Diagnostics.Process.GetCurrentProcess() },
             processNameResolver: p => "Game",
             mainModulePathResolver: p => exePath,
-            startTimeResolver: p => DateTime.UtcNow);
+            startTimeResolver: p => FixedStartTime);
         manager.ActivityInspector = runningInspector;
         installer.ActivityInspector = runningInspector;
 
@@ -299,7 +358,7 @@ public sealed class ProcessActivityBoundaryTests
             processEnumerator: () => new[] { System.Diagnostics.Process.GetCurrentProcess() },
             processNameResolver: p => throw new Win32Exception(5, "Access is denied."),
             mainModulePathResolver: p => null,
-            startTimeResolver: p => DateTime.UtcNow);
+            startTimeResolver: p => FixedStartTime);
 
         var evidence = inspector.GetActivityEvidence(installRoot, new[] { "Game.exe" });
         Assert.Equal(ProcessActivityEvidence.Unknown, evidence);
@@ -317,7 +376,7 @@ public sealed class ProcessActivityBoundaryTests
             processEnumerator: () => new[] { System.Diagnostics.Process.GetCurrentProcess() },
             processNameResolver: p => "Game",
             mainModulePathResolver: p => throw new InvalidOperationException("Process query failed."),
-            startTimeResolver: p => DateTime.UtcNow);
+            startTimeResolver: p => FixedStartTime);
 
         var evidence = inspector.GetActivityEvidence(installRoot, new[] { "Game.exe" });
         Assert.Equal(ProcessActivityEvidence.Unknown, evidence);
@@ -355,7 +414,7 @@ public sealed class ProcessActivityBoundaryTests
         Directory.CreateDirectory(installRoot);
 
         var inspector = new ProcessActivityInspector(
-            processEnumerator: () => throw new Win32Exception(5, "Process enumeration denied."),
+            processEnumerator: () => ThrowingProcessEnumerable(),
             processNameResolver: null,
             mainModulePathResolver: null,
             startTimeResolver: null);
@@ -381,10 +440,11 @@ public sealed class ProcessActivityBoundaryTests
         var storePath = Path.Combine(tempDir.RootPath, "game-library.json");
         var backupsPath = Path.Combine(tempDir.RootPath, "backups");
         var sourceDir = Path.Combine(tempDir.RootPath, "source");
-        var archDir = Path.Combine(sourceDir, "2.6", "x64");
-        Directory.CreateDirectory(archDir);
-        File.WriteAllText(Path.Combine(archDir, "d3d11.dll"), "dxvk-2.6-d3d11");
-        File.WriteAllText(Path.Combine(archDir, "dxgi.dll"), "dxvk-2.6-dxgi");
+        Directory.CreateDirectory(sourceDir);
+
+        byte[] tarGzData = CreateValidTarGzArchive("2.6");
+        var handler = new BlockingHttpMessageHandler(tarGzData);
+        using var http = new HttpClient(handler);
 
         int enumCallCount = 0;
         var raceInspector = new ProcessActivityInspector(
@@ -396,9 +456,8 @@ public sealed class ProcessActivityBoundaryTests
             },
             processNameResolver: p => "Game",
             mainModulePathResolver: p => exePath,
-            startTimeResolver: p => DateTime.UtcNow);
+            startTimeResolver: p => FixedStartTime);
 
-        using var http = new HttpClient();
         var store = new GameLibraryStore(storePath, backupsPath) { LeaseCoordinator = coordinator };
         var engine = new MultiFileTransactionEngine(backupsPath);
         var installer = new DxvkInstaller(http, engine, store, sourceDir)
@@ -408,14 +467,22 @@ public sealed class ProcessActivityBoundaryTests
         };
 
         var profile = new GameProfile(exePath) { Api = GraphicsApi.DX11, Architecture = "x64" };
-        var release = new ReleaseInfo { Version = "2.6", DownloadUrl = "" };
+        var release = new ReleaseInfo { Version = "2.6", DownloadUrl = "https://synthetic.test/dxvk-2.6.tar.gz" };
 
-        bool result = await installer.ApplyToGameAsync(profile, release);
+        var applyTask = installer.ApplyToGameAsync(profile, release);
 
-        // Must refuse
+        // Wait for download to begin
+        await handler.WaitForDownloadStartAsync();
+
+        // Release the download with the valid archive
+        handler.ReleaseDownload();
+
+        bool result = await applyTask;
+
+        // Must refuse due to post-download activity detection
         Assert.False(result);
         Assert.NotNull(installer.LastRefusalReason);
-        Assert.Contains("running", installer.LastRefusalReason, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("launched while downloading", installer.LastRefusalReason, StringComparison.OrdinalIgnoreCase);
 
         // Disk files must be completely untouched!
         Assert.Equal("pristine-native-d3d11", File.ReadAllText(d3d11Path));
@@ -430,5 +497,175 @@ public sealed class ProcessActivityBoundaryTests
         // Store must not have any managed record
         var inst = store.FindByInstallationPath(gameDir);
         Assert.True(inst == null || inst.RestorationState != RestorationState.Managed);
+    }
+
+    [Fact]
+    public async Task DownloadStageRace_ProfileChangedDuringDownload_AbortsBeforeMutation()
+    {
+        using var tempDir = new SyntheticTestDirectory();
+        using var coordDir = new SyntheticTestDirectory();
+
+        var coordinator = new OperationLeaseCoordinator(coordDir.RootPath);
+        var gameDir = Path.Combine(tempDir.RootPath, "Game");
+        Directory.CreateDirectory(gameDir);
+        var exePath = Path.Combine(gameDir, "Game.exe");
+        File.WriteAllText(exePath, "game-binary");
+        var d3d11Path = Path.Combine(gameDir, "d3d11.dll");
+        File.WriteAllText(d3d11Path, "pristine-native-d3d11");
+
+        var storePath = Path.Combine(tempDir.RootPath, "game-library.json");
+        var backupsPath = Path.Combine(tempDir.RootPath, "backups");
+        var profilesPath = Path.Combine(tempDir.RootPath, "profiles.json");
+        var sourceDir = Path.Combine(tempDir.RootPath, "source");
+        Directory.CreateDirectory(sourceDir);
+
+        byte[] tarGzData = CreateValidTarGzArchive("2.6");
+        var handler = new BlockingHttpMessageHandler(tarGzData);
+        using var http = new HttpClient(handler);
+
+        var cleanInspector = new ProcessActivityInspector(
+            processEnumerator: () => Array.Empty<System.Diagnostics.Process>(),
+            processNameResolver: null,
+            mainModulePathResolver: null,
+            startTimeResolver: null);
+
+        var store = new GameLibraryStore(storePath, backupsPath) { LeaseCoordinator = coordinator };
+        var profileStore = new ProfileStore(profilesPath) { LeaseCoordinator = coordinator };
+        var engine = new MultiFileTransactionEngine(backupsPath);
+        var installer = new DxvkInstaller(http, engine, store, sourceDir)
+        {
+            LeaseCoordinator = coordinator,
+            ActivityInspector = cleanInspector,
+            ProfileStore = profileStore
+        };
+
+        var profile = profileStore.GetOrCreate(exePath);
+        profile.Api = GraphicsApi.DX11;
+        profile.Architecture = "x64";
+        profileStore.Save(profile);
+
+        var release = new ReleaseInfo { Version = "2.6", DownloadUrl = "https://synthetic.test/dxvk-2.6.tar.gz" };
+
+        var applyTask = installer.ApplyToGameAsync(profile, release);
+
+        // Wait for download to start
+        await handler.WaitForDownloadStartAsync();
+
+        // Concurrently mutate profile file on disk to simulate baseline invalidation during download
+        File.WriteAllText(profilesPath, "{\"concurrent\": \"mutation\"}");
+
+        // Release the download
+        handler.ReleaseDownload();
+
+        bool result = await applyTask;
+
+        // Must refuse due to post-download profile baseline invalidation
+        Assert.False(result);
+        Assert.NotNull(installer.LastRefusalReason);
+        Assert.Contains("Profile store baseline was modified concurrently", installer.LastRefusalReason, StringComparison.OrdinalIgnoreCase);
+
+        // Disk files untouched
+        Assert.Equal("pristine-native-d3d11", File.ReadAllText(d3d11Path));
+        Assert.False(File.Exists(Path.Combine(gameDir, "dxgi.dll")));
+
+        // Backups directory empty
+        if (Directory.Exists(backupsPath))
+        {
+            Assert.Empty(Directory.EnumerateFiles(backupsPath, "*", SearchOption.AllDirectories));
+        }
+    }
+
+    [Fact]
+    public void CandidateProcess_WithEmbeddedDots_MatchesImageName()
+    {
+        using var tempDir = new SyntheticTestDirectory();
+        var installRoot = Path.Combine(tempDir.RootPath, "MyGame");
+        Directory.CreateDirectory(installRoot);
+        var exePath = Path.Combine(installRoot, "Game.Client.exe");
+
+        // Process name reported without .exe (e.g. "Game.Client") matches candidate "Game.Client.exe"
+        var inspector1 = new ProcessActivityInspector(
+            processEnumerator: () => new[] { System.Diagnostics.Process.GetCurrentProcess() },
+            processNameResolver: p => "Game.Client",
+            mainModulePathResolver: p => exePath,
+            startTimeResolver: p => FixedStartTime);
+
+        var evidence1 = inspector1.GetActivityEvidence(installRoot, new[] { "Game.Client.exe" });
+        Assert.Equal(ProcessActivityEvidence.Running, evidence1);
+
+        // Process name reported with .exe (e.g. "Game.Client.exe") matches candidate "Game.Client.exe"
+        var inspector2 = new ProcessActivityInspector(
+            processEnumerator: () => new[] { System.Diagnostics.Process.GetCurrentProcess() },
+            processNameResolver: p => "Game.Client.exe",
+            mainModulePathResolver: p => exePath,
+            startTimeResolver: p => FixedStartTime);
+
+        var evidence2 = inspector2.GetActivityEvidence(installRoot, new[] { "Game.Client.exe" });
+        Assert.Equal(ProcessActivityEvidence.Running, evidence2);
+
+        // Non-matching process "Game.Server" does not match candidate "Game.Client.exe"
+        var inspector3 = new ProcessActivityInspector(
+            processEnumerator: () => new[] { System.Diagnostics.Process.GetCurrentProcess() },
+            processNameResolver: p => "Game.Server",
+            mainModulePathResolver: p => exePath,
+            startTimeResolver: p => FixedStartTime);
+
+        var evidence3 = inspector3.GetActivityEvidence(installRoot, new[] { "Game.Client.exe" });
+        Assert.Equal(ProcessActivityEvidence.ConfirmedNotRunning, evidence3);
+    }
+
+    [Fact]
+    public void DxvkInstaller_AdoptExisting_SubdirectoryExecutable_VerifiesAuthoritativeRoot_RunningSiblingBlocks()
+    {
+        using var tempDir = new SyntheticTestDirectory();
+        using var coordDir = new SyntheticTestDirectory();
+
+        var coordinator = new OperationLeaseCoordinator(coordDir.RootPath);
+        var rootDir = Path.Combine(tempDir.RootPath, "MyGame");
+        var subDir = Path.Combine(rootDir, "bin");
+        Directory.CreateDirectory(subDir);
+
+        var subExe = Path.Combine(subDir, "Game.exe");
+        File.WriteAllText(subExe, "sub-game-exe");
+        var d3d11Dll = Path.Combine(subDir, "d3d11.dll");
+        File.WriteAllText(d3d11Dll, "dxvk-d3d11-content");
+
+        var siblingExe = Path.Combine(rootDir, "Launcher.exe");
+        File.WriteAllText(siblingExe, "launcher-exe");
+
+        var storePath = Path.Combine(tempDir.RootPath, "game-library.json");
+        var backupsPath = Path.Combine(tempDir.RootPath, "backups");
+        var sourceDir = Path.Combine(tempDir.RootPath, "source");
+        Directory.CreateDirectory(sourceDir);
+
+        var store = new GameLibraryStore(storePath, backupsPath) { LeaseCoordinator = coordinator };
+        var installation = store.GetOrCreateInstallation(rootDir, "My Game");
+        installation.GetOrAddExecutable("bin/Game.exe", "Game Client");
+        installation.GetOrAddExecutable("Launcher.exe", "Game Launcher");
+        store.Save(installation);
+
+        // Inspector simulates Launcher.exe running in authoritative root
+        var inspector = new ProcessActivityInspector(
+            processEnumerator: () => new[] { System.Diagnostics.Process.GetCurrentProcess() },
+            processNameResolver: p => "Launcher",
+            mainModulePathResolver: p => siblingExe,
+            startTimeResolver: p => FixedStartTime);
+
+        using var http = new HttpClient();
+        var engine = new MultiFileTransactionEngine(backupsPath);
+        var installer = new DxvkInstaller(http, engine, store, sourceDir)
+        {
+            LeaseCoordinator = coordinator,
+            ActivityInspector = inspector
+        };
+
+        var profile = new GameProfile(subExe) { Api = GraphicsApi.DX11, Architecture = "x64" };
+
+        bool adopted = installer.AdoptExisting(profile);
+
+        // Must refuse because running Launcher under authoritativeRoot was detected
+        Assert.False(adopted);
+        Assert.NotNull(installer.LastRefusalReason);
+        Assert.Contains("running", installer.LastRefusalReason, StringComparison.OrdinalIgnoreCase);
     }
 }

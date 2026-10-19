@@ -161,3 +161,33 @@
 - **Host Execution Guarantee:** Strictly 0 host builds or test runs on the human's Windows host (all verification performed on GitHub Actions Cloud CI).
 - **Public API Surface Guarantee:** Strictly 0 public API additions or signature breaks (all safety types and methods remain internal).
 
+---
+
+## 6. Focused Delta Repair Cycle — Codex Review (PR #179 Comment 6258447248)
+
+**Date:** 2026-10-19  
+**Trigger:** Focused delta review on PR #179 across 6 specific design and verification areas (D1 - D6).
+
+### A. Addressed Areas & Implementation
+1. **D1 / R2 (Store Lease Write Bypass & Inverted Wait):**
+   - In `GameLibraryStore.cs`, `GetOrCreateInstallation` and `TrySaveHealthAfterFailedCompensation`: lease acquisition now fails closed before entering `lock (_sync)`. If lease acquisition times out or returns null, `GetOrCreateInstallation` throws `IOException` immediately and `TrySaveHealthAfterFailedCompensation` returns `false` immediately without mutating in-memory state or attempting to write.
+2. **D2 / R2 (Profile Store Preflights & Broken-Load Isolation):**
+   - In `ProfileStore.cs`: introduced `_isBrokenLoad` and `_brokenLoadReason`. In `Load()`, unreadable files or malformed JSON deserialization set `_isBrokenLoad = true` and leave `_lastCommittedBytes` empty. `TryCheckCanModifyProfileStore` returns `false` on broken load or disk baseline mismatch. `Save` throws `IOException` refusing to overwrite corrupted files.
+   - In `DxvkInstaller.cs`: wired `ProfileStore` preflight validation into `ApplyToGameAsync`, `ReapplyAsync`, and `AdoptExisting`.
+   - In `DxvkManager.cs`: wired `ProfileStore.TryCheckCanModifyProfileStore` into all mutation preflights (`EnableDxvkAsync`, `DisableDxvkAsync`, `AdoptExistingAsync`, `ReapplyAsync`, `QueueOrApplyAsync`).
+3. **D3 / R3 (Manager Reassessment, Cancellation & Intent Under Lease Scope):**
+   - In `DxvkManager.cs`: `ClearCancelledState`, `ReassessEffectiveApi`, and intent capture now execute strictly under established owner lease scope; eliminated unguarded naked `ClearCancelledState` calls before guards; propagated explicit store leases into `GameLibraryStore`; in `ApplyPendingAsync`, removed only completed transient intent via `_pending.TryRemove(new KeyValuePair<string, PendingAction>(exePath, currentTransient))`.
+4. **D4 / R1, R5 (Activity Boundaries, Lifetime Matching, & Authoritative Roots):**
+   - In `ProcessActivityInspector.cs`: image normalization strips only the `.exe` suffix, preserving embedded dots (e.g. `Game.Client.exe` -> `Game.Client`). Process lifetime verification enforces exact start-time equality (`currentStartTime == initialStartTime`).
+   - In `DxvkInstaller.AdoptExisting`: passes `authoritativeRoot` (not `gameDir`) to `GetActivityEvidence`.
+   - In `OperationResourceIdentity.ResolveAuthoritativeInstallationRoot`: supplied invalid/unsupported roots (UNC/network shares) throw `NotSupportedException` directly rather than silently falling back to `exePath`.
+5. **D5 / R1, R6 (Hierarchy Scan Publication Race, Stream Ownership Transfer & Token Validation):**
+   - In `OperationLeaseCoordinator.cs`: hierarchy scanning fail-closed protocol treats empty or unreadable target locks and directory enumeration failures as conflicts after retries; carries remaining acquisition budget and cancellation token to bound scan execution to 500 ms; wraps raw `FileStream` post-open setup in `try ... finally { stream?.Dispose(); }` with explicit ownership transfer to `FileLockLease`; `UnauthorizedAccessException` sets `LastAcquisitionError` and returns `null` immediately without busy retry.
+   - In `DxvkInstaller.cs`, `DxvkRollback.cs`, and `ManagedFileInspector.cs`: validated composite store leases using `(!leaseToken.IsValidForStore(...) && (leaseToken.StoreLease == null || !leaseToken.StoreLease.IsValidForStore(...)))`.
+6. **D6 / R4, R8 (Test Fixture Harness & Hardening):**
+   - In `ProcessActivityBoundaryTests.cs`: replaced all synthetic test `startTimeResolver` `DateTime.UtcNow` hooks with fixed timestamps to adhere to exact equality; updated `ProcessEnumeration_LazyException_ReturnsUnknown` to test lazy enumeration `MoveNext()` throw; rewrote `DownloadStageRace_ActivityDetected_AbortsBeforeMutation_FilesUntouched` using `BlockingHttpMessageHandler` and dynamically generated valid `tar.gz` archive (`PaxTarEntry`); added sibling test `DownloadStageRace_ProfileChangedDuringDownload_AbortsBeforeMutation`; added embedded-dot candidate matching tests; added `AdoptExisting` authoritative root check with sibling running.
+   - In `OperationLeaseCoordinatorTests.cs`: added publication contention test with empty target lock file; added prompt cancellation test with cancelled token; added component wrong-store validation test; added `ResolveAuthoritativeInstallationRoot` UNC throwing test; hardened `InterProcessLocking_OwnedCloudHelper_ExcludesParentDuringHold` with self-terminating PowerShell script (`exit 0`), 15s parent timeout, and confirmed child termination in `finally`.
+   - In `ProfileStorePersistenceTests.cs`: added tests for corrupted JSON / broken load refusal, external modification baseline mismatch, and manager preflight refusal.
+   - In `GameLibraryStorePersistenceTests.cs`: added test for independent held store lease blocking `GetOrCreateInstallation` and `TrySaveHealthAfterFailedCompensation`, preserving disk baseline, and succeeding on retry.
+
+

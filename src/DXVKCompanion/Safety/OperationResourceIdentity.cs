@@ -205,14 +205,7 @@ namespace DXVKCompanion.Safety
         {
             if (!string.IsNullOrWhiteSpace(installationPath))
             {
-                try
-                {
-                    return ResolveCanonicalPath(installationPath);
-                }
-                catch
-                {
-                    // Fall back to resolving from exePath if installationPath fails canonical resolution
-                }
+                return ResolveCanonicalPath(installationPath);
             }
 
             if (!string.IsNullOrWhiteSpace(exePath))

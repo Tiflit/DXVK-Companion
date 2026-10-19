@@ -57,7 +57,10 @@ namespace DXVKCompanion.Safety
                 foreach (var name in candidateExecutableNames)
                 {
                     if (string.IsNullOrWhiteSpace(name)) continue;
-                    string baseName = Path.GetFileNameWithoutExtension(name);
+                    string fileName = Path.GetFileName(name);
+                    string baseName = fileName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)
+                        ? fileName.Substring(0, fileName.Length - 4)
+                        : fileName;
                     if (!string.IsNullOrEmpty(baseName))
                     {
                         candidateSet.Add(baseName);
@@ -136,8 +139,11 @@ namespace DXVKCompanion.Safety
                         continue;
                     }
 
-                    // Normalize actual image name as well as candidates
-                    string processName = Path.GetFileNameWithoutExtension(rawName);
+                    // Normalize actual image name as well as candidates (strip only .exe, preserving embedded dots)
+                    string rawFileName = Path.GetFileName(rawName);
+                    string processName = rawFileName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)
+                        ? rawFileName.Substring(0, rawFileName.Length - 4)
+                        : rawFileName;
 
                     // Candidate Relevance Filtering: Ignore completely unrelated processes
                     if (!candidateSet.Contains(processName))
@@ -244,7 +250,7 @@ namespace DXVKCompanion.Safety
                         }
 
                         var currentStartTime = _startTimeResolver != null ? _startTimeResolver(process) : process.StartTime;
-                        if (Math.Abs((currentStartTime - initialStartTime).TotalMilliseconds) > 50)
+                        if (currentStartTime != initialStartTime)
                         {
                             candidateAccessDenied = true;
                             continue;

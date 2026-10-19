@@ -16,8 +16,12 @@ namespace DXVKCompanion.Storage
         private readonly object _sync = new();
         private readonly string _profilesFile;
         private byte[]? _lastCommittedBytes;
+        private bool _isBrokenLoad;
+        private string? _brokenLoadReason;
 
         internal string ProfilesFile => _profilesFile;
+        internal bool HasBrokenLoad => _isBrokenLoad;
+        internal string? BrokenLoadReason => _brokenLoadReason;
         internal IOperationLeaseCoordinator LeaseCoordinator { get; set; } = OperationLeaseCoordinator.Default;
 
         internal Action<string, string>? CustomTempWriter { get; set; }
@@ -71,6 +75,13 @@ namespace DXVKCompanion.Storage
                 }
             }
 
+            if (_isBrokenLoad)
+            {
+                acquiredLease?.Dispose();
+                HasPendingWriteRetry = true;
+                throw new IOException($"Cannot modify profile store: existing file is corrupted or was inaccessible on load ({_brokenLoadReason}).");
+            }
+
             try
             {
                 lock (_sync)
@@ -117,6 +128,12 @@ namespace DXVKCompanion.Storage
         internal bool TryCheckCanModifyProfileStore(out string? refusalReason, IOperationLease? storeLease)
         {
             refusalReason = null;
+            if (_isBrokenLoad)
+            {
+                refusalReason = $"Cannot modify profile store: existing file is corrupted or was inaccessible on load ({_brokenLoadReason}).";
+                return false;
+            }
+
             IOperationLease? acquiredLease = null;
             if (storeLease != null)
             {
@@ -193,21 +210,51 @@ namespace DXVKCompanion.Storage
                 return;
             }
 
+            byte[] bytes;
             try
             {
-                var bytes = File.ReadAllBytes(_profilesFile);
-                _lastCommittedBytes = bytes;
-                var list = JsonSerializer.Deserialize<List<GameProfile>>(bytes);
-
-                if (list == null)
-                    return;
-
-                foreach (var p in list)
-                    _profiles[p.ExePath] = p;
+                bytes = File.ReadAllBytes(_profilesFile);
             }
-            catch
+            catch (Exception ex)
             {
-                // Corrupted profile file -> ignore and start fresh
+                _isBrokenLoad = true;
+                _brokenLoadReason = $"Existing profile file could not be read on startup ({ex.GetType().Name}: {ex.Message}).";
+                _lastCommittedBytes = null;
+                return;
+            }
+
+            try
+            {
+                var list = JsonSerializer.Deserialize<List<GameProfile>>(bytes);
+                if (list == null)
+                {
+                    _isBrokenLoad = true;
+                    _brokenLoadReason = "Profile file contains null content.";
+                    _lastCommittedBytes = null;
+                    return;
+                }
+
+                var staged = new Dictionary<string, GameProfile>(StringComparer.OrdinalIgnoreCase);
+                foreach (var p in list)
+                {
+                    if (p != null && !string.IsNullOrWhiteSpace(p.ExePath))
+                    {
+                        staged[p.ExePath] = p;
+                    }
+                }
+
+                foreach (var kvp in staged)
+                {
+                    _profiles[kvp.Key] = kvp.Value;
+                }
+
+                _lastCommittedBytes = bytes;
+            }
+            catch (Exception ex)
+            {
+                _isBrokenLoad = true;
+                _brokenLoadReason = $"Profile file contains corrupted JSON ({ex.GetType().Name}: {ex.Message}).";
+                _lastCommittedBytes = null;
             }
         }
 

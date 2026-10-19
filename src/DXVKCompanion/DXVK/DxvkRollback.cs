@@ -77,7 +77,7 @@ namespace DXVKCompanion.DXVK
                 {
                     if (leaseToken.IsDisposed || !leaseToken.IsAcquired ||
                         !leaseToken.IsValidForTarget(authoritativeRoot) ||
-                        (leaseToken.StoreLease == null && !leaseToken.IsValidForStore(_gameLibraryStore.LibraryFilePath)))
+                        (!leaseToken.IsValidForStore(_gameLibraryStore.LibraryFilePath) && (leaseToken.StoreLease == null || !leaseToken.StoreLease.IsValidForStore(_gameLibraryStore.LibraryFilePath))))
                     {
                         throw new ArgumentException("Invalid, mismatched, or incomplete lease token for installation and store scope.", nameof(leaseToken));
                     }

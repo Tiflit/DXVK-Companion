@@ -39,7 +39,7 @@ namespace DXVKCompanion.Storage
             {
                 if (leaseToken.IsDisposed || !leaseToken.IsAcquired ||
                     !leaseToken.IsValidForTarget(installation.InstallationPath) ||
-                    (leaseToken.StoreLease == null && !leaseToken.IsValidForStore(_store.LibraryFilePath)))
+                    (!leaseToken.IsValidForStore(_store.LibraryFilePath) && (leaseToken.StoreLease == null || !leaseToken.StoreLease.IsValidForStore(_store.LibraryFilePath))))
                 {
                     throw new ArgumentException("Invalid, mismatched, or disposed lease token for inspection.", nameof(leaseToken));
                 }
@@ -279,7 +279,11 @@ namespace DXVKCompanion.Storage
 
                         try
                         {
-                            _store.Save(installation);
+                            using var storeLease = _store.LeaseCoordinator.TryAcquireStoreLease(_store.LibraryFilePath, TimeSpan.FromMilliseconds(500));
+                            if (storeLease != null)
+                            {
+                                _store.Save(installation, storeLease);
+                            }
                         }
                         catch (Exception saveEx)
                         {

@@ -5,6 +5,7 @@ using System.Linq;
 using System.Text;
 using DXVKCompanion.Models;
 using DXVKCompanion.PhaseATests;
+using DXVKCompanion.Safety;
 using DXVKCompanion.Storage;
 using Xunit;
 
@@ -982,6 +983,55 @@ namespace DXVKCompanion.PhaseA.Tests
 
             // Clean-slate in-memory initialization
             Assert.Empty(store.GetAll());
+        }
+
+        [Fact]
+        public void GameLibraryStore_IndependentStoreLease_BlocksGetOrCreateAndTrySaveHealth()
+        {
+            using var testDir = new SyntheticTestDirectory();
+            using var coordDir = new SyntheticTestDirectory();
+            string libraryFile = Path.Combine(testDir.RootPath, "game-library.json");
+            string backupsDir = Path.Combine(testDir.RootPath, "backups");
+
+            var coordinator = new OperationLeaseCoordinator(coordDir.RootPath);
+            var store = new GameLibraryStore(libraryFile, backupsDir) { LeaseCoordinator = coordinator };
+
+            // 1. Initial setup: create and save an initial installation
+            var initial = store.GetOrCreateInstallation(@"C:\Games\GameA", "Game A");
+            byte[] baselineBytes = File.ReadAllBytes(libraryFile);
+
+            // 2. An independent coordinator acquires the store lease
+            var externalCoordinator = new OperationLeaseCoordinator(coordDir.RootPath);
+            using (var externalLease = externalCoordinator.TryAcquireStoreLease(libraryFile, timeout: TimeSpan.FromMilliseconds(500)))
+            {
+                Assert.NotNull(externalLease);
+                Assert.True(externalLease.IsAcquired);
+
+                // With store lease held externally, GetOrCreateInstallation must fail to acquire lease and throw IOException
+                var ex = Assert.Throws<IOException>(() =>
+                    store.GetOrCreateInstallation(@"C:\Games\GameB", "Game B"));
+                Assert.Contains("Cannot acquire store lease", ex.Message);
+
+                // TrySaveHealthAfterFailedCompensation must return false without modifying store
+                bool healthSaved = store.TrySaveHealthAfterFailedCompensation(
+                    initial,
+                    RestorationState.AttentionRequired,
+                    "Failed compensation",
+                    "Simulated error");
+                Assert.False(healthSaved);
+
+                // Disk baseline must remain byte-for-byte identical
+                Assert.Equal(baselineBytes, File.ReadAllBytes(libraryFile));
+            }
+
+            // 3. After external store lease is released, retry of GetOrCreateInstallation succeeds immediately
+            var retry = store.GetOrCreateInstallation(@"C:\Games\GameB", "Game B");
+            Assert.NotNull(retry);
+            Assert.Equal("Game B", retry.DisplayName);
+
+            // Disk file now updated with Game B
+            var reloaded = new GameLibraryStore(libraryFile, backupsDir);
+            Assert.NotNull(reloaded.FindByInstallationPath(@"C:\Games\GameB"));
         }
     }
 }

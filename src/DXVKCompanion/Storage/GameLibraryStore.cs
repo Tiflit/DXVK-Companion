@@ -179,6 +179,10 @@ namespace DXVKCompanion.Storage
             var normalized = GameInstallation.NormalizeInstallationPath(installationPath);
 
             var lease = ValidateOrAcquireStoreLease(storeLease, out bool ownsLease);
+            if (lease == null)
+            {
+                throw new IOException($"Operation in progress for game library store: {_libraryFilePath}. Please retry shortly.");
+            }
             try
             {
                 lock (_sync)
@@ -853,6 +857,10 @@ namespace DXVKCompanion.Storage
             if (installation == null) throw new ArgumentNullException(nameof(installation));
 
             var lease = ValidateOrAcquireStoreLease(storeLease, out bool ownsLease);
+            if (lease == null)
+            {
+                return false;
+            }
             try
             {
                 lock (_sync)

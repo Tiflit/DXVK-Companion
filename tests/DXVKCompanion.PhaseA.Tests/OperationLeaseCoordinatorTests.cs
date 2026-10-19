@@ -335,7 +335,7 @@ public sealed class OperationLeaseCoordinatorTests
         var psi = new ProcessStartInfo
         {
             FileName = "powershell.exe",
-            Arguments = $"-NoProfile -NonInteractive -Command \"$f = new-object System.IO.FileStream('{fullLockPath.Replace("'", "''")}', [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None, 4096, [System.IO.FileOptions]::DeleteOnClose); [Console]::Out.WriteLine('LOCKED'); [Console]::Out.Flush(); Start-Sleep -Milliseconds 2000; $f.Dispose()\"",
+            Arguments = $"-NoProfile -NonInteractive -Command \"$f = new-object System.IO.FileStream('{fullLockPath.Replace("'", "''")}', [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None, 4096, [System.IO.FileOptions]::DeleteOnClose); [Console]::Out.WriteLine('LOCKED'); [Console]::Out.Flush(); Start-Sleep -Milliseconds 2000; $f.Dispose(); exit 0\"",
             UseShellExecute = false,
             CreateNoWindow = true,
             RedirectStandardOutput = true,
@@ -343,7 +343,7 @@ public sealed class OperationLeaseCoordinatorTests
         };
 
         Process? helper = null;
-        using var hardTimeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        using var hardTimeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
         try
         {
             helper = Process.Start(psi);
@@ -383,13 +383,83 @@ public sealed class OperationLeaseCoordinatorTests
                     if (!helper.HasExited)
                     {
                         helper.Kill(entireProcessTree: true);
-                        helper.WaitForExit(5000);
+                        Assert.True(helper.WaitForExit(5000));
+                    }
+                    else
+                    {
+                        Assert.True(helper.HasExited);
                     }
                 }
                 catch { }
                 helper.Dispose();
             }
         }
+    }
+
+    [Fact]
+    public async Task TargetLockPublicationContention_EmptyFile_DetectedAsConflictAndRefused()
+    {
+        using var tempDir = new SyntheticTestDirectory();
+        using var coordDir = new SyntheticTestDirectory();
+
+        var coordinator = new OperationLeaseCoordinator(coordDir.RootPath);
+        var targetPath = Path.Combine(tempDir.RootPath, "ContestedGame");
+        Directory.CreateDirectory(targetPath);
+
+        // Pre-create an empty 0-byte target lock file to simulate in-flight publication contention
+        string dummyLockPath = Path.Combine(coordDir.RootPath, "target_0000000000000000000000000000000000000000000000000000000000000000.lock");
+        File.WriteAllBytes(dummyLockPath, Array.Empty<byte>());
+
+        // Attempting to acquire any target lease must fail-closed on publication contention
+        await using var lease = await coordinator.TryAcquireOperationScopeAsync(targetPath, timeout: TimeSpan.FromMilliseconds(100));
+        Assert.Null(lease);
+    }
+
+    [Fact]
+    public async Task TryAcquireOperationScopeAsync_CancelledToken_TerminatesPromptly()
+    {
+        using var tempDir = new SyntheticTestDirectory();
+        using var coordDir = new SyntheticTestDirectory();
+
+        var coordinator = new OperationLeaseCoordinator(coordDir.RootPath);
+        var targetPath = Path.Combine(tempDir.RootPath, "Game");
+        Directory.CreateDirectory(targetPath);
+
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        var sw = Stopwatch.StartNew();
+        await using var lease = await coordinator.TryAcquireOperationScopeAsync(targetPath, timeout: TimeSpan.FromMilliseconds(500), cancellationToken: cts.Token);
+        sw.Stop();
+
+        Assert.Null(lease);
+        Assert.True(sw.ElapsedMilliseconds < 150, $"Expected prompt cancellation, took {sw.ElapsedMilliseconds} ms");
+    }
+
+    [Fact]
+    public void OperationLease_WrongStoreValidation_RejectedAcrossComponents()
+    {
+        using var tempDir = new SyntheticTestDirectory();
+        using var coordDir = new SyntheticTestDirectory();
+
+        var coordinator = new OperationLeaseCoordinator(coordDir.RootPath);
+        var target = Path.Combine(tempDir.RootPath, "Game");
+        var storeA = Path.Combine(tempDir.RootPath, "store_a.json");
+        var storeB = Path.Combine(tempDir.RootPath, "store_b.json");
+        Directory.CreateDirectory(target);
+        File.WriteAllText(storeA, "{}");
+        File.WriteAllText(storeB, "{}");
+
+        // Acquire composite lease covering target and storeA only
+        using var lease = coordinator.TryAcquireOperationScope(target, storeA);
+        Assert.NotNull(lease);
+        Assert.True(lease.IsValidForTarget(target));
+        Assert.True(lease.IsValidForStore(storeA));
+
+        // Validation against wrong storeB must return false on both composite token and StoreLease
+        Assert.False(lease.IsValidForStore(storeB));
+        Assert.NotNull(lease.StoreLease);
+        Assert.False(lease.StoreLease.IsValidForStore(storeB));
     }
 
     [Fact]
@@ -416,6 +486,22 @@ public sealed class OperationLeaseCoordinatorTests
         string authoritative = OperationResourceIdentity.ResolveAuthoritativeInstallationRoot(null, exePath);
 
         Assert.Equal(OperationResourceIdentity.ResolveCanonicalPath(gameDir), authoritative);
+    }
+
+    [Fact]
+    public void ResolveAuthoritativeInstallationRoot_SuppliedInvalidUncRoot_ThrowsNotSupportedException()
+    {
+        using var temp = new SyntheticTestDirectory();
+        var localExe = Path.Combine(temp.RootPath, "game.exe");
+        File.WriteAllText(localExe, "dummy");
+
+        // Supplying an unsupported UNC installation root must throw NotSupportedException
+        Assert.Throws<NotSupportedException>(() =>
+            OperationResourceIdentity.ResolveAuthoritativeInstallationRoot(@"\\server\share\game", localExe));
+
+        // When installation path is null or whitespace, falls back to exe directory without throwing
+        string fallback = OperationResourceIdentity.ResolveAuthoritativeInstallationRoot(null, localExe);
+        Assert.Equal(OperationResourceIdentity.ResolveCanonicalPath(temp.RootPath), fallback);
     }
 
     [Fact]

@@ -247,9 +247,10 @@ namespace DXVKCompanion.Safety
             var sw = Stopwatch.StartNew();
             while (sw.Elapsed < timeout && !ct.IsCancellationRequested)
             {
+                FileStream? stream = null;
                 try
                 {
-                    var stream = new FileStream(
+                    stream = new FileStream(
                         lockFilePath,
                         FileMode.OpenOrCreate,
                         FileAccess.ReadWrite,
@@ -262,17 +263,23 @@ namespace DXVKCompanion.Safety
                     stream.Write(pathBytes, 0, pathBytes.Length);
                     stream.Flush();
 
-                    if (isTarget && HasConflictingTargetLock(lockFilePath, canonicalPath))
+                    var remainingBudget = timeout - sw.Elapsed;
+                    bool hasConflict = isTarget && await HasConflictingTargetLockAsync(lockFilePath, canonicalPath, remainingBudget, ct).ConfigureAwait(false);
+
+                    if (hasConflict || sw.Elapsed >= timeout || ct.IsCancellationRequested)
                     {
                         stream.Dispose();
+                        stream = null;
                     }
                     else
                     {
-                        return new FileLockLease(
+                        var lease = new FileLockLease(
                             canonicalPath,
                             lockKey,
                             stream,
                             isTarget ? OperationLeaseKind.Target : OperationLeaseKind.Store);
+                        stream = null; // ownership transferred to lease
+                        return lease;
                     }
                 }
                 catch (IOException ex) when (IsContentionException(ex))
@@ -281,15 +288,16 @@ namespace DXVKCompanion.Safety
                 }
                 catch (UnauthorizedAccessException ex)
                 {
-                    if (!File.Exists(lockFilePath))
-                    {
-                        LastAcquisitionError = $"Access denied to coordination directory or lock file '{lockFilePath}': {ex.Message}";
-                        return null;
-                    }
+                    LastAcquisitionError = $"Access denied to coordination directory or lock file '{lockFilePath}': {ex.Message}";
+                    return null;
+                }
+                finally
+                {
+                    stream?.Dispose();
                 }
 
                 var remaining = timeout - sw.Elapsed;
-                if (remaining <= TimeSpan.Zero)
+                if (remaining <= TimeSpan.Zero || ct.IsCancellationRequested)
                 {
                     break;
                 }
@@ -326,9 +334,10 @@ namespace DXVKCompanion.Safety
             var sw = Stopwatch.StartNew();
             while (sw.Elapsed < timeout)
             {
+                FileStream? stream = null;
                 try
                 {
-                    var stream = new FileStream(
+                    stream = new FileStream(
                         lockFilePath,
                         FileMode.OpenOrCreate,
                         FileAccess.ReadWrite,
@@ -341,17 +350,23 @@ namespace DXVKCompanion.Safety
                     stream.Write(pathBytes, 0, pathBytes.Length);
                     stream.Flush();
 
-                    if (isTarget && HasConflictingTargetLock(lockFilePath, canonicalPath))
+                    var remainingBudget = timeout - sw.Elapsed;
+                    bool hasConflict = isTarget && HasConflictingTargetLockSync(lockFilePath, canonicalPath, remainingBudget);
+
+                    if (hasConflict || sw.Elapsed >= timeout)
                     {
                         stream.Dispose();
+                        stream = null;
                     }
                     else
                     {
-                        return new FileLockLease(
+                        var lease = new FileLockLease(
                             canonicalPath,
                             lockKey,
                             stream,
                             isTarget ? OperationLeaseKind.Target : OperationLeaseKind.Store);
+                        stream = null; // ownership transferred
+                        return lease;
                     }
                 }
                 catch (IOException ex) when (IsContentionException(ex))
@@ -360,11 +375,12 @@ namespace DXVKCompanion.Safety
                 }
                 catch (UnauthorizedAccessException ex)
                 {
-                    if (!File.Exists(lockFilePath))
-                    {
-                        LastAcquisitionError = $"Access denied to coordination directory or lock file '{lockFilePath}': {ex.Message}";
-                        return null;
-                    }
+                    LastAcquisitionError = $"Access denied to coordination directory or lock file '{lockFilePath}': {ex.Message}";
+                    return null;
+                }
+                finally
+                {
+                    stream?.Dispose();
                 }
 
                 var remaining = timeout - sw.Elapsed;
@@ -385,21 +401,42 @@ namespace DXVKCompanion.Safety
             return null;
         }
 
-        private bool HasConflictingTargetLock(string myLockFilePath, string myCanonicalPath)
+        private async Task<bool> HasConflictingTargetLockAsync(
+            string myLockFilePath,
+            string myCanonicalPath,
+            TimeSpan remainingBudget,
+            CancellationToken ct)
         {
+            var sw = Stopwatch.StartNew();
             try
             {
                 if (!Directory.Exists(CoordinationDirectory)) return false;
 
-                foreach (var file in Directory.EnumerateFiles(CoordinationDirectory, "target_*.lock"))
+                IEnumerable<string> files;
+                try
+                {
+                    files = Directory.EnumerateFiles(CoordinationDirectory, "target_*.lock");
+                }
+                catch
+                {
+                    return true;
+                }
+
+                foreach (var file in files)
                 {
                     if (string.Equals(file, myLockFilePath, StringComparison.OrdinalIgnoreCase))
                     {
                         continue;
                     }
 
+                    bool readSuccess = false;
                     for (int attempt = 0; attempt < 3; attempt++)
                     {
+                        if (sw.Elapsed >= remainingBudget || ct.IsCancellationRequested)
+                        {
+                            return true;
+                        }
+
                         try
                         {
                             using var readStream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
@@ -407,6 +444,7 @@ namespace DXVKCompanion.Safety
                             string otherPath = reader.ReadToEnd().Trim();
                             if (!string.IsNullOrEmpty(otherPath))
                             {
+                                readSuccess = true;
                                 if (OperationResourceIdentity.PathEquals(myCanonicalPath, otherPath) ||
                                     OperationResourceIdentity.IsPathInside(myCanonicalPath, otherPath) ||
                                     OperationResourceIdentity.IsPathInside(otherPath, myCanonicalPath))
@@ -418,16 +456,103 @@ namespace DXVKCompanion.Safety
                         }
                         catch
                         {
-                            // File may be in middle of atomic creation or deletion
+                            // Incomplete publication or transient lock
                         }
 
-                        Thread.Sleep(5);
+                        var delay = Math.Min(5, Math.Max(1, (int)(remainingBudget - sw.Elapsed).TotalMilliseconds));
+                        if (delay > 0)
+                        {
+                            await Task.Delay(delay, ct).ConfigureAwait(false);
+                        }
+                    }
+
+                    if (!readSuccess)
+                    {
+                        return true;
                     }
                 }
             }
             catch
             {
-                // Directory enumeration issue
+                return true;
+            }
+
+            return false;
+        }
+
+        private bool HasConflictingTargetLockSync(
+            string myLockFilePath,
+            string myCanonicalPath,
+            TimeSpan remainingBudget)
+        {
+            var sw = Stopwatch.StartNew();
+            try
+            {
+                if (!Directory.Exists(CoordinationDirectory)) return false;
+
+                IEnumerable<string> files;
+                try
+                {
+                    files = Directory.EnumerateFiles(CoordinationDirectory, "target_*.lock");
+                }
+                catch
+                {
+                    return true;
+                }
+
+                foreach (var file in files)
+                {
+                    if (string.Equals(file, myLockFilePath, StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    bool readSuccess = false;
+                    for (int attempt = 0; attempt < 3; attempt++)
+                    {
+                        if (sw.Elapsed >= remainingBudget)
+                        {
+                            return true;
+                        }
+
+                        try
+                        {
+                            using var readStream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                            using var reader = new StreamReader(readStream, System.Text.Encoding.UTF8);
+                            string otherPath = reader.ReadToEnd().Trim();
+                            if (!string.IsNullOrEmpty(otherPath))
+                            {
+                                readSuccess = true;
+                                if (OperationResourceIdentity.PathEquals(myCanonicalPath, otherPath) ||
+                                    OperationResourceIdentity.IsPathInside(myCanonicalPath, otherPath) ||
+                                    OperationResourceIdentity.IsPathInside(otherPath, myCanonicalPath))
+                                {
+                                    return true;
+                                }
+                                break;
+                            }
+                        }
+                        catch
+                        {
+                            // Incomplete publication or transient lock
+                        }
+
+                        var delay = Math.Min(5, Math.Max(1, (int)(remainingBudget - sw.Elapsed).TotalMilliseconds));
+                        if (delay > 0)
+                        {
+                            Thread.Sleep(delay);
+                        }
+                    }
+
+                    if (!readSuccess)
+                    {
+                        return true;
+                    }
+                }
+            }
+            catch
+            {
+                return true;
             }
 
             return false;
