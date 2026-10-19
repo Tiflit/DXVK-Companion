@@ -678,7 +678,7 @@ public sealed class OperationExclusionBoundaryTests
         // Assert: in-memory live state was NOT mutated because lease was unavailable
         Assert.NotNull(installation.LastCancelledAction);
         Assert.Equal(cancelledAction.Type, installation.LastCancelledAction.Type);
-        Assert.Equal(cancelledAction.TargetVersion, installation.LastCancelledAction.TargetVersion);
+        Assert.Equal(cancelledAction.TargetDxvkVersion, installation.LastCancelledAction.TargetDxvkVersion);
         Assert.Equal("Prior cancel", installation.LastCancellationReason);
         Assert.Equal("Cancelled", installation.LastCancellationOutcome);
         Assert.Equal("Cancelled pending action", installation.LastRefusalReason);
@@ -756,8 +756,8 @@ public sealed class OperationExclusionBoundaryTests
         installation.ManagedFiles.Add(new ManagedFileRecord
         {
             RelativePath = "d3d11.dll",
-            RecordedSha256 = "dummy-sha",
-            FileSizeBytes = 100
+            ExpectedManagedSha256 = "dummy-sha",
+            ManagedDxvkVersion = "2.5"
         });
         libraryStore.Save(installation);
 
