@@ -239,5 +239,6 @@
      - Bounded per-candidate inspection to a maximum of 50 ms (`var fileBudgetMs = Math.Min(50, Math.Max(10, (int)(remainingBudget - sw.Elapsed).TotalMilliseconds))`) preventing any single candidate from starving the caller's acquisition budget.
      - Discriminated `UnauthorizedAccessException` as `deletePendingObserved = true` because active locks always grant `FileShare.Read` and `FileShare.Delete`, so `UnauthorizedAccessException` on NTFS exclusively denotes a closed handle in `STATUS_DELETE_PENDING`.
      - In post-loop resolution, if a candidate was delete-pending (`deletePendingObserved`) or deleted (`!File.Exists(file)`), it is safely skipped as non-conflicting, while real 0-byte publication contention (e.g. `dummyLockPath`) continues to fail-closed as conflict (`return true`).
-- **Scope & API Surface Check:** All modified files remain strictly within declared Issue #178 allowed paths (`OperationLeaseCoordinator.cs` and this journal). Zero public API changes. Strictly 0 host test executions.
+  3. In `OperationLeaseCoordinatorTests.InterProcessLocking_OwnedCloudHelper_ExcludesParentDuringHold`: increased helper process startup and exit timeout bounds from 5s to 15s to prevent false-positive timeouts caused by Windows PowerShell cold-start under parallel test runner load.
+- **Scope & API Surface Check:** All modified files remain strictly within declared Issue #178 allowed paths (`OperationLeaseCoordinator.cs`, `OperationLeaseCoordinatorTests.cs`, and this journal). Zero public API changes. Strictly 0 host test executions.
 

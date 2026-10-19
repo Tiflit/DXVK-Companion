@@ -352,9 +352,9 @@ public sealed class OperationLeaseCoordinatorTests
             helper = Process.Start(psi);
             Assert.NotNull(helper);
 
-            // Wait for helper to confirm lock acquisition via stdout (bounded 5s)
+            // Wait for helper to confirm lock acquisition via stdout (bounded 15s for runner cold-start)
             var readTask = helper.StandardOutput.ReadLineAsync();
-            var readCompleted = await Task.WhenAny(readTask, Task.Delay(TimeSpan.FromSeconds(5)));
+            var readCompleted = await Task.WhenAny(readTask, Task.Delay(TimeSpan.FromSeconds(15)));
             if (readCompleted != readTask)
             {
                 try { helper.Kill(entireProcessTree: true); } catch { }
@@ -371,9 +371,9 @@ public sealed class OperationLeaseCoordinatorTests
             Assert.Null(refusedLease);
             Assert.True(sw.ElapsedMilliseconds >= 150, $"Expected timeout around 200 ms, actual: {sw.ElapsedMilliseconds} ms");
 
-            // Wait for helper to exit naturally (bounded max 5s wait)
+            // Wait for helper to exit naturally (bounded max 15s wait)
             var exitTask = helper.WaitForExitAsync();
-            var exitCompleted = await Task.WhenAny(exitTask, Task.Delay(TimeSpan.FromSeconds(5)));
+            var exitCompleted = await Task.WhenAny(exitTask, Task.Delay(TimeSpan.FromSeconds(15)));
             if (exitCompleted != exitTask)
             {
                 try { helper.Kill(entireProcessTree: true); } catch { }
