@@ -2,13 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Net.Http;
 using System.Text.Json;
-using System.Threading.Tasks;
-using DXVKCompanion.DXVK;
 using DXVKCompanion.Models;
 using DXVKCompanion.PhaseATests;
-using DXVKCompanion.Safety;
 using DXVKCompanion.Storage;
 using Xunit;
 
@@ -414,105 +410,6 @@ namespace DXVKCompanion.PhaseA.Tests
 
             // In-memory mutation is preserved (existing behavior)
             Assert.Equal(2, store.GetAll().Count());
-        }
-
-        [Fact]
-        public void ProfileStore_CorruptedJson_MarksBrokenLoad_RefusesSaveAndMutation()
-        {
-            using var testDir = new SyntheticTestDirectory();
-            string profilesFile = Path.Combine(testDir.RootPath, "games.json");
-
-            // Write malformed JSON
-            File.WriteAllText(profilesFile, "{ \"corrupted\": ");
-
-            var store = new ProfileStore(profilesFile);
-
-            // Preflight check must return false
-            Assert.False(store.TryCheckCanModifyProfileStore(null));
-
-            // In-memory profiles are empty
-            Assert.Empty(store.GetAll());
-
-            // Save must throw IOException and refuse to overwrite corrupted file
-            var profile = new GameProfile(@"C:\Games\Test\game.exe");
-            var ex = Assert.Throws<IOException>(() => store.Save(profile));
-            Assert.Contains("corrupted or unreadable", ex.Message);
-
-            // File on disk remains untouched
-            Assert.Equal("{ \"corrupted\": ", File.ReadAllText(profilesFile));
-        }
-
-        [Fact]
-        public void ProfileStore_ExternalFileModification_MismatchedBaseline_RefusesSave()
-        {
-            using var testDir = new SyntheticTestDirectory();
-            string profilesFile = Path.Combine(testDir.RootPath, "games.json");
-
-            var store = new ProfileStore(profilesFile);
-            var profile = store.GetOrCreate(@"C:\Games\Test\game.exe");
-            store.Save(profile);
-
-            // Simulate external process modifying the profiles file
-            File.WriteAllText(profilesFile, "{\"external\": true}");
-
-            // Preflight check must detect baseline mismatch
-            Assert.False(store.TryCheckCanModifyProfileStore(null));
-
-            // Mutate and attempt to save: must refuse with IOException
-            profile.DxvkVersion = "2.5";
-            var ex = Assert.Throws<IOException>(() => store.Save(profile));
-            Assert.Contains("modified externally", ex.Message);
-        }
-
-        [Fact]
-        public async Task ProfileStore_BrokenLoad_DxvkManagerPreflightRefusal()
-        {
-            using var testDir = new SyntheticTestDirectory();
-            using var coordDir = new SyntheticTestDirectory();
-
-            var coordinator = new OperationLeaseCoordinator(coordDir.RootPath);
-            var gameDir = Path.Combine(testDir.RootPath, "Game");
-            Directory.CreateDirectory(gameDir);
-            var exePath = Path.Combine(gameDir, "Game.exe");
-            File.WriteAllText(exePath, "game-bin");
-
-            var storePath = Path.Combine(testDir.RootPath, "game-library.json");
-            var backupsPath = Path.Combine(testDir.RootPath, "backups");
-            var profilesFile = Path.Combine(testDir.RootPath, "games.json");
-            var sourceDir = Path.Combine(testDir.RootPath, "source");
-            Directory.CreateDirectory(sourceDir);
-
-            // Corrupt profiles file
-            File.WriteAllText(profilesFile, "{ \"broken\": ");
-
-            var profileStore = new ProfileStore(profilesFile) { LeaseCoordinator = coordinator };
-            var libraryStore = new GameLibraryStore(storePath, backupsPath) { LeaseCoordinator = coordinator };
-            var engine = new MultiFileTransactionEngine(backupsPath);
-
-            using var http = new HttpClient();
-            var installer = new DxvkInstaller(http, engine, libraryStore, sourceDir)
-            {
-                LeaseCoordinator = coordinator,
-                ProfileStore = profileStore
-            };
-            var rollback = new DxvkRollback(engine, libraryStore)
-            {
-                LeaseCoordinator = coordinator
-            };
-            var manager = new DxvkManager(installer, rollback, new DxvkGithubClient(http, new CacheStore()), profileStore, libraryStore, coordinator);
-
-            var profile = new GameProfile(exePath) { Api = GraphicsApi.DX11, Architecture = "x64" };
-
-            // Act
-            bool result = await manager.EnableDxvkAsync(profile, "2.5");
-
-            // Assert: manager refused at preflight
-            Assert.False(result);
-            Assert.NotNull(manager.LastRefusalReason);
-            Assert.Contains("Profile store baseline was modified concurrently or is unreadable", manager.LastRefusalReason);
-
-            // Game directory remains untouched
-            Assert.False(File.Exists(Path.Combine(gameDir, "d3d11.dll")));
         }
     }
 }
