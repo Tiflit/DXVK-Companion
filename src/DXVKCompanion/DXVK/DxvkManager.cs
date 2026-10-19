@@ -108,7 +108,10 @@ namespace DXVKCompanion.DXVK
             _profiles = profiles;
             _gameLibraryStore = gameLibraryStore ?? new GameLibraryStore();
             _config = new DxvkConfigManager();
-            _installer.ProfileStore = _profiles;
+            if (_installer != null)
+            {
+                _installer.ProfileStore = _profiles;
+            }
         }
 
         internal DxvkManager(
@@ -124,16 +127,16 @@ namespace DXVKCompanion.DXVK
             if (leaseCoordinator != null)
             {
                 LeaseCoordinator = leaseCoordinator;
-                _installer.LeaseCoordinator = leaseCoordinator;
-                _rollback.LeaseCoordinator = leaseCoordinator;
-                _profiles.LeaseCoordinator = leaseCoordinator;
-                _gameLibraryStore.LeaseCoordinator = leaseCoordinator;
+                if (_installer != null) _installer.LeaseCoordinator = leaseCoordinator;
+                if (_rollback != null) _rollback.LeaseCoordinator = leaseCoordinator;
+                if (_profiles != null) _profiles.LeaseCoordinator = leaseCoordinator;
+                if (_gameLibraryStore != null) _gameLibraryStore.LeaseCoordinator = leaseCoordinator;
             }
             if (activityInspector != null)
             {
                 ActivityInspector = activityInspector;
-                _installer.ActivityInspector = activityInspector;
-                _rollback.ActivityInspector = activityInspector;
+                if (_installer != null) _installer.ActivityInspector = activityInspector;
+                if (_rollback != null) _rollback.ActivityInspector = activityInspector;
             }
         }
 
@@ -381,7 +384,7 @@ namespace DXVKCompanion.DXVK
                     return DxvkActionResult.Failed;
                 }
 
-                if (!_profiles.TryCheckCanModifyProfileStore(out var profileRefusalReason, storeLease))
+                if (!_profiles.TryCheckCanModifyProfileStore(out var profileRefusalReason))
                 {
                     LastRefusalReason = profileRefusalReason;
                     return DxvkActionResult.Failed;
@@ -513,7 +516,7 @@ namespace DXVKCompanion.DXVK
                     return DxvkActionResult.Failed;
                 }
 
-                if (!_profiles.TryCheckCanModifyProfileStore(out var profileRefusalReason, storeLease))
+                if (!_profiles.TryCheckCanModifyProfileStore(out var profileRefusalReason))
                 {
                     LastRefusalReason = profileRefusalReason;
                     return DxvkActionResult.Failed;

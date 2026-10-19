@@ -64,6 +64,17 @@ namespace DXVKCompanion.DXVK
         public string? LastRefusalReason { get; private set; }
         internal ProfileStore? ProfileStore { get; set; }
 
+        private IOperationLease? GetProfileStoreLease(IOperationLease leaseToken)
+        {
+            if (ProfileStore == null || string.IsNullOrWhiteSpace(ProfileStore.ProfilesFile))
+                return null;
+            if (leaseToken.IsValidForStore(ProfileStore.ProfilesFile))
+                return leaseToken;
+            if (leaseToken.StoreLease != null && leaseToken.StoreLease.IsValidForStore(ProfileStore.ProfilesFile))
+                return leaseToken.StoreLease;
+            return null;
+        }
+
         private static string SanitizeVersion(string version)
         {
             foreach (char c in Path.GetInvalidFileNameChars())
@@ -171,9 +182,14 @@ namespace DXVKCompanion.DXVK
                 }
                 else
                 {
+                    var storePaths = new List<string> { _gameLibraryStore.LibraryFilePath };
+                    if (ProfileStore != null && !string.IsNullOrWhiteSpace(ProfileStore.ProfilesFile))
+                    {
+                        storePaths.Add(ProfileStore.ProfilesFile);
+                    }
                     acquiredLease = await LeaseCoordinator.TryAcquireOperationScopeAsync(
                         authoritativeRoot,
-                        _gameLibraryStore.LibraryFilePath,
+                        storePaths,
                         TimeSpan.FromMilliseconds(500)).ConfigureAwait(false);
 
                     if (acquiredLease == null)
@@ -217,7 +233,7 @@ namespace DXVKCompanion.DXVK
                     return false;
                 }
 
-                if (ProfileStore != null && !ProfileStore.TryCheckCanModifyProfileStore(out var profileRefusalReason, leaseToken.StoreLease))
+                if (ProfileStore != null && !ProfileStore.TryCheckCanModifyProfileStore(out var profileRefusalReason, GetProfileStoreLease(leaseToken)))
                 {
                     LastRefusalReason = profileRefusalReason;
                     if (existingInstallation != null)
@@ -283,7 +299,7 @@ namespace DXVKCompanion.DXVK
                         return false;
                     }
 
-                    if (ProfileStore != null && !ProfileStore.TryCheckCanModifyProfileStore(out var postDownloadProfileRefusal, leaseToken.StoreLease))
+                    if (ProfileStore != null && !ProfileStore.TryCheckCanModifyProfileStore(out var postDownloadProfileRefusal, GetProfileStoreLease(leaseToken)))
                     {
                         LastRefusalReason = postDownloadProfileRefusal;
                         Logger.Log($"DxvkInstaller: refusing deployment to {profile.ExeName} after download: {postDownloadProfileRefusal}");
@@ -331,7 +347,7 @@ namespace DXVKCompanion.DXVK
                     return false;
                 }
 
-                if (ProfileStore != null && !ProfileStore.TryCheckCanModifyProfileStore(out var preMutationProfileRefusal, leaseToken.StoreLease))
+                if (ProfileStore != null && !ProfileStore.TryCheckCanModifyProfileStore(out var preMutationProfileRefusal, GetProfileStoreLease(leaseToken)))
                 {
                     LastRefusalReason = preMutationProfileRefusal;
                     Logger.Log($"DxvkInstaller: refusing deployment to {profile.ExeName} before mutation: {preMutationProfileRefusal}");
@@ -670,9 +686,14 @@ namespace DXVKCompanion.DXVK
                 }
                 else
                 {
+                    var storePaths = new List<string> { _gameLibraryStore.LibraryFilePath };
+                    if (ProfileStore != null && !string.IsNullOrWhiteSpace(ProfileStore.ProfilesFile))
+                    {
+                        storePaths.Add(ProfileStore.ProfilesFile);
+                    }
                     acquiredLease = await LeaseCoordinator.TryAcquireOperationScopeAsync(
                         authoritativeRoot,
-                        _gameLibraryStore.LibraryFilePath,
+                        storePaths,
                         TimeSpan.FromMilliseconds(500)).ConfigureAwait(false);
 
                     if (acquiredLease == null)
@@ -721,7 +742,7 @@ namespace DXVKCompanion.DXVK
                     return false;
                 }
 
-                if (ProfileStore != null && !ProfileStore.TryCheckCanModifyProfileStore(out var profileRefusalReason, leaseToken.StoreLease))
+                if (ProfileStore != null && !ProfileStore.TryCheckCanModifyProfileStore(out var profileRefusalReason, GetProfileStoreLease(leaseToken)))
                 {
                     LastRefusalReason = profileRefusalReason;
                     installation.RestorationState = RestorationState.AttentionRequired;
@@ -1203,9 +1224,14 @@ namespace DXVKCompanion.DXVK
                 }
                 else
                 {
+                    var storePaths = new List<string> { _gameLibraryStore.LibraryFilePath };
+                    if (ProfileStore != null && !string.IsNullOrWhiteSpace(ProfileStore.ProfilesFile))
+                    {
+                        storePaths.Add(ProfileStore.ProfilesFile);
+                    }
                     acquiredLease = LeaseCoordinator.TryAcquireOperationScope(
                         authoritativeRoot,
-                        _gameLibraryStore.LibraryFilePath,
+                        storePaths,
                         TimeSpan.FromMilliseconds(500));
 
                     if (acquiredLease == null)
@@ -1249,7 +1275,7 @@ namespace DXVKCompanion.DXVK
                     return false;
                 }
 
-                if (ProfileStore != null && !ProfileStore.TryCheckCanModifyProfileStore(out var profileRefusalReason, leaseToken.StoreLease))
+                if (ProfileStore != null && !ProfileStore.TryCheckCanModifyProfileStore(out var profileRefusalReason, GetProfileStoreLease(leaseToken)))
                 {
                     LastRefusalReason = profileRefusalReason;
                     if (existingInstallation != null)

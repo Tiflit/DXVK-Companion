@@ -58,9 +58,9 @@ namespace DXVKCompanion.Storage
             if (profile == null) throw new ArgumentNullException(nameof(profile));
 
             IOperationLease? acquiredLease = null;
-            if (storeLease != null)
+            if (storeLease != null && (storeLease.IsValidForStore(_profilesFile) || storeLease.StoreLease?.IsValidForStore(_profilesFile) == true))
             {
-                if (storeLease.IsDisposed || !storeLease.IsAcquired || !storeLease.IsValidForStore(_profilesFile))
+                if (storeLease.IsDisposed || !storeLease.IsAcquired)
                 {
                     throw new ArgumentException("Invalid, mismatched, or disposed store lease token.", nameof(storeLease));
                 }
@@ -138,9 +138,9 @@ namespace DXVKCompanion.Storage
             }
 
             IOperationLease? acquiredLease = null;
-            if (storeLease != null)
+            if (storeLease != null && (storeLease.IsValidForStore(_profilesFile) || storeLease.StoreLease?.IsValidForStore(_profilesFile) == true))
             {
-                if (storeLease.IsDisposed || !storeLease.IsAcquired || !storeLease.IsValidForStore(_profilesFile))
+                if (storeLease.IsDisposed || !storeLease.IsAcquired)
                 {
                     refusalReason = "Invalid, mismatched, or disposed store lease token for profile store.";
                     return false;

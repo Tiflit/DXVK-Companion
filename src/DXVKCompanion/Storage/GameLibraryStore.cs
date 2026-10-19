@@ -230,7 +230,8 @@ namespace DXVKCompanion.Storage
         {
             if (storeLease != null)
             {
-                if (storeLease.IsDisposed || !storeLease.IsAcquired || !storeLease.IsValidForStore(_libraryFilePath))
+                bool valid = storeLease.IsValidForStore(_libraryFilePath) || storeLease.StoreLease?.IsValidForStore(_libraryFilePath) == true;
+                if (storeLease.IsDisposed || !storeLease.IsAcquired || !valid)
                 {
                     throw new ArgumentException("Invalid, mismatched, or disposed store lease token.", nameof(storeLease));
                 }
