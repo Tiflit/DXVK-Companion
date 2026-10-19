@@ -326,6 +326,7 @@ namespace DXVKCompanion.Storage
                 }
 
                 throw result.Exception ?? new IOException(result.DiagnosticMessage ?? "Failed to persist detection snapshot.");
+                }
             }
             finally
             {

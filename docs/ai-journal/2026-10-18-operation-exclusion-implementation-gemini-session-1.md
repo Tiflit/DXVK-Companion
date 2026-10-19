@@ -72,10 +72,14 @@
 
 ---
 
-## 3. Next Actions
+## 3. Review & CI Repair (Session 1 Follow-up)
 
-1. Commit changes to branch `feat/issue-178-operation-exclusion-boundary`.
-2. Push branch to origin.
-3. Open pull request resolving Issue #178 targeting `main`.
-4. Monitor cloud CI on GitHub Actions.
-5. Provide submission record and request review from Codex.
+1. PR #179 opened targeting `main`.
+2. Initial CI reported:
+   - `build-and-test`: CS1513 in `GameLibraryStore.cs` (`RecordDetectionSnapshot` missing closing brace for `lock (_sync)`).
+   - `PR hygiene`: Heading formatting mismatch (`### Summary of Implementation` instead of required `## Summary`, and missing required sections).
+3. Repairs executed:
+   - Fixed unclosed `lock (_sync)` block in `src/DXVKCompanion/Storage/GameLibraryStore.cs`.
+   - Updated PR #179 body using `scripts/ai-workflow/update_pr_body.py` with standard contract headers (`## Summary`, `## Scope`, `## Verification`, `## Documentation`).
+4. Committed repair and pushed to branch `feat/issue-178-operation-exclusion-boundary`.
+5. Monitoring cloud CI.
