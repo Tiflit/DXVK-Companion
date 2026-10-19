@@ -524,25 +524,27 @@ def anchor_and_resolve_backup_path(backup_dir: Path, cwd: Optional[Path] = None)
     else:
         anchored = backup_dir
 
-    parts_to_append: List[str] = []
-    curr = anchored
-    while not curr.exists() and not curr.is_symlink():
-        parts_to_append.append(curr.name)
-        parent = curr.parent
-        if parent == curr:
-            break
-        curr = parent
-
     try:
+        parts_to_append: List[str] = []
+        curr = anchored
+        while not curr.exists() and not curr.is_symlink():
+            parts_to_append.append(curr.name)
+            parent = curr.parent
+            if parent == curr:
+                break
+            curr = parent
+
         resolved_ancestor = curr.resolve(strict=True)
+
+        resolved_full = resolved_ancestor
+        for part in reversed(parts_to_append):
+            resolved_full = resolved_full / part
+
+        return resolved_full
+    except SecurityValidationError:
+        raise
     except Exception:
         raise SecurityValidationError("Backup destination path resolution failed.")
-
-    resolved_full = resolved_ancestor
-    for part in reversed(parts_to_append):
-        resolved_full = resolved_full / part
-
-    return resolved_full
 
 
 def is_inside_git_repository(target: Path) -> bool:
@@ -550,14 +552,19 @@ def is_inside_git_repository(target: Path) -> bool:
     Probes whether target or its nearest existing directory ancestor is inside any Git repository.
     Fails closed if the boundary query fails for reasons other than standard non-repository absence.
     """
-    curr = target
-    while not curr.exists() or not curr.is_dir():
-        parent = curr.parent
-        if parent == curr:
-            break
-        curr = parent
+    try:
+        curr = target
+        while not curr.exists() or not curr.is_dir():
+            parent = curr.parent
+            if parent == curr:
+                break
+            curr = parent
 
-    if not curr.exists() or not curr.is_dir():
+        if not curr.exists() or not curr.is_dir():
+            raise SecurityValidationError("Git worktree boundary could not be established.")
+    except SecurityValidationError:
+        raise
+    except Exception:
         raise SecurityValidationError("Git worktree boundary could not be established.")
 
     try:
@@ -624,8 +631,13 @@ def validate_backup_dir(
 
     anchored_backup_path = anchor_and_resolve_backup_path(path_obj, cwd=cwd)
 
-    if anchored_backup_path.is_file():
-        raise SecurityValidationError("Backup destination cannot be an existing file.")
+    try:
+        if anchored_backup_path.is_file():
+            raise SecurityValidationError("Backup destination cannot be an existing file.")
+    except SecurityValidationError:
+        raise
+    except Exception:
+        raise SecurityValidationError("Backup destination path resolution failed.")
 
     worktree_roots = find_git_worktree_roots(cwd=cwd)
 
@@ -672,7 +684,13 @@ def create_prewrite_backup(
         raise SecurityValidationError("Backup directory is required; silent fallback into repository checkout is forbidden.")
 
     validated_target_dir = validate_backup_dir(target_backup_dir, cwd=cwd)
-    validated_target_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        validated_target_dir.mkdir(parents=True, exist_ok=True)
+    except SecurityValidationError:
+        raise
+    except Exception:
+        raise SecurityValidationError("Failed to create pre-write backup directory.")
 
     timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d_%H%M%S")
     backup_file = validated_target_dir / f"{target_type}_{number}_body_backup_{timestamp}.md"
@@ -682,6 +700,10 @@ def create_prewrite_backup(
             f.write(body_text)
     except FileExistsError:
         raise FileExistsError(f"Pre-write backup file already exists: {backup_file.name}. Refusing to overwrite.")
+    except SecurityValidationError:
+        raise
+    except Exception:
+        raise SecurityValidationError("Failed to write pre-write recovery backup file.")
 
     return backup_file
 
@@ -950,7 +972,10 @@ def main() -> int:
         try:
             validated_backup_dir = validate_backup_dir(args.backup_dir)
         except SecurityValidationError as e:
-            print(f"ERROR: Invalid --backup-dir: {sanitize_diagnostic(str(e))}", file=sys.stderr)
+            print(f"ERROR: Invalid --backup-dir: {str(e)}", file=sys.stderr)
+            return 1
+        except Exception:
+            print("ERROR: Invalid --backup-dir: Backup destination path resolution failed.", file=sys.stderr)
             return 1
 
         # Local recovery backup
@@ -958,8 +983,14 @@ def main() -> int:
             backup_path = create_prewrite_backup("issue", args.issue, remote_body, validated_backup_dir)
             safe_backup_display = format_safe_backup_display(backup_path)
             print(f"Pre-write local recovery backup saved to: {safe_backup_display}")
-        except Exception as e:
-            print(f"ERROR saving recovery backup: {sanitize_diagnostic(str(e))}", file=sys.stderr)
+        except FileExistsError as e:
+            print(f"ERROR saving recovery backup: {str(e)}", file=sys.stderr)
+            return 1
+        except SecurityValidationError as e:
+            print(f"ERROR saving recovery backup: {str(e)}", file=sys.stderr)
+            return 1
+        except Exception:
+            print("ERROR saving recovery backup: Failed to create pre-write recovery backup.", file=sys.stderr)
             return 1
 
         # Second GET immediately before PATCH (concurrency check)
@@ -1127,7 +1158,10 @@ def main() -> int:
     try:
         validated_backup_dir = validate_backup_dir(args.backup_dir)
     except SecurityValidationError as e:
-        print(f"ERROR: Invalid --backup-dir: {sanitize_diagnostic(str(e))}", file=sys.stderr)
+        print(f"ERROR: Invalid --backup-dir: {str(e)}", file=sys.stderr)
+        return 1
+    except Exception:
+        print("ERROR: Invalid --backup-dir: Backup destination path resolution failed.", file=sys.stderr)
         return 1
 
     # Local recovery backup
@@ -1135,8 +1169,14 @@ def main() -> int:
         backup_path = create_prewrite_backup("pr", args.pr, remote_body, validated_backup_dir)
         safe_backup_display = format_safe_backup_display(backup_path)
         print(f"Pre-write local recovery backup saved to: {safe_backup_display}")
-    except Exception as e:
-        print(f"ERROR saving recovery backup: {sanitize_diagnostic(str(e))}", file=sys.stderr)
+    except FileExistsError as e:
+        print(f"ERROR saving recovery backup: {str(e)}", file=sys.stderr)
+        return 1
+    except SecurityValidationError as e:
+        print(f"ERROR saving recovery backup: {str(e)}", file=sys.stderr)
+        return 1
+    except Exception:
+        print("ERROR saving recovery backup: Failed to create pre-write recovery backup.", file=sys.stderr)
         return 1
 
     # Second GET immediately before PATCH

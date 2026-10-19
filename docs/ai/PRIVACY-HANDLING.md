@@ -48,8 +48,7 @@ The repository `.gitignore` provides targeted exclusions:
 
 The workflow helper incorporates fail-closed scanners and redaction filters:
 - **Home Directory Scanners:** Detect Windows personal directory paths (`C:\Users\<user>\...` or `C:/Users/...`) and POSIX personal directory paths (`/home/<user>/...` or `/Users/<user>/...`).
-- **Token and Secret Scanners:** Detect GitHub personal access tokens (`ghp_`, `github_pat_`, etc.) and bearer authorization tokens.
-- **Fail-Closed Pre-Write Checks:** If sensitive paths or credentials are detected in proposed PR bodies, candidate Issue append records, or remote targets, the helper immediately aborts before output or remote dispatch.
+- **Fail-Closed Pre-Write Checks:** Proposed PR bodies, candidate Issue append records, and final mutation payloads are strictly scanned for sensitive personal paths and credentials before remote dispatch; if sensitive data is detected in the candidate content, the helper immediately aborts. When previewing updates against an existing remote target that contains sensitive data (such as a dirty remote PR body), the helper does not abort clean-replacement candidates, but instead redacts sensitive paths and tokens line-by-line in the diff preview (`sanitize_diff_line`) so contaminated remote lines appear as `-[REDACTED_PATH]` without leaking private data.
 - **Diagnostic Sanitization & Fixed Category Errors:** Error diagnostics use fixed category-only error strings without echoing raw Git stderr, exception text, or environment paths. Backup confirmation displays use a fixed basename format (`[REDACTED_PATH]/<filename>`) to prevent leaking personal paths or usernames with spaces (e.g. `C:\Users\Example Person\`).
 - **Diff Preview Redaction:** Unified-diff previews are sanitized line-by-line (`sanitize_diff_line`) so personal paths or tokens present in dirty remote bodies are safely redacted without corrupting unified-diff structural indicators (`+`, `-`, ` `).
 

@@ -114,7 +114,39 @@ Following PR #189 initial green CI, Codex conducted peer review ([comment 627823
 
 ---
 
-### 5. Allowed Paths Compliance
+### 5. Focused Repair Review (Codex Comment 6278681129) Resolution
+
+Following PR #189 first review commit `bbb85007c1fd6618f676aceea4f86d0fe3d3c58d`, Codex completed a focused repair review ([comment 6278681129](https://github.com/Tiflit/DXVK-Companion/pull/189#issuecomment-6278681129)) highlighting unhandled probe exceptions and failure diagnostic leaks. Addressed in-place:
+
+1. **Enclosed All Backup-Boundary Filesystem Probes in Category-Only Handlers**:
+   - `exists()`, `is_symlink()`, `is_dir()`, `is_file()`, and `resolve(strict=True)` in `anchor_and_resolve_backup_path`, `is_inside_git_repository`, and `validate_backup_dir` are enclosed in `try ... except Exception:` blocks.
+   - Any OS `PermissionError` or probe failure fails closed with fixed category strings (`"Backup destination path resolution failed."` or `"Git worktree boundary could not be established."`), completely eliminating raw exception tracebacks that expose environment paths.
+
+2. **Category-Only Backup Operation Error Handling**:
+   - In `create_prewrite_backup`:
+     - Wrapped `mkdir` failure to raise `SecurityValidationError("Failed to create pre-write backup directory.")`.
+     - Wrapped file write/open failure to raise `SecurityValidationError("Failed to write pre-write recovery backup file.")`.
+     - Collision retains exact truthful diagnosis: `FileExistsError(f"Pre-write backup file already exists: {backup_file.name}. Refusing to overwrite.")` (filename only, no directory path).
+   - In `main()` (both PR and Issue write modes):
+     - Catch `FileExistsError` and `SecurityValidationError` directly, printing the category-only messages without raw exception echo; catch generic `Exception` fallback; exit code 1 with zero PATCH requests dispatched.
+
+3. **Privacy Leak Prevention for Paths with Spaces**:
+   - Tested that personal paths with whitespace (e.g. `C:\Users\Example Person\...` or `/home/Example Person/...`) do not leak either full paths or trailing word tokens (`"Person"`) into stdout or stderr.
+
+4. **Documentation Alignment in `docs/ai/PRIVACY-HANDLING.md`**:
+   - Clarified that candidate PR bodies and Issue append records fail closed if sensitive data is detected before remote dispatch, whereas unified-diff preview against a dirty remote target redacts sensitive lines line-by-line (`sanitize_diff_line`) rather than aborting clean-replacement operations.
+
+5. **Deterministic Regression Tests in `test_update_pr_body.py`**:
+   - Added `test_filesystem_predicates_permission_errors_fail_closed_as_security_validation`.
+   - Added `test_main_cli_fails_closed_on_predicate_permission_errors_without_traceback_or_leak`.
+   - Added `test_main_cli_fails_closed_on_mkdir_failure_without_traceback_or_leak`.
+   - Added `test_main_cli_fails_closed_on_write_failure_without_traceback_or_leak`.
+   - Added `test_main_cli_collision_refusal_preserves_existing_backup_without_leak`.
+   - Enhanced `test_write_mode_backup_confirmation_never_leaks_personal_paths_with_spaces` to assert absence of trailing personal path fragments.
+
+---
+
+### 6. Allowed Paths Compliance
 
 All modified and created files strictly match the declared `### Allowed paths` in Issue #183:
 1. `.gitignore`
@@ -128,8 +160,8 @@ No product code, project files, or unapproved paths were modified.
 
 ---
 
-### 6. Next Steps
+### 7. Next Steps
 
-1. Commit and push review fixes to feature branch `feat/issue-183-workflow-backup-hygiene`.
+1. Commit and push repair fixes to feature branch `feat/issue-183-workflow-backup-hygiene`.
 2. Monitor Cloud CI workflows across GitHub Actions (`AI Workflow Tests`, `AI task scope`, `PR hygiene`, `Build and Test`).
 3. Return new head SHA and verified passing test runs for Codex review; human performs final merge.
