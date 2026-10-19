@@ -125,3 +125,39 @@
   - `ProcessActivityBoundaryTests`: added tests for process name query `Win32Exception` fault -> `Unknown`, `InvalidOperationException` with unconfirmed exit -> `Unknown`, PID replacement / relaunch -> `Unknown`, lazy enumeration exception -> `Unknown`, download-stage activity/baseline race (verifying untouched files, backups, and store), and updated `ApplyPendingAsync` test to verify transient dictionary preservation and reloaded store reconstruction.
   - Reconciled `docs/design/OPERATION-EXCLUSION-AND-ACTIVITY-BOUNDARY.md` removing active references to `pending-actions.json`, env overrides, and automatic orphan compensation.
   - Implemented `OperationResourceIdentity.ResolveAuthoritativeInstallationRoot(string? installationPath, string exePath)` resolving canonical installation roots and falling back to exe directory, with unit tests in `OperationLeaseCoordinatorTests`.
+
+---
+
+## 5. Final Verification & CI Signoff
+
+### Root Cause Analysis & Focused Delta Repairs
+1. **Target Lock Sharing (`FileShare.Delete` on Windows):**
+   - Windows file locking requires `FileShare.Delete` when opening files marked with `FileOptions.DeleteOnClose`. Readers without `FileShare.Delete` threw `IOException: Sharing violation`. `HasConflictingTargetLock` caught `IOException` and returned `true`, causing every target lock to falsely block every other target lock.
+   - Fixed by adding `FileShare.Delete` and retries, eliminating false collision returns (`30e892e`).
+2. **`CompositeStoreLease` for Multi-Store Token Validation:**
+   - In composite operations involving multiple stores (`dxvk-profiles.json` and `game-library.json`), `CompositeOperationLease.StoreLease` previously returned `_storeLeases[0]`. Because stores were sorted alphabetically, `_storeLeases[0]` was `dxvk-profiles.json`. When `DxvkInstaller` or `DxvkManager` validated `leaseToken.StoreLease.IsValidForStore(gameLibraryPath)`, validation failed with `ArgumentException`.
+   - Fixed by implementing `CompositeStoreLease` which delegates `IsValidForStore` across all acquired stores, and caching the instance in `CompositeOperationLease` (`411eb3a`).
+3. **Restoration of `gameDir = rawDir` for Relative DLL Paths:**
+   - Restored `gameDir = rawDir` for relative path resolution across `ApplyToGameAsync`, `ReapplyAsync`, and `AdoptExistingAsync` while keeping `authoritativeRoot` for lease acquisition and process activity boundary inspection (`30e892e`).
+4. **Pre-mutation Activity Revalidation:**
+   - Added `preMutationActivity` check immediately prior to mutating target or store in `DxvkInstaller.ApplyToGameAsync` (`411eb3a`).
+5. **Test Fixture Scoping:**
+   - Scoped `targetOnlyLease` and `storeOnlyLease` into independent `using` blocks in `OperationLeaseCoordinatorTests.TokenValidation_RoleAndKind_Enforced` so locks are released before composite lease acquisition (`411eb3a`).
+
+### Verified Cloud CI Outcomes (Commit `411eb3a`)
+- **`Build and Test` ([Run 39189978697](https://github.com/Tiflit/DXVK-Companion/actions/runs/39189978697)):**
+  - Result: **SUCCESS** in 2m 6s.
+  - Phase A Test Suite: **940 tests total, 940 passed, 0 failed, 0 skipped**.
+  - 100% pass rate; all 907 pre-existing baseline invariants and all 33 newly added Issue #178 tests passed.
+  - Executable Artifact: `DXVK-Companion-win-x64.zip` published and uploaded successfully.
+- **`AI Scope Check` ([Run 39189978600](https://github.com/Tiflit/DXVK-Companion/actions/runs/39189978600)):**
+  - Result: **SUCCESS** (all modified files within declared allowed paths).
+- **`AI PR Hygiene` ([Run 39189978619](https://github.com/Tiflit/DXVK-Companion/actions/runs/39189978619)):**
+  - Result: **SUCCESS**.
+- **`AI Workflow Tests` ([Run 39189978611](https://github.com/Tiflit/DXVK-Companion/actions/runs/39189978611)):**
+  - Result: **SUCCESS**.
+- **`AI Current State Dashboard` ([Run 39189977331](https://github.com/Tiflit/DXVK-Companion/actions/runs/39189977331)):**
+  - Result: **SUCCESS**.
+- **Host Execution Guarantee:** Strictly 0 host builds or test runs on the human's Windows host (all verification performed on GitHub Actions Cloud CI).
+- **Public API Surface Guarantee:** Strictly 0 public API additions or signature breaks (all safety types and methods remain internal).
+
