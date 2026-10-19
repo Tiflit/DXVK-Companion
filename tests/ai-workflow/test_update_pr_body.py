@@ -2124,13 +2124,17 @@ class TestUpdatePrBody(unittest.TestCase):
         R3: When pre-write recovery backup is saved, confirmation display never leaks
         usernames with spaces or local personal paths.
         """
-        expected_final = f"{self.sample_issue_body}\n\n{self.sample_append_block}\n"
+        remote_body = self.sample_issue_body
+        expected_final = prepare_issue_candidate(remote_body, self.sample_append_block)
         call_count = 0
         def fake_urlopen(req, *args, **kwargs):
             nonlocal call_count
             call_count += 1
+            method = req.get_method() if hasattr(req, "get_method") else "GET"
+            if method == "PATCH":
+                return MockHttpResponse({"number": 42, "body": expected_final})
             if call_count <= 2:
-                return MockHttpResponse({"number": 42, "body": self.sample_issue_body})
+                return MockHttpResponse({"number": 42, "body": remote_body})
             return MockHttpResponse({"number": 42, "body": expected_final})
 
         mock_urlopen.side_effect = fake_urlopen
