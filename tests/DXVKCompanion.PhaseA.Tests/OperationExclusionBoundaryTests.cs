@@ -125,6 +125,7 @@ public sealed class OperationExclusionBoundaryTests
             var op2Completed = await Task.WhenAny(op2Task, Task.Delay(testTimeout));
             Assert.True(op2Completed == op2Task, "Operation 2 timed out during execution.");
             op2Result = await op2Task;
+            op2Finished.TrySetResult(true);
 
             // Wait for Operation 1 to complete its failure/rollback
             var op1Completed = await Task.WhenAny(op1Task, Task.Delay(testTimeout));
@@ -1330,7 +1331,9 @@ public sealed class OperationExclusionBoundaryTests
             Assert.Equal("x32", reloadedProfile.Architecture);
 
             // Library save failed before committing, so installation in-memory was reverted to prevManagedArch ("win64")
-            Assert.Equal("win64", recordedExe.LastKnownArchitecture);
+            var currentExe = installation.FindExecutable("Game.exe");
+            Assert.NotNull(currentExe);
+            Assert.Equal("win64", currentExe.LastKnownArchitecture);
         }
         finally
         {

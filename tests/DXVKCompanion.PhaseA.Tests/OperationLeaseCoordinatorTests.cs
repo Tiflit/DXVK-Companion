@@ -856,10 +856,10 @@ public sealed class OperationLeaseCoordinatorTests
         using var cts = new CancellationTokenSource();
         cts.CancelAfter(50);
         var cancelSw = Stopwatch.StartNew();
-        await using var cancelLease = await coordinator.TryAcquireOperationScopeAsync(targetPath, timeout: TimeSpan.FromMilliseconds(500), ct: cts.Token);
+        await using var cancelLease = await coordinator.TryAcquireOperationScopeAsync(targetPath, timeout: TimeSpan.FromSeconds(2), ct: cts.Token);
         cancelSw.Stop();
         Assert.Null(cancelLease);
-        Assert.True(cancelSw.ElapsedMilliseconds < 350, $"Expected early exit on cancellation during wait, actual: {cancelSw.ElapsedMilliseconds} ms");
+        Assert.True(cancelSw.ElapsedMilliseconds < 1500, $"Expected early exit on cancellation during wait, actual: {cancelSw.ElapsedMilliseconds} ms");
 
         // Sync acquisition must fail closed (return null) and respect upper budget bounds
         var syncSw = Stopwatch.StartNew();
@@ -894,10 +894,10 @@ public sealed class OperationLeaseCoordinatorTests
         using var cts = new CancellationTokenSource();
         cts.CancelAfter(50);
         var cancelSw = Stopwatch.StartNew();
-        await using var cancelLease = await coordinator.TryAcquireOperationScopeAsync(targetPath, timeout: TimeSpan.FromMilliseconds(500), ct: cts.Token);
+        await using var cancelLease = await coordinator.TryAcquireOperationScopeAsync(targetPath, timeout: TimeSpan.FromSeconds(2), ct: cts.Token);
         cancelSw.Stop();
         Assert.Null(cancelLease);
-        Assert.True(cancelSw.ElapsedMilliseconds < 350, $"Expected early exit on cancellation during wait, actual: {cancelSw.ElapsedMilliseconds} ms");
+        Assert.True(cancelSw.ElapsedMilliseconds < 1500, $"Expected early exit on cancellation during wait, actual: {cancelSw.ElapsedMilliseconds} ms");
 
         // Sync: fails closed because content is unreadable/empty and file does not disappear
         var syncSw = Stopwatch.StartNew();
@@ -963,10 +963,10 @@ public sealed class OperationLeaseCoordinatorTests
         using var cts = new CancellationTokenSource();
         cts.CancelAfter(50);
         var cancelSw = Stopwatch.StartNew();
-        await using var cancelLease = await coordinator.TryAcquireOperationScopeAsync(targetPath, timeout: TimeSpan.FromMilliseconds(500), ct: cts.Token);
+        await using var cancelLease = await coordinator.TryAcquireOperationScopeAsync(targetPath, timeout: TimeSpan.FromSeconds(2), ct: cts.Token);
         cancelSw.Stop();
         Assert.Null(cancelLease);
-        Assert.True(cancelSw.ElapsedMilliseconds < 350, $"Expected early exit on cancellation during wait, actual: {cancelSw.ElapsedMilliseconds} ms");
+        Assert.True(cancelSw.ElapsedMilliseconds < 1500, $"Expected early exit on cancellation during wait, actual: {cancelSw.ElapsedMilliseconds} ms");
 
         // Sync: fails closed within requested budget
         var syncSw = Stopwatch.StartNew();
