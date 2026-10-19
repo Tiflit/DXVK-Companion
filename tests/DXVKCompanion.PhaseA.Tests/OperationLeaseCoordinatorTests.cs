@@ -433,7 +433,7 @@ public sealed class OperationLeaseCoordinatorTests
         cts.Cancel();
 
         var sw = Stopwatch.StartNew();
-        await using var lease = await coordinator.TryAcquireOperationScopeAsync(targetPath, timeout: TimeSpan.FromMilliseconds(500), cancellationToken: cts.Token);
+        await using var lease = await coordinator.TryAcquireOperationScopeAsync(targetPath, timeout: TimeSpan.FromMilliseconds(500), ct: cts.Token);
         sw.Stop();
 
         Assert.Null(lease);

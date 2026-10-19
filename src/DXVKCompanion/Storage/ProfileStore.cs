@@ -125,7 +125,10 @@ namespace DXVKCompanion.Storage
             }
         }
 
-        internal bool TryCheckCanModifyProfileStore(out string? refusalReason, IOperationLease? storeLease)
+        internal bool TryCheckCanModifyProfileStore(IOperationLease? storeLease = null) =>
+            TryCheckCanModifyProfileStore(out _, storeLease);
+
+        internal bool TryCheckCanModifyProfileStore(out string? refusalReason, IOperationLease? storeLease = null)
         {
             refusalReason = null;
             if (_isBrokenLoad)

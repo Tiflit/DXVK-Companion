@@ -660,8 +660,13 @@ public sealed class ProcessActivityBoundaryTests
         };
 
         var profile = new GameProfile(subExe) { Api = GraphicsApi.DX11, Architecture = "x64" };
+        var assessment = new ExistingDxvkAssessment
+        {
+            Status = ExistingDxvkStatus.OfficialRelease,
+            MatchedVersion = "2.5"
+        };
 
-        bool adopted = installer.AdoptExisting(profile);
+        bool adopted = installer.AdoptExisting(profile, assessment);
 
         // Must refuse because running Launcher under authoritativeRoot was detected
         Assert.False(adopted);

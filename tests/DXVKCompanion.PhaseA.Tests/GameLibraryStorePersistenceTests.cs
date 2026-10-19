@@ -1015,9 +1015,9 @@ namespace DXVKCompanion.PhaseA.Tests
                 // TrySaveHealthAfterFailedCompensation must return false without modifying store
                 bool healthSaved = store.TrySaveHealthAfterFailedCompensation(
                     initial,
-                    RestorationState.AttentionRequired,
-                    "Failed compensation",
-                    "Simulated error");
+                    expectedPreWriteBytes: baselineBytes,
+                    preWriteExisted: true,
+                    storeLease: null);
                 Assert.False(healthSaved);
 
                 // Disk baseline must remain byte-for-byte identical
