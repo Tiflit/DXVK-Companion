@@ -354,8 +354,8 @@ public sealed class OperationLeaseCoordinatorTests
 
             // Wait for helper to confirm lock acquisition via stdout (bounded 5s)
             var readTask = helper.StandardOutput.ReadLineAsync();
-            var readCompleted = await Task.WhenAny(readTask.AsTask(), Task.Delay(TimeSpan.FromSeconds(5)));
-            if (readCompleted != readTask.AsTask())
+            var readCompleted = await Task.WhenAny(readTask, Task.Delay(TimeSpan.FromSeconds(5)));
+            if (readCompleted != readTask)
             {
                 try { helper.Kill(entireProcessTree: true); } catch { }
                 throw new TimeoutException("Timed out waiting for LOCKED signal from cloud helper.");
