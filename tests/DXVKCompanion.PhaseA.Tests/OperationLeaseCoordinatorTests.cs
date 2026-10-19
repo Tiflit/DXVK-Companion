@@ -385,4 +385,38 @@ public sealed class OperationLeaseCoordinatorTests
             }
         }
     }
+
+    [Fact]
+    public void ResolveAuthoritativeInstallationRoot_WithValidInstallationPath_UsesInstallationPath()
+    {
+        using var temp = new SyntheticTestDirectory();
+        var gameRoot = Path.Combine(temp.RootPath, "Games", "MyGame");
+        var exePath = Path.Combine(gameRoot, "bin", "x64", "game.exe");
+        Directory.CreateDirectory(Path.GetDirectoryName(exePath)!);
+
+        string authoritative = OperationResourceIdentity.ResolveAuthoritativeInstallationRoot(gameRoot, exePath);
+
+        Assert.Equal(OperationResourceIdentity.ResolveCanonicalPath(gameRoot), authoritative);
+    }
+
+    [Fact]
+    public void ResolveAuthoritativeInstallationRoot_WithNullInstallationPath_FallsBackToExeDirectory()
+    {
+        using var temp = new SyntheticTestDirectory();
+        var gameDir = Path.Combine(temp.RootPath, "Games", "MyGame");
+        var exePath = Path.Combine(gameDir, "game.exe");
+        Directory.CreateDirectory(gameDir);
+
+        string authoritative = OperationResourceIdentity.ResolveAuthoritativeInstallationRoot(null, exePath);
+
+        Assert.Equal(OperationResourceIdentity.ResolveCanonicalPath(gameDir), authoritative);
+    }
+
+    [Fact]
+    public void ResolveAuthoritativeInstallationRoot_WithEmptyOrNullPaths_ReturnsEmpty()
+    {
+        Assert.Equal(string.Empty, OperationResourceIdentity.ResolveAuthoritativeInstallationRoot(null, string.Empty));
+        Assert.Equal(string.Empty, OperationResourceIdentity.ResolveAuthoritativeInstallationRoot(string.Empty, "   "));
+    }
 }
+

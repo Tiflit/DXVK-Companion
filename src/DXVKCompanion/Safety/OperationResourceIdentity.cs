@@ -200,5 +200,38 @@ namespace DXVKCompanion.Safety
 
             return canChild.StartsWith(parentWithSlash, StringComparison.OrdinalIgnoreCase);
         }
+
+        public static string ResolveAuthoritativeInstallationRoot(string? installationPath, string exePath)
+        {
+            if (!string.IsNullOrWhiteSpace(installationPath))
+            {
+                try
+                {
+                    return ResolveCanonicalPath(installationPath);
+                }
+                catch
+                {
+                    // Fall back to resolving from exePath if installationPath fails canonical resolution
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(exePath))
+            {
+                try
+                {
+                    string? dir = Path.GetDirectoryName(exePath);
+                    if (!string.IsNullOrWhiteSpace(dir))
+                    {
+                        return ResolveCanonicalPath(dir);
+                    }
+                }
+                catch
+                {
+                    // Fall back to empty string
+                }
+            }
+
+            return string.Empty;
+        }
     }
 }
