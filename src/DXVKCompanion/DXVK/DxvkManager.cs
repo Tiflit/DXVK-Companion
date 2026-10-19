@@ -381,10 +381,7 @@ namespace DXVKCompanion.DXVK
             if (isRunning)
             {
                 var existingInstall = ResolveInstallation(profile.ExePath);
-                string rawDir = Path.GetDirectoryName(profile.ExePath) ?? string.Empty;
-                string authoritativeRoot = existingInstall != null
-                    ? existingInstall.InstallationPath
-                    : GameInstallation.NormalizeInstallationPath(rawDir);
+                string authoritativeRoot = OperationResourceIdentity.ResolveAuthoritativeInstallationRoot(existingInstall?.InstallationPath, profile.ExePath);
 
                 var storePaths = new List<string> { _gameLibraryStore.LibraryFilePath };
                 if (!string.IsNullOrWhiteSpace(_profiles.ProfilesFile))
@@ -449,7 +446,7 @@ namespace DXVKCompanion.DXVK
                         ? installation.ManagementPolicy.PinnedDxvkVersion.Trim()
                         : "latest");
 
-                string authoritativeRoot = OperationResourceIdentity.ResolveAuthoritativeInstallationRoot(installation?.InstallationPath, profile.ExePath);
+                authoritativeRoot = OperationResourceIdentity.ResolveAuthoritativeInstallationRoot(installation?.InstallationPath, profile.ExePath);
                 if (!string.IsNullOrWhiteSpace(authoritativeRoot))
                 {
                     installation ??= _gameLibraryStore.GetOrCreateInstallation(authoritativeRoot, Path.GetFileNameWithoutExtension(profile.ExePath), storeLease);
@@ -528,10 +525,7 @@ namespace DXVKCompanion.DXVK
             if (isRunning)
             {
                 var existingInstall = ResolveInstallation(profile.ExePath);
-                string rawDir = Path.GetDirectoryName(profile.ExePath) ?? string.Empty;
-                string authoritativeRoot = existingInstall != null
-                    ? existingInstall.InstallationPath
-                    : GameInstallation.NormalizeInstallationPath(rawDir);
+                string authoritativeRoot = OperationResourceIdentity.ResolveAuthoritativeInstallationRoot(existingInstall?.InstallationPath, profile.ExePath);
 
                 var storePaths = new List<string> { _gameLibraryStore.LibraryFilePath };
                 if (!string.IsNullOrWhiteSpace(_profiles.ProfilesFile))
@@ -587,7 +581,7 @@ namespace DXVKCompanion.DXVK
                     return DxvkActionResult.Failed;
                 }
 
-                string authoritativeRoot = OperationResourceIdentity.ResolveAuthoritativeInstallationRoot(installation?.InstallationPath, profile.ExePath);
+                authoritativeRoot = OperationResourceIdentity.ResolveAuthoritativeInstallationRoot(installation?.InstallationPath, profile.ExePath);
                 if (!string.IsNullOrWhiteSpace(authoritativeRoot))
                 {
                     var targetInst = installation ?? _gameLibraryStore.GetOrCreateInstallation(authoritativeRoot, Path.GetFileNameWithoutExtension(profile.ExePath), storeLease);
