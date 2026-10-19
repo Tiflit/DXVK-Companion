@@ -464,18 +464,146 @@ def merge_and_preserve_review_records(
     return final_body, list(remote_records.keys())
 
 
+def find_git_worktree_roots(cwd: Optional[Path] = None) -> List[Path]:
+    """
+    Discovers all Git worktree root paths for the repository associated with cwd.
+    Uses 'git worktree list --porcelain' and 'git rev-parse --show-toplevel'.
+    Fails closed (raises SecurityValidationError) if git commands fail or repository
+    boundaries cannot be determined.
+    """
+    effective_cwd = cwd or Path.cwd()
+    roots: List[Path] = []
+
+    try:
+        proc = subprocess.run(
+            ["git", "worktree", "list", "--porcelain"],
+            cwd=effective_cwd,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except Exception as e:
+        raise SecurityValidationError(
+            f"Git worktree boundary could not be established: {sanitize_diagnostic(str(e))}"
+        )
+
+    if proc.returncode != 0:
+        err_msg = proc.stderr.strip() or "git worktree list failed"
+        raise SecurityValidationError(
+            f"Git worktree boundary could not be established: {sanitize_diagnostic(err_msg)}"
+        )
+
+    for line in proc.stdout.splitlines():
+        line = line.strip()
+        if line.startswith("worktree "):
+            wt_path_str = line[len("worktree "):].strip()
+            if wt_path_str:
+                roots.append(Path(wt_path_str))
+
+    try:
+        toplevel_proc = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=effective_cwd,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if toplevel_proc.returncode == 0 and toplevel_proc.stdout.strip():
+            roots.append(Path(toplevel_proc.stdout.strip()))
+    except Exception:
+        pass
+
+    if not roots:
+        raise SecurityValidationError(
+            "Git worktree boundary could not be established: no worktree roots discovered."
+        )
+
+    return roots
+
+
+def is_path_inside_or_equal(target: Path, root: Path) -> bool:
+    """
+    Determines whether target path is equal to or located inside root directory.
+    Resolves aliases, symlinks, and junctions, with case-normalization on Windows.
+    """
+    try:
+        target_resolved = Path(os.path.realpath(target))
+        root_resolved = Path(os.path.realpath(root))
+    except Exception:
+        target_resolved = target.resolve()
+        root_resolved = root.resolve()
+
+    if os.name == "nt":
+        t_parts = [p.lower() for p in target_resolved.parts]
+        r_parts = [p.lower() for p in root_resolved.parts]
+        if len(t_parts) >= len(r_parts) and t_parts[:len(r_parts)] == r_parts:
+            return True
+        try:
+            t_abs = [p.lower() for p in target.resolve().parts]
+            r_abs = [p.lower() for p in root.resolve().parts]
+            if len(t_abs) >= len(r_abs) and t_abs[:len(r_abs)] == r_abs:
+                return True
+        except Exception:
+            pass
+        return False
+    else:
+        if target_resolved == root_resolved or root_resolved in target_resolved.parents:
+            return True
+        try:
+            t_res = target.resolve()
+            r_res = root.resolve()
+            if t_res == r_res or r_res in t_res.parents:
+                return True
+        except Exception:
+            pass
+        return False
+
+
+def validate_backup_dir(
+    backup_dir: Optional[Union[str, Path]],
+    cwd: Optional[Path] = None,
+) -> Path:
+    """
+    Validates that backup_dir is explicitly specified and located strictly outside
+    all Git worktrees and checkouts discovered locally.
+    Fails closed if boundary cannot be established or if backup_dir is inside any worktree.
+    """
+    if backup_dir is None:
+        raise SecurityValidationError("--backup-dir is required for writes.")
+
+    b_str = str(backup_dir).strip()
+    if not b_str:
+        raise SecurityValidationError("--backup-dir is required for writes.")
+
+    path_obj = Path(backup_dir)
+
+    if path_obj.is_file():
+        raise SecurityValidationError("Backup destination cannot be an existing file.")
+
+    worktree_roots = find_git_worktree_roots(cwd=cwd)
+
+    for wt_root in worktree_roots:
+        if is_path_inside_or_equal(path_obj, wt_root):
+            raise SecurityValidationError(
+                "Backup destination must be strictly outside all Git checkouts and worktrees."
+            )
+
+    return path_obj
+
+
 def create_prewrite_backup(
     target_type_or_number: Any,
     number_or_body: Any,
     body_or_backup_dir: Any = None,
     backup_dir: Optional[Path] = None,
+    cwd: Optional[Path] = None,
 ) -> Path:
     """
     Writes a local pre-write recovery backup file.
     Supports:
       create_prewrite_backup(pr_number: int, body: str, backup_dir: Optional[Path] = None)
       create_prewrite_backup(target_type: str, number: int, body: str, backup_dir: Optional[Path] = None)
-    Does not leak private data or tokens.
+    Does not leak private data or tokens. Enforces external placement and non-overwriting creation.
     """
     if isinstance(target_type_or_number, int):
         target_type = "pr"
@@ -488,12 +616,21 @@ def create_prewrite_backup(
         body_text = str(body_or_backup_dir)
         target_backup_dir = backup_dir
 
-    target_dir = target_backup_dir or (Path.cwd() / ".ai-review-backups")
-    target_dir.mkdir(parents=True, exist_ok=True)
+    if not target_backup_dir:
+        raise SecurityValidationError("Backup directory is required; silent fallback into repository checkout is forbidden.")
+
+    validated_target_dir = validate_backup_dir(target_backup_dir, cwd=cwd)
+    validated_target_dir.mkdir(parents=True, exist_ok=True)
 
     timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d_%H%M%S")
-    backup_file = target_dir / f"{target_type}_{number}_body_backup_{timestamp}.md"
-    backup_file.write_text(body_text, encoding="utf-8")
+    backup_file = validated_target_dir / f"{target_type}_{number}_body_backup_{timestamp}.md"
+
+    try:
+        with open(backup_file, "x", encoding="utf-8") as f:
+            f.write(body_text)
+    except FileExistsError:
+        raise FileExistsError(f"Pre-write backup file already exists: {backup_file.name}. Refusing to overwrite.")
+
     return backup_file
 
 
@@ -541,7 +678,12 @@ def main() -> int:
     parser.add_argument("--write", action="store_true", help="Explicit opt-in flag to execute write (defaults to preview only).")
     parser.add_argument("--adopt-unmarked", action="store_true", help="Opt-in route to adopt candidate unmarked reviewer sections (PR mode only).")
     parser.add_argument("--expected-base-hash", type=str, default=None, help="Expected SHA256 hex digest of remote body before update.")
-    parser.add_argument("--backup-dir", type=Path, default=None, help="Directory to store pre-write local recovery backup file.")
+    parser.add_argument(
+        "--backup-dir",
+        type=Path,
+        default=None,
+        help="Directory to store pre-write local recovery backup file (required for writes; must be outside all Git worktrees).",
+    )
     parser.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY", "Tiflit/DXVK-Companion"), help="Repository owner/repo.")
     parser.add_argument("--token", default=get_default_github_token(), help="GitHub API token.")
     args = parser.parse_args()
@@ -738,10 +880,10 @@ def main() -> int:
             if is_privacy_sensitive_text(str(args.append_file)) or is_privacy_sensitive_text(args.append_file.name):
                 print(
                     f"\nTo commit this change, supply your local file and re-run with: "
-                    f"python scripts/ai-workflow/update_pr_body.py --issue {args.issue} --append-file <path-to-append-file> --expected-base-hash {current_hash} --write"
+                    f"python scripts/ai-workflow/update_pr_body.py --issue {args.issue} --append-file <path-to-append-file> --expected-base-hash {current_hash} --backup-dir <external-backup-dir> --write"
                 )
             else:
-                print(f"\nTo commit this change, re-run with: python scripts/ai-workflow/update_pr_body.py --issue {args.issue} --append-file {args.append_file.name} --expected-base-hash {current_hash} --write")
+                print(f"\nTo commit this change, re-run with: python scripts/ai-workflow/update_pr_body.py --issue {args.issue} --append-file {args.append_file.name} --expected-base-hash {current_hash} --backup-dir <external-backup-dir> --write")
             return 0
 
         # Write Mode
@@ -749,9 +891,19 @@ def main() -> int:
             print("ERROR: GitHub token (GITHUB_TOKEN or GH_TOKEN) required for --write.", file=sys.stderr)
             return 1
 
+        if not args.backup_dir:
+            print("ERROR: --backup-dir is required for writes.", file=sys.stderr)
+            return 1
+
+        try:
+            validated_backup_dir = validate_backup_dir(args.backup_dir)
+        except SecurityValidationError as e:
+            print(f"ERROR: Invalid --backup-dir: {sanitize_diagnostic(str(e))}", file=sys.stderr)
+            return 1
+
         # Local recovery backup
         try:
-            backup_path = create_prewrite_backup("issue", args.issue, remote_body, args.backup_dir)
+            backup_path = create_prewrite_backup("issue", args.issue, remote_body, validated_backup_dir)
             safe_backup_display = format_safe_backup_display(backup_path)
             print(f"Pre-write local recovery backup saved to: {safe_backup_display}")
         except Exception as e:
@@ -908,7 +1060,7 @@ def main() -> int:
         for diff_line in diff:
             sys.stdout.write(sanitize_diff_line(diff_line))
         print("--- END DIFF PREVIEW ---")
-        print("\nTo commit this change, re-run with explicit --write flag.")
+        print("\nTo commit this change, re-run with explicit --write flag and external --backup-dir.")
         return 0
 
     # Write Mode
@@ -916,9 +1068,19 @@ def main() -> int:
         print("ERROR: GitHub token (GITHUB_TOKEN or GH_TOKEN) required for --write.", file=sys.stderr)
         return 1
 
+    if not args.backup_dir:
+        print("ERROR: --backup-dir is required for writes.", file=sys.stderr)
+        return 1
+
+    try:
+        validated_backup_dir = validate_backup_dir(args.backup_dir)
+    except SecurityValidationError as e:
+        print(f"ERROR: Invalid --backup-dir: {sanitize_diagnostic(str(e))}", file=sys.stderr)
+        return 1
+
     # Local recovery backup
     try:
-        backup_path = create_prewrite_backup("pr", args.pr, remote_body, args.backup_dir)
+        backup_path = create_prewrite_backup("pr", args.pr, remote_body, validated_backup_dir)
         safe_backup_display = format_safe_backup_display(backup_path)
         print(f"Pre-write local recovery backup saved to: {safe_backup_display}")
     except Exception as e:

@@ -24,11 +24,14 @@ from update_pr_body import (
     check_issue_idempotency,
     compute_body_sha256,
     create_prewrite_backup,
+    find_git_worktree_roots,
+    is_path_inside_or_equal,
     merge_and_preserve_review_records,
     parse_and_validate_append_input,
     parse_and_validate_review_records,
     prepare_issue_candidate,
     scan_for_privacy_violations,
+    validate_backup_dir,
 )
 
 
@@ -1017,6 +1020,7 @@ class TestUpdatePrBody(unittest.TestCase):
                     "--issue", "42",
                     "--append-file", str(f_path),
                     "--expected-base-hash", expected_hash,
+                    "--backup-dir", str(personal_backup_dir),
                     "--write",
                     "--token", "tok",
                 ]
@@ -1756,7 +1760,281 @@ class TestUpdatePrBody(unittest.TestCase):
                 self.assertIn("chatgpt-2026-10-04-rev1", out)
                 self.assertIn("Preserved Review Records (1): chatgpt-2026-10-04-rev1", out)
 
+    # =========================================================================
+    # 13. Worktree Boundary Validation, Backup Directory Enforcement & Collision Refusal
+    # =========================================================================
+
+    def test_validate_backup_dir_rejects_none_and_empty(self):
+        with self.assertRaises(SecurityValidationError) as cm1:
+            validate_backup_dir(None)
+        self.assertIn("--backup-dir is required for writes", str(cm1.exception))
+
+        with self.assertRaises(SecurityValidationError) as cm2:
+            validate_backup_dir("")
+        self.assertIn("--backup-dir is required for writes", str(cm2.exception))
+
+        with self.assertRaises(SecurityValidationError) as cm3:
+            validate_backup_dir("   ")
+        self.assertIn("--backup-dir is required for writes", str(cm3.exception))
+
+    @patch("update_pr_body.find_git_worktree_roots")
+    def test_validate_backup_dir_rejects_inside_worktree(self, mock_roots):
+        mock_roots.return_value = [Path("/repo/checkout")]
+        with self.assertRaises(SecurityValidationError) as cm:
+            validate_backup_dir(Path("/repo/checkout/sub_backups"))
+        self.assertIn("must be strictly outside all Git checkouts and worktrees", str(cm.exception))
+
+    @patch("update_pr_body.find_git_worktree_roots")
+    def test_validate_backup_dir_rejects_worktree_root_itself(self, mock_roots):
+        mock_roots.return_value = [Path("/repo/checkout")]
+        with self.assertRaises(SecurityValidationError) as cm:
+            validate_backup_dir(Path("/repo/checkout"))
+        self.assertIn("must be strictly outside all Git checkouts and worktrees", str(cm.exception))
+
+    @patch("update_pr_body.find_git_worktree_roots")
+    def test_validate_backup_dir_rejects_inside_linked_worktree(self, mock_roots):
+        mock_roots.return_value = [Path("/repo/checkout"), Path("/repo/linked-wt")]
+        with self.assertRaises(SecurityValidationError) as cm:
+            validate_backup_dir(Path("/repo/linked-wt/backups"))
+        self.assertIn("must be strictly outside all Git checkouts and worktrees", str(cm.exception))
+
+    @patch("update_pr_body.find_git_worktree_roots")
+    def test_validate_backup_dir_resolves_aliases_and_case(self, mock_roots):
+        mock_roots.return_value = [Path("C:/Repos/DXVK-Companion")]
+        # Case variation on Windows
+        if os.name == "nt":
+            with self.assertRaises(SecurityValidationError) as cm:
+                validate_backup_dir(Path("c:/repos/dxvk-companion/backups"))
+            self.assertIn("must be strictly outside all Git checkouts and worktrees", str(cm.exception))
+
+        # Dot-dot relative alias resolving inside
+        with self.assertRaises(SecurityValidationError) as cm:
+            validate_backup_dir(Path("C:/Repos/DXVK-Companion/../DXVK-Companion/backups"))
+        self.assertIn("must be strictly outside all Git checkouts and worktrees", str(cm.exception))
+
+    def test_validate_backup_dir_rejects_existing_file(self):
+        with tempfile.NamedTemporaryFile() as f:
+            f_path = Path(f.name)
+            with self.assertRaises(SecurityValidationError) as cm:
+                validate_backup_dir(f_path)
+            self.assertIn("cannot be an existing file", str(cm.exception))
+
+    @patch("subprocess.run")
+    def test_validate_backup_dir_fails_closed_when_git_fails(self, mock_run):
+        mock_proc = MagicMock()
+        mock_proc.returncode = 128
+        mock_proc.stderr = "fatal: not a git repository"
+        mock_run.return_value = mock_proc
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with self.assertRaises(SecurityValidationError) as cm:
+                validate_backup_dir(Path(tmp_dir))
+            self.assertIn("Git worktree boundary could not be established", str(cm.exception))
+
+    @patch("update_pr_body.find_git_worktree_roots")
+    def test_validate_backup_dir_accepts_valid_external_destination(self, mock_roots):
+        mock_roots.return_value = [Path("/repo/checkout")]
+        external_path = Path("/external/safe/backups")
+        validated = validate_backup_dir(external_path)
+        self.assertEqual(validated, external_path)
+
+    def test_create_prewrite_backup_rejects_missing_destination(self):
+        with self.assertRaises(SecurityValidationError) as cm:
+            create_prewrite_backup(31, "content", None)
+        self.assertIn("silent fallback into repository checkout is forbidden", str(cm.exception))
+
+        with self.assertRaises(SecurityValidationError) as cm:
+            create_prewrite_backup("issue", 42, "content", None)
+        self.assertIn("silent fallback into repository checkout is forbidden", str(cm.exception))
+
+    def test_create_prewrite_backup_writes_exact_raw_bytes_and_naming(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            external_dir = Path(tmp_dir) / "safe_ext_backups"
+            raw_text = "Exact raw body with \n newlines\r\n and unicöde 🚀"
+
+            # PR backup
+            pr_backup = create_prewrite_backup(31, raw_text, external_dir)
+            self.assertTrue(pr_backup.is_file())
+            self.assertTrue(pr_backup.name.startswith("pr_31_body_backup_"))
+            self.assertTrue(pr_backup.name.endswith(".md"))
+            self.assertEqual(pr_backup.read_text(encoding="utf-8"), raw_text)
+
+            # Issue backup
+            issue_backup = create_prewrite_backup("issue", 42, raw_text, external_dir)
+            self.assertTrue(issue_backup.is_file())
+            self.assertTrue(issue_backup.name.startswith("issue_42_body_backup_"))
+            self.assertTrue(issue_backup.name.endswith(".md"))
+            self.assertEqual(issue_backup.read_text(encoding="utf-8"), raw_text)
+
+    def test_create_prewrite_backup_collision_refusal_preserves_existing_file(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            external_dir = Path(tmp_dir) / "safe_backups"
+            external_dir.mkdir(parents=True, exist_ok=True)
+
+            # First backup creation succeeds
+            backup1 = create_prewrite_backup(31, "first untouched content", external_dir)
+            self.assertTrue(backup1.is_file())
+            self.assertEqual(backup1.read_text(encoding="utf-8"), "first untouched content")
+
+            # Second backup within the same second collides with identical target path
+            # We mock datetime to guarantee exact timestamp collision
+            timestamp_str = backup1.name.replace("pr_31_body_backup_", "").replace(".md", "")
+            mock_dt = MagicMock()
+            mock_dt.strftime.return_value = timestamp_str
+
+            with patch("update_pr_body.datetime.datetime") as mock_datetime:
+                mock_datetime.now.return_value = mock_dt
+                mock_datetime.timezone = datetime.timezone
+                with self.assertRaises(FileExistsError) as cm:
+                    create_prewrite_backup(31, "overwriting modified content", external_dir)
+                self.assertIn("already exists", str(cm.exception))
+                self.assertIn("Refusing to overwrite", str(cm.exception))
+
+            # Verify existing file content was preserved completely untouched
+            self.assertEqual(backup1.read_text(encoding="utf-8"), "first untouched content")
+
+    @patch("urllib.request.urlopen")
+    def test_issue_write_mode_requires_backup_dir_before_patch(self, mock_urlopen):
+        mock_urlopen.return_value = MockHttpResponse({
+            "number": 42,
+            "body": self.sample_issue_body,
+        })
+        with tempfile.NamedTemporaryFile("w", delete=False) as f:
+            f.write(self.sample_append_block)
+            f_path = Path(f.name)
+        try:
+            expected_hash = compute_body_sha256(self.sample_issue_body)
+            test_args = [
+                "update_pr_body.py",
+                "--issue", "42",
+                "--append-file", str(f_path),
+                "--expected-base-hash", expected_hash,
+                "--write",
+                "--token", "tok",
+            ]
+            with patch.object(sys, "argv", test_args):
+                with patch("sys.stderr", new_callable=io.StringIO) as mock_err:
+                    exit_code = update_pr_body.main()
+                    self.assertEqual(exit_code, 1)
+                    self.assertIn("--backup-dir is required for writes", mock_err.getvalue())
+
+            for call in mock_urlopen.call_args_list:
+                req = call[0][0]
+                method = req.get_method() if hasattr(req, "get_method") else "GET"
+                self.assertNotEqual(method, "PATCH")
+        finally:
+            f_path.unlink()
+
+    @patch("urllib.request.urlopen")
+    def test_issue_write_mode_rejects_inside_worktree_before_patch(self, mock_urlopen):
+        mock_urlopen.return_value = MockHttpResponse({
+            "number": 42,
+            "body": self.sample_issue_body,
+        })
+        with tempfile.NamedTemporaryFile("w", delete=False) as f:
+            f.write(self.sample_append_block)
+            f_path = Path(f.name)
+        try:
+            expected_hash = compute_body_sha256(self.sample_issue_body)
+            inside_dir = Path.cwd() / ".ai-review-backups-test-should-refuse"
+            test_args = [
+                "update_pr_body.py",
+                "--issue", "42",
+                "--append-file", str(f_path),
+                "--expected-base-hash", expected_hash,
+                "--backup-dir", str(inside_dir),
+                "--write",
+                "--token", "tok",
+            ]
+            with patch.object(sys, "argv", test_args):
+                with patch("sys.stderr", new_callable=io.StringIO) as mock_err:
+                    exit_code = update_pr_body.main()
+                    self.assertEqual(exit_code, 1)
+                    self.assertIn("strictly outside all Git checkouts and worktrees", mock_err.getvalue())
+
+            # Confirm no directory was created inside the worktree
+            self.assertFalse(inside_dir.exists())
+
+            # Confirm no PATCH request was made
+            for call in mock_urlopen.call_args_list:
+                req = call[0][0]
+                method = req.get_method() if hasattr(req, "get_method") else "GET"
+                self.assertNotEqual(method, "PATCH")
+        finally:
+            f_path.unlink()
+
+    @patch("urllib.request.urlopen")
+    def test_pr_write_mode_requires_backup_dir_before_patch(self, mock_urlopen):
+        mock_urlopen.return_value = MockHttpResponse({
+            "number": 31,
+            "body": self.sample_remote_body,
+        })
+        expected_hash = compute_body_sha256(self.sample_remote_body)
+        valid_proposed = (
+            "## Primary Issue\nFixes #31\n\n"
+            "## Summary\nValid summary.\n\n"
+            "## Scope\nscripts/ai-workflow/**\n\n"
+            "## Verification\n92 passed.\n\n"
+            "## Documentation\nUpdated.\n"
+        )
+        test_args = [
+            "update_pr_body.py",
+            "--pr", "31",
+            "--body", valid_proposed,
+            "--expected-base-hash", expected_hash,
+            "--write",
+            "--token", "tok",
+        ]
+        with patch.object(sys, "argv", test_args):
+            with patch("sys.stderr", new_callable=io.StringIO) as mock_err:
+                exit_code = update_pr_body.main()
+                self.assertEqual(exit_code, 1)
+                self.assertIn("--backup-dir is required for writes", mock_err.getvalue())
+
+        for call in mock_urlopen.call_args_list:
+            req = call[0][0]
+            method = req.get_method() if hasattr(req, "get_method") else "GET"
+            self.assertNotEqual(method, "PATCH")
+
+    @patch("urllib.request.urlopen")
+    def test_pr_write_mode_rejects_inside_worktree_before_patch(self, mock_urlopen):
+        mock_urlopen.return_value = MockHttpResponse({
+            "number": 31,
+            "body": self.sample_remote_body,
+        })
+        expected_hash = compute_body_sha256(self.sample_remote_body)
+        valid_proposed = (
+            "## Primary Issue\nFixes #31\n\n"
+            "## Summary\nValid summary.\n\n"
+            "## Scope\nscripts/ai-workflow/**\n\n"
+            "## Verification\n92 passed.\n\n"
+            "## Documentation\nUpdated.\n"
+        )
+        inside_dir = Path.cwd() / "invalid-in-worktree-backup-dir"
+        test_args = [
+            "update_pr_body.py",
+            "--pr", "31",
+            "--body", valid_proposed,
+            "--expected-base-hash", expected_hash,
+            "--backup-dir", str(inside_dir),
+            "--write",
+            "--token", "tok",
+        ]
+        with patch.object(sys, "argv", test_args):
+            with patch("sys.stderr", new_callable=io.StringIO) as mock_err:
+                exit_code = update_pr_body.main()
+                self.assertEqual(exit_code, 1)
+                self.assertIn("strictly outside all Git checkouts and worktrees", mock_err.getvalue())
+
+        self.assertFalse(inside_dir.exists())
+
+        for call in mock_urlopen.call_args_list:
+            req = call[0][0]
+            method = req.get_method() if hasattr(req, "get_method") else "GET"
+            self.assertNotEqual(method, "PATCH")
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

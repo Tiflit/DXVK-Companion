@@ -1,0 +1,27 @@
+# Build output and compilation artifacts (.NET)
+bin/
+obj/
+TestResults/
+**/bin/
+**/obj/
+**/TestResults/
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# AI workflow local recovery backups and private cache
+.ai-review-backups/
+.ai-cache/
+
+# Local environment configuration and secrets
+.env
+.env.*
+!.env.example
+
+# Patch and editor artifacts
+*.orig
+*.rej
+*~
