@@ -196,13 +196,8 @@ def sanitize_diagnostic(msg: Any) -> str:
 
 
 def format_safe_backup_display(backup_path: Path) -> str:
-    """Formats backup confirmation path safely without leaking personal home directories."""
-    try:
-        rel_path = backup_path.relative_to(Path.cwd())
-        display_str = str(rel_path)
-    except ValueError:
-        display_str = str(backup_path)
-    return sanitize_privacy_text(display_str)
+    """Formats backup confirmation safely using fixed safe basename/redacted identifier without path exposure."""
+    return f"[REDACTED_PATH]/{backup_path.name}"
 
 
 @dataclass
@@ -468,7 +463,7 @@ def find_git_worktree_roots(cwd: Optional[Path] = None) -> List[Path]:
     """
     Discovers all Git worktree root paths for the repository associated with cwd.
     Uses 'git worktree list --porcelain' and 'git rev-parse --show-toplevel'.
-    Fails closed (raises SecurityValidationError) if git commands fail or repository
+    Fails closed with a category-only error if git commands fail or repository
     boundaries cannot be determined.
     """
     effective_cwd = cwd or Path.cwd()
@@ -482,21 +477,16 @@ def find_git_worktree_roots(cwd: Optional[Path] = None) -> List[Path]:
             text=True,
             timeout=5,
         )
-    except Exception as e:
-        raise SecurityValidationError(
-            f"Git worktree boundary could not be established: {sanitize_diagnostic(str(e))}"
-        )
+    except Exception:
+        raise SecurityValidationError("Git worktree boundary could not be established.")
 
     if proc.returncode != 0:
-        err_msg = proc.stderr.strip() or "git worktree list failed"
-        raise SecurityValidationError(
-            f"Git worktree boundary could not be established: {sanitize_diagnostic(err_msg)}"
-        )
+        raise SecurityValidationError("Git worktree boundary could not be established.")
 
-    for line in proc.stdout.splitlines():
-        line = line.strip()
+    for raw_line in proc.stdout.splitlines():
+        line = raw_line.rstrip("\r\n")
         if line.startswith("worktree "):
-            wt_path_str = line[len("worktree "):].strip()
+            wt_path_str = line[len("worktree "):]
             if wt_path_str:
                 roots.append(Path(wt_path_str))
 
@@ -508,58 +498,108 @@ def find_git_worktree_roots(cwd: Optional[Path] = None) -> List[Path]:
             text=True,
             timeout=5,
         )
-        if toplevel_proc.returncode == 0 and toplevel_proc.stdout.strip():
-            roots.append(Path(toplevel_proc.stdout.strip()))
+        if toplevel_proc.returncode == 0:
+            top_str = toplevel_proc.stdout.rstrip("\r\n")
+            if top_str:
+                roots.append(Path(top_str))
     except Exception:
         pass
 
     if not roots:
-        raise SecurityValidationError(
-            "Git worktree boundary could not be established: no worktree roots discovered."
-        )
+        raise SecurityValidationError("Git worktree boundary could not be established.")
 
     return roots
+
+
+def anchor_and_resolve_backup_path(backup_dir: Path, cwd: Optional[Path] = None) -> Path:
+    """
+    Explicitly anchors backup_dir against cwd (or Path.cwd() if omitted) and resolves
+    existing ancestor symlinks and junctions with strict error-sensitive handling.
+    Fails closed on resolution errors, symlink loops, or access denials.
+    Returns an absolute, anchored Path.
+    """
+    effective_cwd = cwd or Path.cwd()
+    if not backup_dir.is_absolute():
+        anchored = effective_cwd / backup_dir
+    else:
+        anchored = backup_dir
+
+    parts_to_append: List[str] = []
+    curr = anchored
+    while not curr.exists() and not curr.is_symlink():
+        parts_to_append.append(curr.name)
+        parent = curr.parent
+        if parent == curr:
+            break
+        curr = parent
+
+    try:
+        resolved_ancestor = curr.resolve(strict=True)
+    except Exception:
+        raise SecurityValidationError("Backup destination path resolution failed.")
+
+    resolved_full = resolved_ancestor
+    for part in reversed(parts_to_append):
+        resolved_full = resolved_full / part
+
+    return resolved_full
+
+
+def is_inside_git_repository(target: Path) -> bool:
+    """
+    Probes whether target or its nearest existing directory ancestor is inside any Git repository.
+    Fails closed if the boundary query fails for reasons other than standard non-repository absence.
+    """
+    curr = target
+    while not curr.exists() or not curr.is_dir():
+        parent = curr.parent
+        if parent == curr:
+            break
+        curr = parent
+
+    if not curr.exists() or not curr.is_dir():
+        raise SecurityValidationError("Git worktree boundary could not be established.")
+
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(curr), "rev-parse", "--is-inside-work-tree", "--is-inside-git-dir"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except Exception:
+        raise SecurityValidationError("Git worktree boundary could not be established.")
+
+    if proc.returncode == 0:
+        lines = [line.strip().lower() for line in proc.stdout.splitlines()]
+        if "true" in lines:
+            return True
+
+    stderr_lower = proc.stderr.lower()
+    if proc.returncode != 0 and "not a git repository" in stderr_lower:
+        return False
+
+    raise SecurityValidationError("Git worktree boundary could not be established.")
 
 
 def is_path_inside_or_equal(target: Path, root: Path, cwd: Optional[Path] = None) -> bool:
     """
     Determines whether target path is equal to or located inside root directory.
     Resolves aliases, symlinks, and junctions, with case-normalization on Windows.
+    Fails closed on resolution errors or symlink loops.
     """
-    effective_cwd = cwd or Path.cwd()
-    target_path = target if target.is_absolute() else (effective_cwd / target)
-    root_path = root if root.is_absolute() else (effective_cwd / root)
-
-    try:
-        target_resolved = Path(os.path.realpath(target_path))
-        root_resolved = Path(os.path.realpath(root_path))
-    except Exception:
-        target_resolved = target_path.resolve()
-        root_resolved = root_path.resolve()
+    target_resolved = anchor_and_resolve_backup_path(target, cwd=cwd)
+    root_resolved = anchor_and_resolve_backup_path(root, cwd=cwd)
 
     if os.name == "nt":
         t_parts = [p.lower() for p in target_resolved.parts]
         r_parts = [p.lower() for p in root_resolved.parts]
         if len(t_parts) >= len(r_parts) and t_parts[:len(r_parts)] == r_parts:
             return True
-        try:
-            t_abs = [p.lower() for p in target_path.resolve().parts]
-            r_abs = [p.lower() for p in root_path.resolve().parts]
-            if len(t_abs) >= len(r_abs) and t_abs[:len(r_abs)] == r_abs:
-                return True
-        except Exception:
-            pass
         return False
     else:
         if target_resolved == root_resolved or root_resolved in target_resolved.parents:
             return True
-        try:
-            t_res = target_path.resolve()
-            r_res = root_path.resolve()
-            if t_res == r_res or r_res in t_res.parents:
-                return True
-        except Exception:
-            pass
         return False
 
 
@@ -569,7 +609,8 @@ def validate_backup_dir(
 ) -> Path:
     """
     Validates that backup_dir is explicitly specified and located strictly outside
-    all Git worktrees and checkouts discovered locally.
+    all Git worktrees and checkouts (both caller repository and independent repositories).
+    Returns an anchored, resolved absolute Path.
     Fails closed if boundary cannot be established or if backup_dir is inside any worktree.
     """
     if backup_dir is None:
@@ -581,18 +622,25 @@ def validate_backup_dir(
 
     path_obj = Path(backup_dir)
 
-    if path_obj.is_file():
+    anchored_backup_path = anchor_and_resolve_backup_path(path_obj, cwd=cwd)
+
+    if anchored_backup_path.is_file():
         raise SecurityValidationError("Backup destination cannot be an existing file.")
 
     worktree_roots = find_git_worktree_roots(cwd=cwd)
 
     for wt_root in worktree_roots:
-        if is_path_inside_or_equal(path_obj, wt_root, cwd=cwd):
+        if is_path_inside_or_equal(anchored_backup_path, wt_root, cwd=cwd):
             raise SecurityValidationError(
                 "Backup destination must be strictly outside all Git checkouts and worktrees."
             )
 
-    return path_obj
+    if is_inside_git_repository(anchored_backup_path):
+        raise SecurityValidationError(
+            "Backup destination must be strictly outside all Git checkouts and worktrees."
+        )
+
+    return anchored_backup_path
 
 
 def create_prewrite_backup(

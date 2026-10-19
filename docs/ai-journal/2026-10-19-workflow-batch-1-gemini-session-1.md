@@ -79,12 +79,42 @@ Implement Issue #183 (Batch 1: Keep raw backups and generated output outside pub
       1. Missing `import datetime` in test file.
       2. Linux path anchoring in `is_path_inside_or_equal` when synthetic `cwd` was passed for relative targets.
       3. Python universal-newlines translation on raw text assertions (`newline=""` added to `open(..., 'x')` and exact byte read in tests).
-      4. OS-specific personal path syntax in `test_safe_backup_display_redacts_personal_home_path` (`/home/...` on POSIX vs `C:/Users/...` on Windows).
   - Repaired in second iteration across allowed paths.
+  - Second run on PR #189 commit `521ba0174e2d3bbefc4a0346387eaebdfcb104bf`:
+    - `AI Workflow Tests` ([Run 39330758410](https://github.com/Tiflit/DXVK-Companion/actions/runs/39330758410)): 274 passed in 30s. PASS.
+    - `AI task scope` ([Run 39330758428](https://github.com/Tiflit/DXVK-Companion/actions/runs/39330758428)): PASS.
+    - `PR hygiene` ([Run 39330758448](https://github.com/Tiflit/DXVK-Companion/actions/runs/39330758448)): PASS.
+    - `Build and Test` ([Run 39330758423](https://github.com/Tiflit/DXVK-Companion/actions/runs/39330758423)): PASS.
 
 ---
 
-### 4. Allowed Paths Compliance
+### 4. Codex Review Findings R1–R4 Resolution
+
+Following PR #189 initial green CI, Codex conducted peer review ([comment 6278239033](https://github.com/Tiflit/DXVK-Companion/pull/189#issuecomment-6278239033)) with findings R1–R4 addressed in-place on branch `feat/issue-183-workflow-backup-hygiene`:
+
+1. **R1 (Independent Repository Boundary Enforcement)**:
+   - Extended boundary validation beyond caller repository worktrees to reject destinations inside *any* locally establishable Git repository.
+   - Implemented `is_inside_git_repository(target: Path)` which walks up to the nearest existing directory ancestor and probes with `git -C <curr> rev-parse --is-inside-work-tree --is-inside-git-dir`.
+   - Distinguishes confirmed non-repository absence (exit code 128 with `"not a git repository"` in stderr) from boundary query failures or timeouts, failing closed on unexpected codes or errors.
+   - Added synthetic multi-repo tests in `test_repository_hygiene.py` with Repo A and Repo B verifying that Repo A rejects `--backup-dir` inside Repo B root, nested existing directory, nested non-existent suffix, and `.git` directory before `mkdir` or PATCH.
+
+2. **R2 (Strict Anchoring & Alias Resolution)**:
+   - Implemented `anchor_and_resolve_backup_path(backup_dir: Path, cwd: Optional[Path]) -> Path`: explicitly anchors relative paths against supplied `cwd` (defaulting to `Path.cwd()`), strictly resolves existing ancestor symlinks/junctions with `resolve(strict=True)` failing closed with `SecurityValidationError("Backup destination path resolution failed.")` on loops or denials, appends non-existent suffixes, and returns the single validated absolute `Path`.
+   - Used this validated absolute `Path` across downstream `mkdir` and pre-write `open` calls in `create_prewrite_backup`.
+   - Preserved path characters losslessly in `find_git_worktree_roots` by using `rstrip("\r\n")` without stripping legal internal or leading/trailing spaces from porcelain lines.
+
+3. **R3 (Privacy Leak Prevention in Boundary Diagnostics)**:
+   - Formatted backup confirmation displays strictly as `[REDACTED_PATH]/{backup_path.name}` via `format_safe_backup_display`.
+   - Used fixed category-only error strings for all security validation exceptions without echoing raw Git stderr, exception tracebacks, or personal paths with spaces (e.g. `C:\Users\Example Person\`).
+   - Added regression coverage verifying that paths with spaces never leak personal directory fragments into stdout or stderr.
+
+4. **R4 (Generated Artifacts Exclusion)**:
+   - Added root `artifacts/` to `.gitignore` to ignore build provenance and publish directories (`artifacts/provenance/`, `artifacts/publish/`).
+   - Verified via `git check-ignore` that provenance and publish artifacts are ignored while tracked source files and test fixtures remain versionable.
+
+---
+
+### 5. Allowed Paths Compliance
 
 All modified and created files strictly match the declared `### Allowed paths` in Issue #183:
 1. `.gitignore`
@@ -98,9 +128,8 @@ No product code, project files, or unapproved paths were modified.
 
 ---
 
-### 5. Next Steps
+### 6. Next Steps
 
-1. Commit and push feature branch `feat/issue-183-workflow-backup-hygiene`.
-2. Open Pull Request referencing `Fixes #183`.
-3. Verify Cloud CI workflows pass.
-4. Yield for Codex review; human performs final merge.
+1. Commit and push review fixes to feature branch `feat/issue-183-workflow-backup-hygiene`.
+2. Monitor Cloud CI workflows across GitHub Actions (`AI Workflow Tests`, `AI task scope`, `PR hygiene`, `Build and Test`).
+3. Return new head SHA and verified passing test runs for Codex review; human performs final merge.

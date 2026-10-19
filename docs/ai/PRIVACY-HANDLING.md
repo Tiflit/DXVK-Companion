@@ -10,15 +10,15 @@ Local recovery backups are critical for preserving baseline states and recoverin
 
 ### External Backup Destination Mandate
 - **Mandatory External Placement:** For any mutation operation (`--write`) on a Pull Request or Issue that performs a write requiring a pre-write recovery backup, the workflow helper (`scripts/ai-workflow/update_pr_body.py`) strictly mandates an explicit `--backup-dir` destination.
-- **Fail-Closed Worktree Boundary Enforcement:** The helper discovers all local Git worktrees (the main checkout and any linked worktrees registered with `git worktree list --porcelain` and `git rev-parse --show-toplevel`). If the specified `--backup-dir` is located within, or equal to, any local checkout or linked worktree, the operation refuses immediately with an error before any filesystem directory is created and before any GitHub API mutation (`PATCH`) is executed.
-- **Path Alias Resolution:** Path validation resolves symlinks, directory junctions, relative references (`.` and `..`), and operating system path aliases (such as 8.3 short names and case variations on Windows) prior to boundary evaluation.
-- **Boundary Failure:** If local Git repository boundaries cannot be determined (e.g. Git executable failure, corrupted metadata, or detached execution outside a Git context), the helper fails closed and refuses writes.
+- **Fail-Closed Repository Boundary Enforcement:** The helper discovers all local Git worktrees of the caller repository (the main checkout and linked worktrees registered with `git worktree list --porcelain` and `git rev-parse --show-toplevel`). Furthermore, the helper probes whether the destination or its nearest existing directory ancestor is located inside *any* locally establishable Git repository or worktree (including independent repositories, `.git` directories, and non-existent destination suffixes within checkouts) using `git -C <nearest_ancestor> rev-parse --is-inside-work-tree --is-inside-git-dir`. If the specified `--backup-dir` is located within, or equal to, any checkout or worktree, the operation refuses immediately before any filesystem directory is created and before any GitHub API mutation (`PATCH`) is executed.
+- **Strict Path Anchoring & Alias Resolution:** Path validation explicitly anchors relative paths against `cwd` (or `Path.cwd()`), strictly resolves existing ancestor symlinks and directory junctions with `resolve(strict=True)` (failing closed with `SecurityValidationError("Backup destination path resolution failed.")` on loops, broken symlinks, or access denials), appends non-existent suffixes, and returns/uses the single validated absolute `Path` for downstream `mkdir` and pre-write file creation. Path characters are preserved losslessly when parsing `git worktree list --porcelain`.
+- **Boundary Failure:** The helper distinguishes established non-repository absence (exit code 128 with "not a git repository") from query failures, timeouts, corrupted metadata, or detached execution outside a Git context, failing closed with a category-only error on any uncertainty.
 - **No Implicit Fallback:** The helper never silently falls back into the current working directory (`CWD`) or `.ai-review-backups/` within the repository.
 - **Exempt Operations:** Side-effect-free preview flows (`--preview` or omitting `--write`) and verified idempotent no-op flows (where the remote entity already contains the identical record and zero writes are committed) remain side-effect-free and do not require `--backup-dir`.
 
 ### Exact Raw Snapshots & Collision Preservation
 - **Exact Raw Content:** Pre-write recovery backups are written as target-qualified, exact byte-for-byte UTF-8 representations of the remote state immediately prior to mutation.
-- **Non-Overwriting Exclusive Creation:** Backup files are created using atomic exclusive creation (`open(..., 'x')`). If a backup file with the target-qualified timestamp name already exists, the helper refuses to overwrite it, preserves the existing file intact (collision preservation), and aborts the operation before any API mutation.
+- **Non-Overwriting Exclusive Creation:** Backup files are created using atomic exclusive creation (`open(..., 'x', encoding='utf-8', newline='')`). If a backup file with the target-qualified timestamp name already exists, the helper refuses to overwrite it, preserves the existing file intact (collision preservation), and aborts the operation before any API mutation.
 - **No Historical Mutation:** The helper never scans, moves, renames, or deletes historical backup files or expands filesystem exploration outside the explicitly provided destination.
 
 ---
@@ -31,6 +31,7 @@ Targeted exclusions are declared in `.gitignore` to prevent incidental accumulat
 The repository `.gitignore` provides targeted exclusions:
 - `.ai-review-backups/` — legacy or accidental local recovery backups
 - `.ai-cache/` — local AI workflow temporary cache and scratch data
+- `artifacts/` — root build provenance and publish output directories (`artifacts/provenance/`, `artifacts/publish/`)
 - `bin/`, `obj/`, `TestResults/` — compilation and test output artifacts
 - `__pycache__/`, `*.py[cod]` — Python bytecode caches
 - `.env`, `.env.*` (with `!.env.example` unignored) — local environment secrets
@@ -49,7 +50,8 @@ The workflow helper incorporates fail-closed scanners and redaction filters:
 - **Home Directory Scanners:** Detect Windows personal directory paths (`C:\Users\<user>\...` or `C:/Users/...`) and POSIX personal directory paths (`/home/<user>/...` or `/Users/<user>/...`).
 - **Token and Secret Scanners:** Detect GitHub personal access tokens (`ghp_`, `github_pat_`, etc.) and bearer authorization tokens.
 - **Fail-Closed Pre-Write Checks:** If sensitive paths or credentials are detected in proposed PR bodies, candidate Issue append records, or remote targets, the helper immediately aborts before output or remote dispatch.
-- **Diagnostic Sanitization:** All diff previews, error diagnostics, and backup display confirmations sanitize sensitive personal paths to `[REDACTED_PATH]` and tokens to `[REDACTED_TOKEN]`. Backup contents and personal usernames are never echoed to public logs or output streams.
+- **Diagnostic Sanitization & Fixed Category Errors:** Error diagnostics use fixed category-only error strings without echoing raw Git stderr, exception text, or environment paths. Backup confirmation displays use a fixed basename format (`[REDACTED_PATH]/<filename>`) to prevent leaking personal paths or usernames with spaces (e.g. `C:\Users\Example Person\`).
+- **Diff Preview Redaction:** Unified-diff previews are sanitized line-by-line (`sanitize_diff_line`) so personal paths or tokens present in dirty remote bodies are safely redacted without corrupting unified-diff structural indicators (`+`, `-`, ` `).
 
 ---
 

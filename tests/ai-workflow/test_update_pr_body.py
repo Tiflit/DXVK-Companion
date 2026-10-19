@@ -22,10 +22,13 @@ from update_pr_body import (
     ReviewRecord,
     SecurityValidationError,
     adopt_unmarked_review_records,
+    anchor_and_resolve_backup_path,
     check_issue_idempotency,
     compute_body_sha256,
     create_prewrite_backup,
     find_git_worktree_roots,
+    format_safe_backup_display,
+    is_inside_git_repository,
     is_path_inside_or_equal,
     merge_and_preserve_review_records,
     parse_and_validate_append_input,
@@ -1835,12 +1838,14 @@ class TestUpdatePrBody(unittest.TestCase):
                 validate_backup_dir(Path(tmp_dir))
             self.assertIn("Git worktree boundary could not be established", str(cm.exception))
 
+    @patch("update_pr_body.is_inside_git_repository", return_value=False)
     @patch("update_pr_body.find_git_worktree_roots")
-    def test_validate_backup_dir_accepts_valid_external_destination(self, mock_roots):
+    def test_validate_backup_dir_accepts_valid_external_destination(self, mock_roots, mock_is_inside):
         mock_roots.return_value = [Path("/repo/checkout")]
-        external_path = Path("/external/safe/backups")
-        validated = validate_backup_dir(external_path)
-        self.assertEqual(validated, external_path)
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            external_path = Path(tmp_dir) / "safe_backups"
+            validated = validate_backup_dir(external_path)
+            self.assertEqual(validated, external_path.resolve())
 
     def test_create_prewrite_backup_rejects_missing_destination(self):
         with self.assertRaises(SecurityValidationError) as cm:
@@ -2036,6 +2041,124 @@ class TestUpdatePrBody(unittest.TestCase):
             req = call[0][0]
             method = req.get_method() if hasattr(req, "get_method") else "GET"
             self.assertNotEqual(method, "PATCH")
+
+    def test_format_safe_backup_display_redacts_paths_with_spaces_and_special_chars(self):
+        """
+        R3: Formats backup confirmation display using fixed basename/redacted format,
+        never leaking personal path fragments or usernames with spaces.
+        """
+        win_path_with_spaces = Path("C:/Users/Example Person/Documents/DXVK Backups/pr_31_body_backup_20261019_120000.md")
+        disp_win = format_safe_backup_display(win_path_with_spaces)
+        self.assertEqual(disp_win, "[REDACTED_PATH]/pr_31_body_backup_20261019_120000.md")
+        self.assertNotIn("Example Person", disp_win)
+        self.assertNotIn("Users", disp_win)
+
+        posix_path_with_spaces = Path("/home/Example Person/dxvk_backups/issue_42_body_backup_20261019_120000.md")
+        disp_posix = format_safe_backup_display(posix_path_with_spaces)
+        self.assertEqual(disp_posix, "[REDACTED_PATH]/issue_42_body_backup_20261019_120000.md")
+        self.assertNotIn("Example Person", disp_posix)
+        self.assertNotIn("home", disp_posix)
+
+    def test_validate_backup_dir_category_only_errors(self):
+        """
+        R3: Diagnostics must use fixed category-only error strings without echoing
+        raw Git stderr, exception text, or personal path names.
+        """
+        # None / empty / whitespace
+        with self.assertRaises(SecurityValidationError) as cm:
+            validate_backup_dir(None)
+        self.assertEqual(str(cm.exception), "--backup-dir is required for writes.")
+
+        with self.assertRaises(SecurityValidationError) as cm:
+            validate_backup_dir("")
+        self.assertEqual(str(cm.exception), "--backup-dir is required for writes.")
+
+        with self.assertRaises(SecurityValidationError) as cm:
+            validate_backup_dir("   ")
+        self.assertEqual(str(cm.exception), "--backup-dir is required for writes.")
+
+        # Existing file
+        with tempfile.NamedTemporaryFile() as f:
+            f_path = Path(f.name)
+            with self.assertRaises(SecurityValidationError) as cm:
+                validate_backup_dir(f_path)
+            self.assertEqual(str(cm.exception), "Backup destination cannot be an existing file.")
+
+        # Worktree boundary failure (Git failure)
+        with patch("subprocess.run") as mock_run:
+            mock_proc = MagicMock()
+            mock_proc.returncode = 128
+            mock_proc.stderr = "fatal: not a git repository: /tmp/test"
+            mock_run.return_value = mock_proc
+
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                with self.assertRaises(SecurityValidationError) as cm:
+                    validate_backup_dir(Path(tmp_dir))
+                self.assertEqual(str(cm.exception), "Git worktree boundary could not be established.")
+
+        # Destination inside worktree
+        with patch("update_pr_body.find_git_worktree_roots") as mock_roots:
+            mock_roots.return_value = [Path("/repo/checkout")]
+            with self.assertRaises(SecurityValidationError) as cm:
+                validate_backup_dir(Path("/repo/checkout/sub_backups"))
+            self.assertEqual(
+                str(cm.exception),
+                "Backup destination must be strictly outside all Git checkouts and worktrees.",
+            )
+
+        # Destination inside independent repository
+        with patch("update_pr_body.find_git_worktree_roots") as mock_roots, \
+             patch("update_pr_body.is_inside_git_repository", return_value=True):
+            mock_roots.return_value = [Path("/repo/checkout")]
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                with self.assertRaises(SecurityValidationError) as cm:
+                    validate_backup_dir(Path(tmp_dir) / "independent_repo_child")
+                self.assertEqual(
+                    str(cm.exception),
+                    "Backup destination must be strictly outside all Git checkouts and worktrees.",
+                )
+
+    @patch("urllib.request.urlopen")
+    def test_write_mode_backup_confirmation_never_leaks_personal_paths_with_spaces(self, mock_urlopen):
+        """
+        R3: When pre-write recovery backup is saved, confirmation display never leaks
+        usernames with spaces or local personal paths.
+        """
+        mock_urlopen.return_value = MockHttpResponse({
+            "number": 42,
+            "body": self.sample_issue_body,
+        })
+        with tempfile.NamedTemporaryFile("w", delete=False) as f:
+            f.write(self.sample_append_block)
+            f_path = Path(f.name)
+        try:
+            expected_hash = compute_body_sha256(self.sample_issue_body)
+            sensitive_dir = Path("C:/Users/Example Person/safe_backups") if os.name == "nt" else Path("/home/Example Person/safe_backups")
+
+            with patch.object(update_pr_body, "create_prewrite_backup") as mock_backup:
+                mock_backup.return_value = sensitive_dir / "issue_42_body_backup_20261019_120000.md"
+                test_args = [
+                    "update_pr_body.py",
+                    "--issue", "42",
+                    "--append-file", str(f_path),
+                    "--expected-base-hash", expected_hash,
+                    "--backup-dir", str(sensitive_dir),
+                    "--write",
+                    "--token", "tok",
+                ]
+                with patch.object(sys, "argv", test_args):
+                    with patch("sys.stdout", new_callable=io.StringIO) as mock_out, \
+                         patch("sys.stderr", new_callable=io.StringIO) as mock_err:
+                        exit_code = update_pr_body.main()
+                        self.assertEqual(exit_code, 0)
+                        out = mock_out.getvalue()
+                        err = mock_err.getvalue()
+
+                        self.assertIn("Pre-write local recovery backup saved to: [REDACTED_PATH]/issue_42_body_backup_20261019_120000.md", out)
+                        self.assertNotIn("Example Person", out)
+                        self.assertNotIn("Example Person", err)
+        finally:
+            f_path.unlink()
 
 
 if __name__ == "__main__":
