@@ -3,8 +3,10 @@
 **Date**: 2026-10-19  
 **Session**: Gemini Session 1  
 **Primary Issue**: [#184](https://github.com/Tiflit/DXVK-Companion/issues/184)  
+**Pull Request**: [#190](https://github.com/Tiflit/DXVK-Companion/pull/190)  
 **Base Revision**: `31a7a300f749419756db9867d3a842cd3ca5e314` (`origin/main`, includes merged #183 / PR #189)  
 **Policy Identity**: `f3e9974371cb08d1dd99192bd314a135010594ed`  
+**Head Commit**: `c10986432fc87f7d1bb16c97bc867a0a7f9efc6e`  
 
 ---
 
@@ -93,9 +95,10 @@ Implement Issue #184 (Batch 2: Shared privacy detection and redaction guard for 
 - **Git and metadata inspection**:
   - `git diff` verified clean, exact, and strictly bounded to the 8 declared allowed paths.
   - Zero files modified outside the declared scope.
-- **Cloud CI execution**:
-  - Verification to be performed entirely via GitHub Actions on the opened Pull Request:
-    - `AI Workflow Tests`
-    - `AI task scope`
-    - `PR hygiene`
-    - `Build and Test`
+- **Cloud CI execution on PR #190**:
+  - `Run Python workflow tests` (`AI Workflow Tests`): PASS ([Run 39342736334](https://github.com/Tiflit/DXVK-Companion/actions/runs/39342736334)) (322 tests passed in 13s)
+  - `AI task scope`: PASS ([Run 39342736371](https://github.com/Tiflit/DXVK-Companion/actions/runs/39342736371))
+  - `PR hygiene`: PASS ([Run 39342736225](https://github.com/Tiflit/DXVK-Companion/actions/runs/39342736225))
+  - `build-and-test`: PASS ([Run 39342736409](https://github.com/Tiflit/DXVK-Companion/actions/runs/39342736409)) (971 tests passed in 2m3s)
+  - `Acquire Facts and Render Snapshot`: PASS ([Run 39342734161](https://github.com/Tiflit/DXVK-Companion/actions/runs/39342734161))
+  - `Publish Dashboard to Dedicated Issue`: PASS ([Run 39342734161](https://github.com/Tiflit/DXVK-Companion/actions/runs/39342734161))
