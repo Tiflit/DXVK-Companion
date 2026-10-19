@@ -141,18 +141,17 @@ def redact_unc_paths(text: str) -> str:
 
     # Backslash UNC: \\host\share[\folder...][\file]
     text = re.sub(
-        r"\\\\([A-Za-z0-9_.-]+)\\[A-Za-z0-9_.$]+(?:[/\\][A-Za-z0-9_.-]+(?: [A-Za-z0-9_.-]+)*[/\\]+)*(?:[/\\](?:[A-Za-z0-9_.-]+\.[A-Za-z0-9_.-]+|\.\.\.|[A-Za-z0-9_.-]+))?[/\\]?",
+        r"\\\\([A-Za-z0-9_.-]+)\\[A-Za-z0-9_.$]+(?:[/\\](?:[A-Za-z0-9_.-]+(?: [A-Za-z0-9_.-]+)*(?=[/\\])|[A-Za-z0-9_.-]+\.[A-Za-z0-9_.-]+|\.\.\.|[A-Za-z0-9_.-]+))*[/\\]?",
         _replace_unc,
         text,
     )
     # Forward slash UNC: //host/share[/folder...][/file]
     text = re.sub(
-        r"(?<![A-Za-z0-9+.-]:)//([A-Za-z0-9_.-]+)/[A-Za-z0-9_.$]+(?:/[A-Za-z0-9_.-]+(?: [A-Za-z0-9_.-]+)*/+)*(?:/(?:[A-Za-z0-9_.-]+\.[A-Za-z0-9_.-]+|\.\.\.|[A-Za-z0-9_.-]+))?/?",
+        r"(?<![A-Za-z0-9+.-]:)//([A-Za-z0-9_.-]+)/[A-Za-z0-9_.$]+(?:/(?:[A-Za-z0-9_.-]+(?: [A-Za-z0-9_.-]+)*(?=/)|[A-Za-z0-9_.-]+\.[A-Za-z0-9_.-]+|\.\.\.|[A-Za-z0-9_.-]+))*[/\\]?",
         _replace_unc,
         text,
     )
     return text
-
 
 def scan_for_privacy_violations(text: str) -> List[Tuple[int, str]]:
     """
