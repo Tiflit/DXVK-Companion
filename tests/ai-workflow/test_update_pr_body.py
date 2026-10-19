@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 import io
 import json
 import os
@@ -1012,7 +1013,10 @@ class TestUpdatePrBody(unittest.TestCase):
             f.write(self.sample_append_block)
             f_path = Path(f.name)
         try:
-            personal_backup_dir = Path("C:/Users/alice_private/custom_backups")
+            if os.name == "nt":
+                personal_backup_dir = Path("C:/Users/alice_private/custom_backups")
+            else:
+                personal_backup_dir = Path("/home/alice_private/custom_backups")
             with patch.object(update_pr_body, "create_prewrite_backup") as mock_backup:
                 mock_backup.return_value = personal_backup_dir / "issue_42_backup.md"
                 test_args = [
@@ -1857,14 +1861,14 @@ class TestUpdatePrBody(unittest.TestCase):
             self.assertTrue(pr_backup.is_file())
             self.assertTrue(pr_backup.name.startswith("pr_31_body_backup_"))
             self.assertTrue(pr_backup.name.endswith(".md"))
-            self.assertEqual(pr_backup.read_text(encoding="utf-8"), raw_text)
+            self.assertEqual(pr_backup.read_bytes().decode("utf-8"), raw_text)
 
             # Issue backup
             issue_backup = create_prewrite_backup("issue", 42, raw_text, external_dir)
             self.assertTrue(issue_backup.is_file())
             self.assertTrue(issue_backup.name.startswith("issue_42_body_backup_"))
             self.assertTrue(issue_backup.name.endswith(".md"))
-            self.assertEqual(issue_backup.read_text(encoding="utf-8"), raw_text)
+            self.assertEqual(issue_backup.read_bytes().decode("utf-8"), raw_text)
 
     def test_create_prewrite_backup_collision_refusal_preserves_existing_file(self):
         with tempfile.TemporaryDirectory() as tmp_dir:

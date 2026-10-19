@@ -521,17 +521,21 @@ def find_git_worktree_roots(cwd: Optional[Path] = None) -> List[Path]:
     return roots
 
 
-def is_path_inside_or_equal(target: Path, root: Path) -> bool:
+def is_path_inside_or_equal(target: Path, root: Path, cwd: Optional[Path] = None) -> bool:
     """
     Determines whether target path is equal to or located inside root directory.
     Resolves aliases, symlinks, and junctions, with case-normalization on Windows.
     """
+    effective_cwd = cwd or Path.cwd()
+    target_path = target if target.is_absolute() else (effective_cwd / target)
+    root_path = root if root.is_absolute() else (effective_cwd / root)
+
     try:
-        target_resolved = Path(os.path.realpath(target))
-        root_resolved = Path(os.path.realpath(root))
+        target_resolved = Path(os.path.realpath(target_path))
+        root_resolved = Path(os.path.realpath(root_path))
     except Exception:
-        target_resolved = target.resolve()
-        root_resolved = root.resolve()
+        target_resolved = target_path.resolve()
+        root_resolved = root_path.resolve()
 
     if os.name == "nt":
         t_parts = [p.lower() for p in target_resolved.parts]
@@ -539,8 +543,8 @@ def is_path_inside_or_equal(target: Path, root: Path) -> bool:
         if len(t_parts) >= len(r_parts) and t_parts[:len(r_parts)] == r_parts:
             return True
         try:
-            t_abs = [p.lower() for p in target.resolve().parts]
-            r_abs = [p.lower() for p in root.resolve().parts]
+            t_abs = [p.lower() for p in target_path.resolve().parts]
+            r_abs = [p.lower() for p in root_path.resolve().parts]
             if len(t_abs) >= len(r_abs) and t_abs[:len(r_abs)] == r_abs:
                 return True
         except Exception:
@@ -550,8 +554,8 @@ def is_path_inside_or_equal(target: Path, root: Path) -> bool:
         if target_resolved == root_resolved or root_resolved in target_resolved.parents:
             return True
         try:
-            t_res = target.resolve()
-            r_res = root.resolve()
+            t_res = target_path.resolve()
+            r_res = root_path.resolve()
             if t_res == r_res or r_res in t_res.parents:
                 return True
         except Exception:
@@ -583,7 +587,7 @@ def validate_backup_dir(
     worktree_roots = find_git_worktree_roots(cwd=cwd)
 
     for wt_root in worktree_roots:
-        if is_path_inside_or_equal(path_obj, wt_root):
+        if is_path_inside_or_equal(path_obj, wt_root, cwd=cwd):
             raise SecurityValidationError(
                 "Backup destination must be strictly outside all Git checkouts and worktrees."
             )
@@ -626,7 +630,7 @@ def create_prewrite_backup(
     backup_file = validated_target_dir / f"{target_type}_{number}_body_backup_{timestamp}.md"
 
     try:
-        with open(backup_file, "x", encoding="utf-8") as f:
+        with open(backup_file, "x", encoding="utf-8", newline="") as f:
             f.write(body_text)
     except FileExistsError:
         raise FileExistsError(f"Pre-write backup file already exists: {backup_file.name}. Refusing to overwrite.")

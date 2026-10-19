@@ -71,7 +71,16 @@ Implement Issue #183 (Batch 1: Keep raw backups and generated output outside pub
 - **Git and metadata inspection**:
   - `git check-ignore -v` tested against targeted ignore paths and fixture paths.
   - `git status` verified strictly clean on declared allowed paths.
-- **Cloud CI execution**: Verification deferred to GitHub Actions (`AI Workflow Tests`, `AI Scope Check`, `AI PR Hygiene`).
+- **Cloud CI execution**:
+  - First run on PR #189:
+    - `AI task scope` ([Run 39330108957](https://github.com/Tiflit/DXVK-Companion/actions/runs/39330108957)): PASS.
+    - `PR hygiene` ([Run 39330108974](https://github.com/Tiflit/DXVK-Companion/actions/runs/39330108974)): PASS.
+    - `AI Workflow Tests` ([Run 39330108944](https://github.com/Tiflit/DXVK-Companion/actions/runs/39330108944)): 270 passed, 3 failures, 1 error. Failures traced to:
+      1. Missing `import datetime` in test file.
+      2. Linux path anchoring in `is_path_inside_or_equal` when synthetic `cwd` was passed for relative targets.
+      3. Python universal-newlines translation on raw text assertions (`newline=""` added to `open(..., 'x')` and exact byte read in tests).
+      4. OS-specific personal path syntax in `test_safe_backup_display_redacts_personal_home_path` (`/home/...` on POSIX vs `C:/Users/...` on Windows).
+  - Repaired in second iteration across allowed paths.
 
 ---
 
