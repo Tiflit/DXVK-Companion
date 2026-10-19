@@ -339,22 +339,25 @@ public sealed class OperationLeaseCoordinatorTests
         var psi = new ProcessStartInfo
         {
             FileName = "powershell.exe",
-            Arguments = $"-NoProfile -NonInteractive -Command \"$f = new-object System.IO.FileStream('{fullLockPath.Replace("'", "''")}', [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None, 4096, [System.IO.FileOptions]::DeleteOnClose); [Console]::Out.WriteLine('LOCKED'); [Console]::Out.Flush(); Start-Sleep -Milliseconds 2000; $f.Dispose(); exit 0\"",
+            Arguments = $"-NoProfile -NonInteractive -Command \"try {{ $f = new-object System.IO.FileStream('{fullLockPath.Replace("'", "''")}', [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None, 4096, [System.IO.FileOptions]::DeleteOnClose); [Console]::Out.WriteLine('LOCKED'); [Console]::Out.Flush(); Start-Sleep -Milliseconds 2000; $f.Dispose(); exit 0 }} catch {{ [Console]::Error.WriteLine($_); exit 1 }}\"",
             UseShellExecute = false,
             CreateNoWindow = true,
             RedirectStandardOutput = true,
-            RedirectStandardError = false
+            RedirectStandardError = true
         };
 
+        var overallSw = Stopwatch.StartNew();
+        const int maxTotalLifetimeMs = 20000;
         Process? helper = null;
         try
         {
             helper = Process.Start(psi);
             Assert.NotNull(helper);
 
-            // Wait for helper to confirm lock acquisition via stdout (bounded 15s for runner cold-start)
+            // Wait for helper to confirm lock acquisition via stdout (bounded within remaining 20s budget)
+            int startupBudget = Math.Max(1000, maxTotalLifetimeMs - (int)overallSw.ElapsedMilliseconds);
             var readTask = helper.StandardOutput.ReadLineAsync();
-            var readCompleted = await Task.WhenAny(readTask, Task.Delay(TimeSpan.FromSeconds(15)));
+            var readCompleted = await Task.WhenAny(readTask, Task.Delay(startupBudget));
             if (readCompleted != readTask)
             {
                 try { helper.Kill(entireProcessTree: true); } catch { }
@@ -371,9 +374,10 @@ public sealed class OperationLeaseCoordinatorTests
             Assert.Null(refusedLease);
             Assert.True(sw.ElapsedMilliseconds >= 150, $"Expected timeout around 200 ms, actual: {sw.ElapsedMilliseconds} ms");
 
-            // Wait for helper to exit naturally (bounded max 15s wait)
+            // Wait for helper to exit naturally (bounded within remaining 20s budget)
+            int exitBudget = Math.Max(1000, maxTotalLifetimeMs - (int)overallSw.ElapsedMilliseconds);
             var exitTask = helper.WaitForExitAsync();
-            var exitCompleted = await Task.WhenAny(exitTask, Task.Delay(TimeSpan.FromSeconds(15)));
+            var exitCompleted = await Task.WhenAny(exitTask, Task.Delay(exitBudget));
             if (exitCompleted != exitTask)
             {
                 try { helper.Kill(entireProcessTree: true); } catch { }
@@ -388,7 +392,6 @@ public sealed class OperationLeaseCoordinatorTests
         }
         finally
         {
-            // Exact owned child process termination and cleanup with confirmation
             if (helper != null)
             {
                 try
@@ -396,14 +399,11 @@ public sealed class OperationLeaseCoordinatorTests
                     if (!helper.HasExited)
                     {
                         helper.Kill(entireProcessTree: true);
-                        Assert.True(helper.WaitForExit(5000));
-                    }
-                    else
-                    {
-                        Assert.True(helper.HasExited);
                     }
                 }
                 catch { }
+                bool exited = helper.WaitForExit(5000);
+                Assert.True(exited, "Child helper process failed to terminate within bounded 5000 ms drain.");
                 helper.Dispose();
             }
         }
@@ -621,6 +621,113 @@ public sealed class OperationLeaseCoordinatorTests
 
         // Game directory remains untouched
         Assert.False(File.Exists(Path.Combine(gameDir, "d3d11.dll")));
+    }
+
+    [Fact]
+    public async Task InterProcessLocking_ChildHelperPrematureFailure_HandledGracefully()
+    {
+        using var tempDir = new SyntheticTestDirectory();
+        using var coordDir = new SyntheticTestDirectory();
+
+        var coordinator = new OperationLeaseCoordinator(coordDir.RootPath);
+        var targetPath = Path.Combine(tempDir.RootPath, "HelperTargetFail");
+        Directory.CreateDirectory(targetPath);
+
+        // Child process immediately exits with error code 1 without writing LOCKED
+        var psi = new ProcessStartInfo
+        {
+            FileName = "powershell.exe",
+            Arguments = "-NoProfile -NonInteractive -Command \"exit 1\"",
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        };
+
+        Process? helper = null;
+        try
+        {
+            helper = Process.Start(psi);
+            Assert.NotNull(helper);
+
+            var readTask = helper.StandardOutput.ReadLineAsync();
+            var readCompleted = await Task.WhenAny(readTask, Task.Delay(TimeSpan.FromSeconds(5)));
+            Assert.Same(readTask, readCompleted);
+            string? signal = await readTask;
+            Assert.Null(signal); // No LOCKED signal written
+
+            // Helper process exited prematurely
+            await helper.WaitForExitAsync();
+            Assert.NotEqual(0, helper.ExitCode);
+
+            // Coordinator can acquire target lease normally without hang
+            await using var lease = await coordinator.TryAcquireOperationScopeAsync(targetPath, timeout: TimeSpan.FromMilliseconds(500));
+            Assert.NotNull(lease);
+            Assert.True(lease.IsAcquired);
+        }
+        finally
+        {
+            if (helper != null)
+            {
+                try
+                {
+                    if (!helper.HasExited)
+                    {
+                        helper.Kill(entireProcessTree: true);
+                    }
+                }
+                catch { }
+                bool exited = helper.WaitForExit(5000);
+                Assert.True(exited);
+                helper.Dispose();
+            }
+        }
+    }
+
+    [Fact]
+    public async Task TargetLock_UnreadableLockFile_FailsClosedSyncAndAsync()
+    {
+        using var tempDir = new SyntheticTestDirectory();
+        using var coordDir = new SyntheticTestDirectory();
+
+        var coordinator = new OperationLeaseCoordinator(coordDir.RootPath);
+        var targetPath = Path.Combine(tempDir.RootPath, "UnreadableTarget");
+        Directory.CreateDirectory(targetPath);
+
+        // Create an unreadable .target.lock file by locking it exclusively with FileShare.None
+        string unreadableLock = Path.Combine(coordDir.RootPath, "target_0000000000000000000000000000000000000000000000000000000000000001.target.lock");
+        using var exclusiveStream = new FileStream(unreadableLock, FileMode.Create, FileAccess.ReadWrite, FileShare.None);
+
+        // Async acquisition must fail closed (return null) because candidate lock cannot be read
+        await using var asyncLease = await coordinator.TryAcquireOperationScopeAsync(targetPath, timeout: TimeSpan.FromMilliseconds(100));
+        Assert.Null(asyncLease);
+
+        // Sync acquisition must fail closed (return null) because candidate lock cannot be read
+        using var syncLease = coordinator.TryAcquireOperationScope(targetPath, timeout: TimeSpan.FromMilliseconds(100));
+        Assert.Null(syncLease);
+    }
+
+    [Fact]
+    public async Task TargetLock_EmptyPublication_FailsClosedWhenNotWritten_SyncAndAsync()
+    {
+        using var tempDir = new SyntheticTestDirectory();
+        using var coordDir = new SyntheticTestDirectory();
+
+        var coordinator = new OperationLeaseCoordinator(coordDir.RootPath);
+        var targetPath = Path.Combine(tempDir.RootPath, "EmptyPubTarget");
+        Directory.CreateDirectory(targetPath);
+
+        // Create an empty (0 bytes) .target.lock file with FileShare.ReadWrite so it can be opened but has empty content
+        string emptyLock = Path.Combine(coordDir.RootPath, "target_0000000000000000000000000000000000000000000000000000000000000002.target.lock");
+        File.WriteAllBytes(emptyLock, Array.Empty<byte>());
+
+        // Async: fails closed because content is unreadable/empty and file does not disappear
+        await using var asyncLease = await coordinator.TryAcquireOperationScopeAsync(targetPath, timeout: TimeSpan.FromMilliseconds(100));
+        Assert.Null(asyncLease);
+
+        // Sync: fails closed because content is unreadable/empty and file does not disappear
+        using var syncLease = coordinator.TryAcquireOperationScope(targetPath, timeout: TimeSpan.FromMilliseconds(100));
+        Assert.Null(syncLease);
     }
 }
 

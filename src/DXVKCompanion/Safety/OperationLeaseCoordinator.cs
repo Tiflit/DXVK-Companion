@@ -450,7 +450,6 @@ namespace DXVKCompanion.Safety
                     var fileBudgetMs = Math.Min(50, Math.Max(10, (int)(remainingBudget - sw.Elapsed).TotalMilliseconds));
                     var fileSw = Stopwatch.StartNew();
                     bool fileProcessed = false;
-                    bool deletePendingObserved = false;
 
                     while (fileSw.ElapsedMilliseconds < fileBudgetMs && sw.Elapsed < remainingBudget && !ct.IsCancellationRequested)
                     {
@@ -487,13 +486,6 @@ namespace DXVKCompanion.Safety
                             fileProcessed = true;
                             break;
                         }
-                        catch (UnauthorizedAccessException)
-                        {
-                            // On Windows NTFS, opening a file whose handle was closed with DeleteOnClose
-                            // throws UnauthorizedAccessException (STATUS_DELETE_PENDING -> ERROR_ACCESS_DENIED).
-                            // The prior lock holder has already relinquished and closed this lock.
-                            deletePendingObserved = true;
-                        }
                         catch
                         {
                             // Incomplete publication, exclusive locking, or transient contention
@@ -502,17 +494,40 @@ namespace DXVKCompanion.Safety
                         var delay = Math.Min(10, Math.Max(1, fileBudgetMs - (int)fileSw.ElapsedMilliseconds));
                         if (delay > 0)
                         {
-                            await Task.Delay(delay, ct).ConfigureAwait(false);
+                            try
+                            {
+                                await Task.Delay(delay, ct).ConfigureAwait(false);
+                            }
+                            catch
+                            {
+                                return true;
+                            }
                         }
                     }
 
                     if (!fileProcessed)
                     {
-                        if (!File.Exists(file) || deletePendingObserved)
+                        if (!File.Exists(file))
                         {
                             continue;
                         }
-                        return true;
+                        try
+                        {
+                            using var probe = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                            return true;
+                        }
+                        catch (FileNotFoundException)
+                        {
+                            continue;
+                        }
+                        catch (DirectoryNotFoundException)
+                        {
+                            continue;
+                        }
+                        catch
+                        {
+                            return true;
+                        }
                     }
                 }
             }
@@ -554,7 +569,6 @@ namespace DXVKCompanion.Safety
                     var fileBudgetMs = Math.Min(50, Math.Max(10, (int)(remainingBudget - sw.Elapsed).TotalMilliseconds));
                     var fileSw = Stopwatch.StartNew();
                     bool fileProcessed = false;
-                    bool deletePendingObserved = false;
 
                     while (fileSw.ElapsedMilliseconds < fileBudgetMs && sw.Elapsed < remainingBudget)
                     {
@@ -591,13 +605,6 @@ namespace DXVKCompanion.Safety
                             fileProcessed = true;
                             break;
                         }
-                        catch (UnauthorizedAccessException)
-                        {
-                            // On Windows NTFS, opening a file whose handle was closed with DeleteOnClose
-                            // throws UnauthorizedAccessException (STATUS_DELETE_PENDING -> ERROR_ACCESS_DENIED).
-                            // The prior lock holder has already relinquished and closed this lock.
-                            deletePendingObserved = true;
-                        }
                         catch
                         {
                             // Incomplete publication, exclusive locking, or transient contention
@@ -612,11 +619,27 @@ namespace DXVKCompanion.Safety
 
                     if (!fileProcessed)
                     {
-                        if (!File.Exists(file) || deletePendingObserved)
+                        if (!File.Exists(file))
                         {
                             continue;
                         }
-                        return true;
+                        try
+                        {
+                            using var probe = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                            return true;
+                        }
+                        catch (FileNotFoundException)
+                        {
+                            continue;
+                        }
+                        catch (DirectoryNotFoundException)
+                        {
+                            continue;
+                        }
+                        catch
+                        {
+                            return true;
+                        }
                     }
                 }
             }

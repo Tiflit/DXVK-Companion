@@ -475,16 +475,30 @@ public sealed class ProcessActivityBoundaryTests
         var profile = new GameProfile(exePath) { Api = GraphicsApi.DX11, Architecture = "x64" };
         var release = new ReleaseInfo { Version = "2.6", DownloadUrl = "https://synthetic.test/dxvk-2.6.tar.gz" };
 
-        var applyTask = installer.ApplyToGameAsync(profile, release);
+        Task<bool>? applyTask = null;
+        bool result = false;
+        try
+        {
+            applyTask = installer.ApplyToGameAsync(profile, release);
 
-        // Wait for download to begin
-        bool started = await handler.WaitForDownloadStartAsync(TimeSpan.FromSeconds(5));
-        Assert.True(started, "Timed out waiting for download to start.");
+            // Wait for download to begin
+            bool started = await handler.WaitForDownloadStartAsync(TimeSpan.FromSeconds(5));
+            Assert.True(started, "Timed out waiting for download to start.");
 
-        // Release the download with the valid archive
-        handler.ReleaseDownload();
+            // Release the download with the valid archive
+            handler.ReleaseDownload();
 
-        bool result = await applyTask;
+            result = await applyTask;
+        }
+        finally
+        {
+            handler.ReleaseDownload();
+            if (applyTask != null)
+            {
+                var drain = await Task.WhenAny(applyTask, Task.Delay(TimeSpan.FromSeconds(5)));
+                Assert.Same(applyTask, drain);
+            }
+        }
 
         // Must refuse due to post-download activity detection
         Assert.False(result);
@@ -553,19 +567,33 @@ public sealed class ProcessActivityBoundaryTests
 
         var release = new ReleaseInfo { Version = "2.6", DownloadUrl = "https://synthetic.test/dxvk-2.6.tar.gz" };
 
-        var applyTask = installer.ApplyToGameAsync(profile, release);
+        Task<bool>? applyTask = null;
+        bool result = false;
+        try
+        {
+            applyTask = installer.ApplyToGameAsync(profile, release);
 
-        // Wait for download to start
-        bool started = await handler.WaitForDownloadStartAsync(TimeSpan.FromSeconds(5));
-        Assert.True(started, "Timed out waiting for download to start.");
+            // Wait for download to start
+            bool started = await handler.WaitForDownloadStartAsync(TimeSpan.FromSeconds(5));
+            Assert.True(started, "Timed out waiting for download to start.");
 
-        // Concurrently mutate profile file on disk to simulate baseline invalidation during download
-        File.WriteAllText(profilesPath, "{\"concurrent\": \"mutation\"}");
+            // Concurrently mutate profile file on disk to simulate baseline invalidation during download
+            File.WriteAllText(profilesPath, "{\"concurrent\": \"mutation\"}");
 
-        // Release the download
-        handler.ReleaseDownload();
+            // Release the download
+            handler.ReleaseDownload();
 
-        bool result = await applyTask;
+            result = await applyTask;
+        }
+        finally
+        {
+            handler.ReleaseDownload();
+            if (applyTask != null)
+            {
+                var drain = await Task.WhenAny(applyTask, Task.Delay(TimeSpan.FromSeconds(5)));
+                Assert.Same(applyTask, drain);
+            }
+        }
 
         // Must refuse due to post-download profile baseline invalidation
         Assert.False(result);
@@ -680,5 +708,53 @@ public sealed class ProcessActivityBoundaryTests
         Assert.False(adopted);
         Assert.NotNull(installer.LastRefusalReason);
         Assert.Contains("running", installer.LastRefusalReason, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ProfileStore_StartupWithInaccessibleFile_MarksBrokenLoadAndRefusesModifications()
+    {
+        using var tempDir = new SyntheticTestDirectory();
+        using var coordDir = new SyntheticTestDirectory();
+
+        var coordinator = new OperationLeaseCoordinator(coordDir.RootPath);
+        var profilesPath = Path.Combine(tempDir.RootPath, "games.json");
+
+        // Create file and hold it with FileShare.None so startup probe cannot open it
+        using var exclusiveLock = new FileStream(profilesPath, FileMode.Create, FileAccess.ReadWrite, FileShare.None);
+
+        var profileStore = new ProfileStore(profilesPath) { LeaseCoordinator = coordinator };
+        var profile = profileStore.GetOrCreate("C:\\games\\game.exe");
+
+        // TryCheckCanModifyProfileStore must report broken load diagnostic refusal
+        bool canModify = profileStore.TryCheckCanModifyProfileStore(out var refusalReason);
+        Assert.False(canModify);
+        Assert.NotNull(refusalReason);
+        Assert.Contains("corrupted or unreadable on load", refusalReason, StringComparison.OrdinalIgnoreCase);
+
+        // Save must throw IOException with broken load reason
+        var ex = Assert.Throws<IOException>(() => profileStore.Save(profile));
+        Assert.Contains("corrupted or unreadable on load", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ProfileStore_CheckCanModify_ReturnsFalseOnReadSharingViolation()
+    {
+        using var tempDir = new SyntheticTestDirectory();
+        using var coordDir = new SyntheticTestDirectory();
+
+        var coordinator = new OperationLeaseCoordinator(coordDir.RootPath);
+        var profilesPath = Path.Combine(tempDir.RootPath, "games.json");
+        File.WriteAllText(profilesPath, "[]");
+
+        var profileStore = new ProfileStore(profilesPath) { LeaseCoordinator = coordinator };
+
+        // Lock file with FileShare.None to induce read sharing violation during check
+        using var exclusiveLock = new FileStream(profilesPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+
+        // Preflight check must gracefully catch sharing violation and return false with refusal reason, NOT throw outward
+        bool canModify = profileStore.TryCheckCanModifyProfileStore(out var refusalReason);
+        Assert.False(canModify);
+        Assert.NotNull(refusalReason);
+        Assert.Contains("could not be read", refusalReason, StringComparison.OrdinalIgnoreCase);
     }
 }

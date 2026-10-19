@@ -175,7 +175,8 @@ namespace DXVKCompanion.DXVK
                 {
                     if (leaseToken.IsDisposed || !leaseToken.IsAcquired ||
                         !leaseToken.IsValidForTarget(authoritativeRoot) ||
-                        (!leaseToken.IsValidForStore(_gameLibraryStore.LibraryFilePath) && (leaseToken.StoreLease == null || !leaseToken.StoreLease.IsValidForStore(_gameLibraryStore.LibraryFilePath))))
+                        (!leaseToken.IsValidForStore(_gameLibraryStore.LibraryFilePath) && (leaseToken.StoreLease == null || !leaseToken.StoreLease.IsValidForStore(_gameLibraryStore.LibraryFilePath))) ||
+                        (ProfileStore != null && !string.IsNullOrWhiteSpace(ProfileStore.ProfilesFile) && !leaseToken.IsValidForStore(ProfileStore.ProfilesFile) && (leaseToken.StoreLease == null || !leaseToken.StoreLease.IsValidForStore(ProfileStore.ProfilesFile))))
                     {
                         throw new ArgumentException("Invalid, mismatched, or incomplete lease token for installation and store scope.", nameof(leaseToken));
                     }
@@ -679,7 +680,8 @@ namespace DXVKCompanion.DXVK
                 {
                     if (leaseToken.IsDisposed || !leaseToken.IsAcquired ||
                         !leaseToken.IsValidForTarget(authoritativeRoot) ||
-                        (!leaseToken.IsValidForStore(_gameLibraryStore.LibraryFilePath) && (leaseToken.StoreLease == null || !leaseToken.StoreLease.IsValidForStore(_gameLibraryStore.LibraryFilePath))))
+                        (!leaseToken.IsValidForStore(_gameLibraryStore.LibraryFilePath) && (leaseToken.StoreLease == null || !leaseToken.StoreLease.IsValidForStore(_gameLibraryStore.LibraryFilePath))) ||
+                        (ProfileStore != null && !string.IsNullOrWhiteSpace(ProfileStore.ProfilesFile) && !leaseToken.IsValidForStore(ProfileStore.ProfilesFile) && (leaseToken.StoreLease == null || !leaseToken.StoreLease.IsValidForStore(ProfileStore.ProfilesFile))))
                     {
                         throw new ArgumentException("Invalid, mismatched, or incomplete lease token for installation and store scope.", nameof(leaseToken));
                     }
@@ -1217,7 +1219,8 @@ namespace DXVKCompanion.DXVK
                 {
                     if (leaseToken.IsDisposed || !leaseToken.IsAcquired ||
                         !leaseToken.IsValidForTarget(authoritativeRoot) ||
-                        (!leaseToken.IsValidForStore(_gameLibraryStore.LibraryFilePath) && (leaseToken.StoreLease == null || !leaseToken.StoreLease.IsValidForStore(_gameLibraryStore.LibraryFilePath))))
+                        (!leaseToken.IsValidForStore(_gameLibraryStore.LibraryFilePath) && (leaseToken.StoreLease == null || !leaseToken.StoreLease.IsValidForStore(_gameLibraryStore.LibraryFilePath))) ||
+                        (ProfileStore != null && !string.IsNullOrWhiteSpace(ProfileStore.ProfilesFile) && !leaseToken.IsValidForStore(ProfileStore.ProfilesFile) && (leaseToken.StoreLease == null || !leaseToken.StoreLease.IsValidForStore(ProfileStore.ProfilesFile))))
                     {
                         throw new ArgumentException("Invalid, mismatched, or incomplete lease token for installation and store scope.", nameof(leaseToken));
                     }

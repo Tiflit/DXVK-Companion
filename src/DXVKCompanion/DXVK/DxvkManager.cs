@@ -61,6 +61,11 @@ namespace DXVKCompanion.DXVK
 
         internal void ClearCancelledState(GameInstallation installation, IOperationLease? storeLease)
         {
+            if (storeLease == null || !storeLease.IsAcquired || storeLease.IsDisposed || !storeLease.IsValidForStore(_gameLibraryStore.LibraryFilePath))
+            {
+                return;
+            }
+
             if (installation.LastCancelledAction != null)
             {
                 installation.LastCancelledAction = null;
@@ -70,7 +75,7 @@ namespace DXVKCompanion.DXVK
                 {
                     installation.LastRefusalReason = null;
                 }
-                if (!_gameLibraryStore.HasUncertainPersistence && storeLease != null)
+                if (!_gameLibraryStore.HasUncertainPersistence)
                 {
                     _gameLibraryStore.Save(installation, storeLease);
                 }
@@ -158,6 +163,11 @@ namespace DXVKCompanion.DXVK
         /// </summary>
         private void ReassessEffectiveApi(GameInstallation? installation, GameProfile profile, IOperationLease? storeLease = null)
         {
+            if (storeLease == null || !storeLease.IsAcquired || storeLease.IsDisposed)
+            {
+                return;
+            }
+
             bool profileChanged = false;
             bool installationChanged = false;
 
@@ -299,7 +309,10 @@ namespace DXVKCompanion.DXVK
             using var storeLease = LeaseCoordinator.TryAcquireStoreLease(
                 _gameLibraryStore.LibraryFilePath,
                 TimeSpan.FromMilliseconds(500));
-            ReassessEffectiveApi(installation, profile, storeLease);
+            if (storeLease != null && storeLease.IsAcquired && !storeLease.IsDisposed)
+            {
+                ReassessEffectiveApi(installation, profile, storeLease);
+            }
 
             if (!DxvkCompatibility.IsDxvkSupported(profile.Api))
                 return false;
@@ -367,16 +380,31 @@ namespace DXVKCompanion.DXVK
 
             if (isRunning)
             {
-                using var storeLease = await LeaseCoordinator.TryAcquireStoreLeaseAsync(
-                    _gameLibraryStore.LibraryFilePath,
+                var existingInstall = ResolveInstallation(profile.ExePath);
+                string rawDir = Path.GetDirectoryName(profile.ExePath) ?? string.Empty;
+                string authoritativeRoot = existingInstall != null
+                    ? existingInstall.InstallationPath
+                    : GameInstallation.NormalizeInstallationPath(rawDir);
+
+                var storePaths = new List<string> { _gameLibraryStore.LibraryFilePath };
+                if (!string.IsNullOrWhiteSpace(_profiles.ProfilesFile))
+                {
+                    storePaths.Add(_profiles.ProfilesFile);
+                }
+
+                using var scopeLease = await LeaseCoordinator.TryAcquireOperationScopeAsync(
+                    authoritativeRoot,
+                    storePaths,
                     TimeSpan.FromMilliseconds(500)).ConfigureAwait(false);
 
-                if (storeLease == null)
+                if (scopeLease == null)
                 {
                     LastRefusalReason = LeaseCoordinator.LastAcquisitionError ??
                         "Store operation in progress. Please retry shortly.";
                     return DxvkActionResult.Failed;
                 }
+
+                var storeLease = scopeLease.StoreLease ?? scopeLease;
 
                 if (!_gameLibraryStore.TryCheckCanModifyLibrary(out var storeRefusalReason, storeLease))
                 {
@@ -384,7 +412,7 @@ namespace DXVKCompanion.DXVK
                     return DxvkActionResult.Failed;
                 }
 
-                if (!_profiles.TryCheckCanModifyProfileStore(out var profileRefusalReason))
+                if (!_profiles.TryCheckCanModifyProfileStore(out var profileRefusalReason, storeLease))
                 {
                     LastRefusalReason = profileRefusalReason;
                     return DxvkActionResult.Failed;
@@ -499,16 +527,31 @@ namespace DXVKCompanion.DXVK
 
             if (isRunning)
             {
-                using var storeLease = await LeaseCoordinator.TryAcquireStoreLeaseAsync(
-                    _gameLibraryStore.LibraryFilePath,
+                var existingInstall = ResolveInstallation(profile.ExePath);
+                string rawDir = Path.GetDirectoryName(profile.ExePath) ?? string.Empty;
+                string authoritativeRoot = existingInstall != null
+                    ? existingInstall.InstallationPath
+                    : GameInstallation.NormalizeInstallationPath(rawDir);
+
+                var storePaths = new List<string> { _gameLibraryStore.LibraryFilePath };
+                if (!string.IsNullOrWhiteSpace(_profiles.ProfilesFile))
+                {
+                    storePaths.Add(_profiles.ProfilesFile);
+                }
+
+                using var scopeLease = await LeaseCoordinator.TryAcquireOperationScopeAsync(
+                    authoritativeRoot,
+                    storePaths,
                     TimeSpan.FromMilliseconds(500)).ConfigureAwait(false);
 
-                if (storeLease == null)
+                if (scopeLease == null)
                 {
                     LastRefusalReason = LeaseCoordinator.LastAcquisitionError ??
                         "Store operation in progress. Please retry shortly.";
                     return DxvkActionResult.Failed;
                 }
+
+                var storeLease = scopeLease.StoreLease ?? scopeLease;
 
                 if (!_gameLibraryStore.TryCheckCanModifyLibrary(out var storeRefusalReason, storeLease))
                 {
@@ -516,7 +559,7 @@ namespace DXVKCompanion.DXVK
                     return DxvkActionResult.Failed;
                 }
 
-                if (!_profiles.TryCheckCanModifyProfileStore(out var profileRefusalReason))
+                if (!_profiles.TryCheckCanModifyProfileStore(out var profileRefusalReason, storeLease))
                 {
                     LastRefusalReason = profileRefusalReason;
                     return DxvkActionResult.Failed;

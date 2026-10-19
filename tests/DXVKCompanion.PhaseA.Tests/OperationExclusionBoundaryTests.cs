@@ -130,18 +130,14 @@ public sealed class OperationExclusionBoundaryTests
             if (op2Task != null)
             {
                 var completed2 = await Task.WhenAny(op2Task, Task.Delay(testTimeout));
-                if (completed2 == op2Task)
-                {
-                    op2Result = await op2Task;
-                }
+                Assert.Same(op2Task, completed2);
+                op2Result = await op2Task;
             }
             if (op1Task != null)
             {
                 var completed1 = await Task.WhenAny(op1Task, Task.Delay(testTimeout));
-                if (completed1 == op1Task)
-                {
-                    op1Result = await op1Task;
-                }
+                Assert.Same(op1Task, completed1);
+                op1Result = await op1Task;
             }
         }
 
@@ -516,11 +512,13 @@ public sealed class OperationExclusionBoundaryTests
             testFinished.TrySetResult(true);
             if (task1 != null)
             {
-                await Task.WhenAny(task1, Task.Delay(TimeSpan.FromSeconds(5)));
+                var drain1 = await Task.WhenAny(task1, Task.Delay(TimeSpan.FromSeconds(5)));
+                Assert.Same(task1, drain1);
             }
             if (task2 != null)
             {
-                await Task.WhenAny(task2, Task.Delay(TimeSpan.FromSeconds(5)));
+                var drain2 = await Task.WhenAny(task2, Task.Delay(TimeSpan.FromSeconds(5)));
+                Assert.Same(task2, drain2);
             }
         }
 
@@ -633,5 +631,230 @@ public sealed class OperationExclusionBoundaryTests
 
         // Root succeeds
         Assert.True(rootResult);
+    }
+
+    [Fact]
+    public void DxvkManager_WhenCompetingLeaseHeld_ClearCancelledStateLeavesLiveStateUntouched()
+    {
+        using var tempDir = new SyntheticTestDirectory();
+        using var coordDir = new SyntheticTestDirectory();
+
+        var coordinator = new OperationLeaseCoordinator(coordDir.RootPath);
+        var storePath = Path.Combine(tempDir.RootPath, "game-library.json");
+        var backupsPath = Path.Combine(tempDir.RootPath, "backups");
+        var profilesPath = Path.Combine(tempDir.RootPath, "games.json");
+        var sourceDir = Path.Combine(tempDir.RootPath, "source");
+        Directory.CreateDirectory(sourceDir);
+
+        var libraryStore = new GameLibraryStore(storePath, backupsPath) { LeaseCoordinator = coordinator };
+        var profileStore = new ProfileStore(profilesPath) { LeaseCoordinator = coordinator };
+        var engine = new MultiFileTransactionEngine(backupsPath);
+
+        using var http = new HttpClient();
+        var installer = new DxvkInstaller(http, engine, libraryStore, sourceDir) { LeaseCoordinator = coordinator };
+        var rollback = new DxvkRollback(engine, libraryStore) { LeaseCoordinator = coordinator };
+        var manager = new DxvkManager(installer, rollback, new DxvkGithubClient(http, new CacheStore()), profileStore, libraryStore, coordinator);
+
+        var gameDir = Path.Combine(tempDir.RootPath, "Game");
+        Directory.CreateDirectory(gameDir);
+        var exePath = Path.Combine(gameDir, "Game.exe");
+        File.WriteAllText(exePath, "bin");
+
+        var installation = libraryStore.GetOrCreateInstallation(gameDir, "Game");
+        installation.LastCancelledAction = "Install";
+        installation.LastCancellationReason = "Prior cancel";
+        installation.LastCancellationOutcome = "Cancelled";
+        installation.LastRefusalReason = "Cancelled pending action";
+        libraryStore.Save(installation);
+
+        // Competitor holds store lease on library
+        using var competitorLease = coordinator.TryAcquireStoreLease(storePath, TimeSpan.FromMilliseconds(500));
+        Assert.NotNull(competitorLease);
+
+        // Act: manager attempts ClearCancelledState
+        manager.ClearCancelledState(installation);
+
+        // Assert: in-memory live state was NOT mutated because lease was unavailable
+        Assert.Equal("Install", installation.LastCancelledAction);
+        Assert.Equal("Prior cancel", installation.LastCancellationReason);
+        Assert.Equal("Cancelled", installation.LastCancellationOutcome);
+        Assert.Equal("Cancelled pending action", installation.LastRefusalReason);
+    }
+
+    [Fact]
+    public void DxvkManager_WhenCompetingLeaseHeld_UpdateAvailableDoesNotMutateLiveProfileOrExe()
+    {
+        using var tempDir = new SyntheticTestDirectory();
+        using var coordDir = new SyntheticTestDirectory();
+
+        var coordinator = new OperationLeaseCoordinator(coordDir.RootPath);
+        var storePath = Path.Combine(tempDir.RootPath, "game-library.json");
+        var backupsPath = Path.Combine(tempDir.RootPath, "backups");
+        var profilesPath = Path.Combine(tempDir.RootPath, "games.json");
+        var sourceDir = Path.Combine(tempDir.RootPath, "source");
+        Directory.CreateDirectory(sourceDir);
+
+        var libraryStore = new GameLibraryStore(storePath, backupsPath) { LeaseCoordinator = coordinator };
+        var profileStore = new ProfileStore(profilesPath) { LeaseCoordinator = coordinator };
+        var engine = new MultiFileTransactionEngine(backupsPath);
+
+        using var http = new HttpClient();
+        var installer = new DxvkInstaller(http, engine, libraryStore, sourceDir) { LeaseCoordinator = coordinator };
+        var rollback = new DxvkRollback(engine, libraryStore) { LeaseCoordinator = coordinator };
+        var manager = new DxvkManager(installer, rollback, new DxvkGithubClient(http, new CacheStore()), profileStore, libraryStore, coordinator);
+
+        var gameDir = Path.Combine(tempDir.RootPath, "Game");
+        Directory.CreateDirectory(gameDir);
+        var exePath = Path.Combine(gameDir, "Game.exe");
+        File.WriteAllText(exePath, "bin");
+
+        var installation = libraryStore.GetOrCreateInstallation(gameDir, "Game");
+        var exe = installation.GetOrAddExecutable("Game.exe", "Game.exe");
+        exe.LastKnownApi = GraphicsApi.DX11;
+        libraryStore.Save(installation);
+
+        var profile = profileStore.GetOrCreate(exePath);
+        profile.Api = GraphicsApi.Unknown; // Profile unhydrated
+        profileStore.Save(profile);
+
+        // Competitor holds store lease on library
+        using var competitorLease = coordinator.TryAcquireStoreLease(storePath, TimeSpan.FromMilliseconds(500));
+        Assert.NotNull(competitorLease);
+
+        // Act: UpdateAvailable is called while lease is held by competitor
+        bool updateAvailable = manager.UpdateAvailable(profile);
+
+        // Assert: profile in memory was NOT mutated to DX11 by ReassessEffectiveApi without a lease
+        Assert.Equal(GraphicsApi.Unknown, profile.Api);
+        Assert.False(updateAvailable);
+    }
+
+    [Fact]
+    public void ManagedFileInspector_WhenCompetingLeaseHeld_DoesNotMutateInstallationState()
+    {
+        using var tempDir = new SyntheticTestDirectory();
+        using var coordDir = new SyntheticTestDirectory();
+
+        var coordinator = new OperationLeaseCoordinator(coordDir.RootPath);
+        var storePath = Path.Combine(tempDir.RootPath, "game-library.json");
+        var backupsPath = Path.Combine(tempDir.RootPath, "backups");
+        Directory.CreateDirectory(backupsPath);
+
+        var libraryStore = new GameLibraryStore(storePath, backupsPath) { LeaseCoordinator = coordinator };
+
+        var gameDir = Path.Combine(tempDir.RootPath, "Game");
+        Directory.CreateDirectory(gameDir);
+        var d3d11Path = Path.Combine(gameDir, "d3d11.dll");
+        File.WriteAllText(d3d11Path, "managed-content");
+
+        var installation = libraryStore.GetOrCreateInstallation(gameDir, "Game");
+        installation.RestorationState = RestorationState.Managed;
+        installation.ManagedDxvkVersion = "2.5";
+        var fileRecord = installation.GetOrAddTrackedFile("d3d11.dll");
+        fileRecord.RecordedSha256 = "dummy-sha";
+        fileRecord.FileSizeBytes = 100;
+        libraryStore.Save(installation);
+
+        // Lock d3d11.dll exclusively so inspector encounters an exception reading it
+        using var exclusiveTargetFile = new FileStream(d3d11Path, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+
+        // Competitor holds store lease so inspector cannot acquire it to persist failure
+        using var competitorLease = coordinator.TryAcquireStoreLease(storePath, TimeSpan.FromMilliseconds(500));
+        Assert.NotNull(competitorLease);
+
+        var inspector = new ManagedFileInspector(libraryStore);
+
+        // Act: inspector runs and encounters inspection exception on d3d11.dll
+        inspector.InspectAll();
+
+        // Assert: in-memory installation state is NOT mutated to AttentionRequired when lease could not be acquired
+        Assert.Equal(RestorationState.Managed, installation.RestorationState);
+        Assert.Null(installation.LastRefusalReason);
+    }
+
+    [Fact]
+    public void ProfileStore_SaveAndCheck_RejectsMismatchedOrInvalidStoreLeaseWithoutFallback()
+    {
+        using var tempDir = new SyntheticTestDirectory();
+        using var coordDir = new SyntheticTestDirectory();
+
+        var coordinator = new OperationLeaseCoordinator(coordDir.RootPath);
+        var profilesPath = Path.Combine(tempDir.RootPath, "games.json");
+        var wrongStorePath = Path.Combine(tempDir.RootPath, "other-store.json");
+        File.WriteAllText(wrongStorePath, "{}");
+
+        var profileStore = new ProfileStore(profilesPath) { LeaseCoordinator = coordinator };
+        var profile = profileStore.GetOrCreate("C:\\fake\\game.exe");
+
+        // Acquire lease for a completely different store
+        using var wrongLease = coordinator.TryAcquireStoreLease(wrongStorePath, TimeSpan.FromMilliseconds(500));
+        Assert.NotNull(wrongLease);
+
+        // 1. Save must throw ArgumentException for mismatched lease, NOT fall back to acquiring fresh lease
+        Assert.Throws<ArgumentException>(() => profileStore.Save(profile, wrongLease));
+
+        // 2. TryCheckCanModifyProfileStore must return false for mismatched lease
+        bool canModify = profileStore.TryCheckCanModifyProfileStore(out var refusalReason, wrongLease);
+        Assert.False(canModify);
+        Assert.NotNull(refusalReason);
+        Assert.Contains("Invalid, mismatched, or disposed", refusalReason);
+
+        // 3. Disposed lease must also be rejected
+        using (var validLease = coordinator.TryAcquireStoreLease(profilesPath, TimeSpan.FromMilliseconds(500)))
+        {
+            Assert.NotNull(validLease);
+            validLease.Dispose();
+
+            Assert.Throws<ArgumentException>(() => profileStore.Save(profile, validLease));
+            Assert.False(profileStore.TryCheckCanModifyProfileStore(out var disposedRefusal, validLease));
+            Assert.Contains("Invalid, mismatched, or disposed", disposedRefusal);
+        }
+    }
+
+    [Fact]
+    public void DxvkInstaller_AdoptExisting_RejectsIncompleteScopeMissingProfileStore()
+    {
+        using var tempDir = new SyntheticTestDirectory();
+        using var coordDir = new SyntheticTestDirectory();
+
+        var coordinator = new OperationLeaseCoordinator(coordDir.RootPath);
+        var storePath = Path.Combine(tempDir.RootPath, "game-library.json");
+        var backupsPath = Path.Combine(tempDir.RootPath, "backups");
+        var profilesPath = Path.Combine(tempDir.RootPath, "games.json");
+        var sourceDir = Path.Combine(tempDir.RootPath, "source");
+        Directory.CreateDirectory(sourceDir);
+
+        var libraryStore = new GameLibraryStore(storePath, backupsPath) { LeaseCoordinator = coordinator };
+        var profileStore = new ProfileStore(profilesPath) { LeaseCoordinator = coordinator };
+        var engine = new MultiFileTransactionEngine(backupsPath);
+
+        using var http = new HttpClient();
+        var installer = new DxvkInstaller(http, engine, libraryStore, sourceDir)
+        {
+            LeaseCoordinator = coordinator,
+            ProfileStore = profileStore
+        };
+
+        var gameDir = Path.Combine(tempDir.RootPath, "Game");
+        Directory.CreateDirectory(gameDir);
+        var exePath = Path.Combine(gameDir, "Game.exe");
+        File.WriteAllText(exePath, "bin");
+
+        var profile = profileStore.GetOrCreate(exePath);
+        profile.Api = GraphicsApi.DX11;
+        profile.Architecture = "x64";
+
+        // Acquire scope covering target and library store ONLY (omits profile store)
+        using var incompleteScope = coordinator.TryAcquireOperationScope(gameDir, storePath, TimeSpan.FromMilliseconds(500));
+        Assert.NotNull(incompleteScope);
+
+        var assessment = new ExistingDxvkAssessment
+        {
+            ExistingFiles = new List<string> { "d3d11.dll" },
+            IdentifiedVersion = "2.5"
+        };
+
+        // Act & Assert: Must throw ArgumentException for incomplete scope
+        Assert.Throws<ArgumentException>(() => installer.AdoptExisting(profile, assessment, incompleteScope));
     }
 }

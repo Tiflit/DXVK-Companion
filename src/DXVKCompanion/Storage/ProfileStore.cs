@@ -58,9 +58,9 @@ namespace DXVKCompanion.Storage
             if (profile == null) throw new ArgumentNullException(nameof(profile));
 
             IOperationLease? acquiredLease = null;
-            if (storeLease != null && (storeLease.IsValidForStore(_profilesFile) || storeLease.StoreLease?.IsValidForStore(_profilesFile) == true))
+            if (storeLease != null)
             {
-                if (storeLease.IsDisposed || !storeLease.IsAcquired)
+                if (storeLease.IsDisposed || !storeLease.IsAcquired || (!storeLease.IsValidForStore(_profilesFile) && storeLease.StoreLease?.IsValidForStore(_profilesFile) != true))
                 {
                     throw new ArgumentException("Invalid, mismatched, or disposed store lease token.", nameof(storeLease));
                 }
@@ -138,9 +138,9 @@ namespace DXVKCompanion.Storage
             }
 
             IOperationLease? acquiredLease = null;
-            if (storeLease != null && (storeLease.IsValidForStore(_profilesFile) || storeLease.StoreLease?.IsValidForStore(_profilesFile) == true))
+            if (storeLease != null)
             {
-                if (storeLease.IsDisposed || !storeLease.IsAcquired)
+                if (storeLease.IsDisposed || !storeLease.IsAcquired || (!storeLease.IsValidForStore(_profilesFile) && storeLease.StoreLease?.IsValidForStore(_profilesFile) != true))
                 {
                     refusalReason = "Invalid, mismatched, or disposed store lease token for profile store.";
                     return false;
@@ -168,6 +168,27 @@ namespace DXVKCompanion.Storage
                             refusalReason = $"Profile store baseline mismatch: '{_profilesFile}' was created externally.";
                             return false;
                         }
+
+                        // Also verify absence isn't an access denial / permission issue
+                        try
+                        {
+                            using var probe = new FileStream(_profilesFile, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                            refusalReason = $"Profile store baseline mismatch: '{_profilesFile}' was created externally.";
+                            return false;
+                        }
+                        catch (FileNotFoundException)
+                        {
+                            // Positively absent
+                        }
+                        catch (DirectoryNotFoundException)
+                        {
+                            // Positively absent
+                        }
+                        catch (Exception ex)
+                        {
+                            refusalReason = $"Cannot verify profile store absence: access denied or unreadable ({ex.GetType().Name}: {ex.Message}).";
+                            return false;
+                        }
                     }
                     else
                     {
@@ -177,7 +198,17 @@ namespace DXVKCompanion.Storage
                             return false;
                         }
 
-                        byte[] currentDiskBytes = File.ReadAllBytes(_profilesFile);
+                        byte[] currentDiskBytes;
+                        try
+                        {
+                            currentDiskBytes = File.ReadAllBytes(_profilesFile);
+                        }
+                        catch (Exception ex)
+                        {
+                            refusalReason = $"Cannot verify profile store baseline: '{_profilesFile}' could not be read ({ex.GetType().Name}: {ex.Message}).";
+                            return false;
+                        }
+
                         if (!currentDiskBytes.AsSpan().SequenceEqual(_lastCommittedBytes))
                         {
                             refusalReason = $"Profile store baseline mismatch: '{_profilesFile}' has been modified externally.";
@@ -209,8 +240,28 @@ namespace DXVKCompanion.Storage
 
             if (!File.Exists(_profilesFile))
             {
-                _lastCommittedBytes = null;
-                return;
+                // Verify positive absence vs access denial
+                try
+                {
+                    using var probe = new FileStream(_profilesFile, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                }
+                catch (FileNotFoundException)
+                {
+                    _lastCommittedBytes = null;
+                    return;
+                }
+                catch (DirectoryNotFoundException)
+                {
+                    _lastCommittedBytes = null;
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    _isBrokenLoad = true;
+                    _brokenLoadReason = $"Existing profile file could not be accessed on startup ({ex.GetType().Name}: {ex.Message}).";
+                    _lastCommittedBytes = null;
+                    return;
+                }
             }
 
             byte[] bytes;
