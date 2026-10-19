@@ -515,12 +515,14 @@ namespace DXVKCompanion.Safety
         {
             private readonly IOperationLease _targetLease;
             private readonly System.Collections.Generic.List<IOperationLease> _storeLeases;
+            private readonly IOperationLease? _storeLease;
             private bool _isDisposed;
 
             public CompositeOperationLease(IOperationLease targetLease, System.Collections.Generic.IEnumerable<IOperationLease>? storeLeases)
             {
                 _targetLease = targetLease;
                 _storeLeases = storeLeases != null ? new System.Collections.Generic.List<IOperationLease>(storeLeases) : new System.Collections.Generic.List<IOperationLease>();
+                _storeLease = _storeLeases.Count > 0 ? new CompositeStoreLease(_storeLeases) : null;
             }
 
             public OperationLeaseKind Kind => OperationLeaseKind.Composite;
@@ -528,7 +530,7 @@ namespace DXVKCompanion.Safety
             public string LeaseKey => _targetLease.LeaseKey;
             public bool IsAcquired => !_isDisposed && _targetLease.IsAcquired && _storeLeases.TrueForAll(s => s.IsAcquired);
             public bool IsDisposed => _isDisposed;
-            public IOperationLease? StoreLease => _storeLeases.Count > 0 ? _storeLeases[0] : null;
+            public IOperationLease? StoreLease => _storeLease;
 
             public bool IsValidForTarget(string targetPath)
             {
@@ -563,6 +565,47 @@ namespace DXVKCompanion.Safety
                     try { await _storeLeases[i].DisposeAsync().ConfigureAwait(false); } catch { }
                 }
                 try { await _targetLease.DisposeAsync().ConfigureAwait(false); } catch { }
+            }
+        }
+
+        private sealed class CompositeStoreLease : IOperationLease
+        {
+            private readonly System.Collections.Generic.List<IOperationLease> _storeLeases;
+
+            public CompositeStoreLease(System.Collections.Generic.List<IOperationLease> storeLeases)
+            {
+                _storeLeases = storeLeases;
+            }
+
+            public OperationLeaseKind Kind => OperationLeaseKind.Store;
+            public string InstallationRoot => string.Empty;
+            public string LeaseKey => _storeLeases.Count > 0 ? _storeLeases[0].LeaseKey : string.Empty;
+            public bool IsAcquired => _storeLeases.Count > 0 && _storeLeases.TrueForAll(s => s.IsAcquired);
+            public bool IsDisposed => _storeLeases.Exists(s => s.IsDisposed);
+            public IOperationLease? StoreLease => this;
+
+            public bool IsValidForTarget(string targetPath) => false;
+
+            public bool IsValidForStore(string storePath)
+            {
+                if (IsDisposed || _storeLeases.Count == 0) return false;
+                return _storeLeases.Exists(s => s.IsValidForStore(storePath));
+            }
+
+            public void Dispose()
+            {
+                for (int i = _storeLeases.Count - 1; i >= 0; i--)
+                {
+                    try { _storeLeases[i].Dispose(); } catch { }
+                }
+            }
+
+            public async ValueTask DisposeAsync()
+            {
+                for (int i = _storeLeases.Count - 1; i >= 0; i--)
+                {
+                    try { await _storeLeases[i].DisposeAsync().ConfigureAwait(false); } catch { }
+                }
             }
         }
     }

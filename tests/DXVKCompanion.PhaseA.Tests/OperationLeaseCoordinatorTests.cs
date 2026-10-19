@@ -201,25 +201,31 @@ public sealed class OperationLeaseCoordinatorTests
         Directory.CreateDirectory(target);
         File.WriteAllText(store, "{}");
 
-        using var targetOnlyLease = coordinator.TryAcquireOperationScope(target);
-        Assert.NotNull(targetOnlyLease);
-        Assert.Equal(OperationLeaseKind.Target, targetOnlyLease.Kind);
-        Assert.True(targetOnlyLease.IsValidForTarget(target));
-        Assert.False(targetOnlyLease.IsValidForStore(store));
+        using (var targetOnlyLease = coordinator.TryAcquireOperationScope(target))
+        {
+            Assert.NotNull(targetOnlyLease);
+            Assert.Equal(OperationLeaseKind.Target, targetOnlyLease.Kind);
+            Assert.True(targetOnlyLease.IsValidForTarget(target));
+            Assert.False(targetOnlyLease.IsValidForStore(store));
+        }
 
-        using var storeOnlyLease = coordinator.TryAcquireStoreLease(store);
-        Assert.NotNull(storeOnlyLease);
-        Assert.Equal(OperationLeaseKind.Store, storeOnlyLease.Kind);
-        Assert.False(storeOnlyLease.IsValidForTarget(target));
-        Assert.True(storeOnlyLease.IsValidForStore(store));
+        using (var storeOnlyLease = coordinator.TryAcquireStoreLease(store))
+        {
+            Assert.NotNull(storeOnlyLease);
+            Assert.Equal(OperationLeaseKind.Store, storeOnlyLease.Kind);
+            Assert.False(storeOnlyLease.IsValidForTarget(target));
+            Assert.True(storeOnlyLease.IsValidForStore(store));
+        }
 
-        using var compositeLease = coordinator.TryAcquireOperationScope(target, store);
-        Assert.NotNull(compositeLease);
-        Assert.Equal(OperationLeaseKind.Composite, compositeLease.Kind);
-        Assert.True(compositeLease.IsValidForTarget(target));
-        Assert.True(compositeLease.IsValidForStore(store));
-        Assert.NotNull(compositeLease.StoreLease);
-        Assert.Equal(OperationLeaseKind.Store, compositeLease.StoreLease.Kind);
+        using (var compositeLease = coordinator.TryAcquireOperationScope(target, store))
+        {
+            Assert.NotNull(compositeLease);
+            Assert.Equal(OperationLeaseKind.Composite, compositeLease.Kind);
+            Assert.True(compositeLease.IsValidForTarget(target));
+            Assert.True(compositeLease.IsValidForStore(store));
+            Assert.NotNull(compositeLease.StoreLease);
+            Assert.Equal(OperationLeaseKind.Store, compositeLease.StoreLease.Kind);
+        }
     }
 
     [Fact]

@@ -290,8 +290,22 @@ namespace DXVKCompanion.DXVK
                     }
                 }
 
+                var preMutationActivity = ActivityInspector.GetActivityEvidence(authoritativeRoot, candidateExes);
+                if (preMutationActivity == ProcessActivityEvidence.Running)
+                {
+                    LastRefusalReason = $"Game is currently running: {authoritativeRoot}. Close the game before modifying files.";
+                    Logger.Log($"DxvkInstaller: {LastRefusalReason}");
+                    return false;
+                }
+                if (preMutationActivity == ProcessActivityEvidence.Unknown)
+                {
+                    LastRefusalReason = "Cannot verify game activity: candidate process access denied (protected or elevated).";
+                    Logger.Log($"DxvkInstaller: {LastRefusalReason}");
+                    return false;
+                }
+
                 installation = existingInstallation
-                    ?? _gameLibraryStore.GetOrCreateInstallation(gameDir, Path.GetFileNameWithoutExtension(profile.ExePath));
+                    ?? _gameLibraryStore.GetOrCreateInstallation(authoritativeRoot, Path.GetFileNameWithoutExtension(profile.ExePath), leaseToken.StoreLease);
 
                 preOperationSnapshot = _gameLibraryStore.CreateSnapshot(installation);
                 _gameLibraryStore.CaptureCurrentLibraryBaseline(out var preOperationLibraryBytes, out bool preOperationLibraryExisted);
