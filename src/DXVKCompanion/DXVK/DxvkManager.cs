@@ -109,7 +109,7 @@ namespace DXVKCompanion.DXVK
             DxvkRollback rollback,
             DxvkGithubClient github,
             ProfileStore profiles,
-            GameLibraryStore? gameLibraryStore,
+            GameLibraryStore? gameLibraryStore = null,
             IOperationLeaseCoordinator? leaseCoordinator = null,
             IProcessActivityInspector? activityInspector = null)
             : this(installer, rollback, github, profiles, gameLibraryStore)
@@ -120,7 +120,7 @@ namespace DXVKCompanion.DXVK
                 _installer.LeaseCoordinator = leaseCoordinator;
                 _rollback.LeaseCoordinator = leaseCoordinator;
                 _profiles.LeaseCoordinator = leaseCoordinator;
-                if (_gameLibraryStore != null) _gameLibraryStore.LeaseCoordinator = leaseCoordinator;
+                _gameLibraryStore.LeaseCoordinator = leaseCoordinator;
             }
             if (activityInspector != null)
             {
@@ -730,7 +730,7 @@ namespace DXVKCompanion.DXVK
                         continue;
 
                     string? primaryExeRel = null;
-                    if (installation.Executables.Count > 0)
+                    if (installation.Executables != null && installation.Executables.Count > 0)
                     {
                         var allProfiles = _profiles.GetAll().ToList();
                         var matchingExe = installation.Executables.FirstOrDefault(e =>

@@ -81,5 +81,7 @@
 3. Repairs executed:
    - Fixed unclosed `lock (_sync)` block in `src/DXVKCompanion/Storage/GameLibraryStore.cs`.
    - Updated PR #179 body using `scripts/ai-workflow/update_pr_body.py` with standard contract headers (`## Summary`, `## Scope`, `## Verification`, `## Documentation`).
-4. Committed repair and pushed to branch `feat/issue-178-operation-exclusion-boundary`.
-5. Monitoring cloud CI.
+4. Committed repair (`f13d63a`) and pushed to branch `feat/issue-178-operation-exclusion-boundary`.
+5. Second CI run reported `Build Phase A tests` error: missing `processNameResolver` parameter on `ProcessActivityInspector`.
+6. Aligned `ProcessActivityInspector` constructor to include `Func<Process, string>? processNameResolver = null`, route process name queries through it when present, and fixed `DxvkManager` constructor nullability warnings.
+7. Committed and pushed updates to cloud CI.

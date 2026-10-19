@@ -13,17 +13,20 @@ namespace DXVKCompanion.Safety
         public static ProcessActivityInspector Default => _default ??= new ProcessActivityInspector();
 
         private readonly Func<IEnumerable<Process>>? _processEnumerator;
+        private readonly Func<Process, string>? _processNameResolver;
         private readonly Func<Process, string?>? _mainModulePathResolver;
         private readonly Func<Process, DateTime>? _startTimeResolver;
         private readonly Func<Process, bool>? _hasExitedResolver;
 
         public ProcessActivityInspector(
             Func<IEnumerable<Process>>? processEnumerator = null,
+            Func<Process, string>? processNameResolver = null,
             Func<Process, string?>? mainModulePathResolver = null,
             Func<Process, DateTime>? startTimeResolver = null,
             Func<Process, bool>? hasExitedResolver = null)
         {
             _processEnumerator = processEnumerator;
+            _processNameResolver = processNameResolver;
             _mainModulePathResolver = mainModulePathResolver;
             _startTimeResolver = startTimeResolver;
             _hasExitedResolver = hasExitedResolver;
@@ -115,7 +118,9 @@ namespace DXVKCompanion.Safety
                     string processName;
                     try
                     {
-                        processName = process.ProcessName;
+                        processName = _processNameResolver != null
+                            ? _processNameResolver(process)
+                            : process.ProcessName;
                     }
                     catch
                     {
