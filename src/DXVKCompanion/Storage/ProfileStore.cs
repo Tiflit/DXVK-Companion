@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
 using DXVKCompanion.Models;
+using DXVKCompanion.Safety;
 
 namespace DXVKCompanion.Storage
 {
@@ -13,6 +14,9 @@ namespace DXVKCompanion.Storage
         // for what is actually the same file.
         private readonly Dictionary<string, GameProfile> _profiles = new(StringComparer.OrdinalIgnoreCase);
         private readonly string _profilesFile;
+
+        public string ProfilesFile => _profilesFile;
+        internal IOperationLeaseCoordinator LeaseCoordinator { get; set; } = OperationLeaseCoordinator.Default;
 
         internal Action<string, string>? CustomTempWriter { get; set; }
         internal Action<string, string>? CustomCommitReplace { get; set; }
@@ -25,22 +29,52 @@ namespace DXVKCompanion.Storage
             Load();
         }
 
-        public GameProfile GetOrCreate(string exePath)
+        public GameProfile GetOrCreate(string exePath) => GetOrCreate(exePath, null);
+
+        internal GameProfile GetOrCreate(string exePath, IOperationLease? storeLease)
         {
             if (_profiles.TryGetValue(exePath, out var profile))
                 return profile;
 
             var newProfile = new GameProfile(exePath);
             _profiles[exePath] = newProfile;
-            Save(newProfile);
+            Save(newProfile, storeLease);
 
             return newProfile;
         }
 
-        public void Save(GameProfile profile)
+        public void Save(GameProfile profile) => Save(profile, null);
+
+        internal void Save(GameProfile profile, IOperationLease? storeLease)
         {
             _profiles[profile.ExePath] = profile;
-            WriteAll();
+
+            IOperationLease? acquiredLease = null;
+            if (storeLease != null)
+            {
+                if (storeLease.IsDisposed || !storeLease.IsAcquired || !storeLease.IsValidForStore(_profilesFile))
+                {
+                    throw new ArgumentException("Invalid, mismatched, or disposed store lease token.", nameof(storeLease));
+                }
+            }
+            else
+            {
+                acquiredLease = LeaseCoordinator.TryAcquireStoreLease(_profilesFile, TimeSpan.FromMilliseconds(500));
+                if (acquiredLease == null)
+                {
+                    HasPendingWriteRetry = true;
+                    throw new IOException($"Operation in progress for profile store: {_profilesFile}. Please retry shortly.");
+                }
+            }
+
+            try
+            {
+                WriteAll();
+            }
+            finally
+            {
+                acquiredLease?.Dispose();
+            }
         }
 
         public IEnumerable<GameProfile> GetAll() => _profiles.Values;
