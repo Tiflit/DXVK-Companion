@@ -16,6 +16,27 @@ namespace DXVKCompanion.Safety
         public string CoordinationDirectory { get; }
         public string? LastAcquisitionError { get; private set; }
 
+        internal Func<string, FileStream>? CustomOpenLockFileStream { get; set; }
+        internal Func<string, IEnumerable<string>>? CustomEnumerateFiles { get; set; }
+
+        private FileStream OpenCandidateLockStream(string file)
+        {
+            if (CustomOpenLockFileStream != null)
+            {
+                return CustomOpenLockFileStream(file);
+            }
+            return new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        }
+
+        private IEnumerable<string> EnumerateLockFiles(string directory)
+        {
+            if (CustomEnumerateFiles != null)
+            {
+                return CustomEnumerateFiles(directory);
+            }
+            return Directory.EnumerateFiles(directory, "target_*.lock");
+        }
+
         public OperationLeaseCoordinator(string? coordinationDirectory = null)
         {
             CoordinationDirectory = !string.IsNullOrWhiteSpace(coordinationDirectory)
@@ -433,7 +454,7 @@ namespace DXVKCompanion.Safety
                 IEnumerable<string> files;
                 try
                 {
-                    files = Directory.EnumerateFiles(CoordinationDirectory, "target_*.lock");
+                    files = EnumerateLockFiles(CoordinationDirectory);
                 }
                 catch
                 {
@@ -451,15 +472,9 @@ namespace DXVKCompanion.Safety
 
                     while (sw.Elapsed < remainingBudget && !ct.IsCancellationRequested)
                     {
-                        if (!File.Exists(file))
-                        {
-                            fileProcessed = true;
-                            break;
-                        }
-
                         try
                         {
-                            using var readStream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                            using var readStream = OpenCandidateLockStream(file);
                             using var reader = new StreamReader(readStream, System.Text.Encoding.UTF8);
                             string otherPath = reader.ReadToEnd().Trim();
                             if (!string.IsNullOrEmpty(otherPath))
@@ -476,17 +491,19 @@ namespace DXVKCompanion.Safety
                         }
                         catch (FileNotFoundException)
                         {
+                            // Positive absence confirmed by filesystem
                             fileProcessed = true;
                             break;
                         }
                         catch (DirectoryNotFoundException)
                         {
+                            // Positive absence confirmed by filesystem
                             fileProcessed = true;
                             break;
                         }
                         catch
                         {
-                            // Incomplete publication, exclusive locking, or transient contention
+                            // Incomplete publication, exclusive locking, access denied, or transient contention
                         }
 
                         var delay = Math.Min(10, Math.Max(1, (int)(remainingBudget - sw.Elapsed).TotalMilliseconds));
@@ -505,13 +522,12 @@ namespace DXVKCompanion.Safety
 
                     if (!fileProcessed)
                     {
-                        if (!File.Exists(file))
-                        {
-                            continue;
-                        }
+                        // File could not be processed as non-conflicting within budget.
+                        // Probe for positive absence: only FileNotFoundException / DirectoryNotFoundException confirms absence.
+                        // Any other outcome (open succeeded, UnauthorizedAccessException, IOException) fails closed.
                         try
                         {
-                            using var probe = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                            using var probe = OpenCandidateLockStream(file);
                             return true;
                         }
                         catch (FileNotFoundException)
@@ -550,7 +566,7 @@ namespace DXVKCompanion.Safety
                 IEnumerable<string> files;
                 try
                 {
-                    files = Directory.EnumerateFiles(CoordinationDirectory, "target_*.lock");
+                    files = EnumerateLockFiles(CoordinationDirectory);
                 }
                 catch
                 {
@@ -568,15 +584,9 @@ namespace DXVKCompanion.Safety
 
                     while (sw.Elapsed < remainingBudget)
                     {
-                        if (!File.Exists(file))
-                        {
-                            fileProcessed = true;
-                            break;
-                        }
-
                         try
                         {
-                            using var readStream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                            using var readStream = OpenCandidateLockStream(file);
                             using var reader = new StreamReader(readStream, System.Text.Encoding.UTF8);
                             string otherPath = reader.ReadToEnd().Trim();
                             if (!string.IsNullOrEmpty(otherPath))
@@ -593,17 +603,19 @@ namespace DXVKCompanion.Safety
                         }
                         catch (FileNotFoundException)
                         {
+                            // Positive absence confirmed by filesystem
                             fileProcessed = true;
                             break;
                         }
                         catch (DirectoryNotFoundException)
                         {
+                            // Positive absence confirmed by filesystem
                             fileProcessed = true;
                             break;
                         }
                         catch
                         {
-                            // Incomplete publication, exclusive locking, or transient contention
+                            // Incomplete publication, exclusive locking, access denied, or transient contention
                         }
 
                         var delay = Math.Min(10, Math.Max(1, (int)(remainingBudget - sw.Elapsed).TotalMilliseconds));
@@ -615,13 +627,12 @@ namespace DXVKCompanion.Safety
 
                     if (!fileProcessed)
                     {
-                        if (!File.Exists(file))
-                        {
-                            continue;
-                        }
+                        // File could not be processed as non-conflicting within budget.
+                        // Probe for positive absence: only FileNotFoundException / DirectoryNotFoundException confirms absence.
+                        // Any other outcome (open succeeded, UnauthorizedAccessException, IOException) fails closed.
                         try
                         {
-                            using var probe = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                            using var probe = OpenCandidateLockStream(file);
                             return true;
                         }
                         catch (FileNotFoundException)

@@ -294,3 +294,36 @@
      - Truly unreadable or contending locks still fail closed (`return true`) if they persist across the entire caller timeout budget, satisfying Finding E1.
 - **Scope & API Surface Check:** All modified files remain strictly within declared Issue #178 allowed paths (`OperationLeaseCoordinator.cs` and this journal). Zero public API changes. Zero local host execution.
 
+### J. Precision Resolution of Arbitrator Review Findings (E1, E2, E3, E5 & Journal Retractions)
+- **Context & Review Findings (PR #179 Comment 6276064919):**
+  Arbitrator review accepted earlier architectural boundaries but identified residual vulnerabilities in candidate inspection shortcuts, store preflight sequencing, profile contention coverage, and test cleanup bounding. This section records the resolutions and explicitly updates prior journal claims.
+  1. **E1 / D5 (False Existence Shortcut Elimination, Injected Failure Probes & Journal Retraction):**
+     - *Journal Correction / Retraction:* The claim in Section 6.G.1 that `!File.Exists` reliably confirms positive absence was incorrect. In .NET on Windows/NTFS, `File.Exists(path)` returns `false` when access is denied, file permissions are insufficient, or inspection errors occur. Treating `!File.Exists` as absence created a vulnerability where inaccessible lock files could be skipped rather than failing closed.
+     - *Implementation (`OperationLeaseCoordinator.cs`):* Eliminated all `File.Exists` shortcuts in `HasConflictingTargetLockAsync` and `HasConflictingTargetLockSync`. Candidate lock inspection now relies exclusively on `OpenCandidateLockStream(file)` probes where only kernel-level `FileNotFoundException` or `DirectoryNotFoundException` confirms positive absence. Any other error (including `UnauthorizedAccessException` and sharing violations) fails closed (`return true`) once caller budget expires.
+     - *Testability Hooks:* Added `internal Func<string, FileStream>? CustomOpenLockFileStream` and `internal Func<string, IEnumerable<string>>? CustomEnumerateFiles` to enable deterministic failure simulation.
+     - *Regressions (`OperationLeaseCoordinatorTests.cs`):* Added `TargetLock_InjectedCandidateOpenFailure_FailsClosedBoundedSyncAndAsync` and `TargetLock_InjectedEnumerationFailure_FailsClosedSyncAndAsync`. Added budget upper-bound assertions (`Assert.InRange`) and cancellation-during-wait tests (`cts.CancelAfter(50)`) to `TargetLock_UnreadableLockFile_FailsClosedSyncAndAsync` and `TargetLock_EmptyPublication_FailsClosedWhenNotWritten_SyncAndAsync`.
+  2. **E2 / D3 (Authoritative Preflight Sequencing Before In-Memory Mutation & State Preservation):**
+     - *Implementation (`DxvkManager.cs`):*
+       - In `ClearCancelledState`: invoked `_gameLibraryStore.TryCheckCanModifyLibrary(out _, storeLease)` *before* mutating live fields `installation.IsCancellationRequested` or `installation.PendingOperationIntent`. If preflight fails, returns immediately leaving memory untouched. If save throws, snapshots and reverts original field values.
+       - In `ReassessEffectiveApi`: invoked both `_profiles.TryCheckCanModifyProfileStore(out _, storeLease)` and `_gameLibraryStore.TryCheckCanModifyLibrary(out _, storeLease)` *before* mutating live profile or installation objects. If preflight fails, returns false without touching memory. If save throws, a `revert()` snapshot restores all live fields (`profile.EffectiveApiOverride`, `profile.EffectiveTargetD3D11`, `profile.EffectiveTargetD3D9`, `installation.EffectiveApi`, `installation.IsArchitectureMismatched`, `installation.DetectedArchitecture`).
+       - In `UpdateAvailable`: passed held store lease to `ReassessEffectiveApi` and preserved live state on preflight or persistence refusal.
+     - *Implementation (`ManagedFileInspector.cs`):*
+       - In catch block (line 277), invoked `_store.TryCheckCanModifyLibrary(out _, storeLease)` *before* modifying `installation.RestorationState` or `installation.LastRefusalReason`. If preflight fails, continues without editing memory. If save throws, original state and refusal reason are reverted.
+     - *Regressions (`OperationExclusionBoundaryTests.cs`):*
+       - Added `ManagedFileInspector_WhenInspectionThrowsAndStoreStale_PreservesLiveAndDurableState` verifying catch/reacquisition path preserves live and durable state when store is stale.
+       - Added `DxvkManager_ClearCancelledState_WhenStoreStale_PreservesLiveAndDurableState`.
+       - Added `DxvkManager_UpdateAvailable_WhenProfileStoreStale_DoesNotMutateLiveProfileOrInstallation`.
+  3. **E3 / D2 (Profile Store Contention & Reverse-Order Store Acquisition Deadlock Prevention):**
+     - *Implementation & Regressions:*
+       - In `OperationExclusionBoundaryTests.cs`, added `DxvkManager_WhenCompetingProfileLeaseHeld_QueueOrApplyRefusesAndLeavesLiveStateUntouched` verifying that holding a lease on `_profiles.ProfilesFile` blocks `QueueOrApplyAsync` without mutating live state.
+       - In `OperationLeaseCoordinatorTests.cs`, added `OperationScope_ReverseStoreOrdering_AcquiresDeterministicallyWithoutDeadlock` proving configured store paths provided in reverse alphabetical order are sorted deterministically and acquired without deadlock.
+  4. **E5 / D6 (Bounded Cleanup, Aggregated Task Drainage & Journal Retraction):**
+     - *Journal Correction / Retraction:* The claim in Section 6.G.5 that an inclusive 20s overall budget was fully enforced across all paths was incomplete. Process cleanup did not have a dedicated reserved allocation within the 20s budget, and process exits were not universally bounded.
+     - *Implementation & Regressions:*
+       - In `OperationLeaseCoordinatorTests.cs:InterProcessLocking_OwnedCloudHelper_ExcludesParentDuringHold`, enforced single inclusive 20s overall budget with 4s cleanup reservation (`cleanupBudgetMs = 4000`), bounded operational waits, and unswallowed exit assertion in `finally`.
+       - Added `OperatingSystem.IsWindows() && GITHUB_ACTIONS` guard and bounded wait to `InterProcessLocking_ChildHelperPrematureFailure_HandledGracefully`. Added `InterProcessLocking_ChildHelperTimeoutFailure_TerminatedAndCleanedUpWithinBudget` testing child timeout and tree termination (`helper.Kill(entireProcessTree: true)`).
+       - In `ProcessActivityBoundaryTests.cs`, bounded try-block `applyTask` awaits with `Task.WhenAny(applyTask, Task.Delay(TimeSpan.FromSeconds(10)))` in `DownloadStageRace_ActivitySpawnedDuringDownload_AbortsBeforeMutation` and `DownloadStageRace_ProfileChangedDuringDownload_AbortsBeforeMutation` so hangs do not skip finally drain.
+       - In `OperationExclusionBoundaryTests.cs` (lines 128-170 and 548-580), drained all started background tasks independently in nested try-catch blocks in `finally`, aggregating any cleanup exceptions so failure on one drain never skips draining the other.
+- **Scope & API Surface Check:** All modified files remain strictly within declared Issue #178 allowed paths (`DxvkManager.cs`, `OperationLeaseCoordinator.cs`, `ManagedFileInspector.cs`, `OperationExclusionBoundaryTests.cs`, `OperationLeaseCoordinatorTests.cs`, `ProcessActivityBoundaryTests.cs`, and this journal). Zero public API additions. Zero local host execution (`dotnet test` / `dotnet build` NOT RUN on host).
+
+

@@ -488,6 +488,8 @@ public sealed class ProcessActivityBoundaryTests
             // Release the download with the valid archive
             handler.ReleaseDownload();
 
+            var completed = await Task.WhenAny(applyTask, Task.Delay(TimeSpan.FromSeconds(10)));
+            Assert.Same(applyTask, completed);
             result = await applyTask;
         }
         finally
@@ -583,6 +585,8 @@ public sealed class ProcessActivityBoundaryTests
             // Release the download
             handler.ReleaseDownload();
 
+            var completed = await Task.WhenAny(applyTask, Task.Delay(TimeSpan.FromSeconds(10)));
+            Assert.Same(applyTask, completed);
             result = await applyTask;
         }
         finally

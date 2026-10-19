@@ -277,12 +277,29 @@ namespace DXVKCompanion.Storage
                             using var storeLease = _store.LeaseCoordinator.TryAcquireStoreLease(_store.LibraryFilePath, TimeSpan.FromMilliseconds(500));
                             if (storeLease != null && storeLease.IsAcquired && !storeLease.IsDisposed && storeLease.IsValidForStore(_store.LibraryFilePath))
                             {
+                                if (!_store.TryCheckCanModifyLibrary(out _, storeLease))
+                                {
+                                    continue;
+                                }
+
+                                var prevRestorationState = installation.RestorationState;
+                                var prevRefusalReason = installation.LastRefusalReason;
+
                                 installation.RestorationState = RestorationState.AttentionRequired;
                                 installation.LastRefusalReason = string.IsNullOrWhiteSpace(ex.Message)
                                     ? "Inspection failed."
                                     : $"Inspection failed: {ex.Message}";
 
-                                _store.Save(installation, storeLease);
+                                try
+                                {
+                                    _store.Save(installation, storeLease);
+                                }
+                                catch
+                                {
+                                    installation.RestorationState = prevRestorationState;
+                                    installation.LastRefusalReason = prevRefusalReason;
+                                    throw;
+                                }
                             }
                         }
                         catch (Exception saveEx)

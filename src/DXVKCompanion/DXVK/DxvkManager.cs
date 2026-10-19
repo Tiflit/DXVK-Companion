@@ -66,8 +66,19 @@ namespace DXVKCompanion.DXVK
                 return;
             }
 
+            // Authoritative preflight check before modifying in-memory state
+            if (!_gameLibraryStore.TryCheckCanModifyLibrary(out _, storeLease))
+            {
+                return;
+            }
+
             if (installation.LastCancelledAction != null)
             {
+                var prevAction = installation.LastCancelledAction;
+                var prevReason = installation.LastCancellationReason;
+                var prevOutcome = installation.LastCancellationOutcome;
+                var prevRefusal = installation.LastRefusalReason;
+
                 installation.LastCancelledAction = null;
                 installation.LastCancellationReason = null;
                 installation.LastCancellationOutcome = null;
@@ -75,9 +86,18 @@ namespace DXVKCompanion.DXVK
                 {
                     installation.LastRefusalReason = null;
                 }
-                if (!_gameLibraryStore.HasUncertainPersistence)
+
+                try
                 {
                     _gameLibraryStore.Save(installation, storeLease);
+                }
+                catch
+                {
+                    installation.LastCancelledAction = prevAction;
+                    installation.LastCancellationReason = prevReason;
+                    installation.LastCancellationOutcome = prevOutcome;
+                    installation.LastRefusalReason = prevRefusal;
+                    throw;
                 }
             }
         }
@@ -168,6 +188,58 @@ namespace DXVKCompanion.DXVK
                 return;
             }
 
+            // Authoritative preflight checks before modifying in-memory state:
+            // 1. Profile store must be modifiable if configured
+            if (!_profiles.TryCheckCanModifyProfileStore(out _, storeLease))
+            {
+                return;
+            }
+
+            // 2. Library store must be modifiable if installation is present
+            if (installation != null && !_gameLibraryStore.TryCheckCanModifyLibrary(out _, storeLease))
+            {
+                return;
+            }
+
+            // Snapshot entry state to preserve on error/failure
+            string? prevProfileArch = profile.Architecture;
+            bool prevProfileDxvkEnabled = profile.DxvkEnabled;
+            string? prevProfileDxvkVersion = profile.DxvkVersion;
+            GraphicsApi prevProfileApi = profile.Api;
+
+            string? prevManagedArch = installation?.ManagedDxvkArchitecture;
+            var prevExeArchitectures = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+            var prevExeApis = new Dictionary<string, GraphicsApi>(StringComparer.OrdinalIgnoreCase);
+            if (installation?.Executables != null)
+            {
+                foreach (var exe in installation.Executables)
+                {
+                    prevExeArchitectures[exe.RelativePath] = exe.LastKnownArchitecture;
+                    prevExeApis[exe.RelativePath] = exe.LastKnownApi;
+                }
+            }
+
+            Action revert = () =>
+            {
+                profile.Architecture = prevProfileArch;
+                profile.DxvkEnabled = prevProfileDxvkEnabled;
+                profile.DxvkVersion = prevProfileDxvkVersion;
+                profile.Api = prevProfileApi;
+
+                if (installation != null)
+                {
+                    installation.ManagedDxvkArchitecture = prevManagedArch;
+                    if (installation.Executables != null)
+                    {
+                        foreach (var exe in installation.Executables)
+                        {
+                            if (prevExeArchitectures.TryGetValue(exe.RelativePath, out var a)) exe.LastKnownArchitecture = a;
+                            if (prevExeApis.TryGetValue(exe.RelativePath, out var g)) exe.LastKnownApi = g;
+                        }
+                    }
+                }
+            };
+
             bool profileChanged = false;
             bool installationChanged = false;
 
@@ -183,7 +255,15 @@ namespace DXVKCompanion.DXVK
             {
                 if (profileChanged || _profiles.HasPendingWriteRetry)
                 {
-                    TrySaveProfileNonFatal(profile, "reconciliation", storeLease);
+                    try
+                    {
+                        _profiles.Save(profile, storeLease);
+                    }
+                    catch (Exception ex)
+                    {
+                        revert();
+                        Logger.Log($"DxvkManager: failed to save profile during reconciliation for {profile.ExeName}: {ex.GetType().Name} - {ex.Message}");
+                    }
                 }
                 return;
             }
@@ -290,13 +370,21 @@ namespace DXVKCompanion.DXVK
 
             if (storeLease != null)
             {
-                if (profileChanged || _profiles.HasPendingWriteRetry)
+                try
                 {
-                    TrySaveProfileNonFatal(profile, "reconciliation", storeLease);
+                    if (profileChanged || _profiles.HasPendingWriteRetry)
+                    {
+                        _profiles.Save(profile, storeLease);
+                    }
+                    if (installationChanged && !_gameLibraryStore.HasUncertainPersistence)
+                    {
+                        _gameLibraryStore.Save(installation, storeLease);
+                    }
                 }
-                if (installationChanged && !_gameLibraryStore.HasUncertainPersistence)
+                catch (Exception ex)
                 {
-                    _gameLibraryStore.Save(installation, storeLease);
+                    revert();
+                    Logger.Log($"DxvkManager: failed to save during reconciliation for {profile.ExeName}: {ex.GetType().Name} - {ex.Message}");
                 }
             }
         }

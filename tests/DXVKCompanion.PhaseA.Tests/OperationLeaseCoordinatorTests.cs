@@ -348,14 +348,15 @@ public sealed class OperationLeaseCoordinatorTests
 
         var overallSw = Stopwatch.StartNew();
         const int maxTotalLifetimeMs = 20000;
+        const int cleanupReservationMs = 4000;
         Process? helper = null;
         try
         {
             helper = Process.Start(psi);
             Assert.NotNull(helper);
 
-            // Wait for helper to confirm lock acquisition via stdout (bounded within remaining 20s budget)
-            int startupBudget = Math.Max(1000, maxTotalLifetimeMs - (int)overallSw.ElapsedMilliseconds);
+            // Wait for helper to confirm lock acquisition via stdout (bounded within operational budget before cleanup reservation)
+            int startupBudget = Math.Max(500, maxTotalLifetimeMs - cleanupReservationMs - (int)overallSw.ElapsedMilliseconds);
             var readTask = helper.StandardOutput.ReadLineAsync();
             var readCompleted = await Task.WhenAny(readTask, Task.Delay(startupBudget));
             if (readCompleted != readTask)
@@ -374,8 +375,8 @@ public sealed class OperationLeaseCoordinatorTests
             Assert.Null(refusedLease);
             Assert.True(sw.ElapsedMilliseconds >= 150, $"Expected timeout around 200 ms, actual: {sw.ElapsedMilliseconds} ms");
 
-            // Wait for helper to exit naturally (bounded within remaining 20s budget)
-            int exitBudget = Math.Max(1000, maxTotalLifetimeMs - (int)overallSw.ElapsedMilliseconds);
+            // Wait for helper to exit naturally (bounded within remaining operational budget)
+            int exitBudget = Math.Max(500, maxTotalLifetimeMs - cleanupReservationMs - (int)overallSw.ElapsedMilliseconds);
             var exitTask = helper.WaitForExitAsync();
             var exitCompleted = await Task.WhenAny(exitTask, Task.Delay(exitBudget));
             if (exitCompleted != exitTask)
@@ -394,17 +395,18 @@ public sealed class OperationLeaseCoordinatorTests
         {
             if (helper != null)
             {
-                try
+                if (!helper.HasExited)
                 {
-                    if (!helper.HasExited)
+                    try
                     {
                         helper.Kill(entireProcessTree: true);
                     }
+                    catch { }
                 }
-                catch { }
-                bool exited = helper.WaitForExit(5000);
-                Assert.True(exited, "Child helper process failed to terminate within bounded 5000 ms drain.");
+                int cleanupTimeout = Math.Max(1000, maxTotalLifetimeMs - (int)overallSw.ElapsedMilliseconds);
+                bool exited = helper.WaitForExit(cleanupTimeout);
                 helper.Dispose();
+                Assert.True(exited, "Child helper process failed to terminate within bounded cleanup reservation.");
             }
         }
     }
@@ -626,6 +628,9 @@ public sealed class OperationLeaseCoordinatorTests
     [Fact]
     public async Task InterProcessLocking_ChildHelperPrematureFailure_HandledGracefully()
     {
+        if (!OperatingSystem.IsWindows() || !string.Equals(Environment.GetEnvironmentVariable("GITHUB_ACTIONS"), "true", StringComparison.OrdinalIgnoreCase))
+            return;
+
         using var tempDir = new SyntheticTestDirectory();
         using var coordDir = new SyntheticTestDirectory();
 
@@ -644,20 +649,25 @@ public sealed class OperationLeaseCoordinatorTests
             RedirectStandardError = true
         };
 
+        var overallSw = Stopwatch.StartNew();
+        const int maxTotalLifetimeMs = 10000;
+        const int cleanupReservationMs = 3000;
         Process? helper = null;
         try
         {
             helper = Process.Start(psi);
             Assert.NotNull(helper);
 
+            int operationalBudget = Math.Max(500, maxTotalLifetimeMs - cleanupReservationMs - (int)overallSw.ElapsedMilliseconds);
             var readTask = helper.StandardOutput.ReadLineAsync();
-            var readCompleted = await Task.WhenAny(readTask, Task.Delay(TimeSpan.FromSeconds(5)));
+            var readCompleted = await Task.WhenAny(readTask, Task.Delay(operationalBudget));
             Assert.Same(readTask, readCompleted);
             string? signal = await readTask;
             Assert.Null(signal); // No LOCKED signal written
 
-            // Helper process exited prematurely
-            await helper.WaitForExitAsync();
+            int exitBudget = Math.Max(500, maxTotalLifetimeMs - cleanupReservationMs - (int)overallSw.ElapsedMilliseconds);
+            bool exited = helper.WaitForExit(exitBudget);
+            Assert.True(exited, "Child helper process failed to exit within bounded operational budget.");
             Assert.NotEqual(0, helper.ExitCode);
 
             // Coordinator can acquire target lease normally without hang
@@ -669,17 +679,91 @@ public sealed class OperationLeaseCoordinatorTests
         {
             if (helper != null)
             {
-                try
+                if (!helper.HasExited)
                 {
-                    if (!helper.HasExited)
-                    {
-                        helper.Kill(entireProcessTree: true);
-                    }
+                    try { helper.Kill(entireProcessTree: true); } catch { }
                 }
-                catch { }
-                bool exited = helper.WaitForExit(5000);
-                Assert.True(exited);
+                int cleanupBudget = Math.Max(500, maxTotalLifetimeMs - (int)overallSw.ElapsedMilliseconds);
+                bool exited = helper.WaitForExit(cleanupBudget);
                 helper.Dispose();
+                Assert.True(exited, "Child helper process failed to terminate within cleanup reservation.");
+            }
+        }
+    }
+
+    [Fact]
+    public async Task InterProcessLocking_ChildHelperTimeoutFailure_TerminatedAndCleanedUpWithinBudget()
+    {
+        if (!OperatingSystem.IsWindows() || !string.Equals(Environment.GetEnvironmentVariable("GITHUB_ACTIONS"), "true", StringComparison.OrdinalIgnoreCase))
+            return;
+
+        using var tempDir = new SyntheticTestDirectory();
+        using var coordDir = new SyntheticTestDirectory();
+
+        var coordinator = new OperationLeaseCoordinator(coordDir.RootPath);
+        var targetPath = Path.Combine(tempDir.RootPath, "HelperTargetTimeout");
+        Directory.CreateDirectory(targetPath);
+
+        string canonicalTarget = OperationResourceIdentity.ResolveCanonicalPath(targetPath);
+        string lockName = OperationResourceIdentity.GetTargetLockFileName(canonicalTarget);
+        string fullLockPath = Path.Combine(coordDir.RootPath, lockName);
+
+        // Helper holds lock and sleeps for 60 seconds (simulating hanging child)
+        var psi = new ProcessStartInfo
+        {
+            FileName = "powershell.exe",
+            Arguments = $"-NoProfile -NonInteractive -Command \"try {{ $f = new-object System.IO.FileStream('{fullLockPath.Replace("'", "''")}', [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None, 4096, [System.IO.FileOptions]::DeleteOnClose); [Console]::Out.WriteLine('LOCKED'); [Console]::Out.Flush(); Start-Sleep -Seconds 60; $f.Dispose(); exit 0 }} catch {{ exit 1 }}\"",
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        };
+
+        var overallSw = Stopwatch.StartNew();
+        const int maxTotalLifetimeMs = 12000;
+        const int cleanupReservationMs = 4000;
+        Process? helper = null;
+        try
+        {
+            helper = Process.Start(psi);
+            Assert.NotNull(helper);
+
+            int startupBudget = Math.Max(500, maxTotalLifetimeMs - cleanupReservationMs - (int)overallSw.ElapsedMilliseconds);
+            var readTask = helper.StandardOutput.ReadLineAsync();
+            var readCompleted = await Task.WhenAny(readTask, Task.Delay(startupBudget));
+            Assert.Same(readTask, readCompleted);
+            string? signal = await readTask;
+            Assert.Equal("LOCKED", signal);
+
+            // Parent attempts acquisition with 200 ms timeout and must be excluded
+            var sw = Stopwatch.StartNew();
+            await using var refusedLease = await coordinator.TryAcquireOperationScopeAsync(targetPath, timeout: TimeSpan.FromMilliseconds(200));
+            sw.Stop();
+            Assert.Null(refusedLease);
+            Assert.InRange(sw.ElapsedMilliseconds, 150, 2000);
+
+            // Simulate timeout/failure by explicitly killing the child process
+            helper.Kill(entireProcessTree: true);
+            bool exited = helper.WaitForExit(3000);
+            Assert.True(exited, "Child helper process failed to exit after Kill.");
+
+            // Once killed, lock is released and coordinator acquires successfully
+            await using var successLease = await coordinator.TryAcquireOperationScopeAsync(targetPath, timeout: TimeSpan.FromMilliseconds(500));
+            Assert.NotNull(successLease);
+            Assert.True(successLease.IsAcquired);
+        }
+        finally
+        {
+            if (helper != null)
+            {
+                if (!helper.HasExited)
+                {
+                    try { helper.Kill(entireProcessTree: true); } catch { }
+                }
+                int cleanupBudget = Math.Max(500, maxTotalLifetimeMs - (int)overallSw.ElapsedMilliseconds);
+                bool exited = helper.WaitForExit(cleanupBudget);
+                helper.Dispose();
+                Assert.True(exited, "Child helper process failed to terminate within cleanup reservation.");
             }
         }
     }
@@ -698,13 +782,28 @@ public sealed class OperationLeaseCoordinatorTests
         string unreadableLock = Path.Combine(coordDir.RootPath, "target_0000000000000000000000000000000000000000000000000000000000000001.target.lock");
         using var exclusiveStream = new FileStream(unreadableLock, FileMode.Create, FileAccess.ReadWrite, FileShare.None);
 
-        // Async acquisition must fail closed (return null) because candidate lock cannot be read
+        // Async acquisition must fail closed (return null) and respect upper budget bounds
+        var asyncSw = Stopwatch.StartNew();
         await using var asyncLease = await coordinator.TryAcquireOperationScopeAsync(targetPath, timeout: TimeSpan.FromMilliseconds(100));
+        asyncSw.Stop();
         Assert.Null(asyncLease);
+        Assert.InRange(asyncSw.ElapsedMilliseconds, 70, 2000);
 
-        // Sync acquisition must fail closed (return null) because candidate lock cannot be read
+        // Cancellation during wait must abort within bounded time
+        using var cts = new CancellationTokenSource();
+        cts.CancelAfter(50);
+        var cancelSw = Stopwatch.StartNew();
+        await using var cancelLease = await coordinator.TryAcquireOperationScopeAsync(targetPath, timeout: TimeSpan.FromMilliseconds(500), ct: cts.Token);
+        cancelSw.Stop();
+        Assert.Null(cancelLease);
+        Assert.True(cancelSw.ElapsedMilliseconds < 350, $"Expected early exit on cancellation during wait, actual: {cancelSw.ElapsedMilliseconds} ms");
+
+        // Sync acquisition must fail closed (return null) and respect upper budget bounds
+        var syncSw = Stopwatch.StartNew();
         using var syncLease = coordinator.TryAcquireOperationScope(targetPath, timeout: TimeSpan.FromMilliseconds(100));
+        syncSw.Stop();
         Assert.Null(syncLease);
+        Assert.InRange(syncSw.ElapsedMilliseconds, 70, 2000);
     }
 
     [Fact]
@@ -722,12 +821,126 @@ public sealed class OperationLeaseCoordinatorTests
         File.WriteAllBytes(emptyLock, Array.Empty<byte>());
 
         // Async: fails closed because content is unreadable/empty and file does not disappear
+        var asyncSw = Stopwatch.StartNew();
+        await using var asyncLease = await coordinator.TryAcquireOperationScopeAsync(targetPath, timeout: TimeSpan.FromMilliseconds(100));
+        asyncSw.Stop();
+        Assert.Null(asyncLease);
+        Assert.InRange(asyncSw.ElapsedMilliseconds, 70, 2000);
+
+        // Cancellation during wait must abort boundedly
+        using var cts = new CancellationTokenSource();
+        cts.CancelAfter(50);
+        var cancelSw = Stopwatch.StartNew();
+        await using var cancelLease = await coordinator.TryAcquireOperationScopeAsync(targetPath, timeout: TimeSpan.FromMilliseconds(500), ct: cts.Token);
+        cancelSw.Stop();
+        Assert.Null(cancelLease);
+        Assert.True(cancelSw.ElapsedMilliseconds < 350, $"Expected early exit on cancellation during wait, actual: {cancelSw.ElapsedMilliseconds} ms");
+
+        // Sync: fails closed because content is unreadable/empty and file does not disappear
+        var syncSw = Stopwatch.StartNew();
+        using var syncLease = coordinator.TryAcquireOperationScope(targetPath, timeout: TimeSpan.FromMilliseconds(100));
+        syncSw.Stop();
+        Assert.Null(syncLease);
+        Assert.InRange(syncSw.ElapsedMilliseconds, 70, 2000);
+    }
+
+    [Fact]
+    public async Task TargetLock_InjectedEnumerationFailure_FailsClosedSyncAndAsync()
+    {
+        using var tempDir = new SyntheticTestDirectory();
+        using var coordDir = new SyntheticTestDirectory();
+
+        var coordinator = new OperationLeaseCoordinator(coordDir.RootPath);
+        var targetPath = Path.Combine(tempDir.RootPath, "InjectedEnumTarget");
+        Directory.CreateDirectory(targetPath);
+
+        // Injected enumeration failure simulates directory access denial
+        coordinator.CustomEnumerateFiles = _ => throw new UnauthorizedAccessException("Simulated directory permission denial");
+
         await using var asyncLease = await coordinator.TryAcquireOperationScopeAsync(targetPath, timeout: TimeSpan.FromMilliseconds(100));
         Assert.Null(asyncLease);
 
-        // Sync: fails closed because content is unreadable/empty and file does not disappear
         using var syncLease = coordinator.TryAcquireOperationScope(targetPath, timeout: TimeSpan.FromMilliseconds(100));
         Assert.Null(syncLease);
+    }
+
+    [Fact]
+    public async Task TargetLock_InjectedCandidateOpenFailure_FailsClosedBoundedSyncAndAsync()
+    {
+        using var tempDir = new SyntheticTestDirectory();
+        using var coordDir = new SyntheticTestDirectory();
+
+        var coordinator = new OperationLeaseCoordinator(coordDir.RootPath);
+        var targetPath = Path.Combine(tempDir.RootPath, "InjectedOpenTarget");
+        Directory.CreateDirectory(targetPath);
+
+        // Create an existing candidate lock file that throws UnauthorizedAccessException on inspection
+        // Microsoft documents that File.Exists returns false on permission denial.
+        // Our coordinator must NOT shortcut on false existence and must fail closed.
+        string candidateLock = Path.Combine(coordDir.RootPath, "target_0000000000000000000000000000000000000000000000000000000000000003.lock");
+        File.WriteAllText(candidateLock, "dummy-path");
+
+        coordinator.CustomOpenLockFileStream = path =>
+        {
+            if (path.Contains("0000000000000000000000000000000000000000000000000000000000000003"))
+            {
+                throw new UnauthorizedAccessException("Injected access denied on candidate lock inspection");
+            }
+            return new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        };
+
+        // Async: fails closed within requested budget
+        var asyncSw = Stopwatch.StartNew();
+        await using var asyncLease = await coordinator.TryAcquireOperationScopeAsync(targetPath, timeout: TimeSpan.FromMilliseconds(100));
+        asyncSw.Stop();
+        Assert.Null(asyncLease);
+        Assert.InRange(asyncSw.ElapsedMilliseconds, 70, 2000);
+
+        // Async cancellation during wait
+        using var cts = new CancellationTokenSource();
+        cts.CancelAfter(50);
+        var cancelSw = Stopwatch.StartNew();
+        await using var cancelLease = await coordinator.TryAcquireOperationScopeAsync(targetPath, timeout: TimeSpan.FromMilliseconds(500), ct: cts.Token);
+        cancelSw.Stop();
+        Assert.Null(cancelLease);
+        Assert.True(cancelSw.ElapsedMilliseconds < 350, $"Expected early exit on cancellation during wait, actual: {cancelSw.ElapsedMilliseconds} ms");
+
+        // Sync: fails closed within requested budget
+        var syncSw = Stopwatch.StartNew();
+        using var syncLease = coordinator.TryAcquireOperationScope(targetPath, timeout: TimeSpan.FromMilliseconds(100));
+        syncSw.Stop();
+        Assert.Null(syncLease);
+        Assert.InRange(syncSw.ElapsedMilliseconds, 70, 2000);
+    }
+
+    [Fact]
+    public void OperationScope_ReverseStoreOrdering_AcquiresDeterministicallyWithoutDeadlock()
+    {
+        using var tempDir = new SyntheticTestDirectory();
+        using var coordDir = new SyntheticTestDirectory();
+
+        var coordinator = new OperationLeaseCoordinator(coordDir.RootPath);
+        var target = Path.Combine(tempDir.RootPath, "GameRoot");
+        var storeA = Path.Combine(tempDir.RootPath, "store_a.json");
+        var storeB = Path.Combine(tempDir.RootPath, "store_b.json");
+        Directory.CreateDirectory(target);
+        File.WriteAllText(storeA, "{}");
+        File.WriteAllText(storeB, "{}");
+
+        // First caller requests stores in order [A, B]
+        using var lease1 = coordinator.TryAcquireOperationScope(target, new[] { storeA, storeB }, TimeSpan.FromMilliseconds(500));
+        Assert.NotNull(lease1);
+        Assert.True(lease1.IsAcquired);
+        Assert.True(lease1.IsValidForStore(storeA));
+        Assert.True(lease1.IsValidForStore(storeB));
+        lease1.Dispose();
+
+        // Second caller requests stores in reverse order [B, A]
+        using var lease2 = coordinator.TryAcquireOperationScope(target, new[] { storeB, storeA }, TimeSpan.FromMilliseconds(500));
+        Assert.NotNull(lease2);
+        Assert.True(lease2.IsAcquired);
+        Assert.True(lease2.IsValidForStore(storeA));
+        Assert.True(lease2.IsValidForStore(storeB));
     }
 }
 
