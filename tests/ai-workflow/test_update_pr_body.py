@@ -2124,10 +2124,16 @@ class TestUpdatePrBody(unittest.TestCase):
         R3: When pre-write recovery backup is saved, confirmation display never leaks
         usernames with spaces or local personal paths.
         """
-        mock_urlopen.return_value = MockHttpResponse({
-            "number": 42,
-            "body": self.sample_issue_body,
-        })
+        expected_final = f"{self.sample_issue_body}\n\n{self.sample_append_block}\n"
+        call_count = 0
+        def fake_urlopen(req, *args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 2:
+                return MockHttpResponse({"number": 42, "body": self.sample_issue_body})
+            return MockHttpResponse({"number": 42, "body": expected_final})
+
+        mock_urlopen.side_effect = fake_urlopen
         with tempfile.NamedTemporaryFile("w", delete=False) as f:
             f.write(self.sample_append_block)
             f_path = Path(f.name)
