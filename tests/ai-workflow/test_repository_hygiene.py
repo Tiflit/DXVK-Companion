@@ -428,7 +428,12 @@ class TestRepositoryHygiene(unittest.TestCase):
             "## Objective\nValid issue objective.\n\n"
             "## Assignment\nNext owner: Gemini.\n"
         )
-        sample_append = "<!-- AI-RECORD -->\n## Record\nContent.\n<!-- AI-RECORD-END -->"
+        sample_append = (
+            "<!-- AI-POST-MERGE-RECORD: gemini-20261019-issue42-test -->\n"
+            "## Post-Merge Verification & Activity Record — Issue #42\n"
+            "Verified on main. Result: PASS.\n"
+            "<!-- AI-POST-MERGE-RECORD-END -->"
+        )
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             base_dir = Path(tmp_dir)
@@ -553,7 +558,12 @@ class TestRepositoryHygiene(unittest.TestCase):
             "## Objective\nValid issue objective.\n\n"
             "## Assignment\nNext owner: Gemini.\n"
         )
-        sample_append = "<!-- AI-RECORD -->\n## Record\nContent.\n<!-- AI-RECORD-END -->"
+        sample_append = (
+            "<!-- AI-POST-MERGE-RECORD: gemini-20261019-issue42-test2 -->\n"
+            "## Post-Merge Verification & Activity Record — Issue #42\n"
+            "Verified on main. Result: PASS.\n"
+            "<!-- AI-POST-MERGE-RECORD-END -->"
+        )
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             base_dir = Path(tmp_dir)
