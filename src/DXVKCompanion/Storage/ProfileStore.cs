@@ -79,7 +79,7 @@ namespace DXVKCompanion.Storage
             {
                 acquiredLease?.Dispose();
                 HasPendingWriteRetry = true;
-                throw new IOException($"Cannot modify profile store: existing file is corrupted or was inaccessible on load ({_brokenLoadReason}).");
+                throw new IOException($"Cannot modify profile store: existing file is corrupted or unreadable on load ({_brokenLoadReason}).");
             }
 
             try
@@ -133,7 +133,7 @@ namespace DXVKCompanion.Storage
             refusalReason = null;
             if (_isBrokenLoad)
             {
-                refusalReason = $"Cannot modify profile store: existing file is corrupted or was inaccessible on load ({_brokenLoadReason}).";
+                refusalReason = $"Cannot modify profile store: existing file is corrupted or unreadable on load ({_brokenLoadReason}).";
                 return false;
             }
 

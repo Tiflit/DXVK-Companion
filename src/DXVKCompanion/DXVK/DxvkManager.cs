@@ -680,7 +680,7 @@ namespace DXVKCompanion.DXVK
 
             // Re-resolve state and profile under the acquired lease
             installation = ResolveInstallation(exePath);
-            var profile = _profiles.GetOrCreate(exePath);
+            var profile = _profiles.GetOrCreate(exePath, lease.StoreLease);
             ReassessEffectiveApi(installation, profile, lease.StoreLease);
 
             // Re-read current transient intent under protection
@@ -879,7 +879,7 @@ namespace DXVKCompanion.DXVK
                         continue;
                     }
 
-                    var profile = _profiles.GetOrCreate(primaryExePath);
+                    var profile = _profiles.GetOrCreate(primaryExePath, lease.StoreLease);
                     ReassessEffectiveApi(installation, profile, lease.StoreLease);
 
                     if (installation.PendingAction.Type != PendingActionType.Restore && !DxvkCompatibility.IsInstallationSupported(installation, profile.Api, profile.ExeName, out var refusalReason))

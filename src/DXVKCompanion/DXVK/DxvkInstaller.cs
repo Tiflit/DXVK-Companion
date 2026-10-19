@@ -432,7 +432,7 @@ namespace DXVKCompanion.DXVK
                 // Invariant (Section 36): If configuration is needed, stage dxvk.conf atomically
                 if (DxvkConfigManager.RequiresConfigFile(config))
                 {
-                    stagingDir = Path.Combine(GameLibraryPaths.BackupsDir, ".staging", Guid.NewGuid().ToString("N"));
+                    stagingDir = Path.Combine(_transactionEngine.TransactionStoreRoot, ".staging", Guid.NewGuid().ToString("N"));
                     Directory.CreateDirectory(stagingDir);
 
                     string relConfPath = ResolveInstallationRelativeFilePath(DxvkConfigManager.ConfigFileName);
@@ -950,7 +950,7 @@ namespace DXVKCompanion.DXVK
 
                 if (DxvkConfigManager.RequiresConfigFile(config))
                 {
-                    stagingDir = Path.Combine(GameLibraryPaths.BackupsDir, ".staging", Guid.NewGuid().ToString("N"));
+                    stagingDir = Path.Combine(_transactionEngine.TransactionStoreRoot, ".staging", Guid.NewGuid().ToString("N"));
                     Directory.CreateDirectory(stagingDir);
 
                     string relConfPath = ResolveInstallationRelativeFilePath(DxvkConfigManager.ConfigFileName);

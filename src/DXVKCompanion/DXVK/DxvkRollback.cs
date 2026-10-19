@@ -381,7 +381,7 @@ namespace DXVKCompanion.DXVK
                     {
                         if (!_gameLibraryStore.HasUncertainPersistence)
                         {
-                            _gameLibraryStore.Save(installation, leaseToken?.StoreLease);
+                            _gameLibraryStore.Save(installation, leaseToken?.StoreLease ?? leaseToken);
                         }
                     }
                     catch { }
@@ -407,7 +407,7 @@ namespace DXVKCompanion.DXVK
             {
                 if (!_gameLibraryStore.HasUncertainPersistence)
                 {
-                    _gameLibraryStore.Save(installation, leaseToken?.StoreLease);
+                    _gameLibraryStore.Save(installation, leaseToken?.StoreLease ?? leaseToken);
                 }
             }
             catch (Exception ex)

@@ -244,6 +244,7 @@ namespace DXVKCompanion.Safety
                 return null;
             }
 
+            Exception? lastAcquisitionException = null;
             var sw = Stopwatch.StartNew();
             while (sw.Elapsed < timeout && !ct.IsCancellationRequested)
             {
@@ -284,12 +285,14 @@ namespace DXVKCompanion.Safety
                 }
                 catch (IOException ex) when (IsContentionException(ex))
                 {
+                    lastAcquisitionException = ex;
                     // Sharing violation or delete pending: retry within budget
                 }
                 catch (UnauthorizedAccessException ex)
                 {
-                    LastAcquisitionError = $"Access denied to coordination directory or lock file '{lockFilePath}': {ex.Message}";
-                    return null;
+                    lastAcquisitionException = ex;
+                    // On Windows NTFS, opening a file marked DeleteOnClose while closing throws UnauthorizedAccessException.
+                    // Retry within budget; if budget expires, record access denied.
                 }
                 finally
                 {
@@ -309,6 +312,11 @@ namespace DXVKCompanion.Safety
                 }
 
                 await Task.Delay(delayMs, ct).ConfigureAwait(false);
+            }
+
+            if (lastAcquisitionException is UnauthorizedAccessException uae)
+            {
+                LastAcquisitionError = $"Access denied to coordination directory or lock file '{lockFilePath}': {uae.Message}";
             }
 
             return null;
@@ -331,6 +339,7 @@ namespace DXVKCompanion.Safety
                 return null;
             }
 
+            Exception? lastAcquisitionException = null;
             var sw = Stopwatch.StartNew();
             while (sw.Elapsed < timeout)
             {
@@ -371,12 +380,14 @@ namespace DXVKCompanion.Safety
                 }
                 catch (IOException ex) when (IsContentionException(ex))
                 {
+                    lastAcquisitionException = ex;
                     // Sharing violation or delete pending: retry within budget
                 }
                 catch (UnauthorizedAccessException ex)
                 {
-                    LastAcquisitionError = $"Access denied to coordination directory or lock file '{lockFilePath}': {ex.Message}";
-                    return null;
+                    lastAcquisitionException = ex;
+                    // On Windows NTFS, opening a file marked DeleteOnClose while closing throws UnauthorizedAccessException.
+                    // Retry within budget; if budget expires, record access denied.
                 }
                 finally
                 {
@@ -396,6 +407,11 @@ namespace DXVKCompanion.Safety
                 }
 
                 Thread.Sleep(delayMs);
+            }
+
+            if (lastAcquisitionException is UnauthorizedAccessException uae)
+            {
+                LastAcquisitionError = $"Access denied to coordination directory or lock file '{lockFilePath}': {uae.Message}";
             }
 
             return null;
@@ -468,6 +484,10 @@ namespace DXVKCompanion.Safety
 
                     if (!readSuccess)
                     {
+                        if (!File.Exists(file))
+                        {
+                            continue;
+                        }
                         return true;
                     }
                 }
@@ -546,6 +566,10 @@ namespace DXVKCompanion.Safety
 
                     if (!readSuccess)
                     {
+                        if (!File.Exists(file))
+                        {
+                            continue;
+                        }
                         return true;
                     }
                 }
