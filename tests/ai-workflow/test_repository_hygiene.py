@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import io
+import json
 import os
 import shutil
 import subprocess
@@ -24,6 +26,30 @@ from update_pr_body import (
     is_path_inside_or_equal,
     validate_backup_dir,
 )
+
+
+class MockHttpResponse:
+    """Mock HTTP response object."""
+
+    def __init__(self, data, status: int = 200):
+        self.status = status
+        if isinstance(data, (dict, list)):
+            self._bytes = json.dumps(data).encode("utf-8")
+        elif isinstance(data, str):
+            self._bytes = data.encode("utf-8")
+        elif isinstance(data, bytes):
+            self._bytes = data
+        else:
+            self._bytes = b""
+
+    def read(self) -> bytes:
+        return self._bytes
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        pass
 
 
 class TestRepositoryHygiene(unittest.TestCase):
@@ -325,48 +351,338 @@ class TestRepositoryHygiene(unittest.TestCase):
 
     def test_is_inside_git_repository_distinguishes_absence_from_query_failure(self):
         """
-        R1: Distinguishes established non-repository absence (128 + 'not a git repository')
-        from query failures/timeouts which must fail closed.
+        R1: Distinguishes established non-repository absence (no markers in ancestry + 128 + 'not a git repository')
+        from broken repository markers or query failures/timeouts which must fail closed.
         """
-        # Absent repository: code 128 + 'not a git repository' -> returns False
-        with patch("subprocess.run") as mock_run:
-            mock_proc = MagicMock()
-            mock_proc.returncode = 128
-            mock_proc.stdout = ""
-            mock_proc.stderr = "fatal: not a git repository (or any of the parent directories): .git"
-            mock_run.return_value = mock_proc
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            clean_external = Path(tmp_dir) / "clean_external"
+            clean_external.mkdir()
 
-            result = is_inside_git_repository(Path.cwd())
-            self.assertFalse(result)
+            # Absent repository: no markers in ancestry, code 128 + 'not a git repository' -> returns False
+            with patch("subprocess.run") as mock_run:
+                mock_proc = MagicMock()
+                mock_proc.returncode = 128
+                mock_proc.stdout = ""
+                mock_proc.stderr = "fatal: not a git repository (or any of the parent directories): .git"
+                mock_run.return_value = mock_proc
+
+                result = is_inside_git_repository(clean_external)
+                self.assertFalse(result)
+
+            # Broken repository marker: .git file exists, but git exits 128 -> fails closed
+            broken_git = clean_external / ".git"
+            broken_git.write_text("gitdir: /nonexistent/gitdir\n", encoding="utf-8")
+            with patch("subprocess.run") as mock_run:
+                mock_proc = MagicMock()
+                mock_proc.returncode = 128
+                mock_proc.stdout = ""
+                mock_proc.stderr = "fatal: not a git repository: /nonexistent/gitdir"
+                mock_run.return_value = mock_proc
+
+                with self.assertRaises(SecurityValidationError) as cm:
+                    is_inside_git_repository(clean_external)
+                self.assertIn("Git worktree boundary could not be established.", str(cm.exception))
+
+            # Query failure / permission: fails closed with category-only error
+            with patch("subprocess.run") as mock_run:
+                mock_proc = MagicMock()
+                mock_proc.returncode = 1
+                mock_proc.stdout = ""
+                mock_proc.stderr = "fatal: error reading directory: permission denied"
+                mock_run.return_value = mock_proc
+
+                with self.assertRaises(SecurityValidationError) as cm:
+                    is_inside_git_repository(clean_external)
+                self.assertIn("Git worktree boundary could not be established.", str(cm.exception))
+
+            # Query exception: fails closed with category-only error
+            with patch("subprocess.run", side_effect=TimeoutError("git timed out")):
+                with self.assertRaises(SecurityValidationError) as cm:
+                    is_inside_git_repository(clean_external)
+                self.assertIn("Git worktree boundary could not be established.", str(cm.exception))
 
         # Inside repository: code 0 + 'true' -> returns True
-        with patch("subprocess.run") as mock_run:
-            mock_proc = MagicMock()
-            mock_proc.returncode = 0
-            mock_proc.stdout = "true\nfalse\n"
-            mock_proc.stderr = ""
-            mock_run.return_value = mock_proc
-
-            result = is_inside_git_repository(Path.cwd())
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_dir = Path(tmp_dir) / "valid_repo"
+            repo_dir.mkdir()
+            subprocess.run(["git", "init", "-q"], cwd=repo_dir, check=True)
+            result = is_inside_git_repository(repo_dir)
             self.assertTrue(result)
 
-        # Query failure / permission / timeout: fails closed with category-only error
-        with patch("subprocess.run") as mock_run:
-            mock_proc = MagicMock()
-            mock_proc.returncode = 1
-            mock_proc.stdout = ""
-            mock_proc.stderr = "fatal: error reading directory: permission denied"
-            mock_run.return_value = mock_proc
+    @patch("urllib.request.urlopen")
+    def test_synthetic_broken_gitfile_pointer_fixture_refuses_backups_without_creation_or_patch(self, mock_urlopen):
+        """
+        R1: An owned synthetic checkout with a broken .git pointer (pointing to missing gitdir storage)
+        is never mistaken for safe non-repository absence. Both PR and Issue CLI routes refuse with
+        category-only errors, create zero backup directories/files, execute zero PATCH requests,
+        and preserve synthetic metadata intact.
+        """
+        sample_pr_body = (
+            "## Primary Issue\nFixes #31\n\n"
+            "## Summary\nValid summary.\n\n"
+            "## Scope\nscripts/ai-workflow/**\n\n"
+            "## Verification\n92 passed.\n\n"
+            "## Documentation\nUpdated.\n"
+        )
+        sample_issue_body = (
+            "## Objective\nValid issue objective.\n\n"
+            "## Assignment\nNext owner: Gemini.\n"
+        )
+        sample_append = "<!-- AI-RECORD -->\n## Record\nContent.\n<!-- AI-RECORD-END -->"
 
-            with self.assertRaises(SecurityValidationError) as cm:
-                is_inside_git_repository(Path.cwd())
-            self.assertIn("Git worktree boundary could not be established.", str(cm.exception))
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            base_dir = Path(tmp_dir)
+            repo_a = base_dir / "repo_a"
+            repo_a.mkdir()
+            subprocess.run(["git", "init", "-q"], cwd=repo_a, check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo_a, check=True)
+            subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo_a, check=True)
+            (repo_a / "README.md").write_text("# Repo A\n", encoding="utf-8")
+            subprocess.run(["git", "add", "README.md"], cwd=repo_a, check=True)
+            subprocess.run(["git", "commit", "-q", "-m", "Initial commit"], cwd=repo_a, check=True)
 
-        # Query exception: fails closed with category-only error
-        with patch("subprocess.run", side_effect=TimeoutError("git timed out")):
-            with self.assertRaises(SecurityValidationError) as cm:
-                is_inside_git_repository(Path.cwd())
-            self.assertIn("Git worktree boundary could not be established.", str(cm.exception))
+            # Synthetic repo_b with broken .git pointer file
+            repo_b = base_dir / "repo_b"
+            repo_b.mkdir()
+            broken_pointer_content = "gitdir: /nonexistent/storage/gitdir\n"
+            git_file = repo_b / ".git"
+            git_file.write_text(broken_pointer_content, encoding="utf-8")
+
+            # Candidate destination within repo_b
+            target_backup_dir = repo_b / "sub" / "future_backups"
+
+            # Unit-level assertions
+            with self.assertRaises(SecurityValidationError) as cm_unit1:
+                validate_backup_dir(repo_b, cwd=repo_a)
+            self.assertIn("Git worktree boundary could not be established.", str(cm_unit1.exception))
+
+            with self.assertRaises(SecurityValidationError) as cm_unit2:
+                validate_backup_dir(target_backup_dir, cwd=repo_a)
+            self.assertIn("Git worktree boundary could not be established.", str(cm_unit2.exception))
+
+            # CLI-level route 1: PR mode
+            pr_hash = update_pr_body.compute_body_sha256(sample_pr_body)
+            mock_urlopen.return_value = MockHttpResponse({"number": 31, "body": sample_pr_body})
+
+            pr_args = [
+                "update_pr_body.py",
+                "--pr", "31",
+                "--body", sample_pr_body,
+                "--expected-base-hash", pr_hash,
+                "--backup-dir", str(target_backup_dir),
+                "--write",
+                "--token", "tok",
+            ]
+            with patch.object(sys, "argv", pr_args), \
+                 patch("sys.stdout", new_callable=io.StringIO) as mock_out, \
+                 patch("sys.stderr", new_callable=io.StringIO) as mock_err:
+                exit_code = update_pr_body.main()
+                self.assertEqual(exit_code, 1)
+                err = mock_err.getvalue()
+                self.assertIn("Git worktree boundary could not be established.", err)
+                self.assertNotIn("Traceback", err)
+
+            # Assert no backup directory or files created
+            self.assertFalse((repo_b / "sub").exists())
+            self.assertEqual(list(repo_b.glob("**/*.md")), [])
+
+            # Assert zero PATCH requests
+            for call in mock_urlopen.call_args_list:
+                req = call[0][0]
+                method = req.get_method() if hasattr(req, "get_method") else "GET"
+                self.assertNotEqual(method, "PATCH")
+
+            # Assert synthetic metadata preserved intact
+            self.assertEqual(git_file.read_text(encoding="utf-8"), broken_pointer_content)
+
+            # CLI-level route 2: Issue mode
+            mock_urlopen.reset_mock()
+            issue_hash = update_pr_body.compute_body_sha256(sample_issue_body)
+            mock_urlopen.return_value = MockHttpResponse({"number": 42, "body": sample_issue_body})
+
+            append_file = base_dir / "append.md"
+            append_file.write_text(sample_append, encoding="utf-8")
+
+            issue_args = [
+                "update_pr_body.py",
+                "--issue", "42",
+                "--append-file", str(append_file),
+                "--expected-base-hash", issue_hash,
+                "--backup-dir", str(target_backup_dir),
+                "--write",
+                "--token", "tok",
+            ]
+            with patch.object(sys, "argv", issue_args), \
+                 patch("sys.stdout", new_callable=io.StringIO) as mock_out, \
+                 patch("sys.stderr", new_callable=io.StringIO) as mock_err:
+                exit_code = update_pr_body.main()
+                self.assertEqual(exit_code, 1)
+                err = mock_err.getvalue()
+                self.assertIn("Git worktree boundary could not be established.", err)
+                self.assertNotIn("Traceback", err)
+
+            # Assert no backup directory or files created
+            self.assertFalse((repo_b / "sub").exists())
+            self.assertEqual(list(repo_b.glob("**/*.md")), [])
+
+            # Assert zero PATCH requests
+            for call in mock_urlopen.call_args_list:
+                req = call[0][0]
+                method = req.get_method() if hasattr(req, "get_method") else "GET"
+                self.assertNotEqual(method, "PATCH")
+
+            # Assert synthetic metadata preserved intact
+            self.assertEqual(git_file.read_text(encoding="utf-8"), broken_pointer_content)
+
+    @patch("urllib.request.urlopen")
+    def test_synthetic_corrupted_git_directory_fixture_refuses_backups_without_creation_or_patch(self, mock_urlopen):
+        """
+        R1: An owned synthetic checkout with a corrupted .git directory (e.g. invalid HEAD / metadata)
+        is never mistaken for safe non-repository absence. Both PR and Issue CLI routes refuse with
+        category-only errors, create zero backup directories/files, execute zero PATCH requests,
+        and preserve synthetic metadata intact.
+        """
+        sample_pr_body = (
+            "## Primary Issue\nFixes #31\n\n"
+            "## Summary\nValid summary.\n\n"
+            "## Scope\nscripts/ai-workflow/**\n\n"
+            "## Verification\n92 passed.\n\n"
+            "## Documentation\nUpdated.\n"
+        )
+        sample_issue_body = (
+            "## Objective\nValid issue objective.\n\n"
+            "## Assignment\nNext owner: Gemini.\n"
+        )
+        sample_append = "<!-- AI-RECORD -->\n## Record\nContent.\n<!-- AI-RECORD-END -->"
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            base_dir = Path(tmp_dir)
+            repo_a = base_dir / "repo_a"
+            repo_a.mkdir()
+            subprocess.run(["git", "init", "-q"], cwd=repo_a, check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo_a, check=True)
+            subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo_a, check=True)
+            (repo_a / "README.md").write_text("# Repo A\n", encoding="utf-8")
+            subprocess.run(["git", "add", "README.md"], cwd=repo_a, check=True)
+            subprocess.run(["git", "commit", "-q", "-m", "Initial commit"], cwd=repo_a, check=True)
+
+            # Synthetic repo_c with corrupted .git directory
+            repo_c = base_dir / "repo_c"
+            repo_c.mkdir()
+            corrupt_git_dir = repo_c / ".git"
+            corrupt_git_dir.mkdir()
+            head_content = "ref: refs/heads/nonexistent_branch_with_corrupt_objects\n"
+            (corrupt_git_dir / "HEAD").write_text(head_content, encoding="utf-8")
+
+            # Candidate destination within repo_c
+            target_backup_dir = repo_c / "nested" / "future_backups"
+
+            # Unit-level assertions
+            with self.assertRaises(SecurityValidationError) as cm_unit1:
+                validate_backup_dir(repo_c, cwd=repo_a)
+            self.assertIn("Git worktree boundary could not be established.", str(cm_unit1.exception))
+
+            with self.assertRaises(SecurityValidationError) as cm_unit2:
+                validate_backup_dir(target_backup_dir, cwd=repo_a)
+            self.assertIn("Git worktree boundary could not be established.", str(cm_unit2.exception))
+
+            with self.assertRaises(SecurityValidationError) as cm_unit3:
+                validate_backup_dir(corrupt_git_dir, cwd=repo_a)
+            self.assertIn("Git worktree boundary could not be established.", str(cm_unit3.exception))
+
+            # CLI-level route 1: PR mode
+            pr_hash = update_pr_body.compute_body_sha256(sample_pr_body)
+            mock_urlopen.return_value = MockHttpResponse({"number": 31, "body": sample_pr_body})
+
+            pr_args = [
+                "update_pr_body.py",
+                "--pr", "31",
+                "--body", sample_pr_body,
+                "--expected-base-hash", pr_hash,
+                "--backup-dir", str(target_backup_dir),
+                "--write",
+                "--token", "tok",
+            ]
+            with patch.object(sys, "argv", pr_args), \
+                 patch("sys.stdout", new_callable=io.StringIO) as mock_out, \
+                 patch("sys.stderr", new_callable=io.StringIO) as mock_err:
+                exit_code = update_pr_body.main()
+                self.assertEqual(exit_code, 1)
+                err = mock_err.getvalue()
+                self.assertIn("Git worktree boundary could not be established.", err)
+                self.assertNotIn("Traceback", err)
+
+            # Assert no backup directory or files created
+            self.assertFalse((repo_c / "nested").exists())
+            self.assertEqual(list(repo_c.glob("**/*.md")), [])
+
+            # Assert zero PATCH requests
+            for call in mock_urlopen.call_args_list:
+                req = call[0][0]
+                method = req.get_method() if hasattr(req, "get_method") else "GET"
+                self.assertNotEqual(method, "PATCH")
+
+            # Assert synthetic metadata preserved intact
+            self.assertEqual((corrupt_git_dir / "HEAD").read_text(encoding="utf-8"), head_content)
+
+            # CLI-level route 2: Issue mode
+            mock_urlopen.reset_mock()
+            issue_hash = update_pr_body.compute_body_sha256(sample_issue_body)
+            mock_urlopen.return_value = MockHttpResponse({"number": 42, "body": sample_issue_body})
+
+            append_file = base_dir / "append.md"
+            append_file.write_text(sample_append, encoding="utf-8")
+
+            issue_args = [
+                "update_pr_body.py",
+                "--issue", "42",
+                "--append-file", str(append_file),
+                "--expected-base-hash", issue_hash,
+                "--backup-dir", str(target_backup_dir),
+                "--write",
+                "--token", "tok",
+            ]
+            with patch.object(sys, "argv", issue_args), \
+                 patch("sys.stdout", new_callable=io.StringIO) as mock_out, \
+                 patch("sys.stderr", new_callable=io.StringIO) as mock_err:
+                exit_code = update_pr_body.main()
+                self.assertEqual(exit_code, 1)
+                err = mock_err.getvalue()
+                self.assertIn("Git worktree boundary could not be established.", err)
+                self.assertNotIn("Traceback", err)
+
+            # Assert no backup directory or files created
+            self.assertFalse((repo_c / "nested").exists())
+            self.assertEqual(list(repo_c.glob("**/*.md")), [])
+
+            # Assert zero PATCH requests
+            for call in mock_urlopen.call_args_list:
+                req = call[0][0]
+                method = req.get_method() if hasattr(req, "get_method") else "GET"
+                self.assertNotEqual(method, "PATCH")
+
+            # Assert synthetic metadata preserved intact
+            self.assertEqual((corrupt_git_dir / "HEAD").read_text(encoding="utf-8"), head_content)
+
+    def test_genuinely_external_directory_without_repository_markers_succeeds(self):
+        """
+        R1: An external directory with no repository markers in any ancestor
+        is verified as safe absence, accepted by validate_backup_dir, and successfully stores backups.
+        """
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            base_dir = Path(tmp_dir)
+            repo_a = base_dir / "repo_a"
+            repo_a.mkdir()
+            subprocess.run(["git", "init", "-q"], cwd=repo_a, check=True)
+
+            safe_external = base_dir / "safe_external_backups" / "nested"
+            validated = validate_backup_dir(safe_external, cwd=repo_a)
+            self.assertEqual(validated, base_dir.resolve() / "safe_external_backups" / "nested")
+
+            backup_file = create_prewrite_backup("issue", 42, "test issue body", backup_dir=safe_external, cwd=repo_a)
+            self.assertTrue(backup_file.is_file())
+            self.assertEqual(backup_file.parent, validated)
+            self.assertEqual(backup_file.read_text(encoding="utf-8"), "test issue body")
 
 
 if __name__ == "__main__":

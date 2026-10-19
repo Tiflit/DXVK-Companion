@@ -146,7 +146,27 @@ Following PR #189 first review commit `bbb85007c1fd6618f676aceea4f86d0fe3d3c58d`
 
 ---
 
-### 6. Allowed Paths Compliance
+### 6. R1 Correction: Bounded Repository-Marker Ancestor Inspection (Codex Comment 6279118271)
+
+Following the R2/R3 repair, Codex delta review ([comment 6279118271](https://github.com/Tiflit/DXVK-Companion/pull/189#issuecomment-6279118271)) identified that `is_inside_git_repository` previously accepted negative Git probe output (`returncode != 0 and 'not a git repository' in stderr`) as proof of safe non-repository absence. When pointing to a checkout with a broken `.git` pointer (e.g. `READ_GITFILE_ERR_NOT_A_REPO` in Git 2.55.0) or corrupted `.git` directory, Git produces that same diagnostic phrase, which allowed invalid repository metadata to be mistaken for absence. Addressed in-place:
+
+1. **Bounded Repository-Marker Ancestor Inspection (`has_git_repository_marker`)**:
+   - Implemented bounded ancestor inspection in `has_git_repository_marker(directory: Path)`: walks strictly up the destination ancestor chain (`[directory, *directory.parents]`) probing for `.git` entries (files, directories, or symlinks) or directories named `.git`.
+   - Fails closed as `SecurityValidationError("Git worktree boundary could not be established.")` on any filesystem access errors or permission denials.
+   - Negative Git probe outputs (`not a git repository`) are accepted as safe absence *only* when `has_git_repository_marker` confirms that zero repository markers exist in the ancestor chain. If repository-marker evidence is present but Git fails to establish a valid worktree/repository, the helper refuses and raises `SecurityValidationError("Git worktree boundary could not be established.")`.
+
+2. **Synthetic Broken Pointer & Corrupted Metadata Fixtures (`test_repository_hygiene.py`)**:
+   - Added `test_synthetic_broken_gitfile_pointer_fixture_refuses_backups_without_creation_or_patch`: tests synthetic checkout with `.git` pointer to missing gitdir storage. Asserts unit refusal, PR and Issue CLI route refusal with exit code 1, category-only error diagnostic, zero traceback, no backup directory/file creation, zero PATCH requests, and preserved synthetic metadata.
+   - Added `test_synthetic_corrupted_git_directory_fixture_refuses_backups_without_creation_or_patch`: tests synthetic checkout with corrupted `.git` directory and invalid HEAD. Asserts unit and CLI refusal across PR and Issue routes, zero PATCH, no creation, and preserved metadata.
+   - Added `test_genuinely_external_directory_without_repository_markers_succeeds`: verifies that genuinely external directories with no repository markers in their ancestry are accepted and successfully store pre-write backups.
+   - Updated `test_is_inside_git_repository_distinguishes_absence_from_query_failure` to test non-repository absence on clean directories without markers and assert fail-closed refusal when broken markers exist.
+
+3. **Documentation Alignment (`docs/ai/PRIVACY-HANDLING.md`)**:
+   - Updated Section 1 (Boundary Failure & Absence Verification) to declare that negative probe outputs require confirmation of absent repository markers in ancestry before accepting destinations as external.
+
+---
+
+### 7. Allowed Paths Compliance
 
 All modified and created files strictly match the declared `### Allowed paths` in Issue #183:
 1. `.gitignore`
@@ -160,8 +180,9 @@ No product code, project files, or unapproved paths were modified.
 
 ---
 
-### 7. Next Steps
+### 8. Next Steps
 
 1. Commit and push repair fixes to feature branch `feat/issue-183-workflow-backup-hygiene`.
 2. Monitor Cloud CI workflows across GitHub Actions (`AI Workflow Tests`, `AI task scope`, `PR hygiene`, `Build and Test`).
 3. Return new head SHA and verified passing test runs for Codex review; human performs final merge.
+

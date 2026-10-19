@@ -547,12 +547,46 @@ def anchor_and_resolve_backup_path(backup_dir: Path, cwd: Optional[Path] = None)
         raise SecurityValidationError("Backup destination path resolution failed.")
 
 
-def is_inside_git_repository(target: Path) -> bool:
+def has_git_repository_marker(directory: Path) -> bool:
     """
-    Probes whether target or its nearest existing directory ancestor is inside any Git repository.
-    Fails closed if the boundary query fails for reasons other than standard non-repository absence.
+    Checks whether directory or any of its ancestors contains repository-marker evidence
+    (.git file, directory, or symlink; or being inside a .git hierarchy).
+    Fails closed if filesystem inspection fails.
     """
     try:
+        check = directory
+        while True:
+            if check.name == ".git":
+                return True
+            git_entry = check / ".git"
+            try:
+                if git_entry.is_symlink() or git_entry.exists():
+                    return True
+            except Exception:
+                raise SecurityValidationError("Git worktree boundary could not be established.")
+
+            parent = check.parent
+            if parent == check:
+                break
+            check = parent
+        return False
+    except SecurityValidationError:
+        raise
+    except Exception:
+        raise SecurityValidationError("Git worktree boundary could not be established.")
+
+
+def is_inside_git_repository(target: Path, cwd: Optional[Path] = None) -> bool:
+    """
+    Probes whether target or its nearest existing directory ancestor is inside any Git repository.
+    Fails closed if repository-marker evidence exists but cannot be verified, or if the
+    boundary query fails for reasons other than established non-repository absence.
+    """
+    try:
+        if not target.is_absolute():
+            effective_cwd = cwd if cwd is not None else Path.cwd()
+            target = effective_cwd / target
+
         curr = target
         while not curr.exists() or not curr.is_dir():
             parent = curr.parent
@@ -566,6 +600,8 @@ def is_inside_git_repository(target: Path) -> bool:
         raise
     except Exception:
         raise SecurityValidationError("Git worktree boundary could not be established.")
+
+    marker_present = has_git_repository_marker(curr)
 
     try:
         proc = subprocess.run(
@@ -582,8 +618,10 @@ def is_inside_git_repository(target: Path) -> bool:
         if "true" in lines:
             return True
 
+    # Negative probe output is only accepted as safe non-repository absence when
+    # NO repository-marker evidence exists in any relevant ancestor of curr.
     stderr_lower = proc.stderr.lower()
-    if proc.returncode != 0 and "not a git repository" in stderr_lower:
+    if not marker_present and proc.returncode != 0 and "not a git repository" in stderr_lower:
         return False
 
     raise SecurityValidationError("Git worktree boundary could not be established.")
@@ -647,7 +685,7 @@ def validate_backup_dir(
                 "Backup destination must be strictly outside all Git checkouts and worktrees."
             )
 
-    if is_inside_git_repository(anchored_backup_path):
+    if is_inside_git_repository(anchored_backup_path, cwd=cwd):
         raise SecurityValidationError(
             "Backup destination must be strictly outside all Git checkouts and worktrees."
         )
