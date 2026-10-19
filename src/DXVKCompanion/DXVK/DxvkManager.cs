@@ -53,7 +53,10 @@ namespace DXVKCompanion.DXVK
             return CanAutomaticallyDeploy(installation);
         }
 
-        public void ClearCancelledState(GameInstallation installation)
+        public void ClearCancelledState(GameInstallation installation) =>
+            ClearCancelledState(installation, null);
+
+        internal void ClearCancelledState(GameInstallation installation, IOperationLease? storeLease)
         {
             if (installation.LastCancelledAction != null)
             {
@@ -66,7 +69,7 @@ namespace DXVKCompanion.DXVK
                 }
                 if (!_gameLibraryStore.HasUncertainPersistence)
                 {
-                    _gameLibraryStore.Save(installation);
+                    _gameLibraryStore.Save(installation, storeLease);
                 }
             }
         }
@@ -905,7 +908,7 @@ namespace DXVKCompanion.DXVK
 
                 if (installation != null)
                 {
-                    ClearCancelledState(installation);
+                    ClearCancelledState(installation, leaseToken.StoreLease);
                 }
 
                 string? effectiveTarget = !string.IsNullOrWhiteSpace(targetVersion)

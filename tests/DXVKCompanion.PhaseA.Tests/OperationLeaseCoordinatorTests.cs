@@ -208,7 +208,7 @@ public sealed class OperationLeaseCoordinatorTests
         var psi = new ProcessStartInfo
         {
             FileName = "powershell.exe",
-            Arguments = $"-NoProfile -NonInteractive -Command \"$f = [System.IO.File]::Open('{fullLockPath.Replace("'", "''")}', [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None); Start-Sleep -Milliseconds 1500; $f.Dispose()\"",
+            Arguments = $"-NoProfile -NonInteractive -Command \"$f = [System.IO.File]::Open('{fullLockPath.Replace("'", "''")}', [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None); [Console]::Out.WriteLine('LOCKED'); [Console]::Out.Flush(); Start-Sleep -Milliseconds 2000; $f.Dispose()\"",
             UseShellExecute = false,
             CreateNoWindow = true,
             RedirectStandardOutput = true,
@@ -221,8 +221,10 @@ public sealed class OperationLeaseCoordinatorTests
             helper = Process.Start(psi);
             Assert.NotNull(helper);
 
-            // Give helper brief window to acquire file lock
-            await Task.Delay(400);
+            // Wait for helper to confirm lock acquisition via stdout
+            using var readCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            string? signal = await helper.StandardOutput.ReadLineAsync(readCts.Token);
+            Assert.Equal("LOCKED", signal);
 
             // Parent attempt to acquire with 200 ms budget must time out and return null
             var sw = Stopwatch.StartNew();

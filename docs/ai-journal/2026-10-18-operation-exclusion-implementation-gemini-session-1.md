@@ -83,5 +83,10 @@
    - Updated PR #179 body using `scripts/ai-workflow/update_pr_body.py` with standard contract headers (`## Summary`, `## Scope`, `## Verification`, `## Documentation`).
 4. Committed repair (`f13d63a`) and pushed to branch `feat/issue-178-operation-exclusion-boundary`.
 5. Second CI run reported `Build Phase A tests` error: missing `processNameResolver` parameter on `ProcessActivityInspector`.
-6. Aligned `ProcessActivityInspector` constructor to include `Func<Process, string>? processNameResolver = null`, route process name queries through it when present, and fixed `DxvkManager` constructor nullability warnings.
-7. Committed and pushed updates to cloud CI.
+6. Aligned `ProcessActivityInspector` constructor to include `Func<Process, string>? processNameResolver = null`, route process name queries through it when present, and fixed `DxvkManager` constructor nullability warnings (`f828641`).
+7. Third CI run reported 3 test failures out of 927 tests:
+   - `InterProcessLocking_OwnedCloudHelper_ExcludesParentDuringHold`: Cold-start timing on GitHub runner caused parent check before child helper started locking. Resolved by synchronizing helper lock via stdout (`LOCKED`) signal before parent timeout assertion.
+   - `UnresolvedEngineRecovery_OnManagedInstallationWithWritableStore_PersistsAttentionRequiredAndLastRefusalReason`: `DxvkInstaller.TrySaveHealthAfterFailedCompensation` did not receive `leaseToken.StoreLease`, causing non-reentrant lease re-acquisition to time out. Resolved by passing held store lease in `ApplyToGameAsync` and `ReapplyAsync`.
+   - `DxvkManager_ApplyPendingAsync_And_ProcessAllPendingActionsAsync_BlocksExecutionForUnsupportedApis`: `DxvkManager.ClearCancelledState` inside `EnableDxvkAsync` did not receive `leaseToken.StoreLease`, causing non-reentrant lock timeout on `GameLibraryStore.Save`. Resolved by adding `ClearCancelledState(installation, storeLease)` overload and passing `leaseToken.StoreLease`.
+8. Committed repairs and pushed to branch `feat/issue-178-operation-exclusion-boundary`.
+9. Monitoring cloud CI.

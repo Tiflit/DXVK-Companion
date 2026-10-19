@@ -496,7 +496,7 @@ namespace DXVKCompanion.DXVK
 
                         byte[]? expectedPreWriteBytes = saveCallbackInvoked ? lastSaveResult.PreWriteBytes : preOperationLibraryBytes;
                         bool expectedPreWriteExisted = saveCallbackInvoked ? lastSaveResult.PreWriteExisted : preOperationLibraryExisted;
-                        _gameLibraryStore.TrySaveHealthAfterFailedCompensation(installation, expectedPreWriteBytes, expectedPreWriteExisted);
+                        _gameLibraryStore.TrySaveHealthAfterFailedCompensation(installation, expectedPreWriteBytes, expectedPreWriteExisted, leaseToken.StoreLease);
 
                         installation.RestorationState = RestorationState.AttentionRequired;
                         installation.LastRefusalReason = failureMessage;
@@ -1004,7 +1004,7 @@ namespace DXVKCompanion.DXVK
 
                         byte[]? expectedPreWriteBytes = saveCallbackInvoked ? lastSaveResult.PreWriteBytes : preOperationLibraryBytes;
                         bool expectedPreWriteExisted = saveCallbackInvoked ? lastSaveResult.PreWriteExisted : preOperationLibraryExisted;
-                        _gameLibraryStore.TrySaveHealthAfterFailedCompensation(installation, expectedPreWriteBytes, expectedPreWriteExisted);
+                        _gameLibraryStore.TrySaveHealthAfterFailedCompensation(installation, expectedPreWriteBytes, expectedPreWriteExisted, leaseToken.StoreLease);
 
                         installation.RestorationState = RestorationState.AttentionRequired;
                         installation.LastRefusalReason = failureMessage;
