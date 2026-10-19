@@ -775,6 +775,21 @@ class TestDashboardGenerator(unittest.TestCase):
         self.assertNotIn(r"/home/", sanitized)
         self.assertIn("[REDACTED_PATH]", sanitized)
 
+    def test_dashboard_sanitizer_preserves_generic_dev_paths(self):
+        """Preserves safe generic dev and program paths while redacting personal paths."""
+        text = r"Tested in D:\dev\DXVK-Companion with C:\Program Files\Git"
+        sanitized = update_dashboard.sanitize_display_text(text)
+        self.assertIn(r"D:\dev\DXVK-Companion", sanitized)
+        self.assertIn(r"C:\Program Files\Git", sanitized)
+
+    def test_dashboard_sanitizer_redacts_concrete_unc_paths(self):
+        """Redacts concrete UNC paths while preserving generic placeholder hosts."""
+        text = r"Share at \\nas01\share vs \\server\share"
+        sanitized = update_dashboard.sanitize_display_text(text)
+        self.assertNotIn("nas01", sanitized)
+        self.assertIn(r"[REDACTED_PATH]", sanitized)
+        self.assertIn(r"\\server\share", sanitized)
+
     def test_workflow_yaml_structure_and_least_privilege(self):
         """
         Validates workflow YAML structure, concurrency, separate jobs, and least privilege.

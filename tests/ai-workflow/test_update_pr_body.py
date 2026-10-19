@@ -221,6 +221,33 @@ class TestUpdatePrBody(unittest.TestCase):
         violations = scan_for_privacy_violations(text)
         self.assertEqual(len(violations), 0)
 
+    def test_privacy_scan_detects_wsl_home_path(self):
+        text = "File at /mnt/c/Users/developer/file.cs"
+        violations = scan_for_privacy_violations(text)
+        self.assertEqual(len(violations), 1)
+        self.assertEqual(violations[0][1], "WSL personal-home path")
+
+    def test_privacy_scan_detects_concrete_unc_paths(self):
+        text = r"Share mounted at \\nas01\share\sub\data.bin"
+        violations = scan_for_privacy_violations(text)
+        self.assertEqual(len(violations), 1)
+        self.assertEqual(violations[0][1], "UNC / network path")
+
+    def test_privacy_scan_preserves_generic_unc_placeholders(self):
+        text = r"Example: \\server\share\file or \\localhost\data"
+        violations = scan_for_privacy_violations(text)
+        self.assertEqual(len(violations), 0)
+
+    def test_privacy_scan_and_redaction_for_paths_with_spaces(self):
+        text = r"Error at C:\Users\Example Person\Projects\DXVK\file.txt on line 5"
+        violations = scan_for_privacy_violations(text)
+        self.assertEqual(len(violations), 1)
+        self.assertEqual(violations[0][1], "Windows personal-home path")
+        sanitized = sanitize_privacy_text(text)
+        self.assertNotIn("Example", sanitized)
+        self.assertNotIn("Person", sanitized)
+        self.assertIn("[REDACTED_PATH]", sanitized)
+
     # =========================================================================
     # 3. PR Review Preservation & Modifications (Existing Regressions)
     # =========================================================================

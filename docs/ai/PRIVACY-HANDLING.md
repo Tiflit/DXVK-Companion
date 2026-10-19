@@ -44,13 +44,31 @@ The repository `.gitignore` provides targeted exclusions:
 
 ---
 
-## 3. Privacy Detection & Redaction
+## 3. Shared Privacy Guard & Redaction Architecture
 
-The workflow helper incorporates fail-closed scanners and redaction filters:
-- **Home Directory Scanners:** Detect Windows personal directory paths (`C:\Users\<user>\...` or `C:/Users/...`) and POSIX personal directory paths (`/home/<user>/...` or `/Users/<user>/...`).
-- **Fail-Closed Pre-Write Checks:** Proposed PR bodies, candidate Issue append records, and final mutation payloads are strictly scanned for sensitive personal paths and credentials before remote dispatch; if sensitive data is detected in the candidate content, the helper immediately aborts. When previewing updates against an existing remote target that contains sensitive data (such as a dirty remote PR body), the helper does not abort clean-replacement candidates, but instead redacts sensitive paths and tokens line-by-line in the diff preview (`sanitize_diff_line`) so contaminated remote lines appear as `-[REDACTED_PATH]` without leaking private data.
-- **Diagnostic Sanitization & Fixed Category Errors:** Error diagnostics use fixed category-only error strings without echoing raw Git stderr, exception text, or environment paths. Backup confirmation displays use a fixed basename format (`[REDACTED_PATH]/<filename>`) to prevent leaking personal paths or usernames with spaces (e.g. `C:\Users\Example Person\`).
+All automated publishing and workflow tooling route privacy detection, diagnostics, and display redaction through a single standard-library-only module: `scripts/ai-workflow/privacy_guard.py`.
+
+### Design & Environment Purity
+- **Standard Library Only:** Zero external packages. Imports are strictly limited to `re`, `pathlib`, `typing`, and `__future__`.
+- **Zero Side-Effects:** Zero network access, zero subprocess execution, zero environment identity probing (`os.environ.get("USER")`, etc.), and zero private-data reads upon import or execution.
+- **Separate Detection & Redaction:** Exposes distinct scanning (`scan_for_privacy_violations`, `is_privacy_sensitive_text`) and safe redaction (`redact_privacy_text`, `sanitize_display_text`, `sanitize_diff_line`, `sanitize_diagnostic`).
+
+### Path Families & Credential Coverage
+The privacy guard recognizes and filters:
+- **Windows Personal-Home Paths:** Detects Windows user profiles (`C:\Users\<user>\...`, `C:\Documents and Settings\<user>\...`, and `/Users/<user>/...`) across slash variants (`\`, `/`, `\\`), casing, and punctuation prefixes (equals `path=`, colons `setting:`, brackets `[...]`, parentheses `(...)`, angles `<...>`, braces `{...}`, and quotes `""`, `''`, `` ` ``).
+- **WSL Home Paths:** Detects WSL mapped Windows user directories (`/mnt/<drive>/Users/...` and `/mnt/<drive>/Documents and Settings/...`).
+- **POSIX Home Paths:** Detects Unix and macOS personal user directories (`/home/<user>/...` and `/Users/<user>/...`).
+- **Paths with Spaces & Full Names:** Full usernames and directories containing spaces (e.g. `C:\Users\Example Person\...` or `C:\Users\John Doe\AppData\...`) are redacted completely without leaking suffix tokens (such as `"Person"` or `"Doe"`) into output or error diagnostics.
+- **Bounded UNC / Network Share Handling:** Concrete host and share identifiers (e.g. `\\nas01\share`, `//server02/share`, `\\corp.internal\storage`) are redacted to `[REDACTED_PATH]`. Generic documentation and placeholder hosts (`server`, `host`, `example`, `placeholder`, `localhost`, `127.0.0.1`) are preserved.
+- **Credentials & Tokens:** Scans and redacts GitHub personal access tokens (`ghp_`, `github_pat_`), OAuth tokens (`gho_`), user/server tokens (`ghu_`, `ghs_`, `ghr_`), and HTTP `Bearer` tokens to `[REDACTED_TOKEN]`. URL query parameters are redacted to `?[REDACTED_QUERY]`.
+- **Preserved Safe Paths:** Safe generic development paths (`D:\dev\DXVK-Companion`, `C:\dev\...`), program directories (`C:\Program Files\...`), game installations (`C:\Games\...`), repository-relative paths, and standard placeholders (`[REDACTED_PATH]`, `<redacted-filename>`) are explicitly preserved.
+
+### Consumer Integration & Redaction Precedence
+Both consumers (`scripts/ai-workflow/update_pr_body.py` and `scripts/ai-workflow/update_dashboard.py`) route all privacy handling through `privacy_guard.py`:
+- **Redaction Precedes Truncation:** In `sanitize_display_text`, privacy redaction executes strictly **before** display length truncation. This prevents exposing trailing username tokens or directory fragments cut mid-path at truncation boundaries.
 - **Diff Preview Redaction:** Unified-diff previews are sanitized line-by-line (`sanitize_diff_line`) so personal paths or tokens present in dirty remote bodies are safely redacted without corrupting unified-diff structural indicators (`+`, `-`, ` `).
+- **Diagnostics & Backup Confirmation:** Error diagnostics use fixed category-only error strings without echoing sensitive path text. Backup confirmation displays use a fixed basename format (`[REDACTED_PATH]/<filename>`).
+- **Preservation of Core Protections:** Consumer adoption of `privacy_guard.py` does not weaken any existing backup, collision preservation, expected-body hash validation, or readback verification guarantees.
 
 ---
 

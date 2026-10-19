@@ -17,6 +17,17 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+try:
+    from .privacy_guard import (
+        sanitize_diagnostic as _pg_sanitize_diagnostic,
+        sanitize_display_text as _pg_sanitize_display_text,
+    )
+except ImportError:
+    from privacy_guard import (
+        sanitize_diagnostic as _pg_sanitize_diagnostic,
+        sanitize_display_text as _pg_sanitize_display_text,
+    )
+
 DASHBOARD_TITLE = "[AI Dashboard] Current Repository State & Handoff Orientation"
 DASHBOARD_MARKER = "<!-- AI-DASHBOARD-MARKER: v1 -->"
 DASHBOARD_BOT_LOGIN = "github-actions[bot]"
@@ -107,52 +118,16 @@ def sanitize_display_text(text: Optional[str], max_len: int = 100) -> str:
     Sanitizes untrusted display text for safe inclusion in Markdown and tables.
     Redacts full local paths, usernames, auth tokens, removes markdown link injection,
     strips HTML/backticks, escapes table pipes, and bounds length.
+    Delegates to shared privacy_guard.
     """
-    if not text:
-        return ""
-
-    sanitized = re.sub(r"[\r\n\t]+", " ", str(text))
-
-    # Strip HTML tags
-    sanitized = re.sub(r"<[^>]+>", "", sanitized)
-
-    # Strip Markdown link syntax: [title](url) -> title
-    sanitized = re.sub(r"\[([^\]]+)\]\([^\)]+\)", r"\1", sanitized)
-
-    # Strip backticks
-    sanitized = sanitized.replace("`", "")
-
-    # Redact full local Windows drive paths: C:\Users\... or D:\dev\...
-    sanitized = re.sub(r"[A-Za-z]:\\[^:\r\n\t|<>\"`]+", "[REDACTED_PATH]", sanitized)
-
-    # Redact full Unix paths: /home/... or /Users/...
-    sanitized = re.sub(r"/(?:home|Users)/[^/\s]+(?:/[^\s]*)?", "[REDACTED_PATH]", sanitized)
-
-    # Redact tokens (ghp_, github_pat_, Bearer ...)
-    sanitized = re.sub(r"(?:ghp_|github_pat_|bearer\s+)[A-Za-z0-9_]+", "[REDACTED_TOKEN]", sanitized, flags=re.I)
-
-    # Escape Markdown table pipes
-    sanitized = sanitized.replace("|", "/")
-
-    # Collapse consecutive whitespace
-    sanitized = re.sub(r"\s+", " ", sanitized).strip()
-
-    if len(sanitized) > max_len:
-        sanitized = sanitized[: max_len - 3].rstrip() + "..."
-
-    return sanitized
+    return _pg_sanitize_display_text(text, max_len=max_len)
 
 
 def sanitize_diagnostic(msg: str) -> str:
-    """Sanitizes diagnostic and error messages to prevent leaking paths, tokens, or raw queries."""
-    if not msg:
-        return ""
-    clean = re.sub(r"[A-Za-z]:\\[^:\r\n\t|<>\"`]+", "[REDACTED_PATH]", str(msg))
-    clean = re.sub(r"/(?:home|Users)/[^/\s]+(?:/[^\s]*)?", "[REDACTED_PATH]", clean)
-    clean = re.sub(r"(?:ghp_|github_pat_|bearer\s+)[A-Za-z0-9_]+", "[REDACTED_TOKEN]", clean, flags=re.I)
-    clean = re.sub(r"\?[\w=&-]+", "?[REDACTED_QUERY]", clean)
-    return clean.strip()
-
+    """Sanitizes diagnostic and error messages to prevent leaking paths, tokens, or raw queries.
+    Delegates to shared privacy_guard.
+    """
+    return _pg_sanitize_diagnostic(msg)
 
 def count_words_excluding_urls(text: str) -> int:
     """Counts whitespace-separated words excluding URLs and Markdown formatting symbols."""
