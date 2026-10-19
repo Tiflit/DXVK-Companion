@@ -368,6 +368,10 @@ namespace DXVKCompanion.DXVK
 
                 return false;
             }
+            catch (ArgumentException)
+            {
+                throw;
+            }
             catch (Exception ex)
             {
                 var reason = $"Unexpected error restoring {profile.ExeName}: {ex.GetType().Name} - {ex.Message}";

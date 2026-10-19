@@ -606,6 +606,10 @@ namespace DXVKCompanion.DXVK
                 Logger.Log($"DxvkInstaller: transaction failed ({result.State}/{result.Outcome}): {failureMessage}");
                 return false;
             }
+            catch (ArgumentException)
+            {
+                throw;
+            }
             catch (Exception ex)
             {
                 LastRefusalReason = $"Unexpected error applying DXVK to {profile.ExeName}: {ex.GetType().Name} - {ex.Message}";
@@ -1140,6 +1144,10 @@ namespace DXVKCompanion.DXVK
                 Logger.Log($"DxvkInstaller: reapply transaction failed ({result.State}/{result.Outcome}): {failureMessage}");
                 return false;
             }
+            catch (ArgumentException)
+            {
+                throw;
+            }
             catch (Exception ex)
             {
                 LastRefusalReason = $"Unexpected error reapplying DXVK to {profile.ExeName}: {ex.GetType().Name} - {ex.Message}";
@@ -1379,6 +1387,10 @@ namespace DXVKCompanion.DXVK
 
                 Logger.Log($"DxvkInstaller: adoption persistence failed ({saveResult.Outcome}): {LastRefusalReason}");
                 return false;
+            }
+            catch (ArgumentException)
+            {
+                throw;
             }
             catch (Exception ex)
             {

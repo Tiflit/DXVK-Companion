@@ -723,7 +723,7 @@ public sealed class ProcessActivityBoundaryTests
         using var exclusiveLock = new FileStream(profilesPath, FileMode.Create, FileAccess.ReadWrite, FileShare.None);
 
         var profileStore = new ProfileStore(profilesPath) { LeaseCoordinator = coordinator };
-        var profile = profileStore.GetOrCreate("C:\\games\\game.exe");
+        var profile = new GameProfile("C:\\games\\game.exe");
 
         // TryCheckCanModifyProfileStore must report broken load diagnostic refusal
         bool canModify = profileStore.TryCheckCanModifyProfileStore(out var refusalReason);

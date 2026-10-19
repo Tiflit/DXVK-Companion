@@ -306,12 +306,23 @@ namespace DXVKCompanion.DXVK
         public bool UpdateAvailable(GameProfile profile, ReleaseInfo? latest = null)
         {
             var installation = ResolveInstallation(profile.ExePath);
-            using var storeLease = LeaseCoordinator.TryAcquireStoreLease(
-                _gameLibraryStore.LibraryFilePath,
-                TimeSpan.FromMilliseconds(500));
-            if (storeLease != null && storeLease.IsAcquired && !storeLease.IsDisposed)
+            string authoritativeRoot = OperationResourceIdentity.ResolveAuthoritativeInstallationRoot(installation?.InstallationPath, profile.ExePath);
+            if (!string.IsNullOrWhiteSpace(authoritativeRoot))
             {
-                ReassessEffectiveApi(installation, profile, storeLease);
+                var storePaths = new List<string> { _gameLibraryStore.LibraryFilePath };
+                if (!string.IsNullOrWhiteSpace(_profiles.ProfilesFile))
+                {
+                    storePaths.Add(_profiles.ProfilesFile);
+                }
+
+                using var scopeLease = LeaseCoordinator.TryAcquireOperationScope(
+                    authoritativeRoot,
+                    storePaths,
+                    TimeSpan.FromMilliseconds(500));
+                if (scopeLease != null && scopeLease.IsAcquired && !scopeLease.IsDisposed)
+                {
+                    ReassessEffectiveApi(installation, profile, scopeLease.StoreLease ?? scopeLease);
+                }
             }
 
             if (!DxvkCompatibility.IsDxvkSupported(profile.Api))
