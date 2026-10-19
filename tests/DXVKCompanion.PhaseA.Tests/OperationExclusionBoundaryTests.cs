@@ -25,10 +25,10 @@ public sealed class OperationExclusionBoundaryTests
     [Fact]
     public async Task OverlappingOperations_SameInstallation_RollbackUndoingCommittedBytes_MustBeExcluded()
     {
-        using var gameDir = new SyntheticTestDirectory();
-        using var storageDir = new SyntheticTestDirectory();
-        using var sourceDir = new SyntheticTestDirectory();
-        using var coordDir = new SyntheticTestDirectory();
+        var gameDir = new SyntheticTestDirectory();
+        var storageDir = new SyntheticTestDirectory();
+        var sourceDir = new SyntheticTestDirectory();
+        var coordDir = new SyntheticTestDirectory();
 
         var coordinator = new OperationLeaseCoordinator(coordDir.RootPath);
 
@@ -108,6 +108,9 @@ public sealed class OperationExclusionBoundaryTests
         bool op2Result = false;
         bool op1Result = true;
 
+        Exception? primaryEx = null;
+        bool incompleteCleanup = false;
+
         try
         {
             // 3. Launch Operation 1 (Update to 2.6) in background
@@ -122,13 +125,46 @@ public sealed class OperationExclusionBoundaryTests
             var op2Completed = await Task.WhenAny(op2Task, Task.Delay(testTimeout));
             Assert.True(op2Completed == op2Task, "Operation 2 timed out during execution.");
             op2Result = await op2Task;
+
+            // Wait for Operation 1 to complete its failure/rollback
+            var op1Completed = await Task.WhenAny(op1Task, Task.Delay(testTimeout));
+            Assert.True(op1Completed == op1Task, "Operation 1 timed out during execution.");
+            op1Result = await op1Task;
+
+            // Verify Operation 1 failed and handled the deliberate injected fault
+            Assert.False(op1Result);
+            Assert.NotNull(installer1.LastRefusalReason);
+            Assert.Contains("Simulated fault", installer1.LastRefusalReason);
+
+            // Intended Safe Invariant:
+            // 1. Operation 2 must be refused at the lease boundary while Operation 1 is in-flight.
+            Assert.False(op2Result, "Overlapping operation on the same installation root must be refused while another operation holds the exclusion boundary.");
+            Assert.NotNull(installer2.LastRefusalReason);
+            Assert.Contains("in progress", installer2.LastRefusalReason, StringComparison.OrdinalIgnoreCase);
+
+            // 2. Because Operation 2 is refused, Operation 1's safe rollback restores the installation to its pre-operation 2.5 baseline.
+            Assert.Equal("dxvk-2.5-d3d11", File.ReadAllText(d3d11Path));
+            Assert.Equal("dxvk-2.5-dxgi", File.ReadAllText(Path.Combine(gameDir.RootPath, "dxgi.dll")));
+
+            // 3. Reloaded store state confirms the installation remains at 2.5 with its native backup intact and uncorrupted.
+            var reloadedStore = new GameLibraryStore(storePath, backupsPath);
+            var reloadedInst = reloadedStore.FindByInstallationPath(gameDir.RootPath);
+            Assert.NotNull(reloadedInst);
+            Assert.Equal("2.5", reloadedInst.ManagedDxvkVersion);
+            Assert.Equal(RestorationState.Managed, reloadedInst.RestorationState);
+            Assert.True(File.Exists(nativeBackupFile), "Native backup file must remain preserved after rollback.");
+            Assert.Equal("native-original-d3d11", File.ReadAllText(nativeBackupFile));
+        }
+        catch (Exception ex)
+        {
+            primaryEx = ex;
+            throw;
         }
         finally
         {
             // Guaranteed barrier release and bounded task draining inside finally to prevent orphaned work on disposed directories
             op2Finished.TrySetResult(true);
-            Exception? cleanupEx2 = null;
-            Exception? cleanupEx1 = null;
+            var cleanupExceptions = new List<Exception>();
 
             if (op2Task != null)
             {
@@ -137,16 +173,13 @@ public sealed class OperationExclusionBoundaryTests
                     var completed2 = await Task.WhenAny(op2Task, Task.Delay(testTimeout));
                     if (completed2 != op2Task)
                     {
-                        cleanupEx2 = new TimeoutException("Operation 2 task failed to drain within timeout.");
-                    }
-                    else
-                    {
-                        op2Result = await op2Task;
+                        incompleteCleanup = true;
+                        cleanupExceptions.Add(new TimeoutException("Operation 2 task failed to drain within timeout."));
                     }
                 }
                 catch (Exception ex)
                 {
-                    cleanupEx2 = ex;
+                    cleanupExceptions.Add(ex);
                 }
             }
 
@@ -157,51 +190,33 @@ public sealed class OperationExclusionBoundaryTests
                     var completed1 = await Task.WhenAny(op1Task, Task.Delay(testTimeout));
                     if (completed1 != op1Task)
                     {
-                        cleanupEx1 = new TimeoutException("Operation 1 task failed to drain within timeout.");
-                    }
-                    else
-                    {
-                        op1Result = await op1Task;
+                        incompleteCleanup = true;
+                        cleanupExceptions.Add(new TimeoutException("Operation 1 task failed to drain within timeout."));
                     }
                 }
                 catch (Exception ex)
                 {
-                    cleanupEx1 = ex;
+                    cleanupExceptions.Add(ex);
                 }
             }
 
-            if (cleanupEx2 != null || cleanupEx1 != null)
+            if (!incompleteCleanup)
             {
-                var exceptions = new List<Exception>();
-                if (cleanupEx2 != null) exceptions.Add(cleanupEx2);
-                if (cleanupEx1 != null) exceptions.Add(cleanupEx1);
-                throw new AggregateException("Overlap test cleanup failed to drain tasks.", exceptions);
+                gameDir.Dispose();
+                storageDir.Dispose();
+                sourceDir.Dispose();
+                coordDir.Dispose();
+            }
+
+            if (cleanupExceptions.Count > 0)
+            {
+                if (primaryEx != null)
+                {
+                    throw new AggregateException("Primary test failure accompanied by cleanup failures.", new[] { primaryEx }.Concat(cleanupExceptions));
+                }
+                throw new AggregateException("Overlap test cleanup failed to drain tasks.", cleanupExceptions);
             }
         }
-
-        // Verify Operation 1 failed and handled the deliberate injected fault
-        Assert.False(op1Result);
-        Assert.NotNull(installer1.LastRefusalReason);
-        Assert.Contains("Simulated fault", installer1.LastRefusalReason);
-
-        // Intended Safe Invariant:
-        // 1. Operation 2 must be refused at the lease boundary while Operation 1 is in-flight.
-        Assert.False(op2Result, "Overlapping operation on the same installation root must be refused while another operation holds the exclusion boundary.");
-        Assert.NotNull(installer2.LastRefusalReason);
-        Assert.Contains("in progress", installer2.LastRefusalReason, StringComparison.OrdinalIgnoreCase);
-
-        // 2. Because Operation 2 is refused, Operation 1's safe rollback restores the installation to its pre-operation 2.5 baseline.
-        Assert.Equal("dxvk-2.5-d3d11", File.ReadAllText(d3d11Path));
-        Assert.Equal("dxvk-2.5-dxgi", File.ReadAllText(Path.Combine(gameDir.RootPath, "dxgi.dll")));
-
-        // 3. Reloaded store state confirms the installation remains at 2.5 with its native backup intact and uncorrupted.
-        var reloadedStore = new GameLibraryStore(storePath, backupsPath);
-        var reloadedInst = reloadedStore.FindByInstallationPath(gameDir.RootPath);
-        Assert.NotNull(reloadedInst);
-        Assert.Equal("2.5", reloadedInst.ManagedDxvkVersion);
-        Assert.Equal(RestorationState.Managed, reloadedInst.RestorationState);
-        Assert.True(File.Exists(nativeBackupFile), "Native backup file must remain preserved after rollback.");
-        Assert.Equal("native-original-d3d11", File.ReadAllText(nativeBackupFile));
     }
 
     [Fact]
@@ -453,12 +468,12 @@ public sealed class OperationExclusionBoundaryTests
     [Fact]
     public async Task OverlappingOperations_IndependentInstallations_ProceedConcurrentlyWithoutMutualInterference()
     {
-        using var gameDir1 = new SyntheticTestDirectory();
-        using var gameDir2 = new SyntheticTestDirectory();
-        using var storageDir1 = new SyntheticTestDirectory();
-        using var storageDir2 = new SyntheticTestDirectory();
-        using var sourceDir = new SyntheticTestDirectory();
-        using var coordDir = new SyntheticTestDirectory();
+        var gameDir1 = new SyntheticTestDirectory();
+        var gameDir2 = new SyntheticTestDirectory();
+        var storageDir1 = new SyntheticTestDirectory();
+        var storageDir2 = new SyntheticTestDirectory();
+        var sourceDir = new SyntheticTestDirectory();
+        var coordDir = new SyntheticTestDirectory();
 
         var coordinator = new OperationLeaseCoordinator(coordDir.RootPath);
 
@@ -527,6 +542,9 @@ public sealed class OperationExclusionBoundaryTests
 
         Task<bool>? task1 = null;
         Task<bool>? task2 = null;
+        Exception? primaryEx = null;
+        bool incompleteCleanup = false;
+
         try
         {
             // Act: Run both independent installs concurrently
@@ -544,12 +562,25 @@ public sealed class OperationExclusionBoundaryTests
             var allTasks = Task.WhenAll(task1, task2);
             var completed = await Task.WhenAny(allTasks, Task.Delay(testTimeout));
             Assert.Same(allTasks, completed);
+
+            // Assert: Both succeed independently without mutual interference
+            Assert.NotNull(task1);
+            Assert.NotNull(task2);
+            Assert.True(await task1);
+            Assert.True(await task2);
+
+            Assert.Equal("dxvk-2.5-d3d11", File.ReadAllText(Path.Combine(gameDir1.RootPath, "d3d11.dll")));
+            Assert.Equal("dxvk-2.6-d3d11", File.ReadAllText(Path.Combine(gameDir2.RootPath, "d3d11.dll")));
+        }
+        catch (Exception ex)
+        {
+            primaryEx = ex;
+            throw;
         }
         finally
         {
             testFinished.TrySetResult(true);
-            Exception? drainEx1 = null;
-            Exception? drainEx2 = null;
+            var cleanupExceptions = new List<Exception>();
 
             if (task1 != null)
             {
@@ -558,12 +589,13 @@ public sealed class OperationExclusionBoundaryTests
                     var drain1 = await Task.WhenAny(task1, Task.Delay(TimeSpan.FromSeconds(5)));
                     if (drain1 != task1)
                     {
-                        drainEx1 = new TimeoutException("Task 1 failed to drain within 5s.");
+                        incompleteCleanup = true;
+                        cleanupExceptions.Add(new TimeoutException("Task 1 failed to drain within 5s."));
                     }
                 }
                 catch (Exception ex)
                 {
-                    drainEx1 = ex;
+                    cleanupExceptions.Add(ex);
                 }
             }
 
@@ -574,32 +606,35 @@ public sealed class OperationExclusionBoundaryTests
                     var drain2 = await Task.WhenAny(task2, Task.Delay(TimeSpan.FromSeconds(5)));
                     if (drain2 != task2)
                     {
-                        drainEx2 = new TimeoutException("Task 2 failed to drain within 5s.");
+                        incompleteCleanup = true;
+                        cleanupExceptions.Add(new TimeoutException("Task 2 failed to drain within 5s."));
                     }
                 }
                 catch (Exception ex)
                 {
-                    drainEx2 = ex;
+                    cleanupExceptions.Add(ex);
                 }
             }
 
-            if (drainEx1 != null || drainEx2 != null)
+            if (!incompleteCleanup)
             {
-                var exceptions = new List<Exception>();
-                if (drainEx1 != null) exceptions.Add(drainEx1);
-                if (drainEx2 != null) exceptions.Add(drainEx2);
-                throw new AggregateException("Independent operations cleanup failed to drain tasks.", exceptions);
+                gameDir1.Dispose();
+                gameDir2.Dispose();
+                storageDir1.Dispose();
+                storageDir2.Dispose();
+                sourceDir.Dispose();
+                coordDir.Dispose();
+            }
+
+            if (cleanupExceptions.Count > 0)
+            {
+                if (primaryEx != null)
+                {
+                    throw new AggregateException("Primary test failure accompanied by cleanup failures.", new[] { primaryEx }.Concat(cleanupExceptions));
+                }
+                throw new AggregateException("Independent operations cleanup failed to drain tasks.", cleanupExceptions);
             }
         }
-
-        // Assert: Both succeed independently without mutual interference
-        Assert.NotNull(task1);
-        Assert.NotNull(task2);
-        Assert.True(await task1);
-        Assert.True(await task2);
-
-        Assert.Equal("dxvk-2.5-d3d11", File.ReadAllText(Path.Combine(gameDir1.RootPath, "d3d11.dll")));
-        Assert.Equal("dxvk-2.6-d3d11", File.ReadAllText(Path.Combine(gameDir2.RootPath, "d3d11.dll")));
     }
 
     [Fact]
@@ -1112,4 +1147,195 @@ public sealed class OperationExclusionBoundaryTests
         // Act & Assert: Must throw ArgumentException for incomplete scope
         Assert.Throws<ArgumentException>(() => installer.AdoptExisting(profile, assessment, incompleteScope));
     }
+
+    [Fact]
+    public void ManagedFileInspector_WhenDllReadFailsAndSaveOutcomeUnknown_RetainsUncertainPersistenceAndAttention()
+    {
+        using var tempDir = new SyntheticTestDirectory();
+        using var coordDir = new SyntheticTestDirectory();
+
+        var coordinator = new OperationLeaseCoordinator(coordDir.RootPath);
+        var storePath = Path.Combine(tempDir.RootPath, "game-library.json");
+        var backupsPath = Path.Combine(tempDir.RootPath, "backups");
+        Directory.CreateDirectory(backupsPath);
+
+        var libraryStore = new GameLibraryStore(storePath, backupsPath) { LeaseCoordinator = coordinator };
+
+        var gameDir = Path.Combine(tempDir.RootPath, "Game");
+        Directory.CreateDirectory(gameDir);
+        var d3d11Path = Path.Combine(gameDir, "d3d11.dll");
+        File.WriteAllText(d3d11Path, "managed-content");
+
+        var installation = libraryStore.GetOrCreateInstallation(gameDir, "Game");
+        installation.RestorationState = RestorationState.Managed;
+        installation.ManagedDxvkVersion = "2.5";
+        installation.ManagedFiles.Add(new ManagedFileRecord
+        {
+            RelativePath = "d3d11.dll",
+            ExpectedManagedSha256 = new string('a', 64),
+            ManagedDxvkVersion = "2.5"
+        });
+        libraryStore.Save(installation);
+
+        // Lock d3d11.dll exclusively so InspectInstallationUnderLease throws an IOException while reading it
+        using var exclusiveTargetFile = new FileStream(d3d11Path, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+
+        // Configure CustomCommitReplace to write corrupt/mismatched data and throw an IOException,
+        // resulting in an OwnershipPersistenceOutcome.Unknown during the inspector's catch-block save.
+        libraryStore.CustomCommitReplace = (tempPath, destPath) =>
+        {
+            File.WriteAllText(destPath, "{ corrupt json }");
+            throw new IOException("Simulated disk error during commit replace.");
+        };
+
+        try
+        {
+            var inspector = new ManagedFileInspector(libraryStore);
+
+            // Act: inspector runs, catches inspection exception on locked d3d11.dll, attempts to save
+            // AttentionRequired + inspection refusal, but save encounters an Unknown outcome.
+            inspector.InspectAll();
+
+            // Assert: HasUncertainPersistence is latched on store, live installation retains AttentionRequired
+            // and the uncertainty refusal reason, NOT the original Managed state or null refusal reason.
+            Assert.True(libraryStore.HasUncertainPersistence);
+            Assert.Equal(RestorationState.AttentionRequired, installation.RestorationState);
+            Assert.NotNull(installation.LastRefusalReason);
+            Assert.Contains("outcome is unknown", installation.LastRefusalReason, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            libraryStore.CustomCommitReplace = null;
+        }
+    }
+
+    [Fact]
+    public void DxvkManager_ClearCancelledState_WhenSaveOutcomeUnknown_RetainsUncertainPersistenceAndAttention()
+    {
+        using var tempDir = new SyntheticTestDirectory();
+        using var coordDir = new SyntheticTestDirectory();
+
+        var coordinator = new OperationLeaseCoordinator(coordDir.RootPath);
+        var storePath = Path.Combine(tempDir.RootPath, "game-library.json");
+        var backupsPath = Path.Combine(tempDir.RootPath, "backups");
+        var profilesPath = Path.Combine(tempDir.RootPath, "games.json");
+        var sourceDir = Path.Combine(tempDir.RootPath, "source");
+        Directory.CreateDirectory(sourceDir);
+        Directory.CreateDirectory(backupsPath);
+
+        var libraryStore = new GameLibraryStore(storePath, backupsPath) { LeaseCoordinator = coordinator };
+        var profileStore = new ProfileStore(profilesPath) { LeaseCoordinator = coordinator };
+        var engine = new MultiFileTransactionEngine(backupsPath);
+
+        using var http = new HttpClient();
+        var installer = new DxvkInstaller(http, engine, libraryStore, sourceDir) { LeaseCoordinator = coordinator };
+        var rollback = new DxvkRollback(engine, libraryStore) { LeaseCoordinator = coordinator };
+        var manager = new DxvkManager(installer, rollback, new DxvkGithubClient(http, new CacheStore()), profileStore, libraryStore, coordinator);
+
+        var gameDir = Path.Combine(tempDir.RootPath, "Game");
+        Directory.CreateDirectory(gameDir);
+        var installation = libraryStore.GetOrCreateInstallation(gameDir, "Game");
+        var cancelledAction = Models.PendingAction.Install("2.5", "Cancelled by user");
+        installation.LastCancelledAction = cancelledAction;
+        installation.LastCancellationReason = "Cancelled by user";
+        installation.LastCancellationOutcome = "Cancelled";
+        installation.LastRefusalReason = "Cancelled pending action";
+        libraryStore.Save(installation);
+
+        // Configure CustomCommitReplace to cause an Unknown outcome on next save
+        libraryStore.CustomCommitReplace = (tempPath, destPath) =>
+        {
+            File.WriteAllText(destPath, "{ corrupt json }");
+            throw new IOException("Simulated disk error during commit replace.");
+        };
+
+        try
+        {
+            // Act: ClearCancelledState is called and save encounters an Unknown outcome
+            Assert.Throws<IOException>(() => manager.ClearCancelledState(installation));
+
+            // Assert: Uncertain persistence latched, AttentionRequired set, and uncertainty reason retained
+            // without being overwritten by the old cancellation refusal reason
+            Assert.True(libraryStore.HasUncertainPersistence);
+            Assert.Equal(RestorationState.AttentionRequired, installation.RestorationState);
+            Assert.NotNull(installation.LastCancelledAction);
+            Assert.Equal(cancelledAction.Type, installation.LastCancelledAction.Type);
+            Assert.Equal("Cancelled by user", installation.LastCancellationReason);
+            Assert.NotNull(installation.LastRefusalReason);
+            Assert.Contains("outcome is unknown", installation.LastRefusalReason, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("Cancelled pending action", installation.LastRefusalReason, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            libraryStore.CustomCommitReplace = null;
+        }
+    }
+
+    [Fact]
+    public void DxvkManager_ReassessEffectiveApi_WhenProfileSucceedsAndLibraryFails_KeepsCommittedProfileAndReportsLibraryFailure()
+    {
+        using var tempDir = new SyntheticTestDirectory();
+        using var coordDir = new SyntheticTestDirectory();
+
+        var coordinator = new OperationLeaseCoordinator(coordDir.RootPath);
+        var storePath = Path.Combine(tempDir.RootPath, "game-library.json");
+        var backupsPath = Path.Combine(tempDir.RootPath, "backups");
+        var profilesPath = Path.Combine(tempDir.RootPath, "games.json");
+        var sourceDir = Path.Combine(tempDir.RootPath, "source");
+        Directory.CreateDirectory(sourceDir);
+        Directory.CreateDirectory(backupsPath);
+
+        var libraryStore = new GameLibraryStore(storePath, backupsPath) { LeaseCoordinator = coordinator };
+        var profileStore = new ProfileStore(profilesPath) { LeaseCoordinator = coordinator };
+        var engine = new MultiFileTransactionEngine(backupsPath);
+
+        using var http = new HttpClient();
+        var installer = new DxvkInstaller(http, engine, libraryStore, sourceDir) { LeaseCoordinator = coordinator };
+        var rollback = new DxvkRollback(engine, libraryStore) { LeaseCoordinator = coordinator };
+        var manager = new DxvkManager(installer, rollback, new DxvkGithubClient(http, new CacheStore()), profileStore, libraryStore, coordinator);
+
+        var gameDir = Path.Combine(tempDir.RootPath, "Game");
+        Directory.CreateDirectory(gameDir);
+        var exePath = Path.Combine(gameDir, "Game.exe");
+        File.WriteAllText(exePath, "bin");
+
+        var installation = libraryStore.GetOrCreateInstallation(gameDir, "Game");
+        var recordedExe = installation.GetOrAddExecutable("Game.exe", "Game.exe");
+        recordedExe.LastKnownArchitecture = "win64"; // Needs normalization to x64 -> installationChanged = true
+        libraryStore.Save(installation);
+
+        var profile = profileStore.GetOrCreate(exePath);
+        profile.Architecture = "x86"; // Needs normalization to x32 -> profileChanged = true
+        profileStore.Save(profile);
+
+        // Configure libraryStore.CustomCommitReplace to fail during GameLibraryStore.Save
+        libraryStore.CustomCommitReplace = (tempPath, destPath) =>
+        {
+            throw new IOException("Simulated library store commit failure after profile save.");
+        };
+
+        try
+        {
+            // Act: UpdateAvailable triggers reconciliation via ReassessEffectiveApi under store scope lease.
+            // Profile save succeeds, but subsequent library store save throws.
+            manager.UpdateAvailable(profile);
+
+            // Assert: Profile was committed before library save failed, so in-memory profile MUST NOT be reverted;
+            // it must retain the normalized "x32" value to match durable disk reality.
+            Assert.Equal("x32", profile.Architecture);
+
+            // Disk verification: ProfileStore on disk contains the committed "x32"
+            var reloadedProfileStore = new ProfileStore(profilesPath);
+            var reloadedProfile = reloadedProfileStore.GetOrCreate(exePath);
+            Assert.Equal("x32", reloadedProfile.Architecture);
+
+            // Library save failed before committing, so installation in-memory was reverted to prevManagedArch ("win64")
+            Assert.Equal("win64", recordedExe.LastKnownArchitecture);
+        }
+        finally
+        {
+            libraryStore.CustomCommitReplace = null;
+        }
+    }
 }
+

@@ -96,7 +96,10 @@ namespace DXVKCompanion.DXVK
                     installation.LastCancelledAction = prevAction;
                     installation.LastCancellationReason = prevReason;
                     installation.LastCancellationOutcome = prevOutcome;
-                    installation.LastRefusalReason = prevRefusal;
+                    if (!_gameLibraryStore.HasUncertainPersistence)
+                    {
+                        installation.LastRefusalReason = prevRefusal;
+                    }
                     throw;
                 }
             }
@@ -181,7 +184,7 @@ namespace DXVKCompanion.DXVK
         /// Supported library records never erase unsupported profile evidence without established freshness,
         /// and observed Unknown classifications are never promoted to supported from a stale caller profile.
         /// </summary>
-        private void ReassessEffectiveApi(GameInstallation? installation, GameProfile profile, IOperationLease? storeLease = null)
+        internal void ReassessEffectiveApi(GameInstallation? installation, GameProfile profile, IOperationLease? storeLease = null)
         {
             if (storeLease == null || !storeLease.IsAcquired || storeLease.IsDisposed)
             {
@@ -219,13 +222,16 @@ namespace DXVKCompanion.DXVK
                 }
             }
 
-            Action revert = () =>
+            Action revertProfile = () =>
             {
                 profile.Architecture = prevProfileArch;
                 profile.DxvkEnabled = prevProfileDxvkEnabled;
                 profile.DxvkVersion = prevProfileDxvkVersion;
                 profile.Api = prevProfileApi;
+            };
 
+            Action revertInstallation = () =>
+            {
                 if (installation != null)
                 {
                     installation.ManagedDxvkArchitecture = prevManagedArch;
@@ -261,7 +267,7 @@ namespace DXVKCompanion.DXVK
                     }
                     catch (Exception ex)
                     {
-                        revert();
+                        revertProfile();
                         Logger.Log($"DxvkManager: failed to save profile during reconciliation for {profile.ExeName}: {ex.GetType().Name} - {ex.Message}");
                     }
                 }
@@ -370,11 +376,13 @@ namespace DXVKCompanion.DXVK
 
             if (storeLease != null)
             {
+                bool profileSaved = false;
                 try
                 {
                     if (profileChanged || _profiles.HasPendingWriteRetry)
                     {
                         _profiles.Save(profile, storeLease);
+                        profileSaved = true;
                     }
                     if (installationChanged && !_gameLibraryStore.HasUncertainPersistence)
                     {
@@ -383,7 +391,14 @@ namespace DXVKCompanion.DXVK
                 }
                 catch (Exception ex)
                 {
-                    revert();
+                    if (!profileSaved)
+                    {
+                        revertProfile();
+                    }
+                    if (!_gameLibraryStore.HasUncertainPersistence)
+                    {
+                        revertInstallation();
+                    }
                     Logger.Log($"DxvkManager: failed to save during reconciliation for {profile.ExeName}: {ex.GetType().Name} - {ex.Message}");
                 }
             }

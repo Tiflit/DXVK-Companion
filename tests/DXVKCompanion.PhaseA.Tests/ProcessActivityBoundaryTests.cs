@@ -432,8 +432,8 @@ public sealed class ProcessActivityBoundaryTests
     [Fact]
     public async Task DownloadStageRace_ActivityDetected_AbortsBeforeMutation_FilesUntouched()
     {
-        using var tempDir = new SyntheticTestDirectory();
-        using var coordDir = new SyntheticTestDirectory();
+        var tempDir = new SyntheticTestDirectory();
+        var coordDir = new SyntheticTestDirectory();
 
         var coordinator = new OperationLeaseCoordinator(coordDir.RootPath);
         var gameDir = Path.Combine(tempDir.RootPath, "Game");
@@ -477,6 +477,8 @@ public sealed class ProcessActivityBoundaryTests
 
         Task<bool>? applyTask = null;
         bool result = false;
+        Exception? primaryEx = null;
+        bool incompleteCleanup = false;
         try
         {
             applyTask = installer.ApplyToGameAsync(profile, release);
@@ -491,42 +493,74 @@ public sealed class ProcessActivityBoundaryTests
             var completed = await Task.WhenAny(applyTask, Task.Delay(TimeSpan.FromSeconds(10)));
             Assert.Same(applyTask, completed);
             result = await applyTask;
+
+            // Must refuse due to post-download activity detection
+            Assert.False(result);
+            Assert.NotNull(installer.LastRefusalReason);
+            Assert.Contains("running", installer.LastRefusalReason, StringComparison.OrdinalIgnoreCase);
+
+            // Disk files must be completely untouched!
+            Assert.Equal("pristine-native-d3d11", File.ReadAllText(d3d11Path));
+            Assert.False(File.Exists(Path.Combine(gameDir, "dxgi.dll")));
+
+            // Backups directory must be completely empty (no backup taken)
+            if (Directory.Exists(backupsPath))
+            {
+                Assert.Empty(Directory.EnumerateFiles(backupsPath, "*", SearchOption.AllDirectories));
+            }
+
+            // Store must not have any managed record
+            var inst = store.FindByInstallationPath(gameDir);
+            Assert.True(inst == null || inst.RestorationState != RestorationState.Managed);
+        }
+        catch (Exception ex)
+        {
+            primaryEx = ex;
+            throw;
         }
         finally
         {
             handler.ReleaseDownload();
+            Exception? cleanupEx = null;
             if (applyTask != null)
             {
-                var drain = await Task.WhenAny(applyTask, Task.Delay(TimeSpan.FromSeconds(5)));
-                Assert.Same(applyTask, drain);
+                try
+                {
+                    var drain = await Task.WhenAny(applyTask, Task.Delay(TimeSpan.FromSeconds(5)));
+                    if (drain != applyTask)
+                    {
+                        incompleteCleanup = true;
+                        cleanupEx = new TimeoutException("applyTask failed to drain within 5s.");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    cleanupEx = ex;
+                }
+            }
+
+            if (!incompleteCleanup)
+            {
+                coordDir.Dispose();
+                tempDir.Dispose();
+            }
+
+            if (cleanupEx != null)
+            {
+                if (primaryEx != null)
+                {
+                    throw new AggregateException("Primary test failure accompanied by cleanup failure.", primaryEx, cleanupEx);
+                }
+                throw cleanupEx;
             }
         }
-
-        // Must refuse due to post-download activity detection
-        Assert.False(result);
-        Assert.NotNull(installer.LastRefusalReason);
-        Assert.Contains("running", installer.LastRefusalReason, StringComparison.OrdinalIgnoreCase);
-
-        // Disk files must be completely untouched!
-        Assert.Equal("pristine-native-d3d11", File.ReadAllText(d3d11Path));
-        Assert.False(File.Exists(Path.Combine(gameDir, "dxgi.dll")));
-
-        // Backups directory must be completely empty (no backup taken)
-        if (Directory.Exists(backupsPath))
-        {
-            Assert.Empty(Directory.EnumerateFiles(backupsPath, "*", SearchOption.AllDirectories));
-        }
-
-        // Store must not have any managed record
-        var inst = store.FindByInstallationPath(gameDir);
-        Assert.True(inst == null || inst.RestorationState != RestorationState.Managed);
     }
 
     [Fact]
     public async Task DownloadStageRace_ProfileChangedDuringDownload_AbortsBeforeMutation()
     {
-        using var tempDir = new SyntheticTestDirectory();
-        using var coordDir = new SyntheticTestDirectory();
+        var tempDir = new SyntheticTestDirectory();
+        var coordDir = new SyntheticTestDirectory();
 
         var coordinator = new OperationLeaseCoordinator(coordDir.RootPath);
         var gameDir = Path.Combine(tempDir.RootPath, "Game");
@@ -571,6 +605,8 @@ public sealed class ProcessActivityBoundaryTests
 
         Task<bool>? applyTask = null;
         bool result = false;
+        Exception? primaryEx = null;
+        bool incompleteCleanup = false;
         try
         {
             applyTask = installer.ApplyToGameAsync(profile, release);
@@ -588,30 +624,62 @@ public sealed class ProcessActivityBoundaryTests
             var completed = await Task.WhenAny(applyTask, Task.Delay(TimeSpan.FromSeconds(10)));
             Assert.Same(applyTask, completed);
             result = await applyTask;
+
+            // Must refuse due to post-download profile baseline invalidation
+            Assert.False(result);
+            Assert.NotNull(installer.LastRefusalReason);
+            Assert.Contains("Profile store baseline mismatch", installer.LastRefusalReason, StringComparison.OrdinalIgnoreCase);
+
+            // Disk files untouched
+            Assert.Equal("pristine-native-d3d11", File.ReadAllText(d3d11Path));
+            Assert.False(File.Exists(Path.Combine(gameDir, "dxgi.dll")));
+
+            // Backups directory empty
+            if (Directory.Exists(backupsPath))
+            {
+                Assert.Empty(Directory.EnumerateFiles(backupsPath, "*", SearchOption.AllDirectories));
+            }
+        }
+        catch (Exception ex)
+        {
+            primaryEx = ex;
+            throw;
         }
         finally
         {
             handler.ReleaseDownload();
+            Exception? cleanupEx = null;
             if (applyTask != null)
             {
-                var drain = await Task.WhenAny(applyTask, Task.Delay(TimeSpan.FromSeconds(5)));
-                Assert.Same(applyTask, drain);
+                try
+                {
+                    var drain = await Task.WhenAny(applyTask, Task.Delay(TimeSpan.FromSeconds(5)));
+                    if (drain != applyTask)
+                    {
+                        incompleteCleanup = true;
+                        cleanupEx = new TimeoutException("applyTask failed to drain within 5s.");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    cleanupEx = ex;
+                }
             }
-        }
 
-        // Must refuse due to post-download profile baseline invalidation
-        Assert.False(result);
-        Assert.NotNull(installer.LastRefusalReason);
-        Assert.Contains("Profile store baseline mismatch", installer.LastRefusalReason, StringComparison.OrdinalIgnoreCase);
+            if (!incompleteCleanup)
+            {
+                coordDir.Dispose();
+                tempDir.Dispose();
+            }
 
-        // Disk files untouched
-        Assert.Equal("pristine-native-d3d11", File.ReadAllText(d3d11Path));
-        Assert.False(File.Exists(Path.Combine(gameDir, "dxgi.dll")));
-
-        // Backups directory empty
-        if (Directory.Exists(backupsPath))
-        {
-            Assert.Empty(Directory.EnumerateFiles(backupsPath, "*", SearchOption.AllDirectories));
+            if (cleanupEx != null)
+            {
+                if (primaryEx != null)
+                {
+                    throw new AggregateException("Primary test failure accompanied by cleanup failure.", primaryEx, cleanupEx);
+                }
+                throw cleanupEx;
+            }
         }
     }
 

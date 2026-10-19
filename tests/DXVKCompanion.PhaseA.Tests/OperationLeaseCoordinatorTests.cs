@@ -324,8 +324,8 @@ public sealed class OperationLeaseCoordinatorTests
         if (!OperatingSystem.IsWindows() || !string.Equals(Environment.GetEnvironmentVariable("GITHUB_ACTIONS"), "true", StringComparison.OrdinalIgnoreCase))
             return;
 
-        using var tempDir = new SyntheticTestDirectory();
-        using var coordDir = new SyntheticTestDirectory();
+        var tempDir = new SyntheticTestDirectory();
+        var coordDir = new SyntheticTestDirectory();
 
         var coordinator = new OperationLeaseCoordinator(coordDir.RootPath);
         var targetPath = Path.Combine(tempDir.RootPath, "HelperTarget");
@@ -350,13 +350,15 @@ public sealed class OperationLeaseCoordinatorTests
         const int maxTotalLifetimeMs = 20000;
         const int cleanupReservationMs = 4000;
         Process? helper = null;
+        bool helperExited = false;
         try
         {
             helper = Process.Start(psi);
             Assert.NotNull(helper);
 
             // Wait for helper to confirm lock acquisition via stdout (bounded within operational budget before cleanup reservation)
-            int startupBudget = Math.Max(500, maxTotalLifetimeMs - cleanupReservationMs - (int)overallSw.ElapsedMilliseconds);
+            int startupBudget = maxTotalLifetimeMs - cleanupReservationMs - (int)overallSw.ElapsedMilliseconds;
+            if (startupBudget <= 0) throw new TimeoutException("Startup budget expired before child start.");
             var readTask = helper.StandardOutput.ReadLineAsync();
             var readCompleted = await Task.WhenAny(readTask, Task.Delay(startupBudget));
             if (readCompleted != readTask)
@@ -376,7 +378,8 @@ public sealed class OperationLeaseCoordinatorTests
             Assert.True(sw.ElapsedMilliseconds >= 150, $"Expected timeout around 200 ms, actual: {sw.ElapsedMilliseconds} ms");
 
             // Wait for helper to exit naturally (bounded within remaining operational budget)
-            int exitBudget = Math.Max(500, maxTotalLifetimeMs - cleanupReservationMs - (int)overallSw.ElapsedMilliseconds);
+            int exitBudget = maxTotalLifetimeMs - cleanupReservationMs - (int)overallSw.ElapsedMilliseconds;
+            if (exitBudget <= 0) throw new TimeoutException("Exit budget expired before child natural exit.");
             var exitTask = helper.WaitForExitAsync();
             var exitCompleted = await Task.WhenAny(exitTask, Task.Delay(exitBudget));
             if (exitCompleted != exitTask)
@@ -403,11 +406,29 @@ public sealed class OperationLeaseCoordinatorTests
                     }
                     catch { }
                 }
-                int cleanupTimeout = Math.Max(1000, maxTotalLifetimeMs - (int)overallSw.ElapsedMilliseconds);
-                bool exited = helper.WaitForExit(cleanupTimeout);
-                helper.Dispose();
-                Assert.True(exited, "Child helper process failed to terminate within bounded cleanup reservation.");
+                int remainingCleanupMs = maxTotalLifetimeMs - (int)overallSw.ElapsedMilliseconds;
+                if (remainingCleanupMs > 0)
+                {
+                    helperExited = helper.WaitForExit(remainingCleanupMs);
+                }
+                else
+                {
+                    helperExited = helper.HasExited;
+                }
             }
+            else
+            {
+                helperExited = true;
+            }
+
+            if (helperExited)
+            {
+                helper?.Dispose();
+                coordDir.Dispose();
+                tempDir.Dispose();
+            }
+
+            Assert.True(helperExited, "Child helper process failed to terminate within bounded cleanup reservation.");
         }
     }
 
@@ -631,8 +652,8 @@ public sealed class OperationLeaseCoordinatorTests
         if (!OperatingSystem.IsWindows() || !string.Equals(Environment.GetEnvironmentVariable("GITHUB_ACTIONS"), "true", StringComparison.OrdinalIgnoreCase))
             return;
 
-        using var tempDir = new SyntheticTestDirectory();
-        using var coordDir = new SyntheticTestDirectory();
+        var tempDir = new SyntheticTestDirectory();
+        var coordDir = new SyntheticTestDirectory();
 
         var coordinator = new OperationLeaseCoordinator(coordDir.RootPath);
         var targetPath = Path.Combine(tempDir.RootPath, "HelperTargetFail");
@@ -653,19 +674,22 @@ public sealed class OperationLeaseCoordinatorTests
         const int maxTotalLifetimeMs = 10000;
         const int cleanupReservationMs = 3000;
         Process? helper = null;
+        bool helperExited = false;
         try
         {
             helper = Process.Start(psi);
             Assert.NotNull(helper);
 
-            int operationalBudget = Math.Max(500, maxTotalLifetimeMs - cleanupReservationMs - (int)overallSw.ElapsedMilliseconds);
+            int operationalBudget = maxTotalLifetimeMs - cleanupReservationMs - (int)overallSw.ElapsedMilliseconds;
+            if (operationalBudget <= 0) throw new TimeoutException("Operational budget expired before child start.");
             var readTask = helper.StandardOutput.ReadLineAsync();
             var readCompleted = await Task.WhenAny(readTask, Task.Delay(operationalBudget));
             Assert.Same(readTask, readCompleted);
             string? signal = await readTask;
             Assert.Null(signal); // No LOCKED signal written
 
-            int exitBudget = Math.Max(500, maxTotalLifetimeMs - cleanupReservationMs - (int)overallSw.ElapsedMilliseconds);
+            int exitBudget = maxTotalLifetimeMs - cleanupReservationMs - (int)overallSw.ElapsedMilliseconds;
+            if (exitBudget <= 0) throw new TimeoutException("Exit budget expired before child exit.");
             bool exited = helper.WaitForExit(exitBudget);
             Assert.True(exited, "Child helper process failed to exit within bounded operational budget.");
             Assert.NotEqual(0, helper.ExitCode);
@@ -683,11 +707,29 @@ public sealed class OperationLeaseCoordinatorTests
                 {
                     try { helper.Kill(entireProcessTree: true); } catch { }
                 }
-                int cleanupBudget = Math.Max(500, maxTotalLifetimeMs - (int)overallSw.ElapsedMilliseconds);
-                bool exited = helper.WaitForExit(cleanupBudget);
-                helper.Dispose();
-                Assert.True(exited, "Child helper process failed to terminate within cleanup reservation.");
+                int remainingCleanupMs = maxTotalLifetimeMs - (int)overallSw.ElapsedMilliseconds;
+                if (remainingCleanupMs > 0)
+                {
+                    helperExited = helper.WaitForExit(remainingCleanupMs);
+                }
+                else
+                {
+                    helperExited = helper.HasExited;
+                }
             }
+            else
+            {
+                helperExited = true;
+            }
+
+            if (helperExited)
+            {
+                helper?.Dispose();
+                coordDir.Dispose();
+                tempDir.Dispose();
+            }
+
+            Assert.True(helperExited, "Child helper process failed to terminate within cleanup reservation.");
         }
     }
 
@@ -697,8 +739,8 @@ public sealed class OperationLeaseCoordinatorTests
         if (!OperatingSystem.IsWindows() || !string.Equals(Environment.GetEnvironmentVariable("GITHUB_ACTIONS"), "true", StringComparison.OrdinalIgnoreCase))
             return;
 
-        using var tempDir = new SyntheticTestDirectory();
-        using var coordDir = new SyntheticTestDirectory();
+        var tempDir = new SyntheticTestDirectory();
+        var coordDir = new SyntheticTestDirectory();
 
         var coordinator = new OperationLeaseCoordinator(coordDir.RootPath);
         var targetPath = Path.Combine(tempDir.RootPath, "HelperTargetTimeout");
@@ -708,11 +750,11 @@ public sealed class OperationLeaseCoordinatorTests
         string lockName = OperationResourceIdentity.GetTargetLockFileName(canonicalTarget);
         string fullLockPath = Path.Combine(coordDir.RootPath, lockName);
 
-        // Helper holds lock and sleeps for 60 seconds (simulating hanging child)
+        // Helper holds lock with an independent self-timeout (2000 ms), well within 20s profile
         var psi = new ProcessStartInfo
         {
             FileName = "powershell.exe",
-            Arguments = $"-NoProfile -NonInteractive -Command \"try {{ $f = new-object System.IO.FileStream('{fullLockPath.Replace("'", "''")}', [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None, 4096, [System.IO.FileOptions]::DeleteOnClose); [Console]::Out.WriteLine('LOCKED'); [Console]::Out.Flush(); Start-Sleep -Seconds 60; $f.Dispose(); exit 0 }} catch {{ exit 1 }}\"",
+            Arguments = $"-NoProfile -NonInteractive -Command \"try {{ $f = new-object System.IO.FileStream('{fullLockPath.Replace("'", "''")}', [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None, 4096, [System.IO.FileOptions]::DeleteOnClose); [Console]::Out.WriteLine('LOCKED'); [Console]::Out.Flush(); Start-Sleep -Milliseconds 2000; $f.Dispose(); exit 0 }} catch {{ exit 1 }}\"",
             UseShellExecute = false,
             CreateNoWindow = true,
             RedirectStandardOutput = true,
@@ -723,31 +765,34 @@ public sealed class OperationLeaseCoordinatorTests
         const int maxTotalLifetimeMs = 12000;
         const int cleanupReservationMs = 4000;
         Process? helper = null;
+        bool helperExited = false;
         try
         {
             helper = Process.Start(psi);
             Assert.NotNull(helper);
 
-            int startupBudget = Math.Max(500, maxTotalLifetimeMs - cleanupReservationMs - (int)overallSw.ElapsedMilliseconds);
+            int startupBudget = maxTotalLifetimeMs - cleanupReservationMs - (int)overallSw.ElapsedMilliseconds;
+            if (startupBudget <= 0) throw new TimeoutException("Startup budget expired before child start.");
             var readTask = helper.StandardOutput.ReadLineAsync();
             var readCompleted = await Task.WhenAny(readTask, Task.Delay(startupBudget));
             Assert.Same(readTask, readCompleted);
             string? signal = await readTask;
             Assert.Equal("LOCKED", signal);
 
-            // Parent attempts acquisition with 200 ms timeout and must be excluded
+            // Parent attempts acquisition with 200 ms timeout and must be excluded while child holds lock
             var sw = Stopwatch.StartNew();
             await using var refusedLease = await coordinator.TryAcquireOperationScopeAsync(targetPath, timeout: TimeSpan.FromMilliseconds(200));
             sw.Stop();
             Assert.Null(refusedLease);
             Assert.InRange(sw.ElapsedMilliseconds, 150, 2000);
 
-            // Simulate timeout/failure by explicitly killing the child process
-            helper.Kill(entireProcessTree: true);
-            bool exited = helper.WaitForExit(3000);
-            Assert.True(exited, "Child helper process failed to exit after Kill.");
+            // Exercise independent child helper timeout: child self-terminates within its independent timeout (2000 ms) without parent kill
+            int childTimeoutBudget = maxTotalLifetimeMs - cleanupReservationMs - (int)overallSw.ElapsedMilliseconds;
+            if (childTimeoutBudget <= 0) throw new TimeoutException("Child timeout budget expired.");
+            bool childTimedOutAndExited = helper.WaitForExit(childTimeoutBudget);
+            Assert.True(childTimedOutAndExited, "Child helper process failed to self-terminate within its independent timeout.");
 
-            // Once killed, lock is released and coordinator acquires successfully
+            // Once child self-terminated and released lock, coordinator acquires target lease successfully
             await using var successLease = await coordinator.TryAcquireOperationScopeAsync(targetPath, timeout: TimeSpan.FromMilliseconds(500));
             Assert.NotNull(successLease);
             Assert.True(successLease.IsAcquired);
@@ -760,11 +805,29 @@ public sealed class OperationLeaseCoordinatorTests
                 {
                     try { helper.Kill(entireProcessTree: true); } catch { }
                 }
-                int cleanupBudget = Math.Max(500, maxTotalLifetimeMs - (int)overallSw.ElapsedMilliseconds);
-                bool exited = helper.WaitForExit(cleanupBudget);
-                helper.Dispose();
-                Assert.True(exited, "Child helper process failed to terminate within cleanup reservation.");
+                int remainingCleanupMs = maxTotalLifetimeMs - (int)overallSw.ElapsedMilliseconds;
+                if (remainingCleanupMs > 0)
+                {
+                    helperExited = helper.WaitForExit(remainingCleanupMs);
+                }
+                else
+                {
+                    helperExited = helper.HasExited;
+                }
             }
+            else
+            {
+                helperExited = true;
+            }
+
+            if (helperExited)
+            {
+                helper?.Dispose();
+                coordDir.Dispose();
+                tempDir.Dispose();
+            }
+
+            Assert.True(helperExited, "Child helper process failed to terminate within cleanup reservation.");
         }
     }
 

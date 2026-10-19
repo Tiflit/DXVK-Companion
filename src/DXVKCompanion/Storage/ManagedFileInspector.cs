@@ -296,8 +296,11 @@ namespace DXVKCompanion.Storage
                                 }
                                 catch
                                 {
-                                    installation.RestorationState = prevRestorationState;
-                                    installation.LastRefusalReason = prevRefusalReason;
+                                    if (!_store.HasUncertainPersistence)
+                                    {
+                                        installation.RestorationState = prevRestorationState;
+                                        installation.LastRefusalReason = prevRefusalReason;
+                                    }
                                     throw;
                                 }
                             }
