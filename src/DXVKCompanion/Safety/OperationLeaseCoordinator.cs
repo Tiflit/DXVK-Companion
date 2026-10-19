@@ -287,6 +287,13 @@ namespace DXVKCompanion.Safety
                     stream.Flush();
 
                     var remainingBudget = timeout - sw.Elapsed;
+                    if (remainingBudget <= TimeSpan.Zero)
+                    {
+                        stream.Dispose();
+                        stream = null;
+                        break;
+                    }
+
                     bool hasConflict = isTarget && await HasConflictingTargetLockAsync(lockFilePath, canonicalPath, remainingBudget, ct).ConfigureAwait(false);
 
                     if (hasConflict || sw.Elapsed >= timeout || ct.IsCancellationRequested)
@@ -383,6 +390,13 @@ namespace DXVKCompanion.Safety
                     stream.Flush();
 
                     var remainingBudget = timeout - sw.Elapsed;
+                    if (remainingBudget <= TimeSpan.Zero)
+                    {
+                        stream.Dispose();
+                        stream = null;
+                        break;
+                    }
+
                     bool hasConflict = isTarget && HasConflictingTargetLockSync(lockFilePath, canonicalPath, remainingBudget);
 
                     if (hasConflict || sw.Elapsed >= timeout)
@@ -463,7 +477,9 @@ namespace DXVKCompanion.Safety
 
                 foreach (var file in files)
                 {
-                    if (string.Equals(file, myLockFilePath, StringComparison.OrdinalIgnoreCase))
+                    if (string.Equals(Path.GetFileName(file), Path.GetFileName(myLockFilePath), StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(file, myLockFilePath, StringComparison.OrdinalIgnoreCase) ||
+                        OperationResourceIdentity.PathEquals(file, myLockFilePath))
                     {
                         continue;
                     }
@@ -524,10 +540,21 @@ namespace DXVKCompanion.Safety
                     {
                         // File could not be processed as non-conflicting within budget.
                         // Probe for positive absence: only FileNotFoundException / DirectoryNotFoundException confirms absence.
-                        // Any other outcome (open succeeded, UnauthorizedAccessException, IOException) fails closed.
+                        // Any other outcome (probe failure, empty payload, or conflict) fails closed.
                         try
                         {
                             using var probe = OpenCandidateLockStream(file);
+                            using var reader = new StreamReader(probe, System.Text.Encoding.UTF8);
+                            string otherPath = reader.ReadToEnd().Trim();
+                            if (!string.IsNullOrEmpty(otherPath) &&
+                                !OperationResourceIdentity.PathEquals(myCanonicalPath, otherPath) &&
+                                !OperationResourceIdentity.IsPathInside(myCanonicalPath, otherPath) &&
+                                !OperationResourceIdentity.IsPathInside(otherPath, myCanonicalPath))
+                            {
+                                // Positively confirmed to belong to a non-conflicting target
+                                continue;
+                            }
+
                             return true;
                         }
                         catch (FileNotFoundException)
@@ -575,7 +602,9 @@ namespace DXVKCompanion.Safety
 
                 foreach (var file in files)
                 {
-                    if (string.Equals(file, myLockFilePath, StringComparison.OrdinalIgnoreCase))
+                    if (string.Equals(Path.GetFileName(file), Path.GetFileName(myLockFilePath), StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(file, myLockFilePath, StringComparison.OrdinalIgnoreCase) ||
+                        OperationResourceIdentity.PathEquals(file, myLockFilePath))
                     {
                         continue;
                     }
@@ -629,10 +658,21 @@ namespace DXVKCompanion.Safety
                     {
                         // File could not be processed as non-conflicting within budget.
                         // Probe for positive absence: only FileNotFoundException / DirectoryNotFoundException confirms absence.
-                        // Any other outcome (open succeeded, UnauthorizedAccessException, IOException) fails closed.
+                        // Any other outcome (probe failure, empty payload, or conflict) fails closed.
                         try
                         {
                             using var probe = OpenCandidateLockStream(file);
+                            using var reader = new StreamReader(probe, System.Text.Encoding.UTF8);
+                            string otherPath = reader.ReadToEnd().Trim();
+                            if (!string.IsNullOrEmpty(otherPath) &&
+                                !OperationResourceIdentity.PathEquals(myCanonicalPath, otherPath) &&
+                                !OperationResourceIdentity.IsPathInside(myCanonicalPath, otherPath) &&
+                                !OperationResourceIdentity.IsPathInside(otherPath, myCanonicalPath))
+                            {
+                                // Positively confirmed to belong to a non-conflicting target
+                                continue;
+                            }
+
                             return true;
                         }
                         catch (FileNotFoundException)

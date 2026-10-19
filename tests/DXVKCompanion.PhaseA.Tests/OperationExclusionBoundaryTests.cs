@@ -826,7 +826,7 @@ public sealed class OperationExclusionBoundaryTests
         installation.ManagedFiles.Add(new ManagedFileRecord
         {
             RelativePath = "d3d11.dll",
-            ExpectedManagedSha256 = "dummy-sha",
+            ExpectedManagedSha256 = new string('a', 64),
             ManagedDxvkVersion = "2.5"
         });
         libraryStore.Save(installation);
