@@ -778,14 +778,14 @@ class TestDashboardGenerator(unittest.TestCase):
     def test_dashboard_sanitizer_preserves_generic_dev_paths(self):
         """Preserves safe generic dev and program paths while redacting personal paths."""
         text = r"Tested in D:\dev\DXVK-Companion with C:\Program Files\Git"
-        sanitized = update_dashboard.sanitize_display_text(text)
+        sanitized = update_dashboard.sanitize_display_text(text, max_len=200)
         self.assertIn(r"D:\dev\DXVK-Companion", sanitized)
         self.assertIn(r"C:\Program Files\Git", sanitized)
 
     def test_dashboard_sanitizer_redacts_concrete_unc_paths(self):
         """Redacts concrete UNC paths under any host while preserving exact bare documentation templates."""
         text = r"Share at \\nas01\Team-Share vs \\server\share vs \\localhost\my_share"
-        sanitized = update_dashboard.sanitize_display_text(text)
+        sanitized = update_dashboard.sanitize_display_text(text, max_len=200)
         self.assertNotIn("Team-Share", sanitized)
         self.assertNotIn("my_share", sanitized)
         self.assertIn(r"[REDACTED_PATH]", sanitized)
@@ -798,7 +798,7 @@ class TestDashboardGenerator(unittest.TestCase):
             "URL: https://api.github.com/issues?token=prefix.PrivateSentinel%2FPrivateTail "
             "Token: prefix_ghp_1234567890abcdef1234567890abcdef"
         )
-        sanitized = update_dashboard.sanitize_display_text(text)
+        sanitized = update_dashboard.sanitize_display_text(text, max_len=200)
         self.assertNotIn("Éxample", sanitized)
         self.assertNotIn("PrivateSuffix", sanitized)
         self.assertNotIn("PrivateSentinel", sanitized)
