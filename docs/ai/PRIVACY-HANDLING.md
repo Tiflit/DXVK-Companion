@@ -48,9 +48,14 @@ The repository `.gitignore` provides targeted exclusions:
 
 All automated publishing and workflow tooling route privacy detection, diagnostics, and display redaction through a single standard-library-only module: `scripts/ai-workflow/privacy_guard.py`.
 
+### Operational Scope & Limitations
+- **Bounded In-Repo Scope:** The operational scope of `privacy_guard.py` is strictly bounded to the two in-repo publication helpers: `scripts/ai-workflow/update_pr_body.py` (PR body, review record, and diff sanitization) and `scripts/ai-workflow/update_dashboard.py` (dashboard issue body and table cell sanitization).
+- **Pattern-Based Guard (No Zero-Leak Guarantee):** The guard uses deterministic regular expressions targeting recognized path prefixes, common token formats, and URL query strings. It is **not** an exhaustive personal-data discovery engine, natural-language entity extractor, or classifier, and does not provide an absolute zero-leak guarantee for arbitrary unstructured text or novel credential formats.
+
 ### Design & Environment Purity
 - **Standard Library Only:** Zero external packages. Imports are strictly limited to `re`, `pathlib`, `typing`, and `__future__`.
-- **Zero Side-Effects:** Zero network access, zero subprocess execution, zero environment identity probing (`os.environ.get("USER")`, etc.), and zero private-data reads upon import or execution.
+- **Zero Side-Effects:** Zero network access, zero subprocess execution, zero environment identity probing (`os.environ.get("USER")`, `USERNAME`, etc.), and zero private-data reads upon import or execution.
+- **Dynamic & Static Boundary Verification:** Purity is enforced via static source inspection and verified dynamically in automated tests (`tests/ai-workflow/test_privacy_guard.py`) by instrumenting network, subprocess, environment probe, and filesystem write calls during dynamic module reloads.
 - **Separate Detection & Redaction:** Exposes distinct scanning (`scan_for_privacy_violations`, `is_privacy_sensitive_text`) and safe redaction (`redact_privacy_text`, `sanitize_display_text`, `sanitize_diff_line`, `sanitize_diagnostic`).
 
 ### Path Families & Credential Coverage
@@ -58,9 +63,9 @@ The privacy guard recognizes and filters:
 - **Windows Personal-Home Paths:** Detects Windows user profiles (`C:\Users\<user>\...`, `C:\Documents and Settings\<user>\...`, and `/Users/<user>/...`) across slash variants (`\`, `/`, `\\`), casing, and punctuation prefixes (equals `path=`, colons `setting:`, brackets `[...]`, parentheses `(...)`, angles `<...>`, braces `{...}`, and quotes `""`, `''`, `` ` ``).
 - **WSL Home Paths:** Detects WSL mapped Windows user directories (`/mnt/<drive>/Users/...` and `/mnt/<drive>/Documents and Settings/...`).
 - **POSIX Home Paths:** Detects Unix and macOS personal user directories (`/home/<user>/...` and `/Users/<user>/...`).
-- **Paths with Spaces & Full Names:** Full usernames and directories containing spaces (e.g. `C:\Users\Example Person\...` or `C:\Users\John Doe\AppData\...`) are redacted completely without leaking suffix tokens (such as `"Person"` or `"Doe"`) into output or error diagnostics.
-- **Bounded UNC / Network Share Handling:** Concrete host and share identifiers (e.g. `\\nas01\share`, `//server02/share`, `\\corp.internal\storage`) are redacted to `[REDACTED_PATH]`. Generic documentation and placeholder hosts (`server`, `host`, `example`, `placeholder`, `localhost`, `127.0.0.1`) are preserved.
-- **Credentials & Tokens:** Scans and redacts GitHub personal access tokens (`ghp_`, `github_pat_`), OAuth tokens (`gho_`), user/server tokens (`ghu_`, `ghs_`, `ghr_`), and HTTP `Bearer` tokens to `[REDACTED_TOKEN]`. URL query parameters are redacted to `?[REDACTED_QUERY]`.
+- **Unicode, Apostrophes & Multi-Word Names:** Handles usernames with Unicode characters (e.g. `C:\Users\Éxample\...`), apostrophes (e.g. `C:\Users\O'Connor\...`), and multi-word names (e.g. `C:\Users\Example Middle Person\...`). Quoted and unquoted paths are fully consumed up to terminal prose delimiters so that no suffix tokens or trailing directory components leak into output or error diagnostics.
+- **Bounded UNC / Network Share Handling:** Host-only bypasses are strictly prohibited. The guard preserves only exact bare documentation placeholder templates (`\\server\share`, `//server/share`, `\\host\share`, `//host/share`, `\\example\share`, `//example/share`) without private shares or subpaths. Any concrete share or private suffix (e.g. `\\server\share\repo\private_tool`, `\\localhost\my_share\data`, `\\127.0.0.1\c$\secret`, `\\nas01\Team-Share\private_tool`) is detected and redacted to `[REDACTED_PATH]`.
+- **Credentials & Tokens:** Scans and redacts GitHub personal access tokens (`ghp_`, `github_pat_`, including embedded tokens like `prefix_ghp_...`), OAuth tokens (`gho_`), user/server tokens (`ghu_`, `ghs_`, `ghr_`), and HTTP `Bearer` tokens adhering to RFC 6750 Section 2.1 b64token syntax (`[A-Za-z0-9\-._~+/]+=*`) to `[REDACTED_TOKEN]`. Complete URL query parameter strings including dots and percent-encoding are redacted to `?[REDACTED_QUERY]`.
 - **Preserved Safe Paths:** Safe generic development paths (`D:\dev\DXVK-Companion`, `C:\dev\...`), program directories (`C:\Program Files\...`), game installations (`C:\Games\...`), repository-relative paths, and standard placeholders (`[REDACTED_PATH]`, `<redacted-filename>`) are explicitly preserved.
 
 ### Consumer Integration & Redaction Precedence

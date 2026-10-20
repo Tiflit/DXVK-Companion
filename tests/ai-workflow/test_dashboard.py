@@ -783,12 +783,29 @@ class TestDashboardGenerator(unittest.TestCase):
         self.assertIn(r"C:\Program Files\Git", sanitized)
 
     def test_dashboard_sanitizer_redacts_concrete_unc_paths(self):
-        """Redacts concrete UNC paths while preserving generic placeholder hosts."""
-        text = r"Share at \\nas01\share vs \\server\share"
+        """Redacts concrete UNC paths under any host while preserving exact bare documentation templates."""
+        text = r"Share at \\nas01\Team-Share vs \\server\share vs \\localhost\my_share"
         sanitized = update_dashboard.sanitize_display_text(text)
-        self.assertNotIn("nas01", sanitized)
+        self.assertNotIn("Team-Share", sanitized)
+        self.assertNotIn("my_share", sanitized)
         self.assertIn(r"[REDACTED_PATH]", sanitized)
         self.assertIn(r"\\server\share", sanitized)
+
+    def test_dashboard_sanitizer_redacts_unicode_and_complex_tokens(self):
+        """Redacts Unicode personal paths, complex queries, and embedded tokens in dashboard display text."""
+        text = (
+            "User: C:\\Users\\Éxample\\PrivateSuffix "
+            "URL: https://api.github.com/issues?token=prefix.PrivateSentinel%2FPrivateTail "
+            "Token: prefix_ghp_1234567890abcdef1234567890abcdef"
+        )
+        sanitized = update_dashboard.sanitize_display_text(text)
+        self.assertNotIn("Éxample", sanitized)
+        self.assertNotIn("PrivateSuffix", sanitized)
+        self.assertNotIn("PrivateSentinel", sanitized)
+        self.assertNotIn("1234567890abcdef", sanitized)
+        self.assertIn("[REDACTED_PATH]", sanitized)
+        self.assertIn("?[REDACTED_QUERY]", sanitized)
+        self.assertIn("prefix_[REDACTED_TOKEN]", sanitized)
 
     def test_workflow_yaml_structure_and_least_privilege(self):
         """

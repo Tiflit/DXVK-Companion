@@ -102,3 +102,29 @@ Implement Issue #184 (Batch 2: Shared privacy detection and redaction guard for 
   - `build-and-test`: PASS ([Run 39342736409](https://github.com/Tiflit/DXVK-Companion/actions/runs/39342736409)) (971 tests passed in 2m3s)
   - `Acquire Facts and Render Snapshot`: PASS ([Run 39342734161](https://github.com/Tiflit/DXVK-Companion/actions/runs/39342734161))
   - `Publish Dashboard to Dedicated Issue`: PASS ([Run 39342734161](https://github.com/Tiflit/DXVK-Companion/actions/runs/39342734161))
+
+---
+
+### 4. Review Resolutions (Codex Review R1–R4)
+
+Following review of PR #190 by Codex, findings R1–R4 were resolved on branch `feat/issue-184-shared-privacy-guard`:
+
+1. **R1 (P1) — Complete Personal-Home Path Redaction (Unicode, Apostrophes, Multi-word)**:
+   - Eliminated ASCII-only restrictions and apostrophe/space truncation in `scripts/ai-workflow/privacy_guard.py`.
+   - Updated `UNQUOTED_HOME_PATH_PATTERN` with Unicode-aware word matching (`\w`), apostrophe handling (`O'Connor`), and multi-word names (`Example Middle Person`) across Windows, WSL, and POSIX prefixes.
+   - Enforced paired delimiters (`"..."`, `'...'`, `` `...` ``, `(...)`, `[...]`, `<...>`, `{...}`) to preserve quoted names with spaces or apostrophes.
+   - Ensured exact parity between `scan_for_privacy_violations` detection and `redact_privacy_text` redaction so no suffix tokens or trailing directory components leak into output or error diagnostics.
+
+2. **R2 (P1) — Strict Bounded UNC Template Preservation**:
+   - Removed broad host-only bypasses (`GENERIC_UNC_HOSTS`).
+   - Implemented `is_generic_unc_template(full_unc)`: preserves only exact bare documentation placeholder templates (`\\server\share`, `//server/share`, `\\host\share`, `//host/share`, `\\example\share`, `//example/share`) without private shares or subpaths.
+   - Concrete shares and private suffixes under any host (e.g. `\\server\share\repo\private_tool`, `\\localhost\my_share\data`, `\\127.0.0.1\c$\secret`, `\\nas01\Team-Share\private_tool`) are detected and redacted to `[REDACTED_PATH]`.
+
+3. **R3 (P1) — RFC 6750 Bearer Tokens, Full Query Strings & Embedded Tokens**:
+   - Expanded query string pattern `r"\?[^\s\"'`()<>[\]{}|#]+"` to consume complete query parameter values including dots, percent-encoding, and nested symbols (`?[REDACTED_QUERY]`).
+   - Updated `BEARER_TOKEN_PATTERN` to RFC 6750 Section 2.1 b64token syntax (`[A-Za-z0-9\-._~+/]+=*`), supporting `~`, `+`, `/`, and trailing `=`.
+   - Removed leading `\b` word boundary on GitHub token patterns to preserve prior dashboard behavior for embedded tokens (`prefix_ghp_...`).
+
+4. **R4 (P2) — Dynamic Execution Boundary Test & Documentation Scoping**:
+   - Added `test_guarded_import_verification_zero_side_effects` in `tests/ai-workflow/test_privacy_guard.py`: instruments network (`socket`, `urllib`), subprocess (`subprocess.Popen`), environment probing (`os.environ`), and filesystem writes (`io.open_code`, `builtins.open(..., 'w')`) during `importlib.reload`.
+   - Updated `docs/ai/PRIVACY-HANDLING.md`: explicitly bounded operational scope to the two in-repo consumers (`update_pr_body.py` and `update_dashboard.py`), documented the pattern-based nature without claiming general personal-data discovery or zero-leak guarantees, and distinguished static source checks from dynamic execution boundary verification.

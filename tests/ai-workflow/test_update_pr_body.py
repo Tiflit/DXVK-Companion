@@ -234,10 +234,25 @@ class TestUpdatePrBody(unittest.TestCase):
         self.assertEqual(len(violations), 1)
         self.assertEqual(violations[0][1], "UNC / network path")
 
-    def test_privacy_scan_preserves_generic_unc_placeholders(self):
-        text = r"Example: \\server\share\file or \\localhost\data"
+    def test_privacy_scan_preserves_bare_generic_unc_templates_only(self):
+        """Preserves only exact bare documentation placeholder templates without private shares or suffixes."""
+        text = r"Example templates: \\server\share or //host/share"
         violations = scan_for_privacy_violations(text)
         self.assertEqual(len(violations), 0)
+
+    def test_privacy_scan_detects_concrete_unc_under_example_hosts(self):
+        """Detects concrete shares and private suffixes even under localhost or server hosts (R2)."""
+        samples = [
+            r"Path: \\localhost\data",
+            r"Path: \\127.0.0.1\c$\secret",
+            r"Path: \\server\share\repo\private_tool",
+            r"Path: \\server\Team-Share",
+        ]
+        for s in samples:
+            with self.subTest(sample=s):
+                violations = scan_for_privacy_violations(s)
+                self.assertGreaterEqual(len(violations), 1, f"Expected violation for {s}")
+                self.assertEqual(violations[0][1], "UNC / network path")
 
     def test_privacy_scan_and_redaction_for_paths_with_spaces(self):
         text = r"Error at C:\Users\Example Person\Projects\DXVK\file.txt on line 5"
@@ -248,6 +263,23 @@ class TestUpdatePrBody(unittest.TestCase):
         self.assertNotIn("Example", sanitized)
         self.assertNotIn("Person", sanitized)
         self.assertIn("[REDACTED_PATH]", sanitized)
+
+    def test_privacy_scan_and_redaction_for_unicode_and_complex_tokens(self):
+        """Verifies complete redaction of Unicode home paths, complex queries, and RFC 6750 tokens."""
+        text = (
+            "Path: C:\\Users\\Éxample\\PrivateSuffix "
+            "URL: https://example.com/api?token=prefix.PrivateSentinel%2FPrivateTail "
+            "Auth: Bearer ABCDEFGH+PrivateSentinel/=="
+        )
+        violations = scan_for_privacy_violations(text)
+        self.assertGreaterEqual(len(violations), 2)
+        sanitized = sanitize_privacy_text(text)
+        self.assertNotIn("Éxample", sanitized)
+        self.assertNotIn("PrivateSuffix", sanitized)
+        self.assertNotIn("PrivateSentinel", sanitized)
+        self.assertIn("[REDACTED_PATH]", sanitized)
+        self.assertIn("?[REDACTED_QUERY]", sanitized)
+        self.assertIn("[REDACTED_TOKEN]", sanitized)
 
     # =========================================================================
     # 3. PR Review Preservation & Modifications (Existing Regressions)

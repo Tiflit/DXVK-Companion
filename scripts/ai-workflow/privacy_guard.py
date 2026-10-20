@@ -1,8 +1,9 @@
 """
 Standard-library-only privacy detection and redaction guard for publication helpers.
 
-Provides shared detection of sensitive personal-home paths, credentials, tokens,
-and concrete UNC network paths, while preserving generic development paths,
+Provides shared pattern-based detection and safe display redaction of sensitive
+personal-home paths, credentials, tokens, and concrete UNC network paths for
+update_pr_body.py and update_dashboard.py, while preserving generic development paths,
 program names, and placeholders.
 
 Governed by docs/ai/PRIVACY-HANDLING.md and Issue #184.
@@ -17,9 +18,10 @@ from typing import Any, List, NamedTuple, Optional, Pattern, Set, Tuple, Union
 __all__ = [
     "PrivacyViolation",
     "PrivacyViolationError",
-    "GENERIC_UNC_HOSTS",
+    "GENERIC_UNC_TEMPLATES",
     "scan_for_privacy_violations",
     "is_privacy_sensitive_text",
+    "is_generic_unc_template",
     "redact_privacy_text",
     "sanitize_privacy_text",
     "sanitize_display_text",
@@ -41,88 +43,167 @@ class PrivacyViolationError(Exception):
     pass
 
 
-# Literal host placeholders for UNC paths that are known generic documentation examples
-GENERIC_UNC_HOSTS: Set[str] = {
-    "server",
-    "host",
-    "example",
-    "placeholder",
-    "localhost",
-    "127.0.0.1",
+# Exact bare documentation placeholder templates for UNC paths.
+# Only these literal templates (without private shares or arbitrary subpaths) are preserved.
+GENERIC_UNC_TEMPLATES: Set[str] = {
+    r"\\server\share",
+    r"\\host\share",
+    r"\\example\share",
+    r"\\placeholder\share",
+    r"//server/share",
+    r"//host/share",
+    r"//example/share",
+    r"//placeholder/share",
 }
 
-# Credential tokens (GitHub personal access tokens and OAuth/bearer tokens)
+# Credential tokens: GitHub tokens (including embedded after prefix/underscore) and Bearer tokens (RFC 6750)
 CREDENTIAL_TOKEN_PATTERN: Pattern[str] = re.compile(
-    r"\b(?:ghp_|github_pat_|gho_|ghu_|ghs_|ghr_)[A-Za-z0-9_]{8,}\b|\bbearer\s+[A-Za-z0-9_.-]{8,}\b",
+    r"(?:ghp_|github_pat_|gho_|ghu_|ghs_|ghr_)[A-Za-z0-9_]{8,}|(?:^|[\s\"'`(<\[{:,=])bearer\s+[A-Za-z0-9\-._~+/]{8,}=*",
     re.IGNORECASE,
 )
 
-# URL query string parameter pattern
-QUERY_STRING_PATTERN: Pattern[str] = re.compile(r"\?[\w=&-]+")
+# Specific pattern for GitHub tokens to redact without requiring leading word boundary
+GITHUB_TOKEN_PATTERN: Pattern[str] = re.compile(
+    r"(?:ghp_|github_pat_|gho_|ghu_|ghs_|ghr_)[A-Za-z0-9_]{8,}",
+    re.IGNORECASE,
+)
+
+# Specific pattern for Bearer tokens adhering to RFC 6750 section 2.1 b64token syntax
+BEARER_TOKEN_PATTERN: Pattern[str] = re.compile(
+    r"(^|[\s\"'`(<\[{:,=])bearer\s+[A-Za-z0-9\-._~+/]{8,}=*",
+    re.IGNORECASE,
+)
+
+# URL query string parameter pattern: matches ? through full query string up to delimiter/whitespace/anchor
+QUERY_STRING_PATTERN: Pattern[str] = re.compile(
+    r"\?[^\s\"'`()<>[\]{}|#]+",
+    re.IGNORECASE,
+)
 
 # Windows personal home path prefix (matches drive root or rooted / Users or Documents and Settings)
-# Supports single and double backslashes/slashes
+# Supports single and double backslashes/slashes across case variants
 WINDOWS_HOME_PREFIX_PATTERN: Pattern[str] = re.compile(
-    r"(?:file:///)?(?:[A-Za-z]:[/\\]+|(?<![A-Za-z0-9_.-])[/\\]+)(?:Users|Documents and Settings)[/\\]+",
+    r"(?:file:///)?(?:[A-Za-z]:[/\\]+|(?<![^\s\"'`()<>[\]{}|;,=])[/\\]+)(?:Users|Documents and Settings)[/\\]+",
     re.IGNORECASE,
 )
 
 # WSL Windows personal path prefix (/mnt/<drive>/Users or Documents and Settings)
 WSL_HOME_PREFIX_PATTERN: Pattern[str] = re.compile(
-    r"(?<![A-Za-z0-9_.-])/mnt/[A-Za-z]/(?:Users|Documents and Settings)[/\\]+",
+    r"(?<![^\s\"'`()<>[\]{}|;,=])/mnt/[A-Za-z]/(?:Users|Documents and Settings)[/\\]+",
     re.IGNORECASE,
 )
 
 # POSIX personal home path prefix (/home/<user> or /Users/<user>)
 POSIX_HOME_PREFIX_PATTERN: Pattern[str] = re.compile(
-    r"(?:file:///)?(?<![A-Za-z0-9_.-])/(?:home|Users)/[^\s\"'`|<>]+",
+    r"(?:file:///)?(?<![^\s\"'`()<>[\]{}|;,=])/(?:home|Users)/[^\s\"'`|<>]+",
     re.IGNORECASE,
 )
 
-# Quoted Windows, WSL, or POSIX home paths inside quotes or enclosing delimiters:
-# "", '', ``, <>, (), [], or {}
-QUOTED_HOME_PATH_PATTERN: Pattern[str] = re.compile(
-    r"""(?P<open>["'`(<\[{])"""
-    r"""(?P<path>(?:file:///)?(?:[A-Za-z]:[/\\]+|(?<![A-Za-z0-9_.-])[/\\]+|/(?:mnt/[A-Za-z]/)?)(?:Users|Documents and Settings|home)[/\\]+[^"'`()<>[\]{}\r\n\t]+)"""
-    r"""(?P<close>["'`>)\]}])""",
+# Individual pair-matched quoted/bracketed personal paths:
+# Matches quotes ("...", '...', `...`), parens ((...)), brackets ([...]), angles (<...>), and braces ({...})
+# Each opening delimiter matches only its corresponding closing delimiter, preserving apostrophes and
+# delimiters inside other quote styles.
+QUOTED_HOME_PATH_PATTERNS: List[Tuple[Pattern[str], str, str]] = [
+    (
+        re.compile(
+            r'"((?:file:///)?(?:[A-Za-z]:[/\\]+|(?<![^\s"\'`()<>[\]{}|;,=])[/\\]+|/(?:mnt/[A-Za-z]/)?)(?:Users|Documents and Settings|home)[/\\]+[^"\r\n\t]+)"',
+            re.IGNORECASE,
+        ),
+        '"',
+        '"',
+    ),
+    (
+        re.compile(
+            r"'((?:file:///)?(?:[A-Za-z]:[/\\]+|(?<![^\s\"'`()<>[\]{}|;,=])[/\\]+|/(?:mnt/[A-Za-z]/)?)(?:Users|Documents and Settings|home)[/\\]+[^'\r\n\t]+)'",
+            re.IGNORECASE,
+        ),
+        "'",
+        "'",
+    ),
+    (
+        re.compile(
+            r"`((?:file:///)?(?:[A-Za-z]:[/\\]+|(?<![^\s\"'`()<>[\]{}|;,=])[/\\]+|/(?:mnt/[A-Za-z]/)?)(?:Users|Documents and Settings|home)[/\\]+[^`\r\n\t]+)`",
+            re.IGNORECASE,
+        ),
+        "`",
+        "`",
+    ),
+    (
+        re.compile(
+            r"\(((?:file:///)?(?:[A-Za-z]:[/\\]+|(?<![^\s\"'`()<>[\]{}|;,=])[/\\]+|/(?:mnt/[A-Za-z]/)?)(?:Users|Documents and Settings|home)[/\\]+[^)\r\n\t]+)\)",
+            re.IGNORECASE,
+        ),
+        "(",
+        ")",
+    ),
+    (
+        re.compile(
+            r"\[((?:file:///)?(?:[A-Za-z]:[/\\]+|(?<![^\s\"'`()<>[\]{}|;,=])[/\\]+|/(?:mnt/[A-Za-z]/)?)(?:Users|Documents and Settings|home)[/\\]+[^\]\r\n\t]+)\]",
+            re.IGNORECASE,
+        ),
+        "[",
+        "]",
+    ),
+    (
+        re.compile(
+            r"<((?:file:///)?(?:[A-Za-z]:[/\\]+|(?<![^\s\"'`()<>[\]{}|;,=])[/\\]+|/(?:mnt/[A-Za-z]/)?)(?:Users|Documents and Settings|home)[/\\]+[^>\r\n\t]+)>",
+            re.IGNORECASE,
+        ),
+        "<",
+        ">",
+    ),
+    (
+        re.compile(
+            r"\{((?:file:///)?(?:[A-Za-z]:[/\\]+|(?<![^\s\"'`()<>[\]{}|;,=])[/\\]+|/(?:mnt/[A-Za-z]/)?)(?:Users|Documents and Settings|home)[/\\]+[^}\r\n\t]+)\}",
+            re.IGNORECASE,
+        ),
+        "{",
+        "}",
+    ),
+]
+
+# Unquoted personal path pattern:
+# Matches from the personal home prefix through all path segments (Unicode, spaces, apostrophes, etc.)
+# up to a safe delimiter or end of line.
+UNQUOTED_HOME_PATH_PATTERN: Pattern[str] = re.compile(
+    r"(?P<prefix>(?:file:///)?(?:[A-Za-z]:[/\\]+|(?<![^\s\"'`()<>[\]{}|;,=])[/\\]+)(?:Users|Documents and Settings)[/\\]+|(?<![^\s\"'`()<>[\]{}|;,=])/mnt/[A-Za-z]/(?:Users|Documents and Settings)[/\\]+|(?:file:///)?(?<![^\s\"'`()<>[\]{}|;,=])/(?:home|Users)/)"
+    r"(?P<tail>(?:[^\s\"'`()<>[\]{}|;,:\\]+(?: [^\s\"'`()<>[\]{}|;,:\\]+)*[/\\]+)*(?:[^\s\"'`()<>[\]{}|;,:\\]+(?: [^\s\"'`()<>[\]{}|;,:\\]+)*)?)[/\\]?",
     re.IGNORECASE,
 )
 
-# Unquoted Windows personal home path with path segments and optional spaces
-UNQUOTED_WINDOWS_HOME_PATTERN: Pattern[str] = re.compile(
-    r"(?:file:///)?(?:[A-Za-z]:[/\\]+|(?<![A-Za-z0-9_.-])[/\\]+)(?:Users|Documents and Settings)[/\\]+"
-    r"(?:[A-Za-z0-9_.-]+(?: [A-Za-z0-9_.-]+)*[/\\]+)*"
-    r"(?:[A-Za-z0-9_.-]+\.[A-Za-z0-9_.-]+|\.\.\.|[A-Za-z0-9_.-]+(?: [A-Za-z0-9_.-]+)?)[/\\]?",
+# UNC pattern matching network share paths with backslashes or forward slashes
+UNC_PATH_PATTERN: Pattern[str] = re.compile(
+    r"(?:\\\\|(?<![A-Za-z0-9+.-]:)//)"
+    r"(?P<host>[^\s\\/\"'*?<>|]+)"
+    r"[/\\]+"
+    r"(?P<share>[^\s\\/\"'*?<>|]+)"
+    r"(?P<extra>(?:[/\\][^\s\"'`()<>[\]{}|;,:\\]+(?: [^\s\"'`()<>[\]{}|;,:\\]+)*)*)[/\\]?",
     re.IGNORECASE,
 )
 
-# Unquoted WSL Windows personal home path
-UNQUOTED_WSL_HOME_PATTERN: Pattern[str] = re.compile(
-    r"(?<![A-Za-z0-9_.-])/mnt/[A-Za-z]/(?:Users|Documents and Settings)[/\\]+"
-    r"(?:[A-Za-z0-9_.-]+(?: [A-Za-z0-9_.-]+)*[/\\]+)*"
-    r"(?:[A-Za-z0-9_.-]+\.[A-Za-z0-9_.-]+|\.\.\.|[A-Za-z0-9_.-]+(?: [A-Za-z0-9_.-]+)?)[/\\]?",
-    re.IGNORECASE,
-)
 
-# Unquoted POSIX personal home path
-UNQUOTED_POSIX_HOME_PATTERN: Pattern[str] = re.compile(
-    r"(?:file:///)?(?<![A-Za-z0-9_.-])/(?:home|Users)/"
-    r"(?:[A-Za-z0-9_.-]+(?: [A-Za-z0-9_.-]+)*[/\\]+)*"
-    r"(?:[A-Za-z0-9_.-]+\.[A-Za-z0-9_.-]+|\.\.\.|[A-Za-z0-9_.-]+(?: [A-Za-z0-9_.-]+)?)[/\\]?",
-    re.IGNORECASE,
-)
+def is_generic_unc_template(full_unc: str) -> bool:
+    """
+    Returns True ONLY if the UNC path is an exact bare documentation placeholder template.
+    Any path with a concrete host, private share, or arbitrary subpath returns False.
+    """
+    normalized = full_unc.strip().replace("/", "\\").lower().rstrip("\\")
+    return normalized in {
+        r"\\server\share",
+        r"\\host\share",
+        r"\\example\share",
+        r"\\placeholder\share",
+    }
 
 
 def find_concrete_unc_violations(line: str) -> bool:
     """
     Checks if a line contains concrete UNC or network share paths,
-    excluding generic placeholder hosts (server, host, example, placeholder, localhost, 127.0.0.1).
+    excluding only exact bare generic placeholder templates (\\\\server\\share, \\\\host\\share, etc.).
     """
-    for m in re.finditer(r"\\\\([A-Za-z0-9_.-]+)\\[A-Za-z0-9_.$]+", line):
-        if m.group(1).lower() not in GENERIC_UNC_HOSTS:
-            return True
-    for m in re.finditer(r"(?<![A-Za-z0-9+.-]:)//([A-Za-z0-9_.-]+)/[A-Za-z0-9_.$]+", line):
-        if m.group(1).lower() not in GENERIC_UNC_HOSTS:
+    for m in UNC_PATH_PATTERN.finditer(line):
+        full = m.group(0)
+        if not is_generic_unc_template(full):
             return True
     return False
 
@@ -130,28 +211,16 @@ def find_concrete_unc_violations(line: str) -> bool:
 def redact_unc_paths(text: str) -> str:
     """
     Redacts concrete UNC and network share paths (e.g. \\\\nas01\\share, //server02/share),
-    while preserving generic placeholder hosts (server, host, example, placeholder, localhost, 127.0.0.1).
+    while preserving exact bare generic documentation placeholder templates.
     """
     def _replace_unc(m: re.Match) -> str:
         full = m.group(0)
-        host = m.group(1).lower()
-        if host in GENERIC_UNC_HOSTS:
+        if is_generic_unc_template(full):
             return full
         return "[REDACTED_PATH]"
 
-    # Backslash UNC: \\host\share[\folder...][\file]
-    text = re.sub(
-        r"\\\\([A-Za-z0-9_.-]+)\\[A-Za-z0-9_.$]+(?:[/\\](?:[A-Za-z0-9_.-]+(?: [A-Za-z0-9_.-]+)*(?=[/\\])|[A-Za-z0-9_.-]+\.[A-Za-z0-9_.-]+|\.\.\.|[A-Za-z0-9_.-]+))*[/\\]?",
-        _replace_unc,
-        text,
-    )
-    # Forward slash UNC: //host/share[/folder...][/file]
-    text = re.sub(
-        r"(?<![A-Za-z0-9+.-]:)//([A-Za-z0-9_.-]+)/[A-Za-z0-9_.$]+(?:/(?:[A-Za-z0-9_.-]+(?: [A-Za-z0-9_.-]+)*(?=/)|[A-Za-z0-9_.-]+\.[A-Za-z0-9_.-]+|\.\.\.|[A-Za-z0-9_.-]+))*[/\\]?",
-        _replace_unc,
-        text,
-    )
-    return text
+    return UNC_PATH_PATTERN.sub(_replace_unc, text)
+
 
 def scan_for_privacy_violations(text: str) -> List[Tuple[int, str]]:
     """
@@ -203,22 +272,21 @@ def redact_privacy_text(text: Optional[str]) -> str:
         return ""
     clean = str(text)
 
-    # 1. Redact quoted/bracketed personal paths first
-    def _replace_quoted(m: re.Match) -> str:
-        return m.group("open") + "[REDACTED_PATH]" + m.group("close")
-
-    clean = QUOTED_HOME_PATH_PATTERN.sub(_replace_quoted, clean)
+    # 1. Redact quoted/bracketed personal paths first (per-pair matching)
+    for pat, open_delim, close_delim in QUOTED_HOME_PATH_PATTERNS:
+        def _replace_quoted(m: re.Match, o=open_delim, c=close_delim) -> str:
+            return o + "[REDACTED_PATH]" + c
+        clean = pat.sub(_replace_quoted, clean)
 
     # 2. Redact unquoted personal paths
-    clean = UNQUOTED_WINDOWS_HOME_PATTERN.sub("[REDACTED_PATH]", clean)
-    clean = UNQUOTED_WSL_HOME_PATTERN.sub("[REDACTED_PATH]", clean)
-    clean = UNQUOTED_POSIX_HOME_PATTERN.sub("[REDACTED_PATH]", clean)
+    clean = UNQUOTED_HOME_PATH_PATTERN.sub("[REDACTED_PATH]", clean)
 
     # 3. Redact concrete UNC / network paths
     clean = redact_unc_paths(clean)
 
-    # 4. Redact tokens
-    clean = CREDENTIAL_TOKEN_PATTERN.sub("[REDACTED_TOKEN]", clean)
+    # 4. Redact tokens (GitHub tokens and RFC 6750 Bearer tokens)
+    clean = GITHUB_TOKEN_PATTERN.sub("[REDACTED_TOKEN]", clean)
+    clean = BEARER_TOKEN_PATTERN.sub(r"\g<1>[REDACTED_TOKEN]", clean)
 
     # 5. Redact URL query strings
     clean = QUERY_STRING_PATTERN.sub("?[REDACTED_QUERY]", clean)
