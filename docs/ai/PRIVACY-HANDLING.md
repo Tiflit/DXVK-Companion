@@ -79,7 +79,32 @@ Both consumers (`scripts/ai-workflow/update_pr_body.py` and `scripts/ai-workflow
 
 ---
 
-## 4. Incident Response Procedure
+## 4. Explicit local publication preflight
+
+`scripts/ai-workflow/publication_preflight.py` is an opt-in, read-only cooperative check. It does not publish, install hooks, modify Git configuration, create a terms file, discover account/host identities, or obtain credentials. It complements the existing offline scope/hygiene preflight; a result is not authorization, scope approval or remote-freshness evidence. The declared `--repo` must be an existing local checkout root in every mode. Text mode reads only its layout metadata plus the explicitly supplied files; Git modes read selected index/object data, not candidate working-tree contents.
+
+Examples (run only within an approved local execution profile and after the owner's readiness acknowledgment):
+
+```powershell
+python scripts/ai-workflow/publication_preflight.py --repo D:/dev/Project --text-file D:/dev/local-private/comment.md
+python scripts/ai-workflow/publication_preflight.py --repo D:/dev/Project --staged
+python scripts/ai-workflow/publication_preflight.py --repo D:/dev/Project --commits BASE..TIP --private-terms D:/dev/local-private/terms.txt
+python scripts/ai-workflow/publication_preflight.py --repo D:/dev/Project --commits BASE..TIP --public-identity 'Generic Agent <agent@example.invalid>'
+```
+
+Only one input mode is permitted. Repeat `--text-file` for multiple explicit UTF-8 files. `--staged` requires an existing HEAD and excludes unstaged/untracked/ignored content; it checks both old and new blobs, including deleted text. It cannot inspect the identity/message of a commit not yet created: repeat the check in commit mode before publishing commits. `--commits` accepts an explicit local two-dot range using simple refs/full object IDs (no shell expressions, revision operators or automatic remote-ref selection). It checks every introduced commit's raw author/committer fields and message, and changes relative to every parent; an endpoint-only diff is insufficient. Annotated tag metadata, future commits and omitted attachments are outside this mode.
+
+Git operations are fixed plumbing reads (`rev-parse`, `diff-index`, `diff-tree`, `rev-list`, `cat-file`) with no shell. Hooks, fsmonitor, external diffs, textconv, replacement objects, optional locks and lazy object fetch are disabled for those calls without persistent configuration changes. Raw-object access follows Git's [diff-index raw format](https://git-scm.com/docs/git-diff-index), [diff-tree parent comparisons](https://git-scm.com/docs/git-diff-tree) and [cat-file object reads](https://git-scm.com/docs/git-cat-file); it never requests `--filters` or `--follow-symlinks`. Git must support the `--no-lazy-fetch` safety flag; unsupported versions refuse. Before Git setup, bounded reads of the declared repository metadata reject local config include sections and continued config lines; include targets are not opened. Global/system Git configuration and inherited identity/credential/Git override variables are not forwarded. This assumes a trusted native Git executable and explicitly selected local filesystem; the checker cannot attest the physical location of operating-system mounts. Explicit UNC/URL paths and Windows shell-wrapper Git executables are refused. There are no network/authentication APIs, fetch/push calls or connector integrations.
+
+An optional private-terms file must be a regular UTF-8 file outside the selected checkout, its Git metadata/common directory, and the tool checkout. Symlinked files and lexically in-checkout aliases are rejected. Supply 1–256 nonempty literal lines, each 3–128 characters, within 32 KiB. Matching uses Unicode NFC normalization and casefolded **substring** matching, without regular expressions or guessed word boundaries. This deliberately favors false positives. No list is discovered, generated, copied into fixtures/CI/source, hashed into the report or echoed. Cloud tests use synthetic terms only. Keep real lists private; never paste them into a prompt, journal or PR.
+
+Default public commit identities require a GitHub noreply address (`login@users.noreply.github.com` or `number+login@users.noreply.github.com`) and a matching login in the name field, including supported bot suffixes. A noreply email alone does not approve a different personal name. Repeated `--public-identity 'Generic Name <agent@example.invalid>'` explicitly declares up to 16 approved generic identities using reserved `.invalid` addresses; it is a human-provided policy input, not automatic proof that the chosen name is generic. Private-term matching still applies. Identities/history are never rewritten. Ordinary third-party attribution in source text is not classified as a commit identity.
+
+Inputs are bounded: 128 files, 64 introduced commits, 1 MiB per file/object, 8 MiB total inspected content, 2 MiB per Git response, 30 seconds overall Git/check deadline (10 seconds per read command, plus bounded owned-process cleanup). Output is one bounded JSON report with at most 32 category/ordinal/line findings, remaining finding count, exact inspected counts, resolved base/tip IDs where applicable, limits and a candidate SHA-256 covering selected names/content/object identities. It contains no local paths, matched terms, raw argument values, identities or messages. Private terms are not part of that public digest. Repeated basenames count as separate supplied text inputs. A changed payload requires a new check; this is not a reusable approval token.
+
+Exit **0** means the supported selected candidate was inspected without a pattern finding; **1** means inspection completed but findings refuse publication; **2** means incomplete/invalid/unsupported and is also a refusal. Unknown suffixes, binary/control-containing/non-UTF-8 data, LFS pointers, symlinks/gitlinks, unmerged index entries, unborn/missing HEAD, shallow/overlaid history, missing objects, oversize data, changing staged snapshots and failed reads never receive a clean result. Supported text suffixes/names are explicitly listed in the checker. Pattern detection is not general PII recognition; deliberately sensitive synthetic fixtures can be flagged too. Unsupported attachments and contextual findings require human review using an approved tool; this checker supplies no bypass, attachment scanner or publication broker.
+
+## 5. Incident Response Procedure
 
 If private recovery material, personal paths, or credentials are accidentally committed, transmitted, or detected in public records:
 
