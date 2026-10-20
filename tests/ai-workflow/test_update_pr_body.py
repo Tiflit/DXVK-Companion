@@ -236,7 +236,7 @@ class TestUpdatePrBody(unittest.TestCase):
 
     def test_privacy_scan_preserves_bare_generic_unc_templates_only(self):
         """Preserves only exact bare documentation placeholder templates without private shares or suffixes."""
-        text = r"Example templates: \\server\share or //host/share"
+        text = r"Example templates: `\\server\share` or `//host/share`"
         violations = scan_for_privacy_violations(text)
         self.assertEqual(len(violations), 0)
 
@@ -339,10 +339,38 @@ class TestUpdatePrBody(unittest.TestCase):
                 for tok in forbidden_tokens:
                     self.assertNotIn(tok, sanitized, f"Token '{tok}' leaked in sanitized text")
 
-        # Verify bare template is preserved
-        bare = r"Preserve \\server\share in documentation"
+        # Verify structurally isolated bare template is preserved, while an unquoted template followed by
+        # prose is an ambiguous possibly-incomplete prefix and is conservatively redacted
+        bare = r"Preserve `\\server\share` in documentation"
         self.assertEqual(len(scan_for_privacy_violations(bare)), 0)
         self.assertIn(r"\\server\share", sanitize_privacy_text(bare))
+
+        ambiguous = r"Preserve \\server\share in documentation"
+        self.assertGreaterEqual(len(scan_for_privacy_violations(ambiguous)), 1)
+        self.assertNotIn("documentation", sanitize_privacy_text(ambiguous))
+
+    def test_privacy_scan_and_redaction_for_stopword_components_and_template_continuations(self):
+        """R1/R2: Stopword-containing components and template continuations never leave unique suffixes."""
+        cases = [
+            (r"At C:\Users\Example\Private and Sentinel.txt", ["Private", "Sentinel"]),
+            (r"At /home/Example/Private with Sentinel.txt", ["Private", "Sentinel"]),
+            (r"At /mnt/c/Users/Example/Private for Sentinel", ["Private", "Sentinel"]),
+            (r"At C:\Users\Example\Private! Surname", ["Private", "Surname"]),
+            (r"At \\server\share and Sentinel.txt", ["Sentinel"]),
+            (r"At \\nas01\share\Private and Sentinel.txt", ["Private", "Sentinel"]),
+            (r"At \\server\share\Private and Sentinel.txt", ["Private", "Sentinel"]),
+        ]
+        for text, forbidden_tokens in cases:
+            with self.subTest(text=text):
+                self.assertGreaterEqual(len(scan_for_privacy_violations(text)), 1)
+                sanitized = sanitize_privacy_text(text)
+                self.assertIn("[REDACTED_PATH]", sanitized)
+                diag = update_pr_body.sanitize_diagnostic(text)
+                diff = update_pr_body.sanitize_diff_line("-" + text)
+                for tok in forbidden_tokens:
+                    self.assertNotIn(tok, sanitized)
+                    self.assertNotIn(tok, diag)
+                    self.assertNotIn(tok, diff)
 
     # =========================================================================
     # 3. PR Review Preservation & Modifications (Existing Regressions)

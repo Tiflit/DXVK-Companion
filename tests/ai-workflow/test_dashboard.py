@@ -784,7 +784,7 @@ class TestDashboardGenerator(unittest.TestCase):
 
     def test_dashboard_sanitizer_redacts_concrete_unc_paths(self):
         """Redacts concrete UNC paths under any host while preserving exact bare documentation templates."""
-        text = r"Share at \\nas01\Team-Share vs \\server\share vs \\localhost\my_share"
+        text = r"Share at `\\nas01\Team-Share` vs `\\server\share` vs `\\localhost\my_share`"
         sanitized = update_dashboard.sanitize_display_text(text, max_len=200)
         self.assertNotIn("Team-Share", sanitized)
         self.assertNotIn("my_share", sanitized)
@@ -861,9 +861,33 @@ class TestDashboardGenerator(unittest.TestCase):
                 for tok in forbidden_tokens:
                     self.assertNotIn(tok, sanitized, f"Token '{tok}' leaked in dashboard display text")
 
-        bare = r"Preserve \\server\share in dashboard notes"
+        bare = r"Preserve `\\server\share` in dashboard notes"
         san_bare = update_dashboard.sanitize_display_text(bare, max_len=200)
         self.assertIn(r"\\server\share", san_bare)
+
+        # An unquoted template followed by prose is an ambiguous possibly-incomplete prefix: redacted
+        ambiguous = r"Preserve \\server\share in dashboard notes"
+        san_ambiguous = update_dashboard.sanitize_display_text(ambiguous, max_len=200)
+        self.assertNotIn("dashboard notes", san_ambiguous)
+        self.assertIn("[REDACTED_PATH]", san_ambiguous)
+
+    def test_dashboard_sanitizer_redacts_stopword_components_without_suffix_leakage(self):
+        """R1/R2: Stopword-containing components and template continuations never leave unique suffixes."""
+        cases = [
+            (r"At C:\Users\Example\Private and Sentinel.txt", ["Private", "Sentinel"]),
+            (r"At /home/Example/Private with Sentinel.txt", ["Private", "Sentinel"]),
+            (r"At C:\Users\Example\Private! Surname", ["Private", "Surname"]),
+            (r"At \\server\share and Sentinel.txt", ["Sentinel"]),
+            (r"At \\nas01\share\Private and Sentinel.txt", ["Private", "Sentinel"]),
+        ]
+        for text, forbidden_tokens in cases:
+            with self.subTest(text=text):
+                sanitized = update_dashboard.sanitize_display_text(text, max_len=200)
+                diag = update_dashboard.sanitize_diagnostic(text)
+                self.assertIn("[REDACTED_PATH]", sanitized)
+                for tok in forbidden_tokens:
+                    self.assertNotIn(tok, sanitized)
+                    self.assertNotIn(tok, diag)
 
     def test_workflow_yaml_structure_and_least_privilege(self):
         """

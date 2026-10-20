@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import builtins
 import importlib
+import importlib.util
 import inspect
 import io
 import os
@@ -58,15 +59,38 @@ from privacy_guard import (  # noqa: E402
 IDENTITY_ENV_KEYS = {"USER", "USERNAME", "HOME", "USERPROFILE", "LOGNAME"}
 
 
+def _canonical_path(path_like: Any) -> str:
+    """Canonical comparison form of an exact filesystem path (no file content access)."""
+    return os.path.normcase(os.path.realpath(os.fspath(path_like)))
+
+
+def _compute_permitted_module_paths() -> frozenset:
+    """
+    Establishes, OUTSIDE any guarded execution boundary, the exact known repository module source path
+    and its exact interpreter bytecode cache path. Nothing else is ever permitted by the read guard.
+    """
+    source = Path(privacy_guard.__file__)
+    permitted = {_canonical_path(source)}
+    try:
+        permitted.add(_canonical_path(importlib.util.cache_from_source(str(source))))
+    except (NotImplementedError, ValueError):
+        pass
+    return frozenset(permitted)
+
+
+PERMITTED_MODULE_PATHS = _compute_permitted_module_paths()
+
+
 def is_permitted_module_file(file_obj: Any) -> bool:
-    """Permits only privacy_guard.py source and bytecode loading during reload."""
-    name = getattr(file_obj, "name", str(file_obj))
-    norm = str(name).replace("\\", "/").lower()
-    return (
-        norm.endswith("privacy_guard.py")
-        or "privacy_guard.cpython" in norm
-        or norm.endswith("privacy_guard.pyc")
-    )
+    """
+    Permits ONLY the exact repository privacy_guard.py source and its exact bytecode cache path.
+    Lookalike names (not_privacy_guard.py, other-dir/privacy_guard.py, privacy_guard.cpython-*.txt)
+    are rejected. File descriptors and non-path objects are rejected.
+    """
+    try:
+        return _canonical_path(file_obj) in PERMITTED_MODULE_PATHS
+    except (TypeError, ValueError, OSError):
+        return False
 
 
 @contextmanager
@@ -298,10 +322,37 @@ class TestPrivacyGuardEnvironmentAndPurity(unittest.TestCase):
                 builtins.open("forbidden_write.txt", "w")
             self.assertIn("forbidden_write.txt", file_writes)
 
-            # 10. Permitted module file read succeeds without error
+            # 10. Lookalike module paths are rejected BEFORE any real file access (AssertionError from the
+            # guard, never FileNotFoundError from an actual open attempt)
+            lookalikes = [
+                "synthetic-private/privacy_guard.py",
+                "not_privacy_guard.py",
+                "synthetic-private/privacy_guard.cpython-secret.txt",
+                "privacy_guard.py.bak",
+                "privacy_guard.pyc",
+            ]
+            for lookalike in lookalikes:
+                with self.subTest(lookalike=lookalike):
+                    with self.assertRaises(AssertionError):
+                        builtins.open(lookalike, "r")
+                    with self.assertRaises(AssertionError):
+                        Path(lookalike).read_text()
+                    self.assertIn(lookalike, unauthorized_reads)
+
+            # 11. File descriptors are rejected rather than treated as permitted module files
+            with self.assertRaises(AssertionError):
+                builtins.open(0, "r")
+
+            # 12. Exact repository module source read succeeds without error
             pg_path = Path(privacy_guard.__file__)
             content = builtins.open(str(pg_path), "r", encoding="utf-8").read()
             self.assertIn("Standard-library-only", content)
+            self.assertTrue(is_permitted_module_file(pg_path))
+
+        # Permission check itself is exact: lookalikes are not permitted, outside the boundary too
+        self.assertFalse(is_permitted_module_file("synthetic-private/privacy_guard.py"))
+        self.assertFalse(is_permitted_module_file("not_privacy_guard.py"))
+        self.assertFalse(is_permitted_module_file("synthetic-private/privacy_guard.cpython-secret.txt"))
 
 
 class TestPrivacyDetection(unittest.TestCase):
@@ -537,17 +588,17 @@ class TestPrivacyRedaction(unittest.TestCase):
         cases = [
             (
                 r"Failed at C:\Users\Éxample\PrivateSuffix on line 12",
-                "Failed at [REDACTED_PATH] on line 12",
+                "Failed at [REDACTED_PATH]",
                 ["Éxample", "PrivateSuffix"],
             ),
             (
                 r"Log at /home/Éxample/PrivateSuffix for test",
-                "Log at [REDACTED_PATH] for test",
+                "Log at [REDACTED_PATH]",
                 ["Éxample", "PrivateSuffix"],
             ),
             (
                 r"WSL at /mnt/c/Users/Éxample/PrivateSuffix done",
-                "WSL at [REDACTED_PATH] done",
+                "WSL at [REDACTED_PATH]",
                 ["Éxample", "PrivateSuffix"],
             ),
             (
@@ -557,7 +608,7 @@ class TestPrivacyRedaction(unittest.TestCase):
             ),
             (
                 r"Path C:\Users\Example Middle Person\Projects\DXVK\file.txt on line 5",
-                "Path [REDACTED_PATH] on line 5",
+                "Path [REDACTED_PATH]",
                 ["Example", "Middle", "Person", "file.txt"],
             ),
             (
@@ -582,47 +633,47 @@ class TestPrivacyRedaction(unittest.TestCase):
             ),
             (
                 r"Error at C:\Users\Example\Private Surname on line 42",
-                "Error at [REDACTED_PATH] on line 42",
+                "Error at [REDACTED_PATH]",
                 ["Example", "Private", "Surname"],
             ),
             (
                 r"Log at /home/Example/Private Surname for task",
-                "Log at [REDACTED_PATH] for task",
+                "Log at [REDACTED_PATH]",
                 ["Example", "Private", "Surname"],
             ),
             (
                 r"WSL path /mnt/c/Users/Example/Private Surname done",
-                "WSL path [REDACTED_PATH] done",
+                "WSL path [REDACTED_PATH]",
                 ["Example", "Private", "Surname"],
             ),
             (
                 r"Build at C:\Users\Example\Private+Sentinel.txt successfully",
-                "Build at [REDACTED_PATH] successfully",
+                "Build at [REDACTED_PATH]",
                 ["Example", "Private", "Sentinel", "Private+Sentinel"],
             ),
             (
                 r"Source at C:\Users\Example+Sentinel\file.txt finished",
-                "Source at [REDACTED_PATH] finished",
+                "Source at [REDACTED_PATH]",
                 ["Example", "Sentinel", "file.txt"],
             ),
             (
                 r"Directory C:\Users\Example+Sentinel exists",
-                "Directory [REDACTED_PATH] exists",
+                "Directory [REDACTED_PATH]",
                 ["Example", "Sentinel"],
             ),
             (
                 r"Secret at C:\Users\Example\Private$Secret.log ok",
-                "Secret at [REDACTED_PATH] ok",
+                "Secret at [REDACTED_PATH]",
                 ["Private$Secret", "Secret.log"],
             ),
             (
                 r"Path C:\Users\Example\user~1\data.csv ok",
-                "Path [REDACTED_PATH] ok",
+                "Path [REDACTED_PATH]",
                 ["user~1", "data.csv"],
             ),
             (
                 r"Path C:\Users\Example\user@domain\info.json ok",
-                "Path [REDACTED_PATH] ok",
+                "Path [REDACTED_PATH]",
                 ["user@domain", "info.json"],
             ),
         ]
@@ -638,73 +689,103 @@ class TestPrivacyRedaction(unittest.TestCase):
         cases = [
             (
                 r"Share mounted at \\nas01\share\sub\data.bin successfully",
-                "Share mounted at [REDACTED_PATH] successfully",
+                "Share mounted at [REDACTED_PATH]",
                 ["nas01", "data.bin"],
             ),
             (
                 r"Tool at \\nas01\Team-Share\private_tool finished",
-                "Tool at [REDACTED_PATH] finished",
+                "Tool at [REDACTED_PATH]",
                 ["nas01", "Team-Share", "private_tool"],
             ),
             (
                 r"Unicode share at \\nas01\Éxample-Share\private_tool ok",
-                "Unicode share at [REDACTED_PATH] ok",
+                "Unicode share at [REDACTED_PATH]",
                 ["nas01", "Éxample-Share", "private_tool"],
             ),
             (
                 r"Private suffix under server at \\server\share\repo\private_tool end",
-                "Private suffix under server at [REDACTED_PATH] end",
+                "Private suffix under server at [REDACTED_PATH]",
                 ["repo", "private_tool"],
             ),
             (
                 r"Private share under server at \\server\Team-Share end",
-                "Private share under server at [REDACTED_PATH] end",
+                "Private share under server at [REDACTED_PATH]",
                 ["Team-Share"],
             ),
             (
                 r"Localhost share at \\localhost\my_share\data end",
-                "Localhost share at [REDACTED_PATH] end",
+                "Localhost share at [REDACTED_PATH]",
                 ["my_share", "data"],
             ),
             (
                 r"Localhost suffix at //localhost/share/repo/private_tool end",
-                "Localhost suffix at [REDACTED_PATH] end",
+                "Localhost suffix at [REDACTED_PATH]",
                 ["repo", "private_tool"],
             ),
             (
                 r"IP share at \\127.0.0.1\c$\secret end",
-                "IP share at [REDACTED_PATH] end",
+                "IP share at [REDACTED_PATH]",
                 ["c$", "secret"],
             ),
             (
                 r"UNC with plus at \\server\share\+PrivateSentinel finished",
-                "UNC with plus at [REDACTED_PATH] finished",
+                "UNC with plus at [REDACTED_PATH]",
                 ["Private", "Sentinel", "PrivateSentinel"],
             ),
             (
                 "Forward UNC with plus at //server/share/+PrivateSentinel finished",
-                "Forward UNC with plus at [REDACTED_PATH] finished",
+                "Forward UNC with plus at [REDACTED_PATH]",
                 ["Private", "Sentinel", "PrivateSentinel"],
             ),
             (
                 r"UNC space continuation at \\server\share PrivateSentinel finished",
-                "UNC space continuation at [REDACTED_PATH] finished",
+                "UNC space continuation at [REDACTED_PATH]",
                 ["Private", "Sentinel", "PrivateSentinel"],
             ),
             (
                 r"UNC multiword at \\nas01\share\Private Surname finished",
-                "UNC multiword at [REDACTED_PATH] finished",
+                "UNC multiword at [REDACTED_PATH]",
                 ["nas01", "Private", "Surname"],
             ),
             (
-                r"Exact bare template \\server\share is preserved",
-                r"Exact bare template \\server\share is preserved",
+                r"Isolated bare template `\\server\share` is preserved",
+                r"Isolated bare template `\\server\share` is preserved",
                 [],
             ),
             (
-                "Exact bare forward template //host/share is preserved",
-                "Exact bare forward template //host/share is preserved",
+                "Isolated bare forward template `//host/share` is preserved",
+                "Isolated bare forward template `//host/share` is preserved",
                 [],
+            ),
+            (
+                r"Quoted bare template '\\example\share', and (\\placeholder\share).",
+                r"Quoted bare template '\\example\share', and (\\placeholder\share).",
+                [],
+            ),
+            (
+                r"Bare template at end of text \\server\share",
+                r"Bare template at end of text \\server\share",
+                [],
+            ),
+            (
+                r"Unquoted template followed by prose \\server\share is preserved",
+                "Unquoted template followed by prose [REDACTED_PATH]",
+                ["is preserved"],
+            ),
+            (
+                r"Template prefix with stopword continuation \\server\share and Sentinel.txt",
+                "Template prefix with stopword continuation [REDACTED_PATH]",
+                ["Sentinel", "and Sentinel.txt"],
+            ),
+            (
+                r"Concrete UNC with stopword component \\nas01\share\Private and Sentinel.txt",
+                "Concrete UNC with stopword component [REDACTED_PATH]",
+                ["nas01", "Private", "and", "Sentinel"],
+            ),
+            (
+                r"Template with private subpath \\server\share\Private and Sentinel.txt",
+                "Template with private subpath [REDACTED_PATH]",
+                ["Private", "Sentinel"],
             ),
         ]
         for input_text, expected_redacted, forbidden_tokens in cases:
@@ -713,6 +794,87 @@ class TestPrivacyRedaction(unittest.TestCase):
                 self.assertEqual(redacted, expected_redacted)
                 for tok in forbidden_tokens:
                     self.assertNotIn(tok, redacted, f"Token '{tok}' leaked into redacted output!")
+
+    def test_stopword_and_ambiguous_components_are_conservatively_fully_redacted(self):
+        """
+        R1/R2: English stopwords (and, in, for, with, missing, unavailable, ...) and ambiguous punctuation are
+        valid parts of private names and are NOT path boundaries. Ambiguous unquoted spans are over-redacted
+        through the first reliable structural boundary (end of text/line, tab, 'colon + whitespace', unbalanced
+        closing delimiter). Prior prose-preserving expectations (e.g. 'path on line 12') were removed because
+        they required unsafe guesses; trailing prose after an unquoted personal path is now redacted too.
+        """
+        cases = [
+            (r"At C:\Users\Example\Private and Sentinel.txt", "At [REDACTED_PATH]", ["Private", "and", "Sentinel"]),
+            (r"At C:\Users\Example\Private in Sentinel.txt", "At [REDACTED_PATH]", ["Private", "Sentinel"]),
+            (r"At C:\Users\Example\Private for Sentinel", "At [REDACTED_PATH]", ["Private", "Sentinel"]),
+            (r"At C:\Users\Example\Private with Sentinel.txt", "At [REDACTED_PATH]", ["Private", "Sentinel"]),
+            (r"At C:\Users\Example\Private missing Sentinel.txt", "At [REDACTED_PATH]", ["Private", "Sentinel"]),
+            (r"At C:\Users\Example\Private unavailable Sentinel.txt", "At [REDACTED_PATH]", ["Private", "Sentinel"]),
+            (r"At /home/Example/Private and Sentinel.txt", "At [REDACTED_PATH]", ["Private", "Sentinel"]),
+            (r"At /mnt/c/Users/Example/Private and Sentinel.txt", "At [REDACTED_PATH]", ["Private", "Sentinel"]),
+            (r"At C:\Users\Example\Private! Surname", "At [REDACTED_PATH]", ["Private", "Surname"]),
+            (r"At C:\Users\Example\Private, Surname", "At [REDACTED_PATH]", ["Private", "Surname"]),
+            (r"At C:\Users\Example\Private; Surname", "At [REDACTED_PATH]", ["Private", "Surname"]),
+            (r"At C:\Users\Example\Docs (old) Sentinel\f.txt", "At [REDACTED_PATH]", ["Docs", "Sentinel", "f.txt"]),
+            (r"At /home/Example/Private=Sentinel and more", "At [REDACTED_PATH]", ["Private", "Sentinel", "more"]),
+            (
+                r"Error reading C:\Users\Example\Private and Sentinel.txt: access denied",
+                "Error reading [REDACTED_PATH]: access denied",
+                ["Private", "Sentinel"],
+            ),
+            (
+                "Line one C:\\Users\\Example\\Private and Sentinel.txt\nLine two stays",
+                "Line one [REDACTED_PATH]\nLine two stays",
+                ["Private", "Sentinel"],
+            ),
+        ]
+        for input_text, expected_redacted, forbidden_tokens in cases:
+            with self.subTest(input_text=input_text):
+                redacted = redact_privacy_text(input_text)
+                self.assertEqual(redacted, expected_redacted)
+                for tok in forbidden_tokens:
+                    self.assertNotIn(tok, redacted, f"Token '{tok}' leaked into redacted output!")
+                violations = scan_for_privacy_violations(input_text)
+                self.assertGreaterEqual(len(violations), 1)
+                self.assertTrue(is_privacy_sensitive_text(input_text))
+                # Diagnostic and diff surfaces never reveal the unique suffix tokens either
+                for tok in forbidden_tokens:
+                    if tok not in {"and", "in", "for", "with", "more"}:
+                        self.assertNotIn(tok, sanitize_diagnostic(input_text))
+                        self.assertNotIn(tok, sanitize_diff_line("+" + input_text))
+                        self.assertNotIn(tok, sanitize_display_text(input_text, max_len=500))
+
+    def test_unc_template_exemption_requires_structurally_isolated_literal(self):
+        """R2: A possibly incomplete prefix never obtains the bare-template exemption."""
+        ambiguous = [
+            r"\\server\share and Sentinel.txt",
+            r"\\server\share PrivateSentinel",
+            r"\\server\share\+PrivateSentinel",
+            "//server/share/+PrivateSentinel",
+            r"\\server\share\Private and Sentinel.txt",
+            r"\\host\share with Sentinel",
+            r"see \\server\share is preserved",
+        ]
+        for s in ambiguous:
+            with self.subTest(sample=s):
+                self.assertTrue(is_privacy_sensitive_text(s), f"Ambiguous template continuation not flagged: {s}")
+                redacted = redact_privacy_text(s)
+                self.assertNotIn("Sentinel", redacted)
+                self.assertNotIn("PrivateSentinel", redacted)
+                self.assertNotIn("preserved", redacted)
+                self.assertIn("[REDACTED_PATH]", redacted)
+        isolated = [
+            r"\\server\share",
+            "`//host/share`",
+            r"'\\example\share'",
+            r"(\\placeholder\share)",
+            r"\\server\share.",
+            r"\\server\share, then",
+        ]
+        for s in isolated:
+            with self.subTest(sample=s):
+                self.assertFalse(is_privacy_sensitive_text(s), f"Isolated template unexpectedly flagged: {s}")
+                self.assertEqual(redact_privacy_text(s), s)
 
     def test_redacts_credentials_tokens_and_queries_completely(self):
         """Redacts full RFC 6750 Bearer tokens, embedded GitHub tokens, and complex queries (R3)."""
@@ -819,13 +981,13 @@ class TestPrivacyRedaction(unittest.TestCase):
         san_mw = sanitize_diagnostic(diag_mw)
         self.assertNotIn("Private", san_mw)
         self.assertNotIn("Surname", san_mw)
-        self.assertEqual(san_mw, "Path [REDACTED_PATH] not accessible")
+        self.assertEqual(san_mw, "Path [REDACTED_PATH]")
 
         diag_unc = r"Network share \\server\share PrivateSentinel unavailable"
         san_unc = sanitize_diagnostic(diag_unc)
         self.assertNotIn("Private", san_unc)
         self.assertNotIn("Sentinel", san_unc)
-        self.assertEqual(san_unc, "Network share [REDACTED_PATH] unavailable")
+        self.assertEqual(san_unc, "Network share [REDACTED_PATH]")
 
     def test_format_safe_filename_diagnostic(self):
         """Replaces sensitive filenames with <redacted-filename>."""

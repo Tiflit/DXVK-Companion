@@ -162,57 +162,44 @@ QUOTED_HOME_PATH_PATTERNS: List[Tuple[Pattern[str], str, str]] = [
     ),
 ]
 
-# Common prose stopwords that bound unquoted paths in diagnostic and review prose
-_PROSE_STOPWORDS: str = (
-    r"(?:on\s+line\b|on\b|for\b|done\b|finished\b|successfully\b|ok\b|end\b|"
-    r"is\b|was\b|were\b|or\b|vs\b|and\b|to\b|in\b|at\b|from\b|with\b|as\b|by\b|"
-    r"exists\b|has\b|have\b|not\b|failed\b|error\b|line\b|"
-    r"unavailable\b|missing\b|denied\b|found\b|unreachable\b|timeout\b|refused\b|invalid\b|"
-    r"deleted\b|removed\b|created\b|updated\b|modified\b)"
+# Conservative unquoted span body.
+# English words (and, in, for, with, missing, unavailable, ...) are valid parts of private directory and file
+# names, so prose words are NEVER treated as path boundaries. An unquoted personal or UNC span is consumed
+# through every character up to the first RELIABLE structural boundary:
+#   - end of text, newline, carriage return, or tab
+#   - a colon followed by whitespace/end (colons are invalid in Windows names; "path: message" diagnostics)
+#   - an unbalanced quote, backtick, closing bracket/brace/paren, '<', '>' or '|'
+# Balanced (...), [...] and {...} groups (e.g. "Docs (old)") are consumed as part of the name. Where the
+# boundary is ambiguous the guard deliberately over-redacts trailing prose instead of leaking name fragments.
+_SPAN_BODY: str = (
+    r"(?:[^\r\n\t:\"`()\[\]{}<>|]"
+    r"|:(?![ \t\r\n]|$)"
+    r"|\([^()\r\n\t]*\)"
+    r"|\[[^\[\]\r\n\t]*\]"
+    r"|\{[^{}\r\n\t]*\})*"
 )
 
-# Lookahead pattern for boundary where an unquoted path ends in prose, diagnostics, or markdown
-_PROSE_BOUNDARY: str = (
-    r"(?=[\r\n\t]|$|[;,:]\s|[;,:\)\]}>\"'`|]|\.(?:\s|$)|"
-    r"\s+" + _PROSE_STOPWORDS + r"(?:[\s,;:.!?]|$))"
-)
-
-# Building blocks for path segments supporting punctuation (+, ~, $, @, #, %, &, ', -, .)
-_SEG_TOKEN: str = r"(?:\.[\w+~$@#%&'-]+|[\w+~$@#%&'-]+(?:\.[\w+~$@#%&'-]+)*|\.\.\.)"
-_SEG_MULTI: str = _SEG_TOKEN + r"(?: (?!" + _PROSE_STOPWORDS + r"(?:[\s,;:.!?]|$))" + _SEG_TOKEN + r")*"
-
-# Unquoted personal path pattern:
-# Matches from personal home prefix through all path segments (Unicode, spaces, punctuation +, $, ~, @, #, %, &, ', -, .)
+# Unquoted personal path pattern: personal home prefix followed by the entire conservative span.
 UNQUOTED_HOME_PATH_PATTERN: Pattern[str] = re.compile(
     r"(?P<prefix>(?:file:///)?(?:[A-Za-z]:[/\\]+|(?<![^\s\"'`()<>[\]{}|;,=])[/\\]+)(?:Users|Documents and Settings)[/\\]+|(?<![^\s\"'`()<>[\]{}|;,=])/mnt/[A-Za-z]/(?:Users|Documents and Settings)[/\\]+|(?:file:///)?(?<![^\s\"'`()<>[\]{}|;,=])/(?:home|Users)/)"
-    r"(?P<tail>(?:" + _SEG_MULTI + r"[/\\]+)*(?:" + _SEG_MULTI + r")?)"
-    r"[/\\]*"
-    + _PROSE_BOUNDARY,
+    r"(?P<tail>(?![ \t\r\n])" + _SPAN_BODY + r")?",
     re.IGNORECASE,
 )
 
 # Host/share character class excluding delimiters and slashes
 _HOST_SHARE_CHAR: str = r"[^\s\\/\"'*?<>|:;,()\[\]{}`]"
 
-# UNC pattern matching network share paths with backslashes or forward slashes,
-# capturing the entire UNC span including any continuations, subpaths, spaces, and punctuation
-# to prevent partial matches from obtaining generic template exemptions.
+# UNC pattern matching network share paths with backslashes or forward slashes.
+# The WHOLE UNC span (host, share, and any continuation introduced by a slash or a space) is established
+# before the bare-template exemption is evaluated, so an incomplete prefix match can never qualify as a
+# template. A bare template is preserved only when nothing but optional trailing whitespace/slash follows it
+# within the span (e.g. at end of text, or followed by a quote, backtick, bracket, or sentence punctuation).
 UNC_PATH_PATTERN: Pattern[str] = re.compile(
     r"(?:\\\\|(?<![A-Za-z0-9+.-]:)//)"
     r"(?P<host>" + _HOST_SHARE_CHAR + r"+(?<!\.))"
     r"[/\\]+"
     r"(?P<share>" + _HOST_SHARE_CHAR + r"+(?<!\.))"
-    r"(?P<continuation>(?:[/\\]+(?:" + _SEG_MULTI + r"[/\\]*)*| +(?!" + _PROSE_STOPWORDS + r"(?:[\s,;:.!?]|$))" + _SEG_TOKEN + r")?)"
-    r"[/\\]*"
-    + _PROSE_BOUNDARY,
-    re.IGNORECASE,
-)
-
-# Safe prefix fallback: catches any residual sensitive personal prefix if regex boundaries somehow truncated
-SAFE_FALLBACK_PREFIX_PATTERN: Pattern[str] = re.compile(
-    r"(?:file:///)?(?:[A-Za-z]:[/\\]+|(?<![^\s\"'`()<>[\]{}|;,=])[/\\]+)(?:Users|Documents and Settings)[/\\]+[^\s\"'`()<>[\]{}|;,=]*|"
-    r"(?<![^\s\"'`()<>[\]{}|;,=])/mnt/[A-Za-z]/(?:Users|Documents and Settings)[/\\]+[^\s\"'`()<>[\]{}|;,=]*|"
-    r"(?:file:///)?(?<![^\s\"'`()<>[\]{}|;,=])/(?:home|Users)/[^\s\"'`()<>[\]{}|;,=]*",
+    r"(?P<continuation>[/\\ ]" + _SPAN_BODY + r")?",
     re.IGNORECASE,
 )
 
@@ -315,9 +302,6 @@ def redact_privacy_text(text: Optional[str]) -> str:
 
     # 2. Redact unquoted personal paths
     clean = UNQUOTED_HOME_PATH_PATTERN.sub("[REDACTED_PATH]", clean)
-
-    # 3. Safe fallback prefix redaction (ensures no residual sensitive prefix remains)
-    clean = SAFE_FALLBACK_PREFIX_PATTERN.sub("[REDACTED_PATH]", clean)
 
     # 4. Redact concrete UNC / network paths
     clean = redact_unc_paths(clean)
