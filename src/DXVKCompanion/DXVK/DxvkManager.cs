@@ -6,6 +6,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
+using System.Threading;
 using DXVKCompanion.Models;
 using DXVKCompanion.Safety;
 using DXVKCompanion.Storage;
@@ -33,6 +34,10 @@ namespace DXVKCompanion.DXVK
         private readonly ConcurrentDictionary<string, PendingAction> _pending = new(StringComparer.OrdinalIgnoreCase);
         public string? LastRefusalReason { get; private set; }
         public string DxvkSourceDir => _installer.DxvkSourceDir;
+        public Task<DxvkGithubClient.OfficialReleasePage> BrowseOfficialReleasesAsync(int page, CancellationToken token = default) =>
+            _github.FetchOfficialReleasePageAsync(page, token);
+        public Task<DxvkReleaseAcquirer.AcquisitionResult> AcquireOfficialReleaseAsync(string tag, CancellationToken token = default) =>
+            _installer.GetReleaseAcquirer(_github).AcquireAsync(tag, token);
         public event Action<GameInstallation, Models.PendingAction, string>? OnPendingActionCancelled;
 
         internal IOperationLeaseCoordinator LeaseCoordinator { get; set; } = OperationLeaseCoordinator.Default;
@@ -1217,7 +1222,7 @@ namespace DXVKCompanion.DXVK
                 {
                     if (!DxvkLocalReleaseLibrary.IsVersionAvailable(_installer.DxvkSourceDir, effectiveTarget, profile.Api, profile.Architecture))
                     {
-                        var unavailableReason = $"Requested DXVK version '{effectiveTarget}' is not available locally.";
+                        var unavailableReason = $"Requested DXVK version '{effectiveTarget}' is not available locally. Use Browse / Download official versions to inspect or acquire it.";
                         LastRefusalReason = unavailableReason;
                         if (installation != null)
                         {
@@ -1379,7 +1384,15 @@ namespace DXVKCompanion.DXVK
         {
             string gameDir = Path.GetDirectoryName(profile.ExePath) ?? string.Empty;
             var detector = new ExistingDxvkDetector(_installer.DxvkSourceDir);
-            return detector.AssessDirectory(gameDir, profile.Architecture);
+            var assessment = detector.AssessDirectory(gameDir, profile.Architecture);
+            if (assessment.CanBeAdopted && !DxvkLocalReleaseLibrary.IsRecognizedSourceEligible(
+                DxvkSourceDir, assessment.MatchedVersion!, profile.Api, profile.Architecture))
+                return new ExistingDxvkAssessment
+                {
+                    Status = ExistingDxvkStatus.RecognizedUnknownVersion, DetectedDlls = assessment.DetectedDlls,
+                    Evidence = new[] { "Local acquired source verification failed; no verified official identity is available." }
+                };
+            return assessment;
         }
 
         public Task<bool> AdoptExistingAsync(GameProfile profile)
@@ -1476,9 +1489,7 @@ namespace DXVKCompanion.DXVK
                     return false;
                 }
 
-                string gameDir = Path.GetDirectoryName(profile.ExePath) ?? string.Empty;
-                var detector = new ExistingDxvkDetector(_installer.DxvkSourceDir);
-                var assessment = detector.AssessDirectory(gameDir, profile.Architecture);
+                var assessment = AssessExistingDxvk(profile);
                 if (!assessment.CanBeAdopted)
                 {
                     LastRefusalReason = $"Existing DLLs cannot be adopted (status: {assessment.Status}).";

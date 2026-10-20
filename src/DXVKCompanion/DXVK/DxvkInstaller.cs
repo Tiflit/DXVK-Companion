@@ -61,6 +61,12 @@ namespace DXVKCompanion.DXVK
         }
 
         public string DxvkSourceDir => _dxvkSourceDir;
+        private DxvkReleaseAcquirer? _releaseAcquirer;
+        private readonly object _releaseAcquirerGate = new();
+        internal DxvkReleaseAcquirer GetReleaseAcquirer(DxvkGithubClient github)
+        {
+            lock (_releaseAcquirerGate) return _releaseAcquirer ??= new DxvkReleaseAcquirer(github, _dxvkSourceDir);
+        }
         public string? LastRefusalReason { get; private set; }
         internal ProfileStore? ProfileStore { get; set; }
 
@@ -268,6 +274,13 @@ namespace DXVKCompanion.DXVK
                 string arch = string.Equals(profile.Architecture, "x32", StringComparison.OrdinalIgnoreCase) ? "x32" : "x64";
                 string versionDir = Path.Combine(_dxvkSourceDir, SanitizeVersion(release.Version));
                 string dxvkArchDir = Path.Combine(versionDir, arch);
+
+                if (DxvkReleaseAcquirer.HasAcquisitionRecord(versionDir) &&
+                    !DxvkLocalReleaseLibrary.IsVersionAvailable(_dxvkSourceDir, release.Version, profile.Api, profile.Architecture))
+                {
+                    LastRefusalReason = "Acquired DXVK release is invalid or unsupported for this game. Use Browse / Download official versions to inspect the source library.";
+                    return false;
+                }
 
                 if (!Directory.Exists(dxvkArchDir) || !Directory.EnumerateFiles(dxvkArchDir).Any())
                 {
@@ -778,6 +791,13 @@ namespace DXVKCompanion.DXVK
                 string versionDir = Path.Combine(_dxvkSourceDir, SanitizeVersion(version));
                 string dxvkArchDir = Path.Combine(versionDir, arch);
 
+                if (DxvkReleaseAcquirer.HasAcquisitionRecord(versionDir) &&
+                    !DxvkLocalReleaseLibrary.IsVersionAvailable(_dxvkSourceDir, version, profile.Api, arch))
+                {
+                    LastRefusalReason = "Acquired DXVK source verification failed. Inspect it through Browse / Download official versions.";
+                    return false;
+                }
+
                 if (!Directory.Exists(dxvkArchDir))
                 {
                     LastRefusalReason = $"Source DXVK directory not found for version {version} ({arch}).";
@@ -1203,6 +1223,12 @@ namespace DXVKCompanion.DXVK
                 {
                     LastRefusalReason = $"Existing DLLs cannot be adopted (status: {assessment.Status}).";
                     Logger.Log($"DxvkInstaller: cannot adopt existing DXVK for {profile.ExeName}; status is {assessment.Status}.");
+                    return false;
+                }
+
+                if (!DxvkLocalReleaseLibrary.IsRecognizedSourceEligible(_dxvkSourceDir, assessment.MatchedVersion, profile.Api, profile.Architecture))
+                {
+                    LastRefusalReason = "Existing DXVK source is unpublished, invalid or unsupported; adoption refused.";
                     return false;
                 }
 

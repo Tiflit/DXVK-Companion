@@ -5,6 +5,8 @@ using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text.Json;
+using System.Text.Json.Nodes;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using DXVKCompanion.DXVK;
@@ -15,6 +17,97 @@ using Xunit;
 
 namespace DXVKCompanion.PhaseA.Tests
 {
+    public sealed class OfficialReleaseCatalogTests
+    {
+        [Fact]
+        public async Task Catalog_UsesOnlyExactWindowsAsset_AndConstructsBoundedOfficialPages()
+        {
+            using var fixture = new OfficialAcquisitionFixture();
+            var windows = OfficialAcquisitionFixture.Metadata("v2.5", fixture.Archives["v2.5"]);
+            var assets = windows["assets"]!.AsArray();
+            var native = assets[0]!.DeepClone();
+            native["name"] = "dxvk-native-2.5-steamrt-sniper.tar.gz";
+            native["browser_download_url"] = "https://github.com/doitsujin/dxvk/releases/download/v2.5/dxvk-native-2.5-steamrt-sniper.tar.gz";
+            assets.Insert(0, native);
+            var source = assets[1]!.DeepClone();
+            source["name"] = "Source code.tar.gz";
+            assets.Insert(0, source);
+            fixture.Override = (request, _) =>
+            {
+                Assert.Equal("api.github.com", request.RequestUri!.Host);
+                var rows = new JsonArray();
+                if (request.RequestUri.Query.EndsWith("page=1"))
+                    for (int n = 0; n < DxvkGithubClient.CatalogPageSize; n++) rows.Add(windows.DeepClone());
+                else rows.Add(OfficialAcquisitionFixture.Metadata("v2.4", fixture.Archives["v2.5"], digest: false));
+                var response = OfficialAcquisitionFixture.Json(rows);
+                response.Headers.TryAddWithoutValidation("Link", "<https://example.invalid/private>; rel=\"next\"");
+                return Task.FromResult(response);
+            };
+            var first = await fixture.Github.FetchOfficialReleasePageAsync(1);
+            Assert.True(first.HasMore);
+            Assert.Equal(30, first.Releases.Count);
+            Assert.All(first.Releases, r => Assert.Equal("dxvk-2.5.tar.gz", r.AssetName));
+            var second = await fixture.Github.FetchOfficialReleasePageAsync(2);
+            Assert.False(second.HasMore);
+            Assert.Equal("v2.4", Assert.Single(second.Releases).Version);
+            Assert.Null(second.Releases[0].AssetDigest);
+            Assert.All(fixture.Requests, url => Assert.StartsWith("https://api.github.com/repos/doitsujin/dxvk/releases?per_page=30&page=", url));
+            await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => fixture.Github.FetchOfficialReleasePageAsync(0));
+            await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => fixture.Github.FetchOfficialReleasePageAsync(33));
+        }
+
+        [Theory]
+        [InlineData("draft")]
+        [InlineData("prerelease")]
+        [InlineData("tag")]
+        [InlineData("url")]
+        [InlineData("url-tag")]
+        [InlineData("digest")]
+        [InlineData("empty-digest")]
+        [InlineData("duplicate")]
+        [InlineData("native-only")]
+        [InlineData("oversize")]
+        [InlineData("credentials")]
+        public async Task Catalog_RefusesInvalidOrAmbiguousOfficialIdentity(string kind)
+        {
+            using var fixture = new OfficialAcquisitionFixture();
+            var metadata = OfficialAcquisitionFixture.Metadata("v2.5", fixture.Archives["v2.5"]);
+            var asset = metadata["assets"]![0]!;
+            switch (kind)
+            {
+                case "draft": metadata["draft"] = true; break;
+                case "prerelease": metadata["prerelease"] = true; break;
+                case "tag": metadata["tag_name"] = "v2.5/../other"; break;
+                case "url": asset["browser_download_url"] = "https://example.invalid/dxvk-2.5.tar.gz"; break;
+                case "url-tag": asset["browser_download_url"] = OfficialAcquisitionFixture.AssetUrl("v2.4"); break;
+                case "digest": asset["digest"] = "sha256:broken"; break;
+                case "empty-digest": asset["digest"] = ""; break;
+                case "duplicate": metadata["assets"]!.AsArray().Add(asset.DeepClone()); break;
+                case "native-only": asset["name"] = "dxvk-native-2.5.tar.gz"; break;
+                case "oversize": asset["size"] = DxvkReleaseAcquirer.MaximumArchiveBytes + 1; break;
+                case "credentials": asset["browser_download_url"] = "https://generic:synthetic@github.com/doitsujin/dxvk/releases/download/v2.5/dxvk-2.5.tar.gz"; break;
+            }
+            fixture.Override = (_, _) => Task.FromResult(OfficialAcquisitionFixture.Json(new JsonArray(metadata.DeepClone())));
+            Assert.Empty((await fixture.Github.FetchOfficialReleasePageAsync(1)).Releases);
+            fixture.Override = (_, _) => Task.FromResult(OfficialAcquisitionFixture.Json(metadata));
+            await Assert.ThrowsAsync<InvalidDataException>(() => fixture.Github.FetchOfficialReleaseAsync("v2.5"));
+        }
+
+        [Fact]
+        public async Task OfficialTagLookup_RejectsMismatchedResponse_OversizedMetadataAndCancelledRequest()
+        {
+            using var fixture = new OfficialAcquisitionFixture();
+            fixture.Override = (_, _) => Task.FromResult(OfficialAcquisitionFixture.Json(OfficialAcquisitionFixture.Metadata("v2.4", fixture.Archives["v2.5"])));
+            await Assert.ThrowsAsync<InvalidDataException>(() => fixture.Github.FetchOfficialReleaseAsync("v2.5"));
+            fixture.Override = (_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                { Content = new StringContent(new string(' ', DxvkGithubClient.MaximumMetadataBytes + 1)) });
+            await Assert.ThrowsAsync<InvalidDataException>(() => fixture.Github.FetchOfficialReleasePageAsync(1));
+            fixture.Override = async (_, token) => { await Task.Delay(Timeout.InfiniteTimeSpan, token); throw new InvalidOperationException(); };
+            using var cancel = new CancellationTokenSource(TimeSpan.FromMilliseconds(50));
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => fixture.Github.FetchOfficialReleasePageAsync(1, cancel.Token));
+        }
+    }
+
     public class DxvkGithubClientTests
     {
         [Fact]
