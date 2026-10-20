@@ -807,6 +807,64 @@ class TestDashboardGenerator(unittest.TestCase):
         self.assertIn("?[REDACTED_QUERY]", sanitized)
         self.assertIn("prefix_[REDACTED_TOKEN]", sanitized)
 
+    def test_dashboard_sanitizer_redacts_multiword_and_punctuation_paths(self):
+        """R1: Redacts multi-word terminal components and punctuation paths without suffix leakage in dashboard."""
+        cases = [
+            (
+                r"Failed: C:\Users\Example\Private Surname on line 42",
+                ["Example", "Private", "Surname"],
+            ),
+            (
+                r"Log: /home/Example/Private Surname for task",
+                ["Example", "Private", "Surname"],
+            ),
+            (
+                r"Build: C:\Users\Example\Private+Sentinel.txt done",
+                ["Example", "Private", "Sentinel"],
+            ),
+            (
+                r"Source: C:\Users\Example+Sentinel\file.txt ok",
+                ["Example", "Sentinel"],
+            ),
+        ]
+        for text, forbidden_tokens in cases:
+            with self.subTest(text=text):
+                sanitized = update_dashboard.sanitize_display_text(text, max_len=200)
+                self.assertIn("[REDACTED_PATH]", sanitized)
+                for tok in forbidden_tokens:
+                    self.assertNotIn(tok, sanitized, f"Token '{tok}' leaked in dashboard display text")
+
+    def test_dashboard_sanitizer_redacts_unc_continuations_and_preserves_bare_templates(self):
+        """R2: Redacts UNC continuations while preserving bare documentation templates in dashboard."""
+        cases = [
+            (
+                r"UNC: \\server\share\+PrivateSentinel finished",
+                ["Private", "Sentinel", "PrivateSentinel"],
+            ),
+            (
+                "Forward UNC: //server/share/+PrivateSentinel finished",
+                ["Private", "Sentinel", "PrivateSentinel"],
+            ),
+            (
+                r"UNC space: \\server\share PrivateSentinel finished",
+                ["Private", "Sentinel", "PrivateSentinel"],
+            ),
+            (
+                r"UNC multiword: \\nas01\share\Private Surname finished",
+                ["nas01", "Private", "Surname"],
+            ),
+        ]
+        for text, forbidden_tokens in cases:
+            with self.subTest(text=text):
+                sanitized = update_dashboard.sanitize_display_text(text, max_len=200)
+                self.assertIn("[REDACTED_PATH]", sanitized)
+                for tok in forbidden_tokens:
+                    self.assertNotIn(tok, sanitized, f"Token '{tok}' leaked in dashboard display text")
+
+        bare = r"Preserve \\server\share in dashboard notes"
+        san_bare = update_dashboard.sanitize_display_text(bare, max_len=200)
+        self.assertIn(r"\\server\share", san_bare)
+
     def test_workflow_yaml_structure_and_least_privilege(self):
         """
         Validates workflow YAML structure, concurrency, separate jobs, and least privilege.

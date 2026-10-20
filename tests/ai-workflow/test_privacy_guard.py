@@ -20,12 +20,15 @@ from __future__ import annotations
 import builtins
 import importlib
 import inspect
+import io
 import os
 import socket
 import subprocess
 import sys
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 # Ensure scripts/ai-workflow is on sys.path
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -52,6 +55,127 @@ from privacy_guard import (  # noqa: E402
 )
 
 
+IDENTITY_ENV_KEYS = {"USER", "USERNAME", "HOME", "USERPROFILE", "LOGNAME"}
+
+
+def is_permitted_module_file(file_obj: Any) -> bool:
+    """Permits only privacy_guard.py source and bytecode loading during reload."""
+    name = getattr(file_obj, "name", str(file_obj))
+    norm = str(name).replace("\\", "/").lower()
+    return (
+        norm.endswith("privacy_guard.py")
+        or "privacy_guard.cpython" in norm
+        or norm.endswith("privacy_guard.pyc")
+    )
+
+
+@contextmanager
+def guarded_execution_boundary(
+    unauthorized_reads: list,
+    file_writes: list,
+    identity_env_probed: list,
+    network_called: list,
+    subprocess_called: list,
+):
+    """
+    Instruments network, subprocess, identity environment access, and file I/O entry points.
+    Guards builtins.open, io.open, Path.open, Path.read_text, as well as direct dictionary
+    mapping access (os.environ['USER'], os.getenv('USER'), 'USER' in os.environ).
+    """
+    orig_socket = socket.socket
+    orig_popen = subprocess.Popen
+    orig_builtins_open = builtins.open
+    orig_io_open = io.open
+    orig_path_open = Path.open
+    orig_path_read_text = Path.read_text
+
+    environ_cls = type(os.environ)
+    orig_environ_getitem = environ_cls.__getitem__
+    orig_environ_get = environ_cls.get
+    orig_environ_contains = environ_cls.__contains__
+    orig_getenv = os.getenv
+
+    def fake_socket(*args, **kwargs):
+        network_called.append(args)
+        raise AssertionError("Network socket creation attempted during privacy_guard import")
+
+    def fake_popen(*args, **kwargs):
+        subprocess_called.append(args)
+        raise AssertionError("Subprocess spawning attempted during privacy_guard import")
+
+    def guarded_env_check(key: Any):
+        if str(key).upper() in IDENTITY_ENV_KEYS:
+            identity_env_probed.append(str(key))
+            raise AssertionError(f"User identity environment variable '{key}' probed during privacy_guard import")
+
+    def guarded_environ_getitem(self, key):
+        guarded_env_check(key)
+        return orig_environ_getitem(self, key)
+
+    def guarded_environ_get(self, key, default=None):
+        guarded_env_check(key)
+        return orig_environ_get(self, key, default)
+
+    def guarded_environ_contains(self, key):
+        guarded_env_check(key)
+        return orig_environ_contains(self, key)
+
+    def guarded_getenv(key, default=None):
+        guarded_env_check(key)
+        return orig_getenv(key, default)
+
+    def guarded_open(file, mode="r", *args, **kwargs):
+        if any(m in mode for m in ("w", "a", "x", "+")):
+            file_writes.append(str(file))
+            raise AssertionError(f"File write attempted to '{file}' during privacy_guard import")
+        if not is_permitted_module_file(file):
+            unauthorized_reads.append(str(file))
+            raise AssertionError(f"Unauthorized file read attempted on '{file}' during privacy_guard import")
+        return orig_builtins_open(file, mode, *args, **kwargs)
+
+    def guarded_path_open(self, mode="r", *args, **kwargs):
+        if any(m in mode for m in ("w", "a", "x", "+")):
+            file_writes.append(str(self))
+            raise AssertionError(f"File write attempted to '{self}' during privacy_guard import")
+        if not is_permitted_module_file(self):
+            unauthorized_reads.append(str(self))
+            raise AssertionError(f"Unauthorized Path.open attempted on '{self}' during privacy_guard import")
+        return orig_path_open(self, mode, *args, **kwargs)
+
+    def guarded_path_read_text(self, *args, **kwargs):
+        if not is_permitted_module_file(self):
+            unauthorized_reads.append(str(self))
+            raise AssertionError(f"Unauthorized Path.read_text attempted on '{self}' during privacy_guard import")
+        return orig_path_read_text(self, *args, **kwargs)
+
+    try:
+        socket.socket = fake_socket
+        subprocess.Popen = fake_popen
+        builtins.open = guarded_open
+        io.open = guarded_open
+        Path.open = guarded_path_open
+        Path.read_text = guarded_path_read_text
+
+        environ_cls.__getitem__ = guarded_environ_getitem
+        environ_cls.get = guarded_environ_get
+        environ_cls.__contains__ = guarded_environ_contains
+        os.getenv = guarded_getenv
+
+        yield
+    finally:
+        socket.socket = orig_socket
+        subprocess.Popen = orig_popen
+        builtins.open = orig_builtins_open
+        io.open = orig_io_open
+        Path.open = orig_path_open
+        Path.read_text = orig_path_read_text
+
+        environ_cls.__getitem__ = orig_environ_getitem
+        environ_cls.get = orig_environ_get
+        environ_cls.__contains__ = orig_environ_contains
+        os.getenv = orig_getenv
+
+
 class TestPrivacyGuardEnvironmentAndPurity(unittest.TestCase):
     """Verifies that privacy_guard is standard-library only and has no side effects."""
 
@@ -75,59 +199,109 @@ class TestPrivacyGuardEnvironmentAndPurity(unittest.TestCase):
     def test_guarded_import_verification_zero_side_effects(self):
         """
         Meaningful dynamic execution-boundary test:
-        Instruments network, subprocess, environment discovery, and file writes
-        during importlib.reload(privacy_guard) to verify zero execution side effects.
+        Instruments network, subprocess, environment discovery, file reads, and file writes
+        during importlib.reload(privacy_guard) to verify zero execution side effects (R4).
         """
         network_called = []
         subprocess_called = []
         identity_env_probed = []
         file_writes = []
+        unauthorized_reads = []
 
-        orig_socket = socket.socket
-        orig_popen = subprocess.Popen
-        orig_environ_get = os.environ.get
-        orig_open = builtins.open
-
-        def fake_socket(*args, **kwargs):
-            network_called.append(args)
-            raise AssertionError("Network socket creation attempted during privacy_guard import")
-
-        def fake_popen(*args, **kwargs):
-            subprocess_called.append(args)
-            raise AssertionError("Subprocess spawning attempted during privacy_guard import")
-
-        def guarded_env_get(key, default=None):
-            if str(key).upper() in ("USER", "USERNAME", "HOME", "USERPROFILE", "LOGNAME"):
-                identity_env_probed.append(key)
-                raise AssertionError(f"User identity environment variable '{key}' probed during privacy_guard import")
-            return orig_environ_get(key, default)
-
-        def guarded_open(file, mode="r", *args, **kwargs):
-            if any(m in mode for m in ("w", "a", "x", "+")):
-                file_writes.append(str(file))
-                raise AssertionError(f"File write attempted to '{file}' during privacy_guard import")
-            return orig_open(file, mode, *args, **kwargs)
-
-        try:
-            socket.socket = fake_socket
-            subprocess.Popen = fake_popen
-            os.environ.get = guarded_env_get
-            builtins.open = guarded_open
-
+        with guarded_execution_boundary(
+            unauthorized_reads,
+            file_writes,
+            identity_env_probed,
+            network_called,
+            subprocess_called,
+        ):
             # Reload privacy_guard within the instrumented boundary
             reloaded = importlib.reload(privacy_guard)
             self.assertIsNotNone(reloaded)
 
-            # Assert zero boundary violations
-            self.assertEqual(network_called, [], "Network calls were attempted during import")
-            self.assertEqual(subprocess_called, [], "Subprocesses were spawned during import")
-            self.assertEqual(identity_env_probed, [], "Identity environment variables were probed during import")
-            self.assertEqual(file_writes, [], "Filesystem writes were attempted during import")
-        finally:
-            socket.socket = orig_socket
-            subprocess.Popen = orig_popen
-            os.environ.get = orig_environ_get
-            builtins.open = orig_open
+        # Assert zero boundary violations
+        self.assertEqual(network_called, [], "Network calls were attempted during import")
+        self.assertEqual(subprocess_called, [], "Subprocesses were spawned during import")
+        self.assertEqual(identity_env_probed, [], "Identity environment variables were probed during import")
+        self.assertEqual(file_writes, [], "Filesystem writes were attempted during import")
+        self.assertEqual(unauthorized_reads, [], "Unauthorized file reads were attempted during import")
+
+    def test_guarded_boundary_intercepts_seeded_forbidden_reads_and_env_probes(self):
+        """
+        Verifies that the execution boundary actively traps and blocks:
+        - builtins.open reads to non-module files
+        - io.open reads to non-module files
+        - Path.read_text() reads to non-module files
+        - Path.open() reads to non-module files
+        - Direct dictionary mapping access: os.environ["USER"]
+        - Function call access: os.getenv("USER")
+        - Membership testing: "USER" in os.environ
+        - Mapping get: os.environ.get("USER")
+        - Filesystem writes in any mode
+        While permitting legitimate reads of privacy_guard.py itself (R4).
+        """
+        network_called = []
+        subprocess_called = []
+        identity_env_probed = []
+        file_writes = []
+        unauthorized_reads = []
+
+        with guarded_execution_boundary(
+            unauthorized_reads,
+            file_writes,
+            identity_env_probed,
+            network_called,
+            subprocess_called,
+        ):
+            # 1. Traps builtins.open read to unauthorized file
+            with self.assertRaises(AssertionError):
+                builtins.open("forbidden_secret.txt", "r")
+            self.assertIn("forbidden_secret.txt", unauthorized_reads)
+
+            # 2. Traps io.open read to unauthorized file
+            with self.assertRaises(AssertionError):
+                io.open("forbidden_io.txt", "r")
+            self.assertIn("forbidden_io.txt", unauthorized_reads)
+
+            # 3. Traps Path.read_text
+            with self.assertRaises(AssertionError):
+                Path("forbidden_path.txt").read_text()
+            self.assertIn("forbidden_path.txt", unauthorized_reads)
+
+            # 4. Traps Path.open read
+            with self.assertRaises(AssertionError):
+                Path("forbidden_path_open.txt").open("r")
+            self.assertIn("forbidden_path_open.txt", unauthorized_reads)
+
+            # 5. Traps direct dict mapping access os.environ["USER"]
+            with self.assertRaises(AssertionError):
+                _ = os.environ["USER"]
+            self.assertIn("USER", identity_env_probed)
+
+            # 6. Traps os.getenv("USER")
+            with self.assertRaises(AssertionError):
+                _ = os.getenv("USER")
+            self.assertIn("USER", identity_env_probed)
+
+            # 7. Traps membership test "USER" in os.environ
+            with self.assertRaises(AssertionError):
+                _ = "USER" in os.environ
+            self.assertIn("USER", identity_env_probed)
+
+            # 8. Traps os.environ.get("USER")
+            with self.assertRaises(AssertionError):
+                _ = os.environ.get("USER")
+            self.assertIn("USER", identity_env_probed)
+
+            # 9. Traps file write
+            with self.assertRaises(AssertionError):
+                builtins.open("forbidden_write.txt", "w")
+            self.assertIn("forbidden_write.txt", file_writes)
+
+            # 10. Permitted module file read succeeds without error
+            pg_path = Path(privacy_guard.__file__)
+            content = builtins.open(str(pg_path), "r", encoding="utf-8").read()
+            self.assertIn("Standard-library-only", content)
 
 
 class TestPrivacyDetection(unittest.TestCase):
@@ -192,7 +366,7 @@ class TestPrivacyDetection(unittest.TestCase):
                 self.assertTrue(is_privacy_sensitive_text(v))
 
     def test_detects_paths_with_unicode_multiword_and_apostrophes(self):
-        """Detects personal paths containing Unicode, multiword names, and apostrophes (R1)."""
+        """Detects personal paths containing Unicode, multiword names, punctuation, and apostrophes (R1)."""
         samples = [
             r"C:\Users\Éxample\PrivateSuffix",
             r"/home/Éxample/PrivateSuffix",
@@ -203,6 +377,18 @@ class TestPrivacyDetection(unittest.TestCase):
             r"C:\Users\O'Connor\Desktop\app.log",
             r"/home/O'Connor/debug.log",
             r"C:\Documents and Settings\René\app.log",
+            r"C:\Users\Example\Private Surname",
+            r"/home/Example/Private Surname",
+            r"/mnt/c/Users/Example/Private Surname",
+            r"C:\Users\Example\Private+Sentinel.txt",
+            r"C:\Users\Example+Sentinel\file.txt",
+            r"C:\Users\Example+Sentinel",
+            r"C:\Users\Example\Private$Secret.log",
+            r"C:\Users\Example\user~1\data.csv",
+            r"C:\Users\Example\user@domain\info.json",
+            r"C:\Users\Example\build#1\out.log",
+            r"C:\Users\Example\dir%20name\test.txt",
+            r"C:\Users\Example\A&B\app.exe",
         ]
         for s in samples:
             with self.subTest(sample=s):
@@ -230,7 +416,7 @@ class TestPrivacyDetection(unittest.TestCase):
                 self.assertTrue(is_privacy_sensitive_text(s))
 
     def test_detects_concrete_unc_paths_including_under_example_hosts(self):
-        """Detects concrete UNC host, private share, and suffix paths (R2)."""
+        """Detects concrete UNC host, private share, suffix, and ambiguous continuation paths (R2)."""
         samples = [
             r"\\nas01\share\backup\file.zip",
             r"\\nas01\Team-Share\private_tool",
@@ -245,6 +431,10 @@ class TestPrivacyDetection(unittest.TestCase):
             r"\\localhost\share\repo\private_tool",
             r"\\127.0.0.1\c$\secret",
             "//localhost/share/repo/private_tool",
+            r"\\server\share\+PrivateSentinel",
+            "//server/share/+PrivateSentinel",
+            r"\\server\share PrivateSentinel",
+            r"\\nas01\share\Private Surname",
         ]
         for s in samples:
             with self.subTest(sample=s):
@@ -343,7 +533,7 @@ class TestPrivacyRedaction(unittest.TestCase):
         self.assertEqual(redacted, "Logs saved at [REDACTED_PATH]")
 
     def test_redacts_unicode_multiword_and_apostrophe_paths_without_suffix_leakage(self):
-        """Redacts Unicode, multiword names, and apostrophe paths completely without suffix leakage (R1)."""
+        """Redacts Unicode, multiword names, punctuation, and apostrophe paths completely without suffix leakage (R1)."""
         cases = [
             (
                 r"Failed at C:\Users\Éxample\PrivateSuffix on line 12",
@@ -389,6 +579,51 @@ class TestPrivacyRedaction(unittest.TestCase):
                 r"Bracketed [C:\Users\Éxample\doc.md] here",
                 "Bracketed [[REDACTED_PATH]] here",
                 ["Éxample", "doc.md"],
+            ),
+            (
+                r"Error at C:\Users\Example\Private Surname on line 42",
+                "Error at [REDACTED_PATH] on line 42",
+                ["Example", "Private", "Surname"],
+            ),
+            (
+                r"Log at /home/Example/Private Surname for task",
+                "Log at [REDACTED_PATH] for task",
+                ["Example", "Private", "Surname"],
+            ),
+            (
+                r"WSL path /mnt/c/Users/Example/Private Surname done",
+                "WSL path [REDACTED_PATH] done",
+                ["Example", "Private", "Surname"],
+            ),
+            (
+                r"Build at C:\Users\Example\Private+Sentinel.txt successfully",
+                "Build at [REDACTED_PATH] successfully",
+                ["Example", "Private", "Sentinel", "Private+Sentinel"],
+            ),
+            (
+                r"Source at C:\Users\Example+Sentinel\file.txt finished",
+                "Source at [REDACTED_PATH] finished",
+                ["Example", "Sentinel", "file.txt"],
+            ),
+            (
+                r"Directory C:\Users\Example+Sentinel exists",
+                "Directory [REDACTED_PATH] exists",
+                ["Example", "Sentinel"],
+            ),
+            (
+                r"Secret at C:\Users\Example\Private$Secret.log ok",
+                "Secret at [REDACTED_PATH] ok",
+                ["Private$Secret", "Secret.log"],
+            ),
+            (
+                r"Path C:\Users\Example\user~1\data.csv ok",
+                "Path [REDACTED_PATH] ok",
+                ["user~1", "data.csv"],
+            ),
+            (
+                r"Path C:\Users\Example\user@domain\info.json ok",
+                "Path [REDACTED_PATH] ok",
+                ["user@domain", "info.json"],
             ),
         ]
         for input_text, expected_redacted, forbidden_tokens in cases:
@@ -440,6 +675,26 @@ class TestPrivacyRedaction(unittest.TestCase):
                 r"IP share at \\127.0.0.1\c$\secret end",
                 "IP share at [REDACTED_PATH] end",
                 ["c$", "secret"],
+            ),
+            (
+                r"UNC with plus at \\server\share\+PrivateSentinel finished",
+                "UNC with plus at [REDACTED_PATH] finished",
+                ["Private", "Sentinel", "PrivateSentinel"],
+            ),
+            (
+                "Forward UNC with plus at //server/share/+PrivateSentinel finished",
+                "Forward UNC with plus at [REDACTED_PATH] finished",
+                ["Private", "Sentinel", "PrivateSentinel"],
+            ),
+            (
+                r"UNC space continuation at \\server\share PrivateSentinel finished",
+                "UNC space continuation at [REDACTED_PATH] finished",
+                ["Private", "Sentinel", "PrivateSentinel"],
+            ),
+            (
+                r"UNC multiword at \\nas01\share\Private Surname finished",
+                "UNC multiword at [REDACTED_PATH] finished",
+                ["nas01", "Private", "Surname"],
             ),
             (
                 r"Exact bare template \\server\share is preserved",
@@ -511,8 +766,27 @@ class TestPrivacyRedaction(unittest.TestCase):
         self.assertLessEqual(len(sanitized), 100)
         self.assertTrue(sanitized.endswith("..."))
 
+        # Verify multi-word, punctuation, and UNC continuations suppress unique suffix tokens
+        multiword_text = r"Notice: C:\Users\Example\Private Surname for task"
+        san_mw = sanitize_display_text(multiword_text)
+        self.assertNotIn("Private", san_mw)
+        self.assertNotIn("Surname", san_mw)
+        self.assertIn("[REDACTED_PATH]", san_mw)
+
+        punct_text = r"Notice: C:\Users\Example\Private+Sentinel.txt done"
+        san_pt = sanitize_display_text(punct_text)
+        self.assertNotIn("Private", san_pt)
+        self.assertNotIn("Sentinel", san_pt)
+        self.assertIn("[REDACTED_PATH]", san_pt)
+
+        unc_text = r"Share: \\server\share\+PrivateSentinel finished"
+        san_unc = sanitize_display_text(unc_text)
+        self.assertNotIn("Private", san_unc)
+        self.assertNotIn("Sentinel", san_unc)
+        self.assertIn("[REDACTED_PATH]", san_unc)
+
     def test_sanitize_diff_line_preserves_prefix(self):
-        """Preserves diff prefixes (+, -, space) while redacting payloads."""
+        """Preserves diff prefixes (+, -, space) while redacting payloads completely without suffix leakage."""
         add_line = "+ C:\\Users\\Éxample\\file.cs"
         sub_line = "- /home/Éxample/file.cs"
         ctx_line = "  token: Bearer ABCDEFGH+PrivateSentinel/=="
@@ -520,13 +794,38 @@ class TestPrivacyRedaction(unittest.TestCase):
         self.assertEqual(sanitize_diff_line(sub_line), "- [REDACTED_PATH]")
         self.assertEqual(sanitize_diff_line(ctx_line), "  token: [REDACTED_TOKEN]")
 
+        # Multi-word and punctuation paths in diff lines
+        mw_diff = "+ C:\\Users\\Example\\Private Surname"
+        san_mw = sanitize_diff_line(mw_diff)
+        self.assertEqual(san_mw, "+ [REDACTED_PATH]")
+        self.assertNotIn("Private", san_mw)
+        self.assertNotIn("Surname", san_mw)
+
+        unc_diff = "- \\\\server\\share\\+PrivateSentinel"
+        san_unc = sanitize_diff_line(unc_diff)
+        self.assertEqual(san_unc, "- [REDACTED_PATH]")
+        self.assertNotIn("Private", san_unc)
+        self.assertNotIn("Sentinel", san_unc)
+
     def test_sanitize_diagnostic_suppresses_sensitive_data(self):
-        """Sanitizes diagnostic messages cleanly without leaking Unicode names or tokens."""
+        """Sanitizes diagnostic messages cleanly without leaking Unicode names, tokens, or suffixes."""
         msg = "Error reading C:\\Users\\Éxample\\secret.key: file not found"
         sanitized = sanitize_diagnostic(msg)
         self.assertNotIn("Éxample", sanitized)
         self.assertNotIn("secret.key", sanitized)
         self.assertEqual(sanitized, "Error reading [REDACTED_PATH]: file not found")
+
+        diag_mw = r"Path C:\Users\Example\Private Surname not accessible"
+        san_mw = sanitize_diagnostic(diag_mw)
+        self.assertNotIn("Private", san_mw)
+        self.assertNotIn("Surname", san_mw)
+        self.assertEqual(san_mw, "Path [REDACTED_PATH] not accessible")
+
+        diag_unc = r"Network share \\server\share PrivateSentinel unavailable"
+        san_unc = sanitize_diagnostic(diag_unc)
+        self.assertNotIn("Private", san_unc)
+        self.assertNotIn("Sentinel", san_unc)
+        self.assertEqual(san_unc, "Network share [REDACTED_PATH] unavailable")
 
     def test_format_safe_filename_diagnostic(self):
         """Replaces sensitive filenames with <redacted-filename>."""
@@ -535,12 +834,23 @@ class TestPrivacyRedaction(unittest.TestCase):
         self.assertEqual(format_safe_filename_diagnostic(sensitive_path), "<redacted-filename>")
         self.assertEqual(format_safe_filename_diagnostic(safe_path), "summary.md")
 
+        mw_path = Path("C:/Users/Example/Private Surname")
+        unc_path = Path(r"\\server\share\+PrivateSentinel")
+        self.assertEqual(format_safe_filename_diagnostic(mw_path), "<redacted-filename>")
+        self.assertEqual(format_safe_filename_diagnostic(unc_path), "<redacted-filename>")
+
     def test_format_safe_backup_display(self):
         """Formats backup confirmation safely using fixed prefix and basename."""
         backup_path = Path("C:/Users/Éxample/.backups/pr_body_backup_20261019.md")
         display = format_safe_backup_display(backup_path)
         self.assertNotIn("Éxample", display)
         self.assertEqual(display, "[REDACTED_PATH]/pr_body_backup_20261019.md")
+
+        mw_backup = Path("C:/Users/Example/Private Surname/.backups/issue_42_backup.md")
+        disp_mw = format_safe_backup_display(mw_backup)
+        self.assertNotIn("Private", disp_mw)
+        self.assertNotIn("Surname", disp_mw)
+        self.assertEqual(disp_mw, "[REDACTED_PATH]/issue_42_backup.md")
 
 
 if __name__ == "__main__":

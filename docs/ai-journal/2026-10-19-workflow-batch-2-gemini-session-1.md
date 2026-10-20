@@ -136,3 +136,29 @@ Following review of PR #190 by Codex, findings R1–R4 were resolved on branch `
    - `build-and-test`: PASS ([Run 39346455785](https://github.com/Tiflit/DXVK-Companion/actions/runs/39346455785)) (971 tests passed in 2m6s)
    - `Acquire Facts and Render Snapshot`: PASS ([Run 39346454077](https://github.com/Tiflit/DXVK-Companion/actions/runs/39346454077))
    - `Publish Dashboard to Dedicated Issue`: PASS ([Run 39346454077](https://github.com/Tiflit/DXVK-Companion/actions/runs/39346454077))
+
+---
+
+### 5. Codex Repair Review Resolutions (Comment 6294300045)
+
+Following repair review of PR #190 by Codex ([comment 6294300045](https://github.com/Tiflit/DXVK-Companion/pull/190#issuecomment-6294300045)), findings R1, R2, and R4 were resolved:
+
+1. **R1 (P1) — Stop Path Component Truncation at Spaces & Valid Punctuation**:
+   - Updated `UNQUOTED_HOME_PATH_PATTERN` and `POSIX_HOME_PREFIX_PATTERN` in `scripts/ai-workflow/privacy_guard.py` to support valid path punctuation (`+`, `$`, `~`, `@`, `#`, `%`, `&`, `'`, `-`, `.`) and multi-word terminal components (e.g. `C:\Users\Example\Private Surname`, `/home/Example/Private Surname`, `C:\Users\Example\Private+Sentinel.txt`, `C:\Users\Example+Sentinel\file.txt`).
+   - Implemented conservative complete-span matching bounded by prose boundary lookaheads (`_PROSE_BOUNDARY`) and added `SAFE_FALLBACK_PREFIX_PATTERN` in `redact_privacy_text` as a safe prefix fallback.
+   - Asserted complete unique suffix token absence (`Private`, `Surname`, `Sentinel`, `PrivateSentinel`) across redactions, diff previews, diagnostics, and both consumers (`update_pr_body.py` and `update_dashboard.py`).
+
+2. **R2 (P1) — Prevent Partial UNC Matches from Bare-Template Exemption**:
+   - Re-architected `UNC_PATH_PATTERN` to capture the entire UNC span including trailing subpaths, punctuation, and ambiguous space continuations before evaluating template exemptions.
+   - Partial or ambiguous continuations (e.g. `\\server\share\+PrivateSentinel`, `//server/share/+PrivateSentinel`, `\\server\share PrivateSentinel`, `\\nas01\share\Private Surname`) are captured in the whole span, causing `is_generic_unc_template` to return `False`, ensuring conservative redaction to `[REDACTED_PATH]`.
+   - Exact bare documentation templates (`\\server\share`, `//server/share`, etc.) remain preserved.
+   - Added exhaustive tests verifying unique suffix token absence across `test_privacy_guard.py`, `test_update_pr_body.py`, and `test_dashboard.py`.
+
+3. **R4 (P2) — Dynamic Execution Boundary Entry Points & Documentation Scoping**:
+   - Extended dynamic execution boundary in `tests/ai-workflow/test_privacy_guard.py` to guard all file-read entry points (`builtins.open`, `io.open`, `Path.open`, `Path.read_text`), permitting only narrowly defined module-loading resources (`privacy_guard.py` source and bytecode).
+   - Guarded direct dictionary mapping access (`os.environ["USER"]`, `os.getenv("USER")`, `"USER" in os.environ`, `os.environ.get("USER")`) against identity discovery.
+   - Added seeded forbidden read and identity probe test (`test_guarded_boundary_intercepts_seeded_forbidden_reads_and_env_probes`) actively asserting that unauthorized reads, env mapping accesses, and file writes are trapped.
+   - Corrected opening sentence of `docs/ai/PRIVACY-HANDLING.md:49` to bound scope strictly to `update_pr_body.py` and `update_dashboard.py`.
+
+4. **Honest Observability & CI Recording**:
+   - Note on intermittent CI test flakiness: Cloud runs on Windows runner in prior cycles exhibited runner timing flakiness on 2 tests (`969 passed / 2 failed`) before rerun passed cleanly (`971 / 971`). Out-of-scope product tests are not modified; record all CI runs transparently.

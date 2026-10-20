@@ -93,9 +93,9 @@ WSL_HOME_PREFIX_PATTERN: Pattern[str] = re.compile(
     re.IGNORECASE,
 )
 
-# POSIX personal home path prefix (/home/<user> or /Users/<user>)
+# POSIX personal home path prefix (/home/<user> or /Users/<user>), supporting punctuation (+, ~, $, @, #, %, &, ', -, .)
 POSIX_HOME_PREFIX_PATTERN: Pattern[str] = re.compile(
-    r"(?:file:///)?(?<![^\s\"'`()<>[\]{}|;,=])/(?:home|Users)/[\w'.-]+",
+    r"(?:file:///)?(?<![^\s\"'`()<>[\]{}|;,=])/(?:home|Users)/[\w+~$@#%&'.-]+",
     re.IGNORECASE,
 )
 
@@ -162,30 +162,54 @@ QUOTED_HOME_PATH_PATTERNS: List[Tuple[Pattern[str], str, str]] = [
     ),
 ]
 
+# Common prose stopwords that bound unquoted paths in diagnostic and review prose
+_PROSE_STOPWORDS: str = (
+    r"(?:on\s+line\b|on\b|for\b|done\b|finished\b|successfully\b|ok\b|end\b|"
+    r"is\b|was\b|were\b|or\b|vs\b|and\b|to\b|in\b|at\b|from\b|with\b|as\b|by\b|"
+    r"exists\b|has\b|have\b|not\b|failed\b|error\b|line\b)"
+)
+
+# Lookahead pattern for boundary where an unquoted path ends in prose, diagnostics, or markdown
+_PROSE_BOUNDARY: str = (
+    r"(?=[\r\n\t]|$|[;,:]\s|[;,:\)\]}>\"'`|]|\.(?:\s|$)|"
+    r"\s+" + _PROSE_STOPWORDS + r"(?:[\s,;:.!?]|$))"
+)
+
+# Building blocks for path segments supporting punctuation (+, ~, $, @, #, %, &, ', -, .)
+_SEG_TOKEN: str = r"(?:\.[\w+~$@#%&'-]+|[\w+~$@#%&'-]+(?:\.[\w+~$@#%&'-]+)*|\.\.\.)"
+_SEG_MULTI: str = _SEG_TOKEN + r"(?: (?!" + _PROSE_STOPWORDS + r"(?:[\s,;:.!?]|$))" + _SEG_TOKEN + r")*"
+
 # Unquoted personal path pattern:
-# Matches from the personal home prefix through all path segments (Unicode, spaces, apostrophes, etc.)
-# Branch 1 matches paths with internal slashes; intermediate segments end with slashes, while the terminal
-# segment (file or single subfolder) does not consume trailing whitespace or prose words.
-# Branch 2 matches a bare home directory name directly under Users/home at line end or delimiter.
+# Matches from personal home prefix through all path segments (Unicode, spaces, punctuation +, $, ~, @, #, %, &, ', -, .)
 UNQUOTED_HOME_PATH_PATTERN: Pattern[str] = re.compile(
     r"(?P<prefix>(?:file:///)?(?:[A-Za-z]:[/\\]+|(?<![^\s\"'`()<>[\]{}|;,=])[/\\]+)(?:Users|Documents and Settings)[/\\]+|(?<![^\s\"'`()<>[\]{}|;,=])/mnt/[A-Za-z]/(?:Users|Documents and Settings)[/\\]+|(?:file:///)?(?<![^\s\"'`()<>[\]{}|;,=])/(?:home|Users)/)"
-    r"(?P<tail>"
-    r"[\w'.-]+(?: [\w'.-]+)*[/\\]+(?:[\w'.-]+(?: [\w'.-]+)*(?=[/\\])[/\\]+)*(?:[\w'.-]+\.[\w'.-]+|\.\.\.|[\w'.-]+)?"
-    r"|"
-    r"[\w'.-]+(?: [\w'.-]+)*(?=[\r\n\t]|$|[;,:]\s)"
-    r")"
-    r"[/\\]?",
+    r"(?P<tail>(?:" + _SEG_MULTI + r"[/\\]+)*(?:" + _SEG_MULTI + r")?)"
+    r"[/\\]*"
+    + _PROSE_BOUNDARY,
     re.IGNORECASE,
 )
 
-# UNC pattern matching network share paths with backslashes or forward slashes
+# Host/share character class excluding delimiters and slashes
+_HOST_SHARE_CHAR: str = r"[^\s\\/\"'*?<>|:;,()\[\]{}`]"
+
+# UNC pattern matching network share paths with backslashes or forward slashes,
+# capturing the entire UNC span including any continuations, subpaths, spaces, and punctuation
+# to prevent partial matches from obtaining generic template exemptions.
 UNC_PATH_PATTERN: Pattern[str] = re.compile(
     r"(?:\\\\|(?<![A-Za-z0-9+.-]:)//)"
-    r"(?P<host>[^\s\\/\"'*?<>|]+)"
+    r"(?P<host>" + _HOST_SHARE_CHAR + r"+(?<!\.))"
     r"[/\\]+"
-    r"(?P<share>[^\s\\/\"'*?<>|]+)"
-    r"(?P<extra>(?:[/\\]+[\w'.-]+(?: [\w'.-]+)*(?=[/\\]))*[/\\]+(?:[\w'.-]+\.[\w'.-]+|\.\.\.|[\w'.-]+))?"
-    r"[/\\]?",
+    r"(?P<share>" + _HOST_SHARE_CHAR + r"+(?<!\.))"
+    r"(?P<continuation>(?:[/\\]+(?:" + _SEG_MULTI + r"[/\\]*)*| +(?!" + _PROSE_STOPWORDS + r"(?:[\s,;:.!?]|$))" + _SEG_MULTI + r")*)"
+    r"[/\\]*",
+    re.IGNORECASE,
+)
+
+# Safe prefix fallback: catches any residual sensitive personal prefix if regex boundaries somehow truncated
+SAFE_FALLBACK_PREFIX_PATTERN: Pattern[str] = re.compile(
+    r"(?:file:///)?(?:[A-Za-z]:[/\\]+|(?<![^\s\"'`()<>[\]{}|;,=])[/\\]+)(?:Users|Documents and Settings)[/\\]+[^\s\"'`()<>[\]{}|;,=]*|"
+    r"(?<![^\s\"'`()<>[\]{}|;,=])/mnt/[A-Za-z]/(?:Users|Documents and Settings)[/\\]+[^\s\"'`()<>[\]{}|;,=]*|"
+    r"(?:file:///)?(?<![^\s\"'`()<>[\]{}|;,=])/(?:home|Users)/[^\s\"'`()<>[\]{}|;,=]*",
     re.IGNORECASE,
 )
 
@@ -289,14 +313,17 @@ def redact_privacy_text(text: Optional[str]) -> str:
     # 2. Redact unquoted personal paths
     clean = UNQUOTED_HOME_PATH_PATTERN.sub("[REDACTED_PATH]", clean)
 
-    # 3. Redact concrete UNC / network paths
+    # 3. Safe fallback prefix redaction (ensures no residual sensitive prefix remains)
+    clean = SAFE_FALLBACK_PREFIX_PATTERN.sub("[REDACTED_PATH]", clean)
+
+    # 4. Redact concrete UNC / network paths
     clean = redact_unc_paths(clean)
 
-    # 4. Redact tokens (GitHub tokens and RFC 6750 Bearer tokens)
+    # 5. Redact tokens (GitHub tokens and RFC 6750 Bearer tokens)
     clean = GITHUB_TOKEN_PATTERN.sub("[REDACTED_TOKEN]", clean)
     clean = BEARER_TOKEN_PATTERN.sub(r"\g<1>[REDACTED_TOKEN]", clean)
 
-    # 5. Redact URL query strings
+    # 6. Redact URL query strings
     clean = QUERY_STRING_PATTERN.sub("?[REDACTED_QUERY]", clean)
 
     return clean

@@ -281,6 +281,69 @@ class TestUpdatePrBody(unittest.TestCase):
         self.assertIn("?[REDACTED_QUERY]", sanitized)
         self.assertIn("[REDACTED_TOKEN]", sanitized)
 
+    def test_privacy_scan_and_redaction_for_multiword_and_punctuation_paths(self):
+        """R1: Verifies detection and redaction of multi-word terminal components and punctuation paths."""
+        cases = [
+            (
+                r"Failed at C:\Users\Example\Private Surname on line 42",
+                ["Example", "Private", "Surname"],
+            ),
+            (
+                r"Log at /home/Example/Private Surname for task",
+                ["Example", "Private", "Surname"],
+            ),
+            (
+                r"Build at C:\Users\Example\Private+Sentinel.txt successfully",
+                ["Example", "Private", "Sentinel"],
+            ),
+            (
+                r"Source at C:\Users\Example+Sentinel\file.txt finished",
+                ["Example", "Sentinel"],
+            ),
+        ]
+        for text, forbidden_tokens in cases:
+            with self.subTest(text=text):
+                violations = scan_for_privacy_violations(text)
+                self.assertGreaterEqual(len(violations), 1)
+                sanitized = sanitize_privacy_text(text)
+                self.assertIn("[REDACTED_PATH]", sanitized)
+                for tok in forbidden_tokens:
+                    self.assertNotIn(tok, sanitized, f"Token '{tok}' leaked in sanitized text")
+
+    def test_privacy_scan_and_redaction_for_unc_continuations_and_templates(self):
+        """R2: Verifies detection and redaction of UNC ambiguous continuations and partial matches."""
+        cases = [
+            (
+                r"Share: \\server\share\+PrivateSentinel finished",
+                ["Private", "Sentinel", "PrivateSentinel"],
+            ),
+            (
+                "Forward: //server/share/+PrivateSentinel finished",
+                ["Private", "Sentinel", "PrivateSentinel"],
+            ),
+            (
+                r"Space: \\server\share PrivateSentinel finished",
+                ["Private", "Sentinel", "PrivateSentinel"],
+            ),
+            (
+                r"Multiword: \\nas01\share\Private Surname finished",
+                ["nas01", "Private", "Surname"],
+            ),
+        ]
+        for text, forbidden_tokens in cases:
+            with self.subTest(text=text):
+                violations = scan_for_privacy_violations(text)
+                self.assertGreaterEqual(len(violations), 1)
+                sanitized = sanitize_privacy_text(text)
+                self.assertIn("[REDACTED_PATH]", sanitized)
+                for tok in forbidden_tokens:
+                    self.assertNotIn(tok, sanitized, f"Token '{tok}' leaked in sanitized text")
+
+        # Verify bare template is preserved
+        bare = r"Preserve \\server\share in documentation"
+        self.assertEqual(len(scan_for_privacy_violations(bare)), 0)
+        self.assertIn(r"\\server\share", sanitize_privacy_text(bare))
+
     # =========================================================================
     # 3. PR Review Preservation & Modifications (Existing Regressions)
     # =========================================================================
