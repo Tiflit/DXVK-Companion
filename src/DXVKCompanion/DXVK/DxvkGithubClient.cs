@@ -1,7 +1,11 @@
 using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using DXVKCompanion.Models;
@@ -18,6 +22,110 @@ namespace DXVKCompanion.DXVK
         private readonly HttpClient _httpClient;
         private readonly CacheStore _cacheStore;
         private readonly SemaphoreSlim _gate = new(1, 1);
+
+        public const int CatalogPageSize = 30;
+        public const int MaximumCatalogPages = 32;
+        internal const int MaximumMetadataBytes = 2 * 1024 * 1024;
+        internal HttpClient HttpClient => _httpClient;
+
+        public sealed record OfficialReleasePage(IReadOnlyList<ReleaseInfo> Releases, bool HasMore);
+
+        // Page URLs are constructed locally. An untrusted Link header is never followed.
+        public async Task<OfficialReleasePage> FetchOfficialReleasePageAsync(int page, CancellationToken cancellationToken = default)
+        {
+            if (page < 1 || page > MaximumCatalogPages) throw new ArgumentOutOfRangeException(nameof(page));
+            using var document = await ReadOfficialMetadataAsync(
+                $"https://api.github.com/repos/doitsujin/dxvk/releases?per_page={CatalogPageSize}&page={page}", cancellationToken);
+            if (document.RootElement.ValueKind != JsonValueKind.Array) throw new InvalidDataException("Invalid official release catalog.");
+            var entries = document.RootElement.EnumerateArray().ToArray();
+            if (entries.Length > CatalogPageSize) throw new InvalidDataException("Official release page exceeds limit.");
+            var releases = new List<ReleaseInfo>();
+            foreach (var entry in entries)
+            {
+                var release = ParseOfficialRelease(entry);
+                if (release != null) releases.Add(release);
+            }
+            return new OfficialReleasePage(releases, entries.Length == CatalogPageSize && page < MaximumCatalogPages);
+        }
+
+        public async Task<ReleaseInfo> FetchOfficialReleaseAsync(string tag, CancellationToken cancellationToken = default)
+        {
+            if (!IsOfficialTag(tag)) throw new InvalidDataException("Invalid official release tag.");
+            using var document = await ReadOfficialMetadataAsync(
+                $"https://api.github.com/repos/doitsujin/dxvk/releases/tags/{tag}", cancellationToken);
+            var release = ParseOfficialRelease(document.RootElement);
+            if (release == null || release.Version != tag) throw new InvalidDataException("Official release identity does not match the requested tag.");
+            return release;
+        }
+
+        private async Task<JsonDocument> ReadOfficialMetadataAsync(string url, CancellationToken cancellationToken)
+        {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(RequestTimeout);
+            using var request = new HttpRequestMessage(HttpMethod.Get, url);
+            request.Headers.UserAgent.ParseAdd("DXVK-Companion/1.0");
+            request.Headers.Accept.ParseAdd("application/vnd.github+json");
+            using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
+            response.EnsureSuccessStatusCode();
+            await using var stream = await response.Content.ReadAsStreamAsync(timeout.Token);
+            var bytes = await ReadBoundedAsync(stream, MaximumMetadataBytes, timeout.Token);
+            return JsonDocument.Parse(bytes);
+        }
+
+        internal static async Task<byte[]> ReadBoundedAsync(Stream stream, int limit, CancellationToken token)
+        {
+            using var result = new MemoryStream();
+            byte[] buffer = new byte[81920];
+            int count;
+            while ((count = await stream.ReadAsync(buffer.AsMemory(), token)) != 0)
+            {
+                if (result.Length + count > limit) throw new InvalidDataException("Official response exceeds size limit.");
+                result.Write(buffer, 0, count);
+            }
+            return result.ToArray();
+        }
+
+        internal static bool IsOfficialTag(string? tag) => tag != null && tag.Length <= 48 &&
+            Regex.IsMatch(tag, @"\Av[0-9]+(?:\.[0-9]+){1,3}\z", RegexOptions.CultureInvariant);
+
+        internal static bool IsOfficialAsset(ReleaseInfo release) => IsOfficialTag(release.Version) &&
+            release.ReleaseId > 0 && release.AssetId > 0 && release.AssetSize > 0 &&
+            release.AssetSize <= DxvkReleaseAcquirer.MaximumArchiveBytes &&
+            release.AssetName == $"dxvk-{release.Version[1..]}.tar.gz" &&
+            release.DownloadUrl == $"https://github.com/doitsujin/dxvk/releases/download/{release.Version}/{release.AssetName}" &&
+            (release.AssetDigest == null || Regex.IsMatch(release.AssetDigest, @"\Asha256:[0-9a-fA-F]{64}\z", RegexOptions.CultureInvariant));
+
+        private static ReleaseInfo? ParseOfficialRelease(JsonElement entry)
+        {
+            if (entry.ValueKind != JsonValueKind.Object || !entry.TryGetProperty("draft", out var draft) ||
+                draft.ValueKind != JsonValueKind.False || !entry.TryGetProperty("prerelease", out var prerelease) ||
+                prerelease.ValueKind != JsonValueKind.False || !entry.TryGetProperty("tag_name", out var tagValue) ||
+                tagValue.ValueKind != JsonValueKind.String) return null;
+            string tag = tagValue.GetString()!;
+            if (!IsOfficialTag(tag) || !entry.TryGetProperty("id", out var id) || !id.TryGetInt64(out long releaseId) ||
+                !entry.TryGetProperty("assets", out var assets) || assets.ValueKind != JsonValueKind.Array) return null;
+            ReleaseInfo? found = null;
+            foreach (var asset in assets.EnumerateArray())
+            {
+                if (asset.ValueKind != JsonValueKind.Object || !asset.TryGetProperty("name", out var name) ||
+                    name.ValueKind != JsonValueKind.String || name.GetString() != $"dxvk-{tag[1..]}.tar.gz") continue;
+                // A duplicate matching asset is ambiguous even if just one has usable metadata.
+                if (found != null) return null;
+                if (!asset.TryGetProperty("id", out var assetId) || !assetId.TryGetInt64(out long aid) ||
+                    !asset.TryGetProperty("size", out var size) || !size.TryGetInt64(out long length) ||
+                    !asset.TryGetProperty("browser_download_url", out var url) || url.ValueKind != JsonValueKind.String) return null;
+                string? digest = null;
+                if (asset.TryGetProperty("digest", out var digestValue) && digestValue.ValueKind != JsonValueKind.Null)
+                {
+                    if (digestValue.ValueKind != JsonValueKind.String) return null;
+                    digest = digestValue.GetString();
+                }
+                found = new ReleaseInfo { Version = tag, DownloadUrl = url.GetString()!, ReleaseId = releaseId,
+                    AssetId = aid, AssetName = name.GetString()!, AssetSize = length, AssetDigest = digest };
+                if (!IsOfficialAsset(found)) return null;
+            }
+            return found;
+        }
 
         public Func<DateTime> UtcNowSeam { get; set; } = () => DateTime.UtcNow;
 

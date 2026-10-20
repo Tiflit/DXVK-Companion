@@ -340,6 +340,33 @@ namespace DXVKCompanion.UI
             Controls.Add(versionCombo);
             top += 35;
 
+            bool PendingNow()
+            {
+                var latest = _gameLibraryStore.FindInstallationForExecutable(_profile.ExePath);
+                return latest?.PendingAction?.IsPending == true || _dxvk.HasTransientPendingAction(_profile.ExePath);
+            }
+            var browseVersions = new Button
+            {
+                Text = "Browse / Download official versions", Left = 20, Top = top, AutoSize = true
+            };
+            browseVersions.Click += (_, _) =>
+            {
+                string? selected = GameDetailsVersionSelection.ResolveSelectedVersion(
+                    versionCombo.SelectedIndex, versionLabels, currentPinnedVersion);
+                using var browser = new GameDetailsReleaseDownloadWindow(_dxvk, _profile, PendingNow);
+                browser.ShowDialog(this);
+                if (!browser.LibraryChanged || IsDisposed) return;
+                versionLabels = GameDetailsVersionSelection.GetAvailableLabels(
+                    DxvkLocalReleaseLibrary.GetAvailableVersions(_dxvk.DxvkSourceDir, _profile.Api, _profile.Architecture), selected);
+                versionCombo.Items.Clear();
+                foreach (var label in versionLabels) versionCombo.Items.Add(label);
+                versionCombo.SelectedIndex = GameDetailsVersionSelection.GetInitialSelectedIndex(versionLabels, selected);
+                versionCombo.Enabled = !PendingNow();
+            };
+            Controls.Add(browseVersions);
+            top += 40;
+            AutoScroll = true;
+
             var hideCheckbox = new CheckBox
             {
                 Text = "Hide game from standard library view",

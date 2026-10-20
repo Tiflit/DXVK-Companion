@@ -6,6 +6,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
+using System.Threading;
 using DXVKCompanion.Models;
 using DXVKCompanion.Safety;
 using DXVKCompanion.Storage;
@@ -33,6 +34,10 @@ namespace DXVKCompanion.DXVK
         private readonly ConcurrentDictionary<string, PendingAction> _pending = new(StringComparer.OrdinalIgnoreCase);
         public string? LastRefusalReason { get; private set; }
         public string DxvkSourceDir => _installer.DxvkSourceDir;
+        public Task<DxvkGithubClient.OfficialReleasePage> BrowseOfficialReleasesAsync(int page, CancellationToken token = default) =>
+            _github.FetchOfficialReleasePageAsync(page, token);
+        public Task<DxvkReleaseAcquirer.AcquisitionResult> AcquireOfficialReleaseAsync(string tag, CancellationToken token = default) =>
+            _installer.GetReleaseAcquirer(_github).AcquireAsync(tag, token);
         public event Action<GameInstallation, Models.PendingAction, string>? OnPendingActionCancelled;
 
         internal IOperationLeaseCoordinator LeaseCoordinator { get; set; } = OperationLeaseCoordinator.Default;
@@ -1217,7 +1222,7 @@ namespace DXVKCompanion.DXVK
                 {
                     if (!DxvkLocalReleaseLibrary.IsVersionAvailable(_installer.DxvkSourceDir, effectiveTarget, profile.Api, profile.Architecture))
                     {
-                        var unavailableReason = $"Requested DXVK version '{effectiveTarget}' is not available locally.";
+                        var unavailableReason = $"Requested DXVK version '{effectiveTarget}' is not available locally. Use Browse / Download official versions to inspect or acquire it.";
                         LastRefusalReason = unavailableReason;
                         if (installation != null)
                         {

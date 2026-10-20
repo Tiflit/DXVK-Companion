@@ -13,6 +13,9 @@ namespace DXVKCompanion.DXVK
             if (string.IsNullOrWhiteSpace(name))
                 return false;
 
+            if (name.StartsWith(".", StringComparison.Ordinal))
+                return false; // Operation-owned acquisition staging is never selectable.
+
             string trimmed = name.Trim();
             if (trimmed == "." || trimmed == "..")
                 return false;
@@ -67,6 +70,10 @@ namespace DXVKCompanion.DXVK
             try
             {
                 if (!Directory.Exists(versionDir))
+                    return false;
+
+                if (DxvkReleaseAcquirer.HasAcquisitionRecord(versionDir) &&
+                    !DxvkReleaseAcquirer.ValidateManifest(versionDir, Path.GetFileName(versionDir), out _))
                     return false;
 
                 var vDirInfo = new DirectoryInfo(versionDir);
