@@ -48,8 +48,8 @@ public sealed class ManagedFileInspectorRestoredTests
         var store = new GameLibraryStore(storePath, backupsPath);
         var engine = new MultiFileTransactionEngine(backupsPath);
         using var http = new HttpClient();
-        var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
-        var rollback = new DxvkRollback(engine, store);
+        var installer = SyntheticSafetyFixture.CreateInstaller(http, engine, store, sourceDir.RootPath);
+        var rollback = SyntheticSafetyFixture.CreateRollback(engine, store);
 
         var profile = new GameProfile(exePath)
         {
@@ -79,7 +79,7 @@ public sealed class ManagedFileInspectorRestoredTests
         Assert.Null(installation.ManagedDxvkVersion);
 
         // 3. Inspect installation
-        var inspector = new ManagedFileInspector(store);
+        var inspector = SyntheticSafetyFixture.CreateInspector(store);
         bool changed = inspector.InspectInstallation(installation);
 
         // Invariant: No external change reported
@@ -109,7 +109,7 @@ public sealed class ManagedFileInspectorRestoredTests
         Assert.Equal(RestorationState.Restored, reloadedInst!.RestorationState);
         Assert.Null(reloadedInst.ManagedDxvkVersion);
 
-        var reloadedInspector = new ManagedFileInspector(reloadedStore);
+        var reloadedInspector = SyntheticSafetyFixture.CreateInspector(reloadedStore);
         bool reloadedChanged = reloadedInspector.InspectInstallation(reloadedInst);
         Assert.False(reloadedChanged);
         Assert.Equal(RestorationState.Restored, reloadedInst.RestorationState);
@@ -141,8 +141,8 @@ public sealed class ManagedFileInspectorRestoredTests
             Path.Combine(storageDir.RootPath, "backups"));
         var engine = new MultiFileTransactionEngine(Path.Combine(storageDir.RootPath, "backups"));
         using var http = new HttpClient();
-        var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
-        var rollback = new DxvkRollback(engine, store);
+        var installer = SyntheticSafetyFixture.CreateInstaller(http, engine, store, sourceDir.RootPath);
+        var rollback = SyntheticSafetyFixture.CreateRollback(engine, store);
 
         var profile = new GameProfile(exePath) { Api = GraphicsApi.DX11, Architecture = "x64" };
         var release = new ReleaseInfo { Version = "2.5", DownloadUrl = "" };
@@ -160,7 +160,7 @@ public sealed class ManagedFileInspectorRestoredTests
         installation.PendingAction = PendingAction.Reapply("2.5", "Initial user action");
         store.Save(installation);
 
-        var inspector = new ManagedFileInspector(store);
+        var inspector = SyntheticSafetyFixture.CreateInspector(store);
 
         // Scan 1: Initial detection flags new transition and AttentionRequired
         bool scan1Changed = inspector.InspectInstallation(installation);
@@ -212,8 +212,8 @@ public sealed class ManagedFileInspectorRestoredTests
             Path.Combine(storageDir.RootPath, "backups"));
         var engine = new MultiFileTransactionEngine(Path.Combine(storageDir.RootPath, "backups"));
         using var http = new HttpClient();
-        var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
-        var rollback = new DxvkRollback(engine, store);
+        var installer = SyntheticSafetyFixture.CreateInstaller(http, engine, store, sourceDir.RootPath);
+        var rollback = SyntheticSafetyFixture.CreateRollback(engine, store);
 
         var profile = new GameProfile(exePath) { Api = GraphicsApi.DX11, Architecture = "x64" };
         var release = new ReleaseInfo { Version = "2.5", DownloadUrl = "" };
@@ -227,7 +227,7 @@ public sealed class ManagedFileInspectorRestoredTests
         // Delete restored original file (d3d11.dll)
         File.Delete(d3d11Path);
 
-        var inspector = new ManagedFileInspector(store);
+        var inspector = SyntheticSafetyFixture.CreateInspector(store);
 
         // Scan 1: Flags new change and AttentionRequired
         bool scan1Changed = inspector.InspectInstallation(installation);
@@ -265,8 +265,8 @@ public sealed class ManagedFileInspectorRestoredTests
             Path.Combine(storageDir.RootPath, "backups"));
         var engine = new MultiFileTransactionEngine(Path.Combine(storageDir.RootPath, "backups"));
         using var http = new HttpClient();
-        var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
-        var rollback = new DxvkRollback(engine, store);
+        var installer = SyntheticSafetyFixture.CreateInstaller(http, engine, store, sourceDir.RootPath);
+        var rollback = SyntheticSafetyFixture.CreateRollback(engine, store);
 
         var profile = new GameProfile(exePath) { Api = GraphicsApi.DX11, Architecture = "x64" };
         var release = new ReleaseInfo { Version = "2.5", DownloadUrl = "" };
@@ -280,7 +280,7 @@ public sealed class ManagedFileInspectorRestoredTests
         // Modify restored original file (d3d11.dll) with different content
         File.WriteAllText(d3d11Path, "modified-d3d11-content");
 
-        var inspector = new ManagedFileInspector(store);
+        var inspector = SyntheticSafetyFixture.CreateInspector(store);
 
         // Scan 1: Flags new change and AttentionRequired
         bool scan1Changed = inspector.InspectInstallation(installation);
@@ -321,8 +321,8 @@ public sealed class ManagedFileInspectorRestoredTests
         var store = new GameLibraryStore(storePath, backupsPath);
         var engine = new MultiFileTransactionEngine(backupsPath);
         using var http = new HttpClient();
-        var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
-        var rollback = new DxvkRollback(engine, store);
+        var installer = SyntheticSafetyFixture.CreateInstaller(http, engine, store, sourceDir.RootPath);
+        var rollback = SyntheticSafetyFixture.CreateRollback(engine, store);
 
         var profile = new GameProfile(exePath) { Api = GraphicsApi.DX11, Architecture = "x64" };
         var release = new ReleaseInfo { Version = "2.5", DownloadUrl = "" };
@@ -336,7 +336,7 @@ public sealed class ManagedFileInspectorRestoredTests
         // Introduce post-restore mismatch: unexpected dxgi.dll present
         File.WriteAllText(dxgiPath, "unexpected-dxgi");
 
-        var inspector = new ManagedFileInspector(store);
+        var inspector = SyntheticSafetyFixture.CreateInspector(store);
         Assert.True(inspector.InspectInstallation(installation));
         Assert.Equal(RestorationState.AttentionRequired, installation.RestorationState);
 
@@ -348,7 +348,7 @@ public sealed class ManagedFileInspectorRestoredTests
         Assert.Null(reloadedInst.ManagedDxvkVersion);
 
         // Inspection before repair: verifies against original baselines, remains AttentionRequired
-        var reloadedInspector = new ManagedFileInspector(reloadedStore);
+        var reloadedInspector = SyntheticSafetyFixture.CreateInspector(reloadedStore);
         Assert.False(reloadedInspector.InspectInstallation(reloadedInst));
         Assert.Equal(RestorationState.AttentionRequired, reloadedInst.RestorationState);
 
@@ -391,8 +391,8 @@ public sealed class ManagedFileInspectorRestoredTests
             Path.Combine(storageDir.RootPath, "backups"));
         var engine = new MultiFileTransactionEngine(Path.Combine(storageDir.RootPath, "backups"));
         using var http = new HttpClient();
-        var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
-        var rollback = new DxvkRollback(engine, store);
+        var installer = SyntheticSafetyFixture.CreateInstaller(http, engine, store, sourceDir.RootPath);
+        var rollback = SyntheticSafetyFixture.CreateRollback(engine, store);
 
         var profile = new GameProfile(exePath) { Api = GraphicsApi.DX11, Architecture = "x64" };
         var release = new ReleaseInfo { Version = "2.5", DownloadUrl = "" };
@@ -404,7 +404,7 @@ public sealed class ManagedFileInspectorRestoredTests
 
         // Introduce mismatch to enter AttentionRequired
         File.WriteAllText(dxgiPath, "unexpected-dxgi");
-        var inspector = new ManagedFileInspector(store);
+        var inspector = SyntheticSafetyFixture.CreateInspector(store);
         Assert.True(inspector.InspectInstallation(installation));
         Assert.Equal(RestorationState.AttentionRequired, installation.RestorationState);
 
@@ -450,7 +450,7 @@ public sealed class ManagedFileInspectorRestoredTests
         });
         store.Save(instNull);
 
-        var inspector = new ManagedFileInspector(store);
+        var inspector = SyntheticSafetyFixture.CreateInspector(store);
         Assert.True(inspector.InspectInstallation(instNull));
         Assert.Equal(RestorationState.AttentionRequired, instNull.RestorationState);
         Assert.Equal(ManagedFileState.ExternallyChanged, instNull.FindManagedFile("d3d11.dll")!.CurrentState);
@@ -520,7 +520,7 @@ public sealed class ManagedFileInspectorRestoredTests
             Path.Combine(storageDir.RootPath, "backups"));
         var engine = new MultiFileTransactionEngine(Path.Combine(storageDir.RootPath, "backups"));
         using var http = new HttpClient();
-        var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
+        var installer = SyntheticSafetyFixture.CreateInstaller(http, engine, store, sourceDir.RootPath);
 
         var profile = new GameProfile(exePath) { Api = GraphicsApi.DX11, Architecture = "x64" };
         var release = new ReleaseInfo { Version = "2.5", DownloadUrl = "" };
@@ -532,7 +532,7 @@ public sealed class ManagedFileInspectorRestoredTests
         Assert.Equal(RestorationState.Managed, installation.RestorationState);
         Assert.Equal("2.5", installation.ManagedDxvkVersion);
 
-        var inspector = new ManagedFileInspector(store);
+        var inspector = SyntheticSafetyFixture.CreateInspector(store);
 
         // Active management scan: DXVK files match ExpectedManagedSha256 -> stays Managed & Consistent
         Assert.False(inspector.InspectInstallation(installation));

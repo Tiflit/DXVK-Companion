@@ -30,13 +30,13 @@ namespace DXVKCompanion.PhaseA.Tests
                 Path.Combine(storageDir.RootPath, "backups"));
             var engine = new MultiFileTransactionEngine(Path.Combine(storageDir.RootPath, "backups"));
             var http = new HttpClient();
-            var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
-            var rollback = new DxvkRollback(engine, store);
+            var installer = SyntheticSafetyFixture.CreateInstaller(http, engine, store, sourceDir.RootPath);
+            var rollback = SyntheticSafetyFixture.CreateRollback(engine, store);
             var profileStore = new ProfileStore(Path.Combine(storageDir.RootPath, "games.json"));
             var cacheStore = new CacheStore(Path.Combine(storageDir.RootPath, "cache.json"));
             cacheStore.SaveCachedRelease(new ReleaseInfo { Version = "2.5", DownloadUrl = "" }, "etag");
             var github = new DxvkGithubClient(http, cacheStore);
-            var manager = new DxvkManager(installer, rollback, github, profileStore, store);
+            var manager = SyntheticSafetyFixture.CreateManager(installer, rollback, github, profileStore, store);
 
             return (manager, installer, store, profileStore, sourceDir.RootPath);
         }
@@ -890,7 +890,8 @@ namespace DXVKCompanion.PhaseA.Tests
 
             // Act 1: Deploy DXVK to nested executable
             var deployResult = await manager.RequestEnableByPathAsync(profile);
-            Assert.Equal(DxvkActionResult.Applied, deployResult);
+            Assert.True(deployResult == DxvkActionResult.Applied,
+                SyntheticSafetyFixture.RefusalCategory(manager.LastRefusalReason));
 
             // Assert: Nested files updated to DXVK
             Assert.True(File.Exists(nestedD3D11));
@@ -965,7 +966,8 @@ namespace DXVKCompanion.PhaseA.Tests
 
             // Act 1: Initial deployment
             var deployResult = await manager.RequestEnableByPathAsync(profile);
-            Assert.Equal(DxvkActionResult.Applied, deployResult);
+            Assert.True(deployResult == DxvkActionResult.Applied,
+                SyntheticSafetyFixture.RefusalCategory(manager.LastRefusalReason));
 
             // Act 2: Reapply DXVK to nested executable
             var reapplyResult = await manager.RequestReapplyByPathAsync(profile, updateBaseline: true);
