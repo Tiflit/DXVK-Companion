@@ -355,7 +355,9 @@ namespace DXVKCompanion.UI
                     versionCombo.SelectedIndex, versionLabels, currentPinnedVersion);
                 using var browser = new GameDetailsReleaseDownloadWindow(_dxvk, _profile, PendingNow);
                 browser.ShowDialog(this);
-                if (!browser.LibraryChanged || IsDisposed) return;
+                if (IsDisposed) return;
+                versionCombo.Enabled = !PendingNow();
+                if (!browser.LibraryChanged) return;
                 versionLabels = GameDetailsVersionSelection.GetAvailableLabels(
                     DxvkLocalReleaseLibrary.GetAvailableVersions(_dxvk.DxvkSourceDir, _profile.Api, _profile.Architecture), selected);
                 versionCombo.Items.Clear();
@@ -440,7 +442,7 @@ namespace DXVKCompanion.UI
                         policyCombo.SelectedIndex,
                         installation.ManagementPolicy);
 
-                    if (versionCombo.Enabled)
+                    if (versionCombo.Enabled && !PendingNow())
                     {
                         string? selectedVer = GameDetailsVersionSelection.ResolveSelectedVersion(
                             versionCombo.SelectedIndex,
