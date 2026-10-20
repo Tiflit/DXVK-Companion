@@ -166,7 +166,9 @@ QUOTED_HOME_PATH_PATTERNS: List[Tuple[Pattern[str], str, str]] = [
 _PROSE_STOPWORDS: str = (
     r"(?:on\s+line\b|on\b|for\b|done\b|finished\b|successfully\b|ok\b|end\b|"
     r"is\b|was\b|were\b|or\b|vs\b|and\b|to\b|in\b|at\b|from\b|with\b|as\b|by\b|"
-    r"exists\b|has\b|have\b|not\b|failed\b|error\b|line\b)"
+    r"exists\b|has\b|have\b|not\b|failed\b|error\b|line\b|"
+    r"unavailable\b|missing\b|denied\b|found\b|unreachable\b|timeout\b|refused\b|invalid\b|"
+    r"deleted\b|removed\b|created\b|updated\b|modified\b)"
 )
 
 # Lookahead pattern for boundary where an unquoted path ends in prose, diagnostics, or markdown
@@ -200,8 +202,9 @@ UNC_PATH_PATTERN: Pattern[str] = re.compile(
     r"(?P<host>" + _HOST_SHARE_CHAR + r"+(?<!\.))"
     r"[/\\]+"
     r"(?P<share>" + _HOST_SHARE_CHAR + r"+(?<!\.))"
-    r"(?P<continuation>(?:[/\\]+(?:" + _SEG_MULTI + r"[/\\]*)*| +(?!" + _PROSE_STOPWORDS + r"(?:[\s,;:.!?]|$))" + _SEG_MULTI + r")*)"
-    r"[/\\]*",
+    r"(?P<continuation>(?:[/\\]+(?:" + _SEG_MULTI + r"[/\\]*)*| +(?!" + _PROSE_STOPWORDS + r"(?:[\s,;:.!?]|$))" + _SEG_TOKEN + r")?)"
+    r"[/\\]*"
+    + _PROSE_BOUNDARY,
     re.IGNORECASE,
 )
 
