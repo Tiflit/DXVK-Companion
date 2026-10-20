@@ -847,6 +847,11 @@ class TestPrivacyRedaction(unittest.TestCase):
     def test_unc_template_exemption_requires_structurally_isolated_literal(self):
         """R2: A possibly incomplete prefix never obtains the bare-template exemption."""
         ambiguous = [
+            r"\\server\share, PrivateSentinel",
+            r"\\server\share; PrivateSentinel",
+            r"\\server\share.PrivateSentinel",
+            r"\\server\share.",
+            r"\\server\share, then",
             r"\\server\share and Sentinel.txt",
             r"\\server\share PrivateSentinel",
             r"\\server\share\+PrivateSentinel",
@@ -868,13 +873,42 @@ class TestPrivacyRedaction(unittest.TestCase):
             "`//host/share`",
             r"'\\example\share'",
             r"(\\placeholder\share)",
-            r"\\server\share.",
-            r"\\server\share, then",
         ]
         for s in isolated:
             with self.subTest(sample=s):
                 self.assertFalse(is_privacy_sensitive_text(s), f"Isolated template unexpectedly flagged: {s}")
                 self.assertEqual(redact_privacy_text(s), s)
+
+    def test_share_punctuation_and_colon_prefixed_home_paths(self):
+        """A share's punctuation is data; a colon before a home prefix is a boundary."""
+        samples = [
+            r"setting:/home/Example/PrivateSentinel",
+            r"setting:/mnt/c/Users/Example/PrivateSentinel",
+            r"setting:\Users\Example\PrivateSentinel",
+            r"setting:/home/!Example/PrivateSentinel",
+            r"\\nas01\Private,Sentinel\PrivateTail",
+            r"\\nas01\Private;Sentinel\PrivateTail",
+            r"\\nas01\O'Connor\PrivateSentinel",
+            "\"\\\\nas01\\O'Connor\\PrivateSentinel\"",
+            r"\\nas01\Private(Sentinel)\PrivateTail",
+            r"\\server\share,PrivateSentinel",
+            r"\\server\share;PrivateSentinel",
+            r"\\server\share.PrivateSentinel",
+            "//server/share,PrivateSentinel",
+        ]
+        for sample in samples:
+            with self.subTest(sample=sample):
+                self.assertTrue(is_privacy_sensitive_text(sample))
+                self.assertTrue(scan_for_privacy_violations(sample))
+                for output in (
+                    redact_privacy_text(sample),
+                    sanitize_diagnostic(sample),
+                    sanitize_diff_line("+" + sample),
+                    sanitize_display_text(sample, max_len=500),
+                ):
+                    self.assertIn("[REDACTED_PATH]", output)
+                    for suffix in ("Private", "Sentinel", "Connor"):
+                        self.assertNotIn(suffix, output)
 
     def test_redacts_credentials_tokens_and_queries_completely(self):
         """Redacts full RFC 6750 Bearer tokens, embedded GitHub tokens, and complex queries (R3)."""

@@ -352,6 +352,12 @@ class TestUpdatePrBody(unittest.TestCase):
     def test_privacy_scan_and_redaction_for_stopword_components_and_template_continuations(self):
         """R1/R2: Stopword-containing components and template continuations never leave unique suffixes."""
         cases = [
+            (r"setting:/home/Example/PrivateSentinel", ["PrivateSentinel"]),
+            (r"setting:/mnt/c/Users/Example/PrivateSentinel", ["PrivateSentinel"]),
+            (r"At \\nas01\Private,Sentinel\PrivateTail", ["Sentinel", "PrivateTail"]),
+            (r"At \\nas01\O'Connor\PrivateSentinel", ["Connor", "PrivateSentinel"]),
+            (r"At \\server\share,PrivateSentinel", ["PrivateSentinel"]),
+            (r"At \\server\share;PrivateSentinel", ["PrivateSentinel"]),
             (r"At C:\Users\Example\Private and Sentinel.txt", ["Private", "Sentinel"]),
             (r"At /home/Example/Private with Sentinel.txt", ["Private", "Sentinel"]),
             (r"At /mnt/c/Users/Example/Private for Sentinel", ["Private", "Sentinel"]),

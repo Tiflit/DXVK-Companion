@@ -83,19 +83,19 @@ QUERY_STRING_PATTERN: Pattern[str] = re.compile(
 # Windows personal home path prefix (matches drive root or rooted / Users or Documents and Settings)
 # Supports single and double backslashes/slashes across case variants
 WINDOWS_HOME_PREFIX_PATTERN: Pattern[str] = re.compile(
-    r"(?:file:///)?(?:[A-Za-z]:[/\\]+|(?<![^\s\"'`()<>[\]{}|;,=])[/\\]+)(?:Users|Documents and Settings)[/\\]+",
+    r"(?:file:///)?(?:[A-Za-z]:[/\\]+|(?<![^\s\"'`()<>[\]{}|;,:=])[/\\]+)(?:Users|Documents and Settings)[/\\]+",
     re.IGNORECASE,
 )
 
 # WSL Windows personal path prefix (/mnt/<drive>/Users or Documents and Settings)
 WSL_HOME_PREFIX_PATTERN: Pattern[str] = re.compile(
-    r"(?<![^\s\"'`()<>[\]{}|;,=])/mnt/[A-Za-z]/(?:Users|Documents and Settings)[/\\]+",
+    r"(?<![^\s\"'`()<>[\]{}|;,:=])/mnt/[A-Za-z]/(?:Users|Documents and Settings)[/\\]+",
     re.IGNORECASE,
 )
 
-# POSIX personal home path prefix (/home/<user> or /Users/<user>), supporting punctuation (+, ~, $, @, #, %, &, ', -, .)
+# Detect the recognized POSIX prefix without restricting the username alphabet.
 POSIX_HOME_PREFIX_PATTERN: Pattern[str] = re.compile(
-    r"(?:file:///)?(?<![^\s\"'`()<>[\]{}|;,=])/(?:home|Users)/[\w+~$@#%&'.-]+",
+    r"(?:file:///)?(?<![^\s\"'`()<>[\]{}|;,:=])/(?:home|Users)/",
     re.IGNORECASE,
 )
 
@@ -106,7 +106,7 @@ POSIX_HOME_PREFIX_PATTERN: Pattern[str] = re.compile(
 QUOTED_HOME_PATH_PATTERNS: List[Tuple[Pattern[str], str, str]] = [
     (
         re.compile(
-            r'"((?:file:///)?(?:[A-Za-z]:[/\\]+|(?<![^\s"\'`()<>[\]{}|;,=])[/\\]+|/(?:mnt/[A-Za-z]/)?)(?:Users|Documents and Settings|home)[/\\]+[^"\r\n\t]+)"',
+            r'"((?:file:///)?(?:[A-Za-z]:[/\\]+|(?<![^\s"\'`()<>[\]{}|;,:=])[/\\]+|/(?:mnt/[A-Za-z]/)?)(?:Users|Documents and Settings|home)[/\\]+[^"\r\n\t]+)"',
             re.IGNORECASE,
         ),
         '"',
@@ -114,7 +114,7 @@ QUOTED_HOME_PATH_PATTERNS: List[Tuple[Pattern[str], str, str]] = [
     ),
     (
         re.compile(
-            r"'((?:file:///)?(?:[A-Za-z]:[/\\]+|(?<![^\s\"'`()<>[\]{}|;,=])[/\\]+|/(?:mnt/[A-Za-z]/)?)(?:Users|Documents and Settings|home)[/\\]+[^'\r\n\t]+)'",
+            r"'((?:file:///)?(?:[A-Za-z]:[/\\]+|(?<![^\s\"'`()<>[\]{}|;,:=])[/\\]+|/(?:mnt/[A-Za-z]/)?)(?:Users|Documents and Settings|home)[/\\]+[^'\r\n\t]+)'",
             re.IGNORECASE,
         ),
         "'",
@@ -122,7 +122,7 @@ QUOTED_HOME_PATH_PATTERNS: List[Tuple[Pattern[str], str, str]] = [
     ),
     (
         re.compile(
-            r"`((?:file:///)?(?:[A-Za-z]:[/\\]+|(?<![^\s\"'`()<>[\]{}|;,=])[/\\]+|/(?:mnt/[A-Za-z]/)?)(?:Users|Documents and Settings|home)[/\\]+[^`\r\n\t]+)`",
+            r"`((?:file:///)?(?:[A-Za-z]:[/\\]+|(?<![^\s\"'`()<>[\]{}|;,:=])[/\\]+|/(?:mnt/[A-Za-z]/)?)(?:Users|Documents and Settings|home)[/\\]+[^`\r\n\t]+)`",
             re.IGNORECASE,
         ),
         "`",
@@ -130,7 +130,7 @@ QUOTED_HOME_PATH_PATTERNS: List[Tuple[Pattern[str], str, str]] = [
     ),
     (
         re.compile(
-            r"\(((?:file:///)?(?:[A-Za-z]:[/\\]+|(?<![^\s\"'`()<>[\]{}|;,=])[/\\]+|/(?:mnt/[A-Za-z]/)?)(?:Users|Documents and Settings|home)[/\\]+[^)\r\n\t]+)\)",
+            r"\(((?:file:///)?(?:[A-Za-z]:[/\\]+|(?<![^\s\"'`()<>[\]{}|;,:=])[/\\]+|/(?:mnt/[A-Za-z]/)?)(?:Users|Documents and Settings|home)[/\\]+[^)\r\n\t]+)\)",
             re.IGNORECASE,
         ),
         "(",
@@ -138,7 +138,7 @@ QUOTED_HOME_PATH_PATTERNS: List[Tuple[Pattern[str], str, str]] = [
     ),
     (
         re.compile(
-            r"\[((?:file:///)?(?:[A-Za-z]:[/\\]+|(?<![^\s\"'`()<>[\]{}|;,=])[/\\]+|/(?:mnt/[A-Za-z]/)?)(?:Users|Documents and Settings|home)[/\\]+[^\]\r\n\t]+)\]",
+            r"\[((?:file:///)?(?:[A-Za-z]:[/\\]+|(?<![^\s\"'`()<>[\]{}|;,:=])[/\\]+|/(?:mnt/[A-Za-z]/)?)(?:Users|Documents and Settings|home)[/\\]+[^\]\r\n\t]+)\]",
             re.IGNORECASE,
         ),
         "[",
@@ -146,7 +146,7 @@ QUOTED_HOME_PATH_PATTERNS: List[Tuple[Pattern[str], str, str]] = [
     ),
     (
         re.compile(
-            r"<((?:file:///)?(?:[A-Za-z]:[/\\]+|(?<![^\s\"'`()<>[\]{}|;,=])[/\\]+|/(?:mnt/[A-Za-z]/)?)(?:Users|Documents and Settings|home)[/\\]+[^>\r\n\t]+)>",
+            r"<((?:file:///)?(?:[A-Za-z]:[/\\]+|(?<![^\s\"'`()<>[\]{}|;,:=])[/\\]+|/(?:mnt/[A-Za-z]/)?)(?:Users|Documents and Settings|home)[/\\]+[^>\r\n\t]+)>",
             re.IGNORECASE,
         ),
         "<",
@@ -154,7 +154,7 @@ QUOTED_HOME_PATH_PATTERNS: List[Tuple[Pattern[str], str, str]] = [
     ),
     (
         re.compile(
-            r"\{((?:file:///)?(?:[A-Za-z]:[/\\]+|(?<![^\s\"'`()<>[\]{}|;,=])[/\\]+|/(?:mnt/[A-Za-z]/)?)(?:Users|Documents and Settings|home)[/\\]+[^}\r\n\t]+)\}",
+            r"\{((?:file:///)?(?:[A-Za-z]:[/\\]+|(?<![^\s\"'`()<>[\]{}|;,:=])[/\\]+|/(?:mnt/[A-Za-z]/)?)(?:Users|Documents and Settings|home)[/\\]+[^}\r\n\t]+)\}",
             re.IGNORECASE,
         ),
         "{",
@@ -181,25 +181,26 @@ _SPAN_BODY: str = (
 
 # Unquoted personal path pattern: personal home prefix followed by the entire conservative span.
 UNQUOTED_HOME_PATH_PATTERN: Pattern[str] = re.compile(
-    r"(?P<prefix>(?:file:///)?(?:[A-Za-z]:[/\\]+|(?<![^\s\"'`()<>[\]{}|;,=])[/\\]+)(?:Users|Documents and Settings)[/\\]+|(?<![^\s\"'`()<>[\]{}|;,=])/mnt/[A-Za-z]/(?:Users|Documents and Settings)[/\\]+|(?:file:///)?(?<![^\s\"'`()<>[\]{}|;,=])/(?:home|Users)/)"
+    r"(?P<prefix>(?:file:///)?(?:[A-Za-z]:[/\\]+|(?<![^\s\"'`()<>[\]{}|;,:=])[/\\]+)(?:Users|Documents and Settings)[/\\]+|(?<![^\s\"'`()<>[\]{}|;,:=])/mnt/[A-Za-z]/(?:Users|Documents and Settings)[/\\]+|(?:file:///)?(?<![^\s\"'`()<>[\]{}|;,:=])/(?:home|Users)/)"
     r"(?P<tail>(?![ \t\r\n])" + _SPAN_BODY + r")?",
     re.IGNORECASE,
 )
 
-# Host/share character class excluding delimiters and slashes
+# Host character class excluding delimiters and slashes. Share names are consumed
+# by the same conservative span body as path continuations, not a narrower class.
 _HOST_SHARE_CHAR: str = r"[^\s\\/\"'*?<>|:;,()\[\]{}`]"
 
 # UNC pattern matching network share paths with backslashes or forward slashes.
-# The WHOLE UNC span (host, share, and any continuation introduced by a slash or a space) is established
-# before the bare-template exemption is evaluated, so an incomplete prefix match can never qualify as a
-# template. A bare template is preserved only when nothing but optional trailing whitespace/slash follows it
-# within the span (e.g. at end of text, or followed by a quote, backtick, bracket, or sentence punctuation).
+# Consume the share and continuation together: commas, apostrophes and semicolons
+# can belong to a share name. They must not expose a private suffix or turn a
+# partial match into an exempt template. A preceding single quote establishes a
+# quoted span; otherwise apostrophes belong to the conservative unquoted body.
+_UNC_PREFIX: str = (
+    r"(?:\\\\|(?<![A-Za-z0-9+.-]:)//)" + _HOST_SHARE_CHAR + r"+[/\\]+"
+)
 UNC_PATH_PATTERN: Pattern[str] = re.compile(
-    r"(?:\\\\|(?<![A-Za-z0-9+.-]:)//)"
-    r"(?P<host>" + _HOST_SHARE_CHAR + r"+(?<!\.))"
-    r"[/\\]+"
-    r"(?P<share>" + _HOST_SHARE_CHAR + r"+(?<!\.))"
-    r"(?P<continuation>[/\\ ]" + _SPAN_BODY + r")?",
+    r"(?<=')" + _UNC_PREFIX + r"[^'\r\n\t]+"
+    r"|" + _UNC_PREFIX + r"(?![\s\"'`]|$)" + _SPAN_BODY,
     re.IGNORECASE,
 )
 
@@ -303,14 +304,14 @@ def redact_privacy_text(text: Optional[str]) -> str:
     # 2. Redact unquoted personal paths
     clean = UNQUOTED_HOME_PATH_PATTERN.sub("[REDACTED_PATH]", clean)
 
-    # 4. Redact concrete UNC / network paths
+    # 3. Redact concrete UNC / network paths
     clean = redact_unc_paths(clean)
 
-    # 5. Redact tokens (GitHub tokens and RFC 6750 Bearer tokens)
+    # 4. Redact tokens (GitHub tokens and RFC 6750 Bearer tokens)
     clean = GITHUB_TOKEN_PATTERN.sub("[REDACTED_TOKEN]", clean)
     clean = BEARER_TOKEN_PATTERN.sub(r"\g<1>[REDACTED_TOKEN]", clean)
 
-    # 6. Redact URL query strings
+    # 5. Redact URL query strings
     clean = QUERY_STRING_PATTERN.sub("?[REDACTED_QUERY]", clean)
 
     return clean
