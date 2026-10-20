@@ -32,6 +32,36 @@ public sealed class SyntheticSafetyFixtureTests
     }
 
     [Fact]
+    public async Task UnreadableUnrelatedRecord_RefusesSharedNamespaceButNotIndependentFixture()
+    {
+        using var fixtureA = new SyntheticTestDirectory();
+        using var fixtureB = new SyntheticTestDirectory();
+        var storeA = new GameLibraryStore(fixtureA.GetPath("library.json"), fixtureA.GetPath("backups"));
+        var storeB = new GameLibraryStore(fixtureB.GetPath("library.json"), fixtureB.GetPath("backups"));
+        var coordinatorA = SyntheticSafetyFixture.ConfigureStore(storeA);
+        var coordinatorB = SyntheticSafetyFixture.ConfigureStore(storeB);
+        var target = fixtureA.GetPath("Game");
+        Directory.CreateDirectory(target);
+        Directory.CreateDirectory(coordinatorA.CoordinationDirectory);
+        var unrelated = fixtureA.GetPath("OtherGame");
+        var record = Path.Combine(coordinatorA.CoordinationDirectory,
+            OperationResourceIdentity.GetTargetLockFileName(unrelated));
+        using var unpublished = new FileStream(record, FileMode.CreateNew,
+            FileAccess.ReadWrite, FileShare.None);
+        var payload = System.Text.Encoding.UTF8.GetBytes(unrelated);
+        unpublished.Write(payload);
+        unpublished.Flush();
+
+        // Even an unrelated record must fail closed when its target cannot be read.
+        await using var refused = await coordinatorA.TryAcquireOperationScopeAsync(target,
+            timeout: TimeSpan.FromMilliseconds(100));
+        Assert.Null(refused);
+        // The identical target succeeds with only the coordination namespace changed.
+        await using var independent = await coordinatorB.TryAcquireOperationScopeAsync(target);
+        Assert.NotNull(independent);
+    }
+
+    [Fact]
     public async Task ExplicitUnknownActivity_StillRefusesSyntheticDeployment()
     {
         using var game = new SyntheticTestDirectory();
