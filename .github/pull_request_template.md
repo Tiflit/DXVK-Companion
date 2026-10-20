@@ -17,4 +17,7 @@ Fixes #
 
 ## Documentation
 
-<!-- Durable documentation updates in docs/ or explanation if none required -->
+<!-- One entry per line: - `docs/example.md` — specific impact (at least four words).
+Or: None — specific reason tied to this change (at least four words).
+Use literal repository-relative .md/.rst/.txt/.adoc paths; no URLs or traversal.
+Syntax does not establish documentation completeness, freshness or publication safety. -->

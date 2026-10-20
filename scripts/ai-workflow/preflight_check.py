@@ -107,6 +107,8 @@ def sanitize_hygiene_diagnostic(diag: str) -> str:
     low = diag.lower()
     if "pr body is empty" in low:
         return "Hygiene error: PR body is empty."
+    if low.startswith("documentation "):
+        return "Hygiene error: documentation disposition or supplied evidence is invalid."
     if "missing required section heading" in low:
         m = re.search(r"##\s+([A-Za-z ]+)", diag)
         heading = m.group(1).strip() if m else "required heading"
@@ -158,6 +160,9 @@ def run_preflight(
     issue_body: str,
     pr_body: str,
     files_data: List[Dict[str, Any]],
+    *,
+    documentation_changed_files: Optional[List[str]] = None,
+    documentation_repository_files: Optional[List[str]] = None,
 ) -> PreflightResult:
     """Executes scope and hygiene checks on supplied texts and file manifest."""
     scope_diags: List[str] = []
@@ -195,9 +200,14 @@ def run_preflight(
         scope_diags.append(sanitize_contract_error(str(e)))
 
     # 2. PR hygiene evaluation
-    hygiene_res = verify_pr_body(pr_body)
+    hygiene_res = verify_pr_body(
+        pr_body, require_documentation=True,
+        changed_files=documentation_changed_files,
+        repository_files=documentation_repository_files,
+    )
     hygiene_valid = hygiene_res.is_valid
     hygiene_diags = [sanitize_hygiene_diagnostic(d) for d in hygiene_res.diagnostics]
+    hygiene_diags.extend(hygiene_res.documentation_notes)
 
     return PreflightResult(
         scope_valid=scope_valid,
@@ -220,9 +230,8 @@ def print_report(result: PreflightResult) -> None:
             print(f"  - {d}")
 
     print(f"PR hygiene:    {'PASS' if result.hygiene_valid else 'FAIL'}")
-    if not result.hygiene_valid:
-        for d in result.hygiene_diagnostics:
-            print(f"  - {d}")
+    for d in result.hygiene_diagnostics:
+        print(f"  - {d}")
 
     print("-----------------------------------")
     print(f"Overall:       {'PASS' if result.is_valid else 'FAIL'}")
