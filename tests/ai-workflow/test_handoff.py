@@ -16,6 +16,93 @@ sys.path.insert(0, str(REPO_ROOT / "scripts" / "ai-workflow"))
 
 import generate_handoff
 from parse_trx import TrxTotals
+from parse_trx import TrxFailureDetail, build_failure_summary
+
+
+class TestFailureSummaryHandoff(unittest.TestCase):
+    def snapshot(self):
+        totals = TrxTotals("failed", 10, 2, 8, 0, "results.trx",
+                           failure_details=[TrxFailureDetail("Synthetic.Failure", "Assertion failed " + "context " * 50) for _ in range(5)],
+                           failure_details_observed=8)
+        return generate_handoff.HandoffSnapshot(
+            capture_time_utc="2026-10-20 12:00:00 UTC", repo="Tiflit/DXVK-Companion", pr_number=9,
+            pr_title="Synthetic summary", pr_state="open", pr_merged=False,
+            live_pr_head_sha="a" * 40, live_pr_base_sha="b" * 40, pr_base_ref="main",
+            repo_default_branch="main", live_default_branch_sha="b" * 40, base_sync_status="synced", base_has_moved=False,
+            primary_issue_number=187, primary_issue_state="open", ci_run_id="101", ci_run_attempt="2",
+            trx_totals=totals, failure_summary=build_failure_summary(totals, 101, 2, 303),
+            next_owner="Codex", next_action="Inspect the scoped failure.")
+
+    def test_json_projection_has_exact_source_and_unchanged_totals(self):
+        snap = self.snapshot()
+        data = json.loads(generate_handoff.format_handoff_json(snap))
+        evidence = data["ci_evidence"]
+        self.assertEqual(evidence["trx_totals"], {"total": 10, "passed": 2, "failed": 8, "skipped": 0})
+        self.assertEqual(evidence["failure_summary"]["artifact_id"], "303")
+        self.assertEqual(len(evidence["failure_summary"]["entries"]), 5)
+        self.assertTrue(evidence["failure_summary"]["entries_truncated"])
+
+    def test_word_budget_omits_only_optional_detail_not_next_action(self):
+        snap = self.snapshot()
+        rendered = generate_handoff.format_handoff_markdown(snap, max_words=220)
+        self.assertIn("## 4. Next Ownership & Action", rendered)
+        self.assertIn("Inspect the scoped failure", rendered)
+        self.assertIn("2 passed, 8 failed, 0 skipped (total 10)", rendered)
+        self.assertLessEqual(generate_handoff.count_words_excluding_urls(rendered), 220)
+        self.assertTrue("omitted" in rendered or "showing" in rendered)
+
+    def test_stale_optional_projection_and_old_snapshot_are_safe(self):
+        snap = self.snapshot()
+        snap.ci_run_attempt = "3"
+        self.assertNotIn("Synthetic.Failure", generate_handoff.format_handoff_markdown(snap, max_words=1000))
+        data = json.loads(generate_handoff.format_handoff_json(snap))
+        self.assertEqual(data["ci_evidence"]["failure_summary"]["entries"], [])
+        snap.failure_summary = None
+        self.assertIn("no attributable detail projection", generate_handoff.format_handoff_markdown(snap, max_words=1000))
+        self.assertIsNone(json.loads(generate_handoff.format_handoff_json(snap))["ci_evidence"]["failure_summary"])
+
+    def test_untrusted_serialized_fields_redacted_again_on_json_and_markdown_output(self):
+        snap = self.snapshot()
+        snap.failure_summary["entries"][0]["name"] = r"C:\Users\Synthetic Owner\PrivateSentinel\test"
+        snap.failure_summary["entries"][0]["message"] = "Bearer PrivateSentinelBearer0123456789"
+        snap.failure_summary["source_name"] = r"\\PrivateSentinelHost\PrivateSentinelShare\result.trx"
+        self.assertNotIn("PrivateSentinel", generate_handoff.format_handoff_json(snap))
+        self.assertNotIn("PrivateSentinel", generate_handoff.format_handoff_markdown(snap, max_words=1000))
+
+    def test_collector_uses_selected_artifact_and_refuses_foreign_run_head(self):
+        def archive(name, content):
+            buffer = io.BytesIO()
+            with zipfile.ZipFile(buffer, "w") as zipped:
+                zipped.writestr(name, content)
+            return buffer.getvalue()
+        head = "a" * 40
+        base = "b" * 40
+        trx = '<TestRun><Results><UnitTestResult testName="Synthetic.Failure" outcome="Failed"><Output><ErrorInfo><Message>Assertion failed</Message></ErrorInfo></Output></UnitTestResult></Results><ResultSummary><Counters total="2" passed="1" failed="1"/></ResultSummary></TestRun>'
+        class Client:
+            foreign = False
+            def get_pr(self, number):
+                return {"number": number, "title": "Synthetic", "state": "open", "merged": False, "body": "## Primary Issue\nFixes #187\n", "head": {"sha": head}, "base": {"sha": base, "ref": "main"}}
+            def get_repo(self): return {"default_branch": "main"}
+            def get_ref(self, ref): return {"object": {"sha": base}}
+            def get_issue(self, number): return {"title": "Synthetic", "state": "open", "body": "### Allowed paths\n- scripts/ai-workflow/**\n"}
+            def get_runs_for_commit(self, sha):
+                return [{"id": 101, "run_attempt": 2, "name": "Build and Test", "conclusion": "failure", "head_sha": "c" * 40 if self.foreign else head}]
+            def get_run_artifacts(self, run):
+                return [{"id": 302, "name": "build-provenance", "archive_download_url": "https://api.github.com/synthetic/prov"},
+                        {"id": 303, "name": "phase-a-test-results", "archive_download_url": "https://api.github.com/synthetic/trx", "created_at": "2026-10-20T12:02:00Z"}]
+            def get_workflow_run_jobs(self, run, attempt=None):
+                return [{"run_attempt": 2, "started_at": "2026-10-20T12:00:00Z", "completed_at": "2026-10-20T12:05:00Z"}]
+            def download_bytes(self, url):
+                if url.endswith("prov"):
+                    return archive("build-provenance.json", json.dumps({"head_sha": head, "ref": "refs/heads/topic", "run_id": "101", "run_attempt": "2"}))
+                return archive("results.trx", trx)
+        client = Client()
+        snap = generate_handoff.collect_handoff_snapshot(client, "Tiflit/DXVK-Companion", 9)
+        self.assertEqual(snap.failure_summary["artifact_id"], "303")
+        self.assertEqual(snap.failure_summary["run_attempt"], "2")
+        self.assertEqual(snap.trx_totals.failed, 1)
+        client.foreign = True
+        self.assertIsNone(generate_handoff.collect_handoff_snapshot(client, "Tiflit/DXVK-Companion", 9).failure_summary)
 
 
 def create_provenance_zip(prov_dict: dict) -> bytes:

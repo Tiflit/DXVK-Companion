@@ -12,6 +12,41 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT / "scripts" / "ai-workflow"))
 
 import generate_review_packet
+from parse_trx import TrxTotals, TrxFailureDetail, build_failure_summary
+
+
+class TestFailureSummaryPacket(unittest.TestCase):
+    def packet(self, summary, source="results.trx", reason=None):
+        return generate_review_packet.build_packet_content(
+            repo="Tiflit/DXVK-Companion", pr_number=9, pr_title="Synthetic failure", pr_url="https://github.com/Tiflit/DXVK-Companion/pull/9",
+            reviewed_head_sha="a" * 40, base_sha="b" * 40, live_pr_head_sha="a" * 40,
+            run_id="101", run_attempt="2", run_head_sha="a" * 40,
+            build_provenance={"head_sha": "a" * 40, "ref": "refs/heads/topic", "run_id": "101", "run_attempt": "2"},
+            task_contract=None, ci_jobs=[], manifest=[], capture_time="2026-10-20T12:00:00Z",
+            trx_totals={"status": "failed", "total": 9, "passed": 1, "failed": 8, "skipped": 0, "source": source, "failure_summary": summary}
+            if reason is None else {"status": "unavailable", "reason": reason})
+
+    def test_details_source_and_counts_are_explicit(self):
+        totals = TrxTotals("failed", 9, 1, 8, 0, "results.trx",
+                           failure_details=[TrxFailureDetail("Synthetic.Failure", "Assertion failed")], failure_details_observed=8)
+        text = self.packet(build_failure_summary(totals, 101, 2, 303))
+        self.assertIn("Failed: 8", text)
+        self.assertIn("showing 1 of 8", text)
+        self.assertIn("run 101, attempt 2, artifact 303", text)
+        self.assertIn("Synthetic.Failure: Assertion failed", text)
+
+    def test_stale_attempt_and_legacy_totals_do_not_publish_unbound_details(self):
+        totals = TrxTotals("failed", 9, 1, 8, 0, "results.trx",
+                           failure_details=[TrxFailureDetail("STALE_SENTINEL", "Old run")], failure_details_observed=1)
+        text = self.packet(build_failure_summary(totals, 101, 1, 303))
+        self.assertIn("UNAVAILABLE", text)
+        self.assertNotIn("STALE_SENTINEL", text)
+        self.assertIn("no attributable detail projection", self.packet(None))
+
+    def test_source_and_error_fields_are_redacted_and_bounded(self):
+        payload = r"C:\Users\Synthetic Owner\PrivateSentinel\result.trx"
+        self.assertNotIn("PrivateSentinel", self.packet(None, source=payload))
+        self.assertNotIn("PrivateSentinel", self.packet(None, reason=payload))
 
 
 
@@ -366,6 +401,26 @@ class TestReviewPacket(unittest.TestCase):
             self.assertTrue(diff_file.exists())
             diff_text = diff_file.read_text(encoding="utf-8")
             self.assertIn("Patch omitted by GitHub API for docs/AI-PILOT-LOG.md", diff_text)
+
+            # Additional failure-artifact phase preserves every all-pass assertion above.
+            class FailureClient(MockClient):
+                def get_run_artifacts(self, run_id):
+                    return [dict(item, id=303 if item["name"] == "phase-a-test-results" else 302)
+                            for item in super().get_run_artifacts(run_id)]
+
+                def download_bytes(self, url, max_bytes=50*1024*1024, timeout=30):
+                    if "trx" in url:
+                        failed_xml = trx_xml.replace('passed="67" failed="0"', 'passed="66" failed="1"')
+                        failed_xml = failed_xml.replace('<ResultSummary', '<Results><UnitTestResult testName="Synthetic.Failure" outcome="Failed"><Output><ErrorInfo><Message>Assertion failed</Message></ErrorInfo></Output></UnitTestResult></Results><ResultSummary')
+                        return make_zip({"phase-a-tests.trx": failed_xml})
+                    return super().download_bytes(url, max_bytes, timeout)
+
+            failure_dir = Path(tmpdir) / "failed-packet"
+            self.assertEqual(generate_review_packet.generate_packet(event, FailureClient(), failure_dir), 0)
+            failure_text = (failure_dir / "review_packet.md").read_text(encoding="utf-8")
+            self.assertIn("Failed: 1", failure_text)
+            self.assertIn("run 37164136438, attempt 1, artifact 303", failure_text)
+            self.assertIn("Synthetic.Failure: Assertion failed", failure_text)
 
     def test_generate_packet_declines_ambiguous_pr_associations(self):
         # Multiple associated PRs without explicit disambiguation must fail (F3).

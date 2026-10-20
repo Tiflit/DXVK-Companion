@@ -23,6 +23,9 @@ try:
     from .parse_trx import (
         SecurityValidationError,
         TrxTotals,
+        build_failure_summary,
+        render_failure_summary,
+        sanitize_failure_summary,
         parse_trx_content,
         parse_trx_file,
         safe_extract_json_from_zip,
@@ -47,6 +50,9 @@ except ImportError:
     from parse_trx import (
         SecurityValidationError,
         TrxTotals,
+        build_failure_summary,
+        render_failure_summary,
+        sanitize_failure_summary,
         parse_trx_content,
         parse_trx_file,
         safe_extract_json_from_zip,
@@ -190,6 +196,7 @@ class HandoffSnapshot:
     tested_checkout_ref: Optional[str] = None
     unverified_checkout_details: Optional[str] = None
     trx_totals: Optional[TrxTotals] = None
+    failure_summary: Optional[Dict[str, Any]] = None
     reviews: List[AttributedReview] = field(default_factory=list)
     next_owner: str = "ChatGPT"
     next_action: str = "Independent verification"
@@ -494,6 +501,7 @@ def collect_handoff_snapshot(
     tested_checkout_ref = None
     unverified_checkout_details = None
     trx_totals: Optional[TrxTotals] = None
+    failure_summary: Optional[Dict[str, Any]] = None
     uncertainties: List[str] = []
 
     try:
@@ -620,9 +628,11 @@ def collect_handoff_snapshot(
                                 totals = parse_trx_file(trx_p)
                                 if totals.status != "unavailable":
                                     trx_totals = totals
+                                    if ci_head_sha == live_pr_head_sha:
+                                        failure_summary = build_failure_summary(totals, ci_run_id, ci_run_attempt, selected_trx.get("id"))
                                     break
-                except Exception as e:
-                    uncertainties.append(f"TRX artifact parsing failed: {sanitize_diagnostic(str(e))}")
+                except Exception:
+                    uncertainties.append("TRX artifact parsing failed.")
             elif trx_unavail_reason:
                 uncertainties.append(f"TRX results unavailable: {trx_unavail_reason}")
     except Exception as e:
@@ -687,6 +697,7 @@ def collect_handoff_snapshot(
         tested_checkout_ref=tested_checkout_ref,
         unverified_checkout_details=unverified_checkout_details,
         trx_totals=trx_totals,
+        failure_summary=failure_summary,
         reviews=reviews,
         next_owner=next_owner,
         next_action=next_action,
@@ -789,6 +800,22 @@ def format_handoff_markdown(snap: HandoffSnapshot, max_words: int = MAX_HANDOFF_
     if snap.uncertainties:
         lines.append(f"- **Remaining Uncertainties**: {'; '.join(snap.uncertainties)}")
 
+    # Optional details must not displace identity, aggregate totals, decisions or next-action context.
+    projection = sanitize_failure_summary(snap.failure_summary, snap.ci_run_id, snap.ci_run_attempt)
+    if projection is not None:
+        detail_lines = render_failure_summary(projection, snap.ci_run_id, snap.ci_run_attempt)
+        for count in range(len(projection["entries"]), 0, -1):
+            candidate = dict(projection, entries=projection["entries"][:count],
+                             entries_truncated=projection["entries_truncated"] or count < len(projection["entries"]))
+            detail_lines = render_failure_summary(candidate, snap.ci_run_id, snap.ci_run_attempt)
+            if count_words_excluding_urls("\n".join(lines + detail_lines)) <= max_words:
+                break
+        if count_words_excluding_urls("\n".join(lines + detail_lines)) > max_words:
+            detail_lines = ["- Failure detail projection omitted by handoff word budget; see JSON."]
+        lines.extend(detail_lines)
+    elif snap.trx_totals and snap.trx_totals.failed:
+        lines.append("- Failure details: UNAVAILABLE (no attributable detail projection).")
+
     full_text = "\n".join(lines)
 
     # Word budget check
@@ -861,6 +888,7 @@ def format_handoff_json(snap: HandoffSnapshot) -> str:
                 "skipped": snap.trx_totals.skipped,
                 "total": snap.trx_totals.total,
             } if snap.trx_totals else None,
+            "failure_summary": sanitize_failure_summary(snap.failure_summary, snap.ci_run_id, snap.ci_run_attempt),
         },
         "review_records": [
             {
