@@ -812,7 +812,10 @@ def format_handoff_markdown(snap: HandoffSnapshot, max_words: int = MAX_HANDOFF_
                 break
         if count_words_excluding_urls("\n".join(lines + detail_lines)) > max_words:
             detail_lines = ["- Failure detail projection omitted by handoff word budget; see JSON."]
-        lines.extend(detail_lines)
+        # At an exact core-budget boundary even the omission notice may not fit.
+        # Leave core context intact; the optional JSON object remains the detailed projection.
+        if count_words_excluding_urls("\n".join(lines + detail_lines)) <= max_words:
+            lines.extend(detail_lines)
     elif snap.trx_totals and snap.trx_totals.failed:
         lines.append("- Failure details: UNAVAILABLE (no attributable detail projection).")
 

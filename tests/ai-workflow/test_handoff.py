@@ -61,6 +61,20 @@ class TestFailureSummaryHandoff(unittest.TestCase):
         self.assertIn("no attributable detail projection", generate_handoff.format_handoff_markdown(snap, max_words=1000))
         self.assertIsNone(json.loads(generate_handoff.format_handoff_json(snap))["ci_evidence"]["failure_summary"])
 
+    def test_even_an_omission_notice_cannot_displace_exact_budget_core(self):
+        snap = self.snapshot()
+        projection = snap.failure_summary
+        snap.failure_summary = None
+        baseline = generate_handoff.format_handoff_markdown(snap, max_words=1000)
+        core = baseline.split("\n- Failure details:", 1)[0]
+        budget = generate_handoff.count_words_excluding_urls(core)
+        snap.failure_summary = projection
+        text = generate_handoff.format_handoff_markdown(snap, max_words=budget)
+        self.assertEqual(text, core)
+        self.assertIn("Inspect the scoped failure", text)
+        self.assertNotIn("Handoff truncated", text)
+        self.assertEqual(len(json.loads(generate_handoff.format_handoff_json(snap))["ci_evidence"]["failure_summary"]["entries"]), 5)
+
     def test_untrusted_serialized_fields_redacted_again_on_json_and_markdown_output(self):
         snap = self.snapshot()
         snap.failure_summary["entries"][0]["name"] = r"C:\Users\Synthetic Owner\PrivateSentinel\test"
