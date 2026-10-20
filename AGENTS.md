@@ -1,13 +1,13 @@
 # Agent Operating Rules
 
-DXVK-Companion is the application and testbed for a GitHub-centered multi-agent workflow. The adopted [kernel v0.4](docs/AI-WORKFLOW-KERNEL.md) governs; the [enforcement register](docs/AI-ENFORCEMENT-REGISTER.md) declares cooperative controls and their gaps. Human merge authority remains unchanged.
+The adopted [kernel v0.4](docs/AI-WORKFLOW-KERNEL.md) governs; the [enforcement register](docs/AI-ENFORCEMENT-REGISTER.md) declares cooperative controls and gaps. The human alone merges.
 
 ## Fresh-Session Quick Start
 
-1. Read the kernel and this document. Derive policy identity on the acquired revision with `git log -1 --format=%H <acquired-revision> -- AGENTS.md docs/AI-WORKFLOW-KERNEL.md docs/AI-ENFORCEMENT-REGISTER.md docs/AI-DEVELOPMENT-WORKFLOW.md`; compare with the trusted policy checkpoint. Refresh changed guidance. Load relevant register entries on demand; reuse reliable unchanged context.
+1. Read the kernel and this document. Derive policy identity with `git log -1 --format=%H <acquired-revision> -- AGENTS.md docs/AI-WORKFLOW-KERNEL.md docs/AI-ENFORCEMENT-REGISTER.md docs/AI-DEVELOPMENT-WORKFLOW.md`; compare with the trusted checkpoint and refresh changed guidance. A fresh agent must read rules it has never learned: a hash is not context. Load relevant register entries on demand; reuse reliable unchanged context.
 2. Inspect machine dashboard [Issue #27](https://github.com/Tiflit/DXVK-Companion/issues/27), then independently query task-critical remote main/head/base identities through GitHub API or connector. Dashboard, local HEAD and static orientation are not substitutes.
 3. Read the assigned Issue, latest approval/hold and checkpoint. Acceptance criteria, delegated actions and `### Allowed paths` define the task. An `ai-observation` Issue is unassigned evidence, not permission.
-4. Read the latest relevant session or PR evidence. Do not reload the full journal/pilot archive.
+4. Read the latest relevant session or PR evidence. Use the [module map](docs/ai/PROJECT-MAP.md) and [decision index](docs/ai/DECISION-INDEX.md) for task-relevant navigation; do not reload the full journal/pilot archive.
 
 ## Roles and Authority
 
@@ -49,14 +49,14 @@ If authorized behavior cannot be observed, report `NOT RUN (blocked: capability/
 
 ## Review and Delivery
 
-Perform one grouped substantive review: contract, behavior, safety, integration and whether tests actually catch failures. Include useful in-scope improvements.
+Perform one grouped review of contract, behavior, safety, integration and test effectiveness. Include useful in-scope improvements.
 - **Blocking:** unmet acceptance criterion, build/test failure, demonstrated regression, safety/privacy/scope violation, or missing/false evidence required for acceptance.
 - **Nonblocking:** style, editorial polish, optional refactoring and improvements outside the approved objective. Record or fix within scope without another human stop.
 - **Decision:** an unsettled behavior/authority choice listed above. Give the human a concrete recommendation.
 
-Group blocking fixes into one normal repair cycle. Verify repaired items and affected context rather than restarting a full audit. Any post-review code change, including a suggested improvement, needs a focused delta check and applicable current CI before carrying acceptance forward. Editorial-only changes need an applicability check. New defects, relevant base/contract movement or contradictory evidence justify expanding review; persistent blocking disagreement goes to the human.
+Group blocking fixes into one repair cycle; verify repairs and affected context rather than restarting the audit. Any post-review code change, including suggested improvements, needs a focused delta check and applicable current CI before acceptance carries forward. Editorial-only changes need an applicability check. New defects, relevant base/contract movement or contradictory evidence justify expanding review; persistent blocking disagreement goes to the human.
 
-Do not weaken tests to obtain green CI. Required evidence stays bound to reviewed head/base and actual checkout; distinguish executed, inspected, reported and unavailable. Self-review is labeled honestly. No test count or independent review is inferred from model agreement.
+Do not weaken tests for green CI. Bind required evidence to reviewed head/base and actual checkout; distinguish executed, inspected, reported and unavailable. Label self-review honestly; model agreement cannot establish test counts or independence.
 
 ## Records and Handoffs
 

@@ -1,0 +1,9 @@
+# Onboarding and project memory — session checkpoint
+
+Actual session: 2026-10-20. Codex implements and self-reviews under the human's temporary assignment; the task reserved this older filename, which does not attribute work to Gemini.
+
+Issue #186; base `8873b3d9f272600e16128a7d88437d0de30ccb82`, governing baseline policy `f3e9974371cb08d1dd99192bd314a135010594ed`. [Activation transcription](https://github.com/Tiflit/DXVK-Companion/issues/186#issuecomment-6303691940). Prepared a six-path documentation proposal: shorter operating/orientation text, module/spec/test navigation, established-decision index and one existing-channel task checkpoint. Complete semantic comparison, before/after document measurements, preserved historical milestones/template pins and source-only fresh-session walkthrough are in WORKFLOW-CONSOLIDATION.md.
+
+Kernel/register/workflow/activity policy, source, scripts, tests, execution permissions and journal allowlists are unchanged. Human reviews semantic preservation before merge; changing AGENTS changes the derived policy identity, without expanding authority. Existing dashboard section boundaries and regression assertions are preserved. Cloud checks pending at submission; no host tests/apps/scanners, bootstrap scripts, private attachments, model dispatch or cleanup used. Self-review is not an independent audit or behavioral onboarding experiment.
+
+Completed source inspection and documentation drafting; changed files are exactly the six task paths. Open findings/decisions: none identified during drafting; cloud/link/semantic verification remains. No human interruptions after activation, status queries or repeated investigation from missing context observed; quota/time not measured. Next owner/action: Codex checks links and grouped semantic preservation, then exact-revision cloud results and PR evidence; human alone merges. Out-of-scope findings: none newly filed.
