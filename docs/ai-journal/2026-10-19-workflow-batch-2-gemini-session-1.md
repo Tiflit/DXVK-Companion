@@ -128,3 +128,11 @@ Following review of PR #190 by Codex, findings R1–R4 were resolved on branch `
 4. **R4 (P2) — Dynamic Execution Boundary Test & Documentation Scoping**:
    - Added `test_guarded_import_verification_zero_side_effects` in `tests/ai-workflow/test_privacy_guard.py`: instruments network (`socket`, `urllib`), subprocess (`subprocess.Popen`), environment probing (`os.environ`), and filesystem writes (`io.open_code`, `builtins.open(..., 'w')`) during `importlib.reload`.
    - Updated `docs/ai/PRIVACY-HANDLING.md`: explicitly bounded operational scope to the two in-repo consumers (`update_pr_body.py` and `update_dashboard.py`), documented the pattern-based nature without claiming general personal-data discovery or zero-leak guarantees, and distinguished static source checks from dynamic execution boundary verification.
+
+5. **Cloud CI Verification for R1–R4 Resolutions**:
+   - `Run Python workflow tests` (`AI Workflow Tests`): PASS ([Run 39346455855](https://github.com/Tiflit/DXVK-Companion/actions/runs/39346455855)) (322 tests passed in 14s)
+   - `AI task scope`: PASS ([Run 39346455767](https://github.com/Tiflit/DXVK-Companion/actions/runs/39346455767))
+   - `PR hygiene`: PASS ([Run 39346455790](https://github.com/Tiflit/DXVK-Companion/actions/runs/39346455790))
+   - `build-and-test`: PASS ([Run 39346455785](https://github.com/Tiflit/DXVK-Companion/actions/runs/39346455785)) (971 tests passed in 2m6s)
+   - `Acquire Facts and Render Snapshot`: PASS ([Run 39346454077](https://github.com/Tiflit/DXVK-Companion/actions/runs/39346454077))
+   - `Publish Dashboard to Dedicated Issue`: PASS ([Run 39346454077](https://github.com/Tiflit/DXVK-Companion/actions/runs/39346454077))
