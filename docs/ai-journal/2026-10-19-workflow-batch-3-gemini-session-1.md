@@ -8,4 +8,6 @@ Synthetic cloud tests cover selection boundaries, deleted/intermediate data, ame
 
 Initial source head `f76d2ce` passed 357 Python tests in cloud run 39477866114. Windows run 39477865738 failed one unchanged backup-restoration test (973/974); its cause is not established. Self-review corrected repeated-file finding ordinals across commit history and distinguished file versus commit findings, with a new regression. The application test was not changed or weakened; current revision-bound evidence and any further outcomes belong in the PR checkpoint.
 
+The final boundary pass rejects short regular-file reads, overrides configured diff order files, and exposes the per-commit parent/resource caps explicitly. Targeted synthetic regressions accompany these checks. No local checker execution or unrelated C# repair was added.
+
 Local work: source/Git inspection and edits only; no scanner/test/build/app execution. This is implementation/self-review, not an independent audit. Out-of-scope finding: the unchanged application CI failure is retained for coordinator follow-up, not a production defect diagnosis. Next owner: Codex verify cloud outcomes and repair within scope; human alone merges.

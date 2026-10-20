@@ -310,6 +310,7 @@ class PublicationPreflightTests(unittest.TestCase):
         for key in ("filter.trap.clean", "filter.trap.smudge", "diff.trap.textconv", "diff.external", "core.fsmonitor"):
             self.git("config", key, command)
         self.git("config", "core.hooksPath", str(self.root / "hooks"))
+        self.git("config", "diff.orderFile", str(self.root / "unselected-order-file"))
         hooks = self.root / "hooks"
         hooks.mkdir()
         for hook in ("post-index-change", "pre-commit"):
@@ -333,6 +334,33 @@ class PublicationPreflightTests(unittest.TestCase):
             self.assertNotIn("--filters", command_line)
             self.assertNotIn("--textconv", command_line)
             self.assertFalse({"fetch", "push", "checkout", "add", "commit"}.intersection(command_line))
+
+    def test_short_regular_file_read_is_incomplete(self):
+        path = self.write("candidate.txt", "safe complete contents")
+        original = pf.os.fdopen
+        class ShortRead:
+            def __init__(self, fd, mode):
+                self.stream = original(fd, mode)
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                self.stream.close()
+            def fileno(self):
+                return self.stream.fileno()
+            def read(self, limit):
+                return self.stream.read(1)
+        with mock.patch.object(pf.os, "fdopen", side_effect=ShortRead):
+            with self.assertRaisesRegex(pf.Refusal, "IncompleteFileRead"):
+                pf.read_regular(path, pf.MAX_OBJECT)
+
+    def test_parent_limit_is_an_explicit_incomplete_result(self):
+        identity = "FixtureAgent <123+FixtureAgent@users.noreply.github.com> 1700000000 +0000"
+        raw = ("tree " + self.base + "\n" + ("parent " + self.base + "\n") * 9
+               + "author " + identity + "\ncommitter " + identity + "\n\nSynthetic message\n").encode("utf-8")
+        reader = pf.GitReader(self.repo)
+        with mock.patch.object(reader, "object", return_value=raw):
+            with self.assertRaisesRegex(pf.Refusal, "TooManyParents"):
+                pf.Inspection("commits", (), set()).commit(reader, self.base)
 
     def test_bounded_git_output_kills_only_owned_reader(self):
         class Output:

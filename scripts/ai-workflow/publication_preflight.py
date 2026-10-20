@@ -94,6 +94,8 @@ def read_regular(path: Path, limit: int) -> bytes:
         after = os.fstat(stream.fileno())
     if len(data) > limit:
         raise Refusal("InputTooLarge")
+    if len(data) != opened.st_size:
+        raise Refusal("IncompleteFileRead")
     if (opened.st_size, opened.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
         raise Refusal("InputChanged")
     return data
@@ -341,8 +343,10 @@ class Inspection:
                         or (name, email) in self.approved):
                     self.findings.add(("UnapprovedCommitIdentity", "commit", self.commits, 0))
                 identities.append(key)
-        if sorted(identities) != ["author", "committer"] or len(parents) > 8:
+        if sorted(identities) != ["author", "committer"]:
             raise Refusal("MalformedCommitMetadata")
+        if len(parents) > 8:
+            raise Refusal("TooManyParents")
         return parents
 
     def report(self, complete: bool, reason: str | None = None) -> dict:
@@ -359,7 +363,10 @@ class Inspection:
             "additional_findings": max(0, len(findings) - MAX_FINDINGS),
             "reason": reason,
             "limits": {"object_bytes": MAX_OBJECT, "total_bytes": MAX_TOTAL,
-                       "files": MAX_FILES, "commits": MAX_COMMITS, "seconds": TOTAL_SECONDS},
+                       "files": MAX_FILES, "commits": MAX_COMMITS, "parents_per_commit": 8,
+                       "git_response_bytes": MAX_GIT_OUTPUT, "config_bytes": 65536,
+                       "terms_bytes": MAX_TERMS_BYTES, "findings": MAX_FINDINGS,
+                       "git_command_seconds": GIT_SECONDS, "seconds": TOTAL_SECONDS},
             "coverage": "Only selected inputs; no authorization/scope/remote freshness or attachment assurance.",
             "commit_metadata": ("checked" if complete else "incomplete") if self.mode == "commits" else "not_in_this_candidate",
             "binding": "A later changed payload requires another check; this is not a publication approval.",
@@ -400,7 +407,7 @@ def approved_identities(values: list[str]) -> set[tuple[str, str]]:
 
 
 DIFF_OPTIONS = ("--raw", "--no-abbrev", "--no-renames", "--no-ext-diff", "--no-textconv",
-                "--ignore-submodules=none", "-z")
+                "--ignore-submodules=none", "--submodule=short", "-O" + os.devnull, "-z")
 
 
 def inspect(args) -> dict:
