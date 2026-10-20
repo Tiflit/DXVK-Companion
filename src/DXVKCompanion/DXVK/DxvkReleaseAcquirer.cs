@@ -49,7 +49,7 @@ public sealed class DxvkReleaseAcquirer
         public List<FileIdentity> Files { get; set; } = new();
     }
 
-    public sealed record AcquisitionResult(string Version, bool Reused, bool UpstreamDigestVerified);
+    public sealed record AcquisitionResult(string Version, bool Reused, bool UpstreamDigestVerified, bool HasAcquisitionManifest = true);
 
     public Task<AcquisitionResult> AcquireAsync(string tag, CancellationToken cancellationToken = default) =>
         Task.Run(() => AcquireCoreAsync(tag, cancellationToken), cancellationToken);
@@ -67,7 +67,7 @@ public sealed class DxvkReleaseAcquirer
             string destination = Path.Combine(_root, tag);
             if (Directory.Exists(destination) || File.Exists(destination))
             {
-                if (IsCompleteLocalRelease(destination, tag, out bool upstream)) return new(tag, true, upstream);
+                if (IsCompleteLocalRelease(destination, tag, out bool upstream)) return new(tag, true, upstream, HasAcquisitionRecord(destination));
                 throw new InvalidDataException("Existing release is incomplete or invalid. Retained files were not changed.");
             }
             // Callers supply a tag, never an asserted URL or provenance record.
@@ -153,7 +153,7 @@ public sealed class DxvkReleaseAcquirer
             try { Directory.Move(staging, destination); }
             catch (IOException) when (IsCompleteLocalRelease(destination, tag, out _))
             {
-                return new(tag, true, ValidateManifest(destination, tag, out bool verified) && verified);
+                return new(tag, true, ValidateManifest(destination, tag, out bool verified) && verified, HasAcquisitionRecord(destination));
             }
             staging = null;
             return new(tag, false, release.AssetDigest != null);
@@ -211,12 +211,14 @@ public sealed class DxvkReleaseAcquirer
                 !IsHash(manifest.ArchiveSha256) || manifest.Files == null || manifest.Files.Count is < 1 or > 14) return false;
             if (manifest.Origin.AssetDigest != null && !string.Equals(manifest.Origin.AssetDigest[7..], manifest.ArchiveSha256, StringComparison.OrdinalIgnoreCase)) return false;
             var paths = new HashSet<string>(StringComparer.Ordinal);
+            long totalSize = 0;
             foreach (var file in manifest.Files)
             {
                 if (file == null || file.Path == null) return false;
                 string[] parts = file.Path.Split('/');
                 if (parts.Length != 2 || (parts[0] != "x32" && parts[0] != "x64") || !KnownDlls.Contains(parts[1], StringComparer.Ordinal) ||
-                    !paths.Add(file.Path) || file.Size <= 0 || file.Size > MaximumDllBytes || !IsHash(file.Sha256)) return false;
+                    !paths.Add(file.Path) || file.Size <= 0 || file.Size > MaximumDllBytes ||
+                    (totalSize += file.Size) > MaximumExtractedBytes || !IsHash(file.Sha256)) return false;
                 string archDir = Path.Combine(directory, parts[0]);
                 string dll = Path.Combine(archDir, parts[1]);
                 if (!IsPlain(archDir) || !File.Exists(dll) || !IsPlain(dll) || new FileInfo(dll).Length != file.Size) return false;

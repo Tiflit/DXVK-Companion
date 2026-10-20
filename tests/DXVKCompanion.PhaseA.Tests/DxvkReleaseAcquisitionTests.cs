@@ -103,7 +103,7 @@ public sealed class DxvkReleaseAcquisitionTests
         fixture.IncludeDigest = digest;
         var results = await Task.WhenAll(Enumerable.Range(0, 8).Select(_ => fixture.Acquirer.AcquireAsync("v2.5")));
         Assert.All(results, r => Assert.Equal(digest, r.UpstreamDigestVerified));
-        Assert.Single(results.Where(r => !r.Reused));
+        Assert.Single(results, r => !r.Reused);
         Assert.Equal(2, fixture.Requests.Count);
         string version = Path.Combine(fixture.Source, "v2.5");
         Assert.Equal(Encoding.UTF8.GetBytes("v2.5:d3d11"), File.ReadAllBytes(Path.Combine(version, "x64", "d3d11.dll")));
@@ -215,6 +215,7 @@ public sealed class DxvkReleaseAcquisitionTests
         var result = await fixture.Acquirer.AcquireAsync("v2.5");
         Assert.True(result.Reused);
         Assert.False(result.UpstreamDigestVerified);
+        Assert.False(result.HasAcquisitionManifest);
         File.Delete(Path.Combine(arch, "dxgi.dll"));
         await Assert.ThrowsAsync<InvalidDataException>(() => fixture.Acquirer.AcquireAsync("v2.5"));
         Assert.Equal("legacy", File.ReadAllText(Path.Combine(arch, "d3d11.dll")));

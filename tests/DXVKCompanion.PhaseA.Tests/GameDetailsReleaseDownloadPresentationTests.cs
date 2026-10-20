@@ -28,6 +28,7 @@ public sealed class GameDetailsReleaseDownloadPresentationTests
         var result = await fixture.Acquirer.AcquireAsync("v2.5");
         Assert.Contains("SHA-256 verified", GameDetailsReleaseDownloadPresentation.CompletedStatus(result));
         Assert.Contains("no upstream digest", GameDetailsReleaseDownloadPresentation.CompletedStatus(new("v2.5", true, false)));
+        Assert.Contains("no acquisition manifest or upstream verification", GameDetailsReleaseDownloadPresentation.CompletedStatus(new("v2.5", true, false, false)));
         Assert.Equal("Downloaded — compatible", GameDetailsReleaseDownloadPresentation.LocalStatus(fixture.Source, "v2.5", GraphicsApi.DX11, "x64"));
         Assert.Contains("unavailable", GameDetailsReleaseDownloadPresentation.LocalStatus(fixture.Source, "v2.5", GraphicsApi.DX11, "x32"));
         Assert.Contains("unavailable", GameDetailsReleaseDownloadPresentation.LocalStatus(fixture.Source, "v2.5", GraphicsApi.DX12, "x64"));

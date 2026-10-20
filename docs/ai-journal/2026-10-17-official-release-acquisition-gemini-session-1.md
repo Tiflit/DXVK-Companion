@@ -24,3 +24,5 @@ No observed human interruptions or new product decisions during implementation; 
 ## Grouped self-review repair
 
 Initial head `1619e305548918d91621125d2b1bf0b73a45c958`: cloud application build succeeded, but the Phase A test build failed on a missing `DXVKCompanion.Safety` namespace import in the new acquisition test. No test pass is claimed for that run (`39508872078`). The repair adds the import, checks dangling/inaccessible acquisition-record entries without `File.Exists` suppression, guards staging cleanup against a substituted root link, and adds supplied-architecture/API eligibility plus cancelled-waiter isolation coverage. Current-head CI remains required.
+
+The focused delta review also distinguishes legacy reuse from acquired manifests in completion messages, caps manifest aggregate file sizes consistently with extraction, and resolves the new xUnit analyzer warning without changing assertions. These source changes require a fresh cloud run; earlier green results cannot be carried forward as current-head evidence.

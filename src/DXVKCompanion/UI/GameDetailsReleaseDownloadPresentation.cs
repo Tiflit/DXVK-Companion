@@ -15,7 +15,9 @@ public static class GameDetailsReleaseDownloadPresentation
         return "Available to download";
     }
 
-    public static string CompletedStatus(DxvkReleaseAcquirer.AcquisitionResult result) => result.UpstreamDigestVerified
+    public static string CompletedStatus(DxvkReleaseAcquirer.AcquisitionResult result) => !result.HasAcquisitionManifest
+        ? "Ready — existing local payload reused; no acquisition manifest or upstream verification. Game selection unchanged."
+        : result.UpstreamDigestVerified
         ? "Ready — official SHA-256 verified. Game selection unchanged."
         : "Ready — official origin and local hashes recorded; no upstream digest. Game selection unchanged.";
 }
