@@ -164,11 +164,16 @@ QUOTED_HOME_PATH_PATTERNS: List[Tuple[Pattern[str], str, str]] = [
 
 # Unquoted personal path pattern:
 # Matches from the personal home prefix through all path segments (Unicode, spaces, apostrophes, etc.)
-# Each intermediate segment ends with a slash [/\\]+.
-# The terminal segment is either a file with extension, ellipsis, or a single/multiword name.
+# Branch 1 matches paths with internal slashes; intermediate segments end with slashes, while the terminal
+# segment (file or single subfolder) does not consume trailing whitespace or prose words.
+# Branch 2 matches a bare home directory name directly under Users/home at line end or delimiter.
 UNQUOTED_HOME_PATH_PATTERN: Pattern[str] = re.compile(
     r"(?P<prefix>(?:file:///)?(?:[A-Za-z]:[/\\]+|(?<![^\s\"'`()<>[\]{}|;,=])[/\\]+)(?:Users|Documents and Settings)[/\\]+|(?<![^\s\"'`()<>[\]{}|;,=])/mnt/[A-Za-z]/(?:Users|Documents and Settings)[/\\]+|(?:file:///)?(?<![^\s\"'`()<>[\]{}|;,=])/(?:home|Users)/)"
-    r"(?P<tail>(?:[\w'.-]+(?: [\w'.-]+)*(?=[/\\])[/\\]+)*(?:[\w'.-]+\.[\w'.-]+|\.\.\.|[\w'.-]+(?: [\w'.-]+)*(?=[\r\n\t]|$|[;,:]\s)|[\w'.-]+)?)"
+    r"(?P<tail>"
+    r"[\w'.-]+(?: [\w'.-]+)*[/\\]+(?:[\w'.-]+(?: [\w'.-]+)*(?=[/\\])[/\\]+)*(?:[\w'.-]+\.[\w'.-]+|\.\.\.|[\w'.-]+)?"
+    r"|"
+    r"[\w'.-]+(?: [\w'.-]+)*(?=[\r\n\t]|$|[;,:]\s)"
+    r")"
     r"[/\\]?",
     re.IGNORECASE,
 )
@@ -179,7 +184,7 @@ UNC_PATH_PATTERN: Pattern[str] = re.compile(
     r"(?P<host>[^\s\\/\"'*?<>|]+)"
     r"[/\\]+"
     r"(?P<share>[^\s\\/\"'*?<>|]+)"
-    r"(?P<extra>(?:[/\\]+[\w'.-]+(?: [\w'.-]+)*(?=[/\\]))*[/\\]+(?:[\w'.-]+\.[\w'.-]+|\.\.\.|[\w'.-]+(?: [\w'.-]+)*(?=[\r\n\t]|$|[;,:]\s)|[\w'.-]+))?"
+    r"(?P<extra>(?:[/\\]+[\w'.-]+(?: [\w'.-]+)*(?=[/\\]))*[/\\]+(?:[\w'.-]+\.[\w'.-]+|\.\.\.|[\w'.-]+))?"
     r"[/\\]?",
     re.IGNORECASE,
 )
