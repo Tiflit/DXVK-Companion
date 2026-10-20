@@ -35,6 +35,7 @@ from update_pr_body import (
     parse_and_validate_review_records,
     prepare_issue_candidate,
     scan_for_privacy_violations,
+    sanitize_privacy_text,
     validate_backup_dir,
 )
 
@@ -220,6 +221,162 @@ class TestUpdatePrBody(unittest.TestCase):
         )
         violations = scan_for_privacy_violations(text)
         self.assertEqual(len(violations), 0)
+
+    def test_privacy_scan_detects_wsl_home_path(self):
+        text = "File at /mnt/c/Users/developer/file.cs"
+        violations = scan_for_privacy_violations(text)
+        self.assertEqual(len(violations), 1)
+        self.assertEqual(violations[0][1], "WSL personal-home path")
+
+    def test_privacy_scan_detects_concrete_unc_paths(self):
+        text = r"Share mounted at \\nas01\share\sub\data.bin"
+        violations = scan_for_privacy_violations(text)
+        self.assertEqual(len(violations), 1)
+        self.assertEqual(violations[0][1], "UNC / network path")
+
+    def test_privacy_scan_preserves_bare_generic_unc_templates_only(self):
+        """Preserves only exact bare documentation placeholder templates without private shares or suffixes."""
+        text = r"Example templates: `\\server\share` or `//host/share`"
+        violations = scan_for_privacy_violations(text)
+        self.assertEqual(len(violations), 0)
+
+    def test_privacy_scan_detects_concrete_unc_under_example_hosts(self):
+        """Detects concrete shares and private suffixes even under localhost or server hosts (R2)."""
+        samples = [
+            r"Path: \\localhost\data",
+            r"Path: \\127.0.0.1\c$\secret",
+            r"Path: \\server\share\repo\private_tool",
+            r"Path: \\server\Team-Share",
+        ]
+        for s in samples:
+            with self.subTest(sample=s):
+                violations = scan_for_privacy_violations(s)
+                self.assertGreaterEqual(len(violations), 1, f"Expected violation for {s}")
+                self.assertEqual(violations[0][1], "UNC / network path")
+
+    def test_privacy_scan_and_redaction_for_paths_with_spaces(self):
+        text = r"Error at C:\Users\Example Person\Projects\DXVK\file.txt on line 5"
+        violations = scan_for_privacy_violations(text)
+        self.assertEqual(len(violations), 1)
+        self.assertEqual(violations[0][1], "Windows personal-home path")
+        sanitized = sanitize_privacy_text(text)
+        self.assertNotIn("Example", sanitized)
+        self.assertNotIn("Person", sanitized)
+        self.assertIn("[REDACTED_PATH]", sanitized)
+
+    def test_privacy_scan_and_redaction_for_unicode_and_complex_tokens(self):
+        """Verifies complete redaction of Unicode home paths, complex queries, and RFC 6750 tokens."""
+        text = (
+            "Path: C:\\Users\\Éxample\\PrivateSuffix\n"
+            "URL: https://example.com/api?token=prefix.PrivateSentinel%2FPrivateTail\n"
+            "Auth: Bearer ABCDEFGH+PrivateSentinel/=="
+        )
+        violations = scan_for_privacy_violations(text)
+        self.assertGreaterEqual(len(violations), 2)
+        sanitized = sanitize_privacy_text(text)
+        self.assertNotIn("Éxample", sanitized)
+        self.assertNotIn("PrivateSuffix", sanitized)
+        self.assertNotIn("PrivateSentinel", sanitized)
+        self.assertIn("[REDACTED_PATH]", sanitized)
+        self.assertIn("?[REDACTED_QUERY]", sanitized)
+        self.assertIn("[REDACTED_TOKEN]", sanitized)
+
+    def test_privacy_scan_and_redaction_for_multiword_and_punctuation_paths(self):
+        """R1: Verifies detection and redaction of multi-word terminal components and punctuation paths."""
+        cases = [
+            (
+                r"Failed at C:\Users\Example\Private Surname on line 42",
+                ["Example", "Private", "Surname"],
+            ),
+            (
+                r"Log at /home/Example/Private Surname for task",
+                ["Example", "Private", "Surname"],
+            ),
+            (
+                r"Build at C:\Users\Example\Private+Sentinel.txt successfully",
+                ["Example", "Private", "Sentinel"],
+            ),
+            (
+                r"Source at C:\Users\Example+Sentinel\file.txt finished",
+                ["Example", "Sentinel"],
+            ),
+        ]
+        for text, forbidden_tokens in cases:
+            with self.subTest(text=text):
+                violations = scan_for_privacy_violations(text)
+                self.assertGreaterEqual(len(violations), 1)
+                sanitized = sanitize_privacy_text(text)
+                self.assertIn("[REDACTED_PATH]", sanitized)
+                for tok in forbidden_tokens:
+                    self.assertNotIn(tok, sanitized, f"Token '{tok}' leaked in sanitized text")
+
+    def test_privacy_scan_and_redaction_for_unc_continuations_and_templates(self):
+        """R2: Verifies detection and redaction of UNC ambiguous continuations and partial matches."""
+        cases = [
+            (
+                r"Share: \\server\share\+PrivateSentinel finished",
+                ["Private", "Sentinel", "PrivateSentinel"],
+            ),
+            (
+                "Forward: //server/share/+PrivateSentinel finished",
+                ["Private", "Sentinel", "PrivateSentinel"],
+            ),
+            (
+                r"Space: \\server\share PrivateSentinel finished",
+                ["Private", "Sentinel", "PrivateSentinel"],
+            ),
+            (
+                r"Multiword: \\nas01\share\Private Surname finished",
+                ["nas01", "Private", "Surname"],
+            ),
+        ]
+        for text, forbidden_tokens in cases:
+            with self.subTest(text=text):
+                violations = scan_for_privacy_violations(text)
+                self.assertGreaterEqual(len(violations), 1)
+                sanitized = sanitize_privacy_text(text)
+                self.assertIn("[REDACTED_PATH]", sanitized)
+                for tok in forbidden_tokens:
+                    self.assertNotIn(tok, sanitized, f"Token '{tok}' leaked in sanitized text")
+
+        # Verify structurally isolated bare template is preserved, while an unquoted template followed by
+        # prose is an ambiguous possibly-incomplete prefix and is conservatively redacted
+        bare = r"Preserve `\\server\share` in documentation"
+        self.assertEqual(len(scan_for_privacy_violations(bare)), 0)
+        self.assertIn(r"\\server\share", sanitize_privacy_text(bare))
+
+        ambiguous = r"Preserve \\server\share in documentation"
+        self.assertGreaterEqual(len(scan_for_privacy_violations(ambiguous)), 1)
+        self.assertNotIn("documentation", sanitize_privacy_text(ambiguous))
+
+    def test_privacy_scan_and_redaction_for_stopword_components_and_template_continuations(self):
+        """R1/R2: Stopword-containing components and template continuations never leave unique suffixes."""
+        cases = [
+            (r"setting:/home/Example/PrivateSentinel", ["PrivateSentinel"]),
+            (r"setting:/mnt/c/Users/Example/PrivateSentinel", ["PrivateSentinel"]),
+            (r"At \\nas01\Private,Sentinel\PrivateTail", ["Sentinel", "PrivateTail"]),
+            (r"At \\nas01\O'Connor\PrivateSentinel", ["Connor", "PrivateSentinel"]),
+            (r"At \\server\share,PrivateSentinel", ["PrivateSentinel"]),
+            (r"At \\server\share;PrivateSentinel", ["PrivateSentinel"]),
+            (r"At C:\Users\Example\Private and Sentinel.txt", ["Private", "Sentinel"]),
+            (r"At /home/Example/Private with Sentinel.txt", ["Private", "Sentinel"]),
+            (r"At /mnt/c/Users/Example/Private for Sentinel", ["Private", "Sentinel"]),
+            (r"At C:\Users\Example\Private! Surname", ["Private", "Surname"]),
+            (r"At \\server\share and Sentinel.txt", ["Sentinel"]),
+            (r"At \\nas01\share\Private and Sentinel.txt", ["Private", "Sentinel"]),
+            (r"At \\server\share\Private and Sentinel.txt", ["Private", "Sentinel"]),
+        ]
+        for text, forbidden_tokens in cases:
+            with self.subTest(text=text):
+                self.assertGreaterEqual(len(scan_for_privacy_violations(text)), 1)
+                sanitized = sanitize_privacy_text(text)
+                self.assertIn("[REDACTED_PATH]", sanitized)
+                diag = update_pr_body.sanitize_diagnostic(text)
+                diff = update_pr_body.sanitize_diff_line("-" + text)
+                for tok in forbidden_tokens:
+                    self.assertNotIn(tok, sanitized)
+                    self.assertNotIn(tok, diag)
+                    self.assertNotIn(tok, diff)
 
     # =========================================================================
     # 3. PR Review Preservation & Modifications (Existing Regressions)

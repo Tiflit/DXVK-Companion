@@ -17,20 +17,50 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 try:
+    from .privacy_guard import (
+        CREDENTIAL_TOKEN_PATTERN,
+        POSIX_HOME_PREFIX_PATTERN as POSIX_HOME_PATH_PATTERN,
+        WINDOWS_HOME_PREFIX_PATTERN as WINDOWS_HOME_PATH_PATTERN,
+        PrivacyViolation,
+        PrivacyViolationError,
+        format_safe_backup_display,
+        format_safe_filename_diagnostic,
+        is_privacy_sensitive_text,
+        redact_privacy_text,
+        sanitize_diagnostic,
+        sanitize_diff_line,
+        sanitize_display_text,
+        sanitize_privacy_text,
+        scan_for_privacy_violations,
+    )
     from .update_dashboard import (
         GitHubApiError,
         GitHubClient,
         is_valid_positive_int,
         is_valid_repo_name,
-        sanitize_display_text,
     )
 except ImportError:
+    from privacy_guard import (
+        CREDENTIAL_TOKEN_PATTERN,
+        POSIX_HOME_PREFIX_PATTERN as POSIX_HOME_PATH_PATTERN,
+        WINDOWS_HOME_PREFIX_PATTERN as WINDOWS_HOME_PATH_PATTERN,
+        PrivacyViolation,
+        PrivacyViolationError,
+        format_safe_backup_display,
+        format_safe_filename_diagnostic,
+        is_privacy_sensitive_text,
+        redact_privacy_text,
+        sanitize_diagnostic,
+        sanitize_diff_line,
+        sanitize_display_text,
+        sanitize_privacy_text,
+        scan_for_privacy_violations,
+    )
     from update_dashboard import (
         GitHubApiError,
         GitHubClient,
         is_valid_positive_int,
         is_valid_repo_name,
-        sanitize_display_text,
     )
 
 try:
@@ -62,19 +92,6 @@ UNMARKED_REVIEW_HEADING_PATTERN = re.compile(
 
 ISSUE_APPEND_SEPARATOR = "\n\n"
 
-# Privacy detection patterns (fail closed)
-WINDOWS_HOME_PATH_PATTERN = re.compile(
-    r"(?:[A-Za-z]:[/\\]|(?<!\w)[/\\])(?:Users|Documents and Settings)[/\\][^\s\"'`|<>]+",
-    re.IGNORECASE,
-)
-POSIX_HOME_PATH_PATTERN = re.compile(
-    r"(?:^|[\s\"'`(<+\-])/(?:home|Users)/[^\s\"'`|<>]+",
-    re.IGNORECASE,
-)
-CREDENTIAL_TOKEN_PATTERN = re.compile(
-    r"\b(?:ghp_|github_pat_|gho_|ghu_|ghs_|ghr_)[A-Za-z0-9_]{8,}\b|\bbearer\s+[A-Za-z0-9_.-]{8,}\b",
-    re.IGNORECASE,
-)
 
 
 def mask_code_spans(text: str) -> str:
@@ -95,109 +112,6 @@ class SecurityValidationError(Exception):
 class LostUpdateError(Exception):
     """Raised when remote body was modified concurrently or does not match expected base hash."""
     pass
-
-
-class PrivacyViolationError(Exception):
-    """Raised when personal home paths or credential tokens are detected in proposed content."""
-    pass
-
-
-def scan_for_privacy_violations(text: str) -> List[Tuple[int, str]]:
-    """
-    Scans text for personal home paths and credential tokens.
-    Returns a list of (line_number, violation_category) tuples.
-    Does NOT return or echo matched sensitive text or tokens.
-    """
-    violations: List[Tuple[int, str]] = []
-    if not text:
-        return violations
-
-    for line_num, line in enumerate(text.splitlines(), start=1):
-        if WINDOWS_HOME_PATH_PATTERN.search(line):
-            violations.append((line_num, "Windows personal-home path"))
-        elif POSIX_HOME_PATH_PATTERN.search(line):
-            violations.append((line_num, "POSIX personal-home path"))
-        elif CREDENTIAL_TOKEN_PATTERN.search(line):
-            violations.append((line_num, "GitHub credential or bearer token"))
-
-    return violations
-
-
-def sanitize_privacy_text(text: Optional[str]) -> str:
-    """
-    Sanitizes diagnostic messages, diff lines, and paths to prevent leaking
-    Windows personal-home paths (both / and \\), POSIX home paths, and credentials/tokens.
-    Replaces matched substrings with redaction placeholders.
-    """
-    if not text:
-        return ""
-    clean = str(text)
-    clean = WINDOWS_HOME_PATH_PATTERN.sub("[REDACTED_PATH]", clean)
-
-    def _redact_posix(m):
-        raw = m.group(0)
-        leading = ""
-        for ch in raw:
-            if ch in " \t\"'`(<+-":
-                leading += ch
-            else:
-                break
-        return leading + "[REDACTED_PATH]"
-
-    clean = POSIX_HOME_PATH_PATTERN.sub(_redact_posix, clean)
-    clean = CREDENTIAL_TOKEN_PATTERN.sub("[REDACTED_TOKEN]", clean)
-    clean = re.sub(r"\?[\w=&-]+", "?[REDACTED_QUERY]", clean)
-    return clean
-
-
-def is_privacy_sensitive_text(text: Optional[str]) -> bool:
-    """Returns True if text contains Windows personal paths, POSIX personal paths, or credentials/tokens."""
-    if not text:
-        return False
-    return (
-        bool(WINDOWS_HOME_PATH_PATTERN.search(text))
-        or bool(POSIX_HOME_PATH_PATTERN.search(text))
-        or bool(CREDENTIAL_TOKEN_PATTERN.search(text))
-    )
-
-
-def format_safe_filename_diagnostic(path: Union[Path, str]) -> str:
-    """
-    Returns a safe representation of a filename for diagnostic messages.
-    If the path or filename contains sensitive user paths or tokens,
-    it returns '<redacted-filename>' without echoing sensitive content.
-    """
-    p_str = str(path)
-    name = Path(path).name if hasattr(path, "name") or isinstance(path, (str, Path)) else str(path)
-    if is_privacy_sensitive_text(p_str) or is_privacy_sensitive_text(name):
-        return "<redacted-filename>"
-    return name
-
-
-def sanitize_diff_line(diff_line: str) -> str:
-    """
-    Sanitizes a unified-diff line while preserving diff structural prefixes.
-    For diff change lines ('-', '+') and context lines (' '), strips the leading
-    indicator, sanitizes the line payload, and restores the indicator.
-    All other lines (including hunk headers and standalone text) are sanitized directly.
-    """
-    if diff_line.startswith(("-", "+", " ")):
-        prefix = diff_line[0]
-        payload = diff_line[1:]
-        return prefix + sanitize_privacy_text(payload)
-    return sanitize_privacy_text(diff_line)
-
-
-def sanitize_diagnostic(msg: Any) -> str:
-    """Sanitizes diagnostic and error messages to prevent leaking paths, tokens, or raw queries."""
-    if msg is None:
-        return ""
-    return sanitize_privacy_text(str(msg)).strip()
-
-
-def format_safe_backup_display(backup_path: Path) -> str:
-    """Formats backup confirmation safely using fixed safe basename/redacted identifier without path exposure."""
-    return f"[REDACTED_PATH]/{backup_path.name}"
 
 
 @dataclass
