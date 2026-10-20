@@ -81,7 +81,7 @@ public sealed class OwnershipPersistenceFailureTests
             });
 
         using var http = new HttpClient();
-        var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
+        var installer = SyntheticSafetyFixture.CreateInstaller(http, engine, store, sourceDir.RootPath);
         var profile = new GameProfile(exePath)
         {
             Api = GraphicsApi.DX11,
@@ -176,7 +176,7 @@ public sealed class OwnershipPersistenceFailureTests
             });
 
         using var http = new HttpClient();
-        var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
+        var installer = SyntheticSafetyFixture.CreateInstaller(http, engine, store, sourceDir.RootPath);
         var profile = new GameProfile(exePath)
         {
             Api = GraphicsApi.DX11,
@@ -229,7 +229,7 @@ public sealed class OwnershipPersistenceFailureTests
         Assert.Equal("2.4", inMemoryInstAfterFailedB!.ManagedDxvkVersion);
 
         var reconstructedEngine = new MultiFileTransactionEngine(backupsDir);
-        var reconstructedRollback = new DxvkRollback(reconstructedEngine, reconstructedStore);
+        var reconstructedRollback = SyntheticSafetyFixture.CreateRollback(reconstructedEngine, reconstructedStore);
         bool restoreOk = await reconstructedRollback.RestoreOriginalDllsAsync(profile);
 
         Assert.True(restoreOk, $"Expected Restore on reconstructed services to succeed after failed Update B, but it refused with: {reconstructedRollback.LastRefusalReason}");
@@ -280,8 +280,8 @@ public sealed class OwnershipPersistenceFailureTests
             });
 
         using var http = new HttpClient();
-        var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
-        var rollback = new DxvkRollback(engine, store);
+        var installer = SyntheticSafetyFixture.CreateInstaller(http, engine, store, sourceDir.RootPath);
+        var rollback = SyntheticSafetyFixture.CreateRollback(engine, store);
         var profile = new GameProfile(exePath)
         {
             Api = GraphicsApi.DX11,
@@ -403,10 +403,10 @@ public sealed class OwnershipPersistenceFailureTests
             });
 
         using var http = new HttpClient();
-        var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
-        var rollback = new DxvkRollback(engine, store);
+        var installer = SyntheticSafetyFixture.CreateInstaller(http, engine, store, sourceDir.RootPath);
+        var rollback = SyntheticSafetyFixture.CreateRollback(engine, store);
         var github = new DxvkGithubClient(http, cacheStore);
-        var manager = new DxvkManager(installer, rollback, github, profileStore, store);
+        var manager = SyntheticSafetyFixture.CreateManager(installer, rollback, github, profileStore, store);
 
         var profile = new GameProfile(exePath)
         {
@@ -473,8 +473,8 @@ public sealed class OwnershipPersistenceFailureTests
         var store = new GameLibraryStore(libraryFile, backupsDir);
         var engine = new MultiFileTransactionEngine(backupsDir);
         using var http = new HttpClient();
-        var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
-        var rollback = new DxvkRollback(engine, store);
+        var installer = SyntheticSafetyFixture.CreateInstaller(http, engine, store, sourceDir.RootPath);
+        var rollback = SyntheticSafetyFixture.CreateRollback(engine, store);
 
         var profile = new GameProfile(exePath)
         {
@@ -518,7 +518,7 @@ public sealed class OwnershipPersistenceFailureTests
         Assert.Equal("dxvk-2.4-d3d11", File.ReadAllText(targetD3d11));
         Assert.True(File.Exists(targetDxgi), "Expected dxgi.dll to be compensated back to managed state when Restore ownership save failed before replacement.");
 
-        var reconstructedRollback = new DxvkRollback(new MultiFileTransactionEngine(backupsDir), reconstructedStore);
+        var reconstructedRollback = SyntheticSafetyFixture.CreateRollback(new MultiFileTransactionEngine(backupsDir), reconstructedStore);
         bool retryRestoreOk = await reconstructedRollback.RestoreOriginalDllsAsync(profile);
         Assert.True(retryRestoreOk, $"Expected retry of RestoreOriginalDllsAsync on reconstructed services to succeed, but it refused with: {reconstructedRollback.LastRefusalReason}");
         Assert.Equal("native-original-d3d11", File.ReadAllText(targetD3d11));
@@ -567,7 +567,7 @@ public sealed class OwnershipPersistenceFailureTests
             });
 
         using var http = new HttpClient();
-        var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
+        var installer = SyntheticSafetyFixture.CreateInstaller(http, engine, store, sourceDir.RootPath);
         var profile = new GameProfile(exePath)
         {
             Api = GraphicsApi.DX11,
@@ -660,7 +660,7 @@ public sealed class OwnershipPersistenceFailureTests
             });
 
         using var http = new HttpClient();
-        var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
+        var installer = SyntheticSafetyFixture.CreateInstaller(http, engine, store, sourceDir.RootPath);
         var profile = new GameProfile(exePath)
         {
             Api = GraphicsApi.DX11,
@@ -747,7 +747,7 @@ public sealed class OwnershipPersistenceFailureTests
             });
 
         using var http = new HttpClient();
-        var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
+        var installer = SyntheticSafetyFixture.CreateInstaller(http, engine, store, sourceDir.RootPath);
         var profile = new GameProfile(exePath)
         {
             Api = GraphicsApi.DX11,
@@ -845,7 +845,7 @@ public sealed class OwnershipPersistenceFailureTests
             });
 
         using var http = new HttpClient();
-        var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
+        var installer = SyntheticSafetyFixture.CreateInstaller(http, engine, store, sourceDir.RootPath);
         var profile = new GameProfile(exePath)
         {
             Api = GraphicsApi.DX11,
@@ -985,10 +985,10 @@ public sealed class OwnershipPersistenceFailureTests
 
         using var http = new HttpClient();
         var cacheStore = new CacheStore(Path.Combine(storageDir.RootPath, "cache.json"));
-        var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
-        var rollback = new DxvkRollback(engine, store);
+        var installer = SyntheticSafetyFixture.CreateInstaller(http, engine, store, sourceDir.RootPath);
+        var rollback = SyntheticSafetyFixture.CreateRollback(engine, store);
         var github = new DxvkGithubClient(http, cacheStore);
-        var manager = new DxvkManager(installer, rollback, github, profileStore, store);
+        var manager = SyntheticSafetyFixture.CreateManager(installer, rollback, github, profileStore, store);
 
         var profile = profileStore.GetOrCreate(exePath);
         profile.Api = GraphicsApi.DX11;
@@ -1028,7 +1028,7 @@ public sealed class OwnershipPersistenceFailureTests
         Assert.Throws<InvalidOperationException>(() => store.GetOrCreateInstallation(otherGameDir, "OtherGame"));
 
         // 2. ManagedFileInspector must NOT overwrite game-library.json or clear AttentionRequired in memory
-        var inspector = new ManagedFileInspector(store);
+        var inspector = SyntheticSafetyFixture.CreateInspector(store);
         inspector.InspectAll();
         inspector.InspectInstallation(inMemoryInst);
         Assert.Equal(RestorationState.AttentionRequired, inMemoryInst.RestorationState);
@@ -1068,10 +1068,10 @@ public sealed class OwnershipPersistenceFailureTests
         var cacheStore = new CacheStore(Path.Combine(storageDir.RootPath, "cache.json"));
         var engine = new MultiFileTransactionEngine(backupsDir);
         using var http = new HttpClient();
-        var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
-        var rollback = new DxvkRollback(engine, store);
+        var installer = SyntheticSafetyFixture.CreateInstaller(http, engine, store, sourceDir.RootPath);
+        var rollback = SyntheticSafetyFixture.CreateRollback(engine, store);
         var github = new DxvkGithubClient(http, cacheStore);
-        var manager = new DxvkManager(installer, rollback, github, profileStore, store);
+        var manager = SyntheticSafetyFixture.CreateManager(installer, rollback, github, profileStore, store);
 
         var profile = profileStore.GetOrCreate(exePath);
         profile.Api = GraphicsApi.DX11;
@@ -1166,7 +1166,7 @@ public sealed class OwnershipPersistenceFailureTests
             });
 
         using var http = new HttpClient();
-        var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
+        var installer = SyntheticSafetyFixture.CreateInstaller(http, engine, store, sourceDir.RootPath);
         var profile = new GameProfile(exePath) { Api = GraphicsApi.DX11, Architecture = "x64" };
 
         bool ok = await installer.ApplyToGameAsync(profile, new ReleaseInfo { Version = "2.4", DownloadUrl = "" });
@@ -1183,7 +1183,7 @@ public sealed class OwnershipPersistenceFailureTests
         Assert.Throws<InvalidOperationException>(() => store.Save(inst));
         Assert.Throws<InvalidOperationException>(() => store.SaveAll());
 
-        var inspector = new ManagedFileInspector(store);
+        var inspector = SyntheticSafetyFixture.CreateInspector(store);
         inspector.InspectAll();
         Assert.Equal(externalJson, File.ReadAllText(libraryFile));
     }
@@ -1211,10 +1211,10 @@ public sealed class OwnershipPersistenceFailureTests
         var engine = new MultiFileTransactionEngine(backupsDir);
 
         using var http = new HttpClient();
-        var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
-        var rollback = new DxvkRollback(engine, store);
+        var installer = SyntheticSafetyFixture.CreateInstaller(http, engine, store, sourceDir.RootPath);
+        var rollback = SyntheticSafetyFixture.CreateRollback(engine, store);
         var github = new DxvkGithubClient(http, cacheStore);
-        var manager = new DxvkManager(installer, rollback, github, profileStore, store);
+        var manager = SyntheticSafetyFixture.CreateManager(installer, rollback, github, profileStore, store);
 
         var profile = profileStore.GetOrCreate(exePath);
         profile.Api = GraphicsApi.DX11;
@@ -1327,7 +1327,7 @@ public sealed class OwnershipPersistenceFailureTests
 
         using var http = new HttpClient();
         var engine = new MultiFileTransactionEngine(backupsDir);
-        var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
+        var installer = SyntheticSafetyFixture.CreateInstaller(http, engine, store, sourceDir.RootPath);
         var profile = new GameProfile(exePath) { Api = GraphicsApi.DX11, Architecture = "x64" };
 
         bool ok;
@@ -1388,7 +1388,7 @@ public sealed class OwnershipPersistenceFailureTests
             });
 
         using var http = new HttpClient();
-        var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
+        var installer = SyntheticSafetyFixture.CreateInstaller(http, engine, store, sourceDir.RootPath);
         var profile = new GameProfile(exePath) { Api = GraphicsApi.DX11, Architecture = "x64" };
 
         bool ok = await installer.ApplyToGameAsync(profile, new ReleaseInfo { Version = "2.4", DownloadUrl = "" });
@@ -1428,7 +1428,7 @@ public sealed class OwnershipPersistenceFailureTests
         var engine = new MultiFileTransactionEngine(backupsDir);
 
         using var http = new HttpClient();
-        var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
+        var installer = SyntheticSafetyFixture.CreateInstaller(http, engine, store, sourceDir.RootPath);
 
         var profile = new GameProfile(exePath)
         {
@@ -1522,7 +1522,7 @@ public sealed class OwnershipPersistenceFailureTests
 
         using var http = new HttpClient();
         var initialEngine = new MultiFileTransactionEngine(backupsDir);
-        var installer = new DxvkInstaller(http, initialEngine, store, sourceDir.RootPath);
+        var installer = SyntheticSafetyFixture.CreateInstaller(http, initialEngine, store, sourceDir.RootPath);
         var profile = new GameProfile(exePath) { Api = GraphicsApi.DX11, Architecture = "x64" };
 
         // 1. Install 2.4 over native v1 baseline
@@ -1565,7 +1565,7 @@ public sealed class OwnershipPersistenceFailureTests
                 }
             });
 
-        var hookInstaller = new DxvkInstaller(http, hookEngine, store, sourceDir.RootPath);
+        var hookInstaller = SyntheticSafetyFixture.CreateInstaller(http, hookEngine, store, sourceDir.RootPath);
 
         bool reapplyOk;
         try

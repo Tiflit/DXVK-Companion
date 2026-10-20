@@ -58,13 +58,13 @@ namespace DXVKCompanion.PhaseA.Tests
                 Path.Combine(storageDir.RootPath, "backups"));
             var engine = new MultiFileTransactionEngine(Path.Combine(storageDir.RootPath, "backups"));
             var http = new HttpClient();
-            var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
-            var rollback = new DxvkRollback(engine, store);
+            var installer = SyntheticSafetyFixture.CreateInstaller(http, engine, store, sourceDir.RootPath);
+            var rollback = SyntheticSafetyFixture.CreateRollback(engine, store);
             var profileStore = new ProfileStore(Path.Combine(storageDir.RootPath, "games.json"));
             var cacheStore = new CacheStore(Path.Combine(storageDir.RootPath, "cache.json"));
             cacheStore.SaveCachedRelease(new ReleaseInfo { Version = "2.5", DownloadUrl = "" }, "etag");
             var github = new DxvkGithubClient(http, cacheStore);
-            var manager = new DxvkManager(installer, rollback, github, profileStore, store);
+            var manager = SyntheticSafetyFixture.CreateManager(installer, rollback, github, profileStore, store);
 
             return (manager, installer, store, profileStore, sourceDir.RootPath);
         }
@@ -261,13 +261,13 @@ namespace DXVKCompanion.PhaseA.Tests
                 var store2 = new GameLibraryStore(libraryPath, backupsPath);
                 var engine2 = new MultiFileTransactionEngine(backupsPath);
                 var http2 = new HttpClient();
-                var installer2 = new DxvkInstaller(http2, engine2, store2, sourceDir.RootPath);
-                var rollback2 = new DxvkRollback(engine2, store2);
+                var installer2 = SyntheticSafetyFixture.CreateInstaller(http2, engine2, store2, sourceDir.RootPath);
+                var rollback2 = SyntheticSafetyFixture.CreateRollback(engine2, store2);
                 var profileStore2 = new ProfileStore(gamesPath);
                 var cacheStore2 = new CacheStore(Path.Combine(storageDir.RootPath, "cache.json"));
                 cacheStore2.SaveCachedRelease(new ReleaseInfo { Version = "2.5", DownloadUrl = "" }, "etag");
                 var github2 = new DxvkGithubClient(http2, cacheStore2);
-                var manager2 = new DxvkManager(installer2, rollback2, github2, profileStore2, store2);
+                var manager2 = SyntheticSafetyFixture.CreateManager(installer2, rollback2, github2, profileStore2, store2);
 
                 int processed = await manager2.ProcessAllPendingActionsAsync();
 
@@ -316,13 +316,13 @@ namespace DXVKCompanion.PhaseA.Tests
                 var store2 = new GameLibraryStore(libraryPath, backupsPath);
                 var engine2 = new MultiFileTransactionEngine(backupsPath);
                 var http2 = new HttpClient();
-                var installer2 = new DxvkInstaller(http2, engine2, store2, sourceDir.RootPath);
-                var rollback2 = new DxvkRollback(engine2, store2);
+                var installer2 = SyntheticSafetyFixture.CreateInstaller(http2, engine2, store2, sourceDir.RootPath);
+                var rollback2 = SyntheticSafetyFixture.CreateRollback(engine2, store2);
                 var profileStore2 = new ProfileStore(gamesPath);
                 var cacheStore2 = new CacheStore(Path.Combine(storageDir.RootPath, "cache.json"));
                 cacheStore2.SaveCachedRelease(new ReleaseInfo { Version = "2.5", DownloadUrl = "" }, "etag");
                 var github2 = new DxvkGithubClient(http2, cacheStore2);
-                var manager2 = new DxvkManager(installer2, rollback2, github2, profileStore2, store2);
+                var manager2 = SyntheticSafetyFixture.CreateManager(installer2, rollback2, github2, profileStore2, store2);
 
                 int processed = await manager2.ProcessAllPendingActionsAsync();
 
