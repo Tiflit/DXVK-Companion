@@ -186,8 +186,15 @@ public sealed class DxvkReleaseAcquirer
     }
 
     internal static bool HasAcquisitionRecord(string directory) =>
-        File.Exists(Path.Combine(directory, MarkerName)) || Directory.Exists(Path.Combine(directory, MarkerName)) ||
-        File.Exists(Path.Combine(directory, ManifestName)) || Directory.Exists(Path.Combine(directory, ManifestName));
+        EntryExists(Path.Combine(directory, MarkerName)) || EntryExists(Path.Combine(directory, ManifestName));
+
+    private static bool EntryExists(string path)
+    {
+        // File.Exists suppresses access failures and can miss dangling links. Neither implies a legacy source.
+        try { _ = File.GetAttributes(path); return true; }
+        catch (FileNotFoundException) { return false; }
+        catch (DirectoryNotFoundException) { return false; }
+    }
 
     internal static bool ValidateManifest(string directory, string tag, out bool upstreamVerified)
     {
@@ -282,12 +289,12 @@ public sealed class DxvkReleaseAcquirer
         catch { return false; }
     }
 
-    private static void TryDeleteOwnedStaging(string staging)
+    private void TryDeleteOwnedStaging(string staging)
     {
         // Only this operation's random staging directory is eligible. Never traverse a substituted link.
         try
         {
-            if (!IsPlain(staging)) return;
+            if (!IsPlain(_root) || !IsPlain(staging)) return;
             foreach (string child in Directory.EnumerateFileSystemEntries(staging))
             {
                 if (!IsPlain(child)) return;

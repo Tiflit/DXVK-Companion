@@ -8,6 +8,7 @@ using System.Text;
 using System.Text.Json.Nodes;
 using DXVKCompanion.DXVK;
 using DXVKCompanion.Models;
+using DXVKCompanion.Safety;
 using DXVKCompanion.Storage;
 using DXVKCompanion.Utils;
 using Xunit;
@@ -223,6 +224,53 @@ public sealed class DxvkReleaseAcquisitionTests
         File.WriteAllText(Path.Combine(interrupted, "d3d11.dll"), "partial");
         File.WriteAllText(Path.Combine(interrupted, "dxgi.dll"), "partial");
         Assert.DoesNotContain(".acquire-interrupted", DxvkLocalReleaseLibrary.GetAvailableVersions(fixture.Source, GraphicsApi.DX11, "x64"));
+    }
+
+    [Theory]
+    [InlineData("x32", false)]
+    [InlineData("x64", false)]
+    [InlineData("x32", true)]
+    public async Task SuppliedArchitectureAndApiSets_ControlEligibility(string arch, bool dx9Only)
+    {
+        using var fixture = new OfficialAcquisitionFixture();
+        string prefix = "dxvk-2.5/" + arch + "/";
+        byte[] bytes = { 1, 2, 3 };
+        fixture.Archives["v2.5"] = dx9Only
+            ? OfficialAcquisitionFixture.Archive("v2.5", (prefix + "d3d9.dll", TarEntryType.RegularFile, bytes))
+            : OfficialAcquisitionFixture.Archive("v2.5", (prefix + "d3d11.dll", TarEntryType.RegularFile, bytes), (prefix + "dxgi.dll", TarEntryType.RegularFile, bytes));
+        await fixture.Acquirer.AcquireAsync("v2.5");
+        Assert.True(DxvkLocalReleaseLibrary.IsVersionAvailable(fixture.Source, "v2.5", dx9Only ? GraphicsApi.DX9 : GraphicsApi.DX11, arch));
+        Assert.False(DxvkLocalReleaseLibrary.IsVersionAvailable(fixture.Source, "v2.5", dx9Only ? GraphicsApi.DX11 : GraphicsApi.DX9, arch));
+        Assert.False(DxvkLocalReleaseLibrary.IsVersionAvailable(fixture.Source, "v2.5", GraphicsApi.DX11, arch == "x32" ? "x64" : "x32"));
+    }
+
+    [Fact]
+    public async Task CancelledWaiter_DoesNotCancelSharedLeader_AndOnlyOneArchiveIsFetched()
+    {
+        using var fixture = new OfficialAcquisitionFixture();
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        fixture.Override = async (request, token) =>
+        {
+            if (request.RequestUri!.AbsolutePath.EndsWith("v2.5"))
+            {
+                started.SetResult();
+                await release.Task.WaitAsync(token);
+                return OfficialAcquisitionFixture.Json(OfficialAcquisitionFixture.Metadata("v2.5", fixture.Archives["v2.5"]));
+            }
+            return new(HttpStatusCode.OK) { Content = new ByteArrayContent(fixture.Archives["v2.5"]) };
+        };
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var leader = fixture.Acquirer.AcquireAsync("v2.5", deadline.Token);
+        await started.Task.WaitAsync(deadline.Token);
+        using var cancel = new CancellationTokenSource();
+        var waiter = fixture.Acquirer.AcquireAsync("v2.5", cancel.Token);
+        cancel.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => waiter);
+        release.SetResult();
+        Assert.False((await leader).Reused);
+        Assert.True((await fixture.Acquirer.AcquireAsync("v2.5")).Reused);
+        Assert.Equal(2, fixture.Requests.Count);
     }
 
     [Fact]

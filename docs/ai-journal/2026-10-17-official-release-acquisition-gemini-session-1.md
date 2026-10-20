@@ -20,3 +20,7 @@ Verification prepared: fake HTTP, synthetic tar/gzip payloads, invalid paths/spe
 Sources inspected: official [DXVK releases](https://github.com/doitsujin/dxvk/releases) via GitHub API (current v3.1.1 includes distinct Windows/native assets), and GitHub's [release asset documentation](https://docs.github.com/en/rest/releases/assets) for browser URLs, redirects and optional digest. No third-party code or new licensed dependency incorporated; synthetic DLL bytes are test-owned text, never executed.
 
 No observed human interruptions or new product decisions during implementation; no time/token savings inferred. Completion evidence will be a revision-bound PR comment rather than a journal-only CI refresh.
+
+## Grouped self-review repair
+
+Initial head `1619e305548918d91621125d2b1bf0b73a45c958`: cloud application build succeeded, but the Phase A test build failed on a missing `DXVKCompanion.Safety` namespace import in the new acquisition test. No test pass is claimed for that run (`39508872078`). The repair adds the import, checks dangling/inaccessible acquisition-record entries without `File.Exists` suppression, guards staging cleanup against a substituted root link, and adds supplied-architecture/API eligibility plus cancelled-waiter isolation coverage. Current-head CI remains required.
