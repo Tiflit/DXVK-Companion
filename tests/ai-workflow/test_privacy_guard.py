@@ -381,7 +381,7 @@ class TestPrivacyRedaction(unittest.TestCase):
                 ["O'Connor", "debug.log"],
             ),
             (
-                r"Quoted \"C:\Users\O'Connor\Desktop\app.log\" here",
+                'Quoted "C:\\Users\\O\'Connor\\Desktop\\app.log" here',
                 'Quoted "[REDACTED_PATH]" here',
                 ["O'Connor", "Desktop", "app.log"],
             ),

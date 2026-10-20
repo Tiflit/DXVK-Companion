@@ -95,7 +95,7 @@ WSL_HOME_PREFIX_PATTERN: Pattern[str] = re.compile(
 
 # POSIX personal home path prefix (/home/<user> or /Users/<user>)
 POSIX_HOME_PREFIX_PATTERN: Pattern[str] = re.compile(
-    r"(?:file:///)?(?<![^\s\"'`()<>[\]{}|;,=])/(?:home|Users)/[^\s\"'`|<>]+",
+    r"(?:file:///)?(?<![^\s\"'`()<>[\]{}|;,=])/(?:home|Users)/[\w'.-]+",
     re.IGNORECASE,
 )
 
@@ -164,10 +164,12 @@ QUOTED_HOME_PATH_PATTERNS: List[Tuple[Pattern[str], str, str]] = [
 
 # Unquoted personal path pattern:
 # Matches from the personal home prefix through all path segments (Unicode, spaces, apostrophes, etc.)
-# up to a safe delimiter or end of line.
+# Each intermediate segment ends with a slash [/\\]+.
+# The terminal segment is either a file with extension, ellipsis, or a single/multiword name.
 UNQUOTED_HOME_PATH_PATTERN: Pattern[str] = re.compile(
     r"(?P<prefix>(?:file:///)?(?:[A-Za-z]:[/\\]+|(?<![^\s\"'`()<>[\]{}|;,=])[/\\]+)(?:Users|Documents and Settings)[/\\]+|(?<![^\s\"'`()<>[\]{}|;,=])/mnt/[A-Za-z]/(?:Users|Documents and Settings)[/\\]+|(?:file:///)?(?<![^\s\"'`()<>[\]{}|;,=])/(?:home|Users)/)"
-    r"(?P<tail>(?:[^\s\"'`()<>[\]{}|;,:\\]+(?: [^\s\"'`()<>[\]{}|;,:\\]+)*[/\\]+)*(?:[^\s\"'`()<>[\]{}|;,:\\]+(?: [^\s\"'`()<>[\]{}|;,:\\]+)*)?)[/\\]?",
+    r"(?P<tail>(?:[\w'.-]+(?: [\w'.-]+)*(?=[/\\])[/\\]+)*(?:[\w'.-]+\.[\w'.-]+|\.\.\.|[\w'.-]+(?: [\w'.-]+)*(?=[\r\n\t]|$|[;,:]\s)|[\w'.-]+)?)"
+    r"[/\\]?",
     re.IGNORECASE,
 )
 
@@ -177,7 +179,8 @@ UNC_PATH_PATTERN: Pattern[str] = re.compile(
     r"(?P<host>[^\s\\/\"'*?<>|]+)"
     r"[/\\]+"
     r"(?P<share>[^\s\\/\"'*?<>|]+)"
-    r"(?P<extra>(?:[/\\][^\s\"'`()<>[\]{}|;,:\\]+(?: [^\s\"'`()<>[\]{}|;,:\\]+)*)*)[/\\]?",
+    r"(?P<extra>(?:[/\\]+[\w'.-]+(?: [\w'.-]+)*(?=[/\\]))*[/\\]+(?:[\w'.-]+\.[\w'.-]+|\.\.\.|[\w'.-]+(?: [\w'.-]+)*(?=[\r\n\t]|$|[;,:]\s)|[\w'.-]+))?"
+    r"[/\\]?",
     re.IGNORECASE,
 )
 

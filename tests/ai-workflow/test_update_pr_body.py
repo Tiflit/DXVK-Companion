@@ -267,8 +267,8 @@ class TestUpdatePrBody(unittest.TestCase):
     def test_privacy_scan_and_redaction_for_unicode_and_complex_tokens(self):
         """Verifies complete redaction of Unicode home paths, complex queries, and RFC 6750 tokens."""
         text = (
-            "Path: C:\\Users\\Éxample\\PrivateSuffix "
-            "URL: https://example.com/api?token=prefix.PrivateSentinel%2FPrivateTail "
+            "Path: C:\\Users\\Éxample\\PrivateSuffix\n"
+            "URL: https://example.com/api?token=prefix.PrivateSentinel%2FPrivateTail\n"
             "Auth: Bearer ABCDEFGH+PrivateSentinel/=="
         )
         violations = scan_for_privacy_violations(text)
