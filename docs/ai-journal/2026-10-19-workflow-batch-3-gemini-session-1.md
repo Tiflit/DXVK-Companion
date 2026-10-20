@@ -1,0 +1,13 @@
+# Batch 3 — Codex implementation/self-review
+
+Issue #185; implementation is by Codex despite this predeclared journal filename. The owner assigned Codex implementation while the other provider is unavailable and instructed continuation after merging #190. Base: `c8a62f7a2d7b32db1450eb3d73c690d407ab881d`; policy: `f3e9974371cb08d1dd99192bd314a135010594ed`. Activation and limits are recorded in the Issue comment.
+
+Added an opt-in publication checker for explicit text files, selected index changes or a local two-dot introduced-commit range. It reuses shared privacy detection, reads bounded raw objects (both sides of changes and every introduced commit's metadata), and emits only categories/ordinals/counts plus a candidate digest. Unsupported/incomplete inputs refuse. Private terms stay explicitly supplied outside checkout/metadata boundaries. Public identities use matched GitHub noreply logins or explicit generic reserved-address entries. Staged mode explicitly lacks future commit metadata; no output is a reusable approval.
+
+Synthetic cloud tests cover selection boundaries, deleted/intermediate data, amended/cherry-picked metadata, identity rules, unsafe arguments, binary/encoding/size failures, private-term boundaries, raw-read hook/filter/fsmonitor suppression, missing promisor objects without transport, index changes and bounded reader cleanup. Documentation describes limits and complementary scope/hygiene checks. No dependencies, hooks, credentials, write API integration, protected policy or product changes.
+
+Initial source head `f76d2ce` passed 357 Python tests in cloud run 39477866114. Windows run 39477865738 failed one unchanged backup-restoration test (973/974); its cause is not established. Self-review corrected repeated-file finding ordinals across commit history and distinguished file versus commit findings, with a new regression. The application test was not changed or weakened; current revision-bound evidence and any further outcomes belong in the PR checkpoint.
+
+The final boundary pass rejects short regular-file reads, overrides configured diff order files, and exposes the per-commit parent/resource caps explicitly. Targeted synthetic regressions accompany these checks. No local checker execution or unrelated C# repair was added.
+
+Local work: source/Git inspection and edits only; no scanner/test/build/app execution. This is implementation/self-review, not an independent audit. Out-of-scope finding: the unchanged application CI failure is retained for coordinator follow-up, not a production defect diagnosis. Next owner: Codex verify cloud outcomes and repair within scope; human alone merges.
