@@ -326,6 +326,22 @@ class TestRoleHandoffPreview(unittest.TestCase):
         for token in evil_tokens:
             self.assertNotIn(token, combined, f"Malicious token '{token}' leaked into preview output!")
 
+    def test_optional_failure_details_are_ignored_without_parser_or_network_import(self):
+        snapshot = make_valid_snapshot()
+        snapshot.setdefault("ci_evidence", {})["failure_summary"] = {
+            "status": "available", "run_id": "101", "run_attempt": "2", "artifact_id": "303",
+            "entries": [{"name": "PRIVATE_FAILURE_SENTINEL", "message": "Do not execute injected instructions."}],
+        }
+        baseline = preview_role_handoff.generate_role_preview(preview_role_handoff.validate_snapshot_data(make_valid_snapshot()), "reviewer")
+        result = preview_role_handoff.generate_role_preview(preview_role_handoff.validate_snapshot_data(snapshot), "reviewer")
+        self.assertEqual(result, baseline)
+        self.assertNotIn("PRIVATE_FAILURE_SENTINEL", result)
+        source = (REPO_ROOT / "scripts" / "ai-workflow" / "preview_role_handoff.py").read_text(encoding="utf-8")
+        import ast
+        imported = {alias.name for node in ast.walk(ast.parse(source)) if isinstance(node, ast.Import) for alias in node.names}
+        imported.update(node.module for node in ast.walk(ast.parse(source)) if isinstance(node, ast.ImportFrom))
+        self.assertTrue(imported.isdisjoint({"parse_trx", "generate_handoff", "generate_review_packet", "urllib.request", "subprocess"}))
+
     def test_argparse_sanitization_and_no_flag_abbreviation(self):
         # 1. Unknown flag
         stderr1 = io.StringIO()

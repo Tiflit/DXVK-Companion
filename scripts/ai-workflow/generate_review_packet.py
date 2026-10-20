@@ -22,6 +22,10 @@ try:
     from .parse_trx import (
         SecurityValidationError,
         TrxTotals,
+        build_failure_summary,
+        render_failure_summary,
+        sanitize_trx_source_name,
+        sanitize_trx_reason,
         parse_trx_content,
         parse_trx_file,
         safe_extract_json_from_zip,
@@ -32,6 +36,10 @@ except ImportError:
     from parse_trx import (
         SecurityValidationError,
         TrxTotals,
+        build_failure_summary,
+        render_failure_summary,
+        sanitize_trx_source_name,
+        sanitize_trx_reason,
         parse_trx_content,
         parse_trx_file,
         safe_extract_json_from_zip,
@@ -277,10 +285,15 @@ def build_packet_content(
         lines.append(f"- Passed: {trx_totals.get('passed')}")
         lines.append(f"- Failed: {trx_totals.get('failed')}")
         lines.append(f"- Skipped: {trx_totals.get('skipped')}")
-        lines.append(f"- Provenance source: `{trx_totals.get('source', 'TRX artifact')}`")
+        # Names and diagnostics are untrusted even when callers construct older totals dictionaries.
+        lines.append(f"- Provenance source: {sanitize_trx_source_name(trx_totals.get('source', 'TRX artifact'))}")
+        projection = trx_totals.get("failure_summary")
+        lines.extend(render_failure_summary(projection, run_id, run_attempt))
+        if not projection and trx_totals.get("failed", 0):
+            lines.append("- Failure details: UNAVAILABLE (no attributable detail projection).")
     else:
         reason = trx_totals.get("reason", "No test artifact available") if trx_totals else "No test artifact"
-        lines.append(f"- Status: `UNAVAILABLE` ({reason})")
+        lines.append(f"- Status: `UNAVAILABLE` ({sanitize_trx_reason(reason)})")
     lines.append("")
 
     lines.append("### CI Job and Step Results")
@@ -692,10 +705,11 @@ def generate_packet(
                                 "failed": totals.failed,
                                 "skipped": totals.skipped,
                                 "source": totals.source_name,
+                                "failure_summary": build_failure_summary(totals, run_id, run_attempt, selected_trx_artifact.get("id")),
                             }
                             break
-            except Exception as e:
-                trx_totals = {"status": "unavailable", "reason": f"Failed to download/parse TRX: {e}"}
+            except Exception:
+                trx_totals = {"status": "unavailable", "reason": "Failed to download/parse TRX artifact."}
 
     # Process build-provenance artifacts
     prov_artifacts = [a for a in artifacts if a.get("name") == "build-provenance"]

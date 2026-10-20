@@ -84,6 +84,8 @@ def validate_snapshot_data(data: Any) -> Dict[str, Any]:
         if not isinstance(val, str) or not HEX_SHA_REGEX.fullmatch(val):
             raise ValueError(f"Field '{key}' must be a 40-character hexadecimal SHA.")
 
+    # Optional ci_evidence.failure_summary is deliberately not consumed. This offline preview
+    # keeps fixed role/identity text and no network/auth/parser imports or failure-message expansion.
     # 5. task states: exact case-insensitive match against finite vocabulary {"open", "closed"}
     pr_state = data.get("pr_state")
     if not isinstance(pr_state, str) or pr_state.lower() not in ("open", "closed"):
