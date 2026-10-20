@@ -66,7 +66,7 @@ def documentation_disposition(
     None means unavailable, whereas [] explicitly asserts a complete empty manifest.
     Repository evidence means paths present at the proposed head (not the base).
     """
-    clean = re.sub(r"<!--.*?-->", "", body, flags=re.S)
+    clean = re.sub(r"<!--.*?-->", "", body.replace("\r\n", "\n"), flags=re.S)
     clean = re.sub(r"^\s*(`{3,}|~{3,}).*?^\s*\1\s*$", "", clean, flags=re.M | re.S)
     sections = list(re.finditer(r"^##[ \t]+Documentation[ \t]*$", clean, re.M | re.I))
     error = "Documentation disposition: use documentation paths with specific impacts, or None — a specific reason."

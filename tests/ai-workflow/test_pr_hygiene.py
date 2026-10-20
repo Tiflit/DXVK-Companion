@@ -1,7 +1,9 @@
 import os
+import io
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT / "scripts" / "ai-workflow"))
@@ -139,6 +141,20 @@ class TestDocumentationDisposition(unittest.TestCase):
         legacy.setUp()
         self.assertTrue(check_pr_hygiene.verify_pr_body(legacy.valid_pr_body).is_valid)
         self.assertFalse(check_pr_hygiene.verify_pr_body(legacy.valid_pr_body, require_documentation=True).is_valid)
+
+    def test_crlf_and_cli_adoption(self):
+        body = ("## Primary Issue\r\nFixes #188\r\n## Summary\r\nS\r\n## Scope\r\nS\r\n"
+                "## Verification\r\nV\r\n## Documentation\r\n"
+                "None — This repairs synthetic fixtures without changing public behavior.\r\n")
+        self.assertTrue(check_pr_hygiene.verify_pr_body(body, require_documentation=True).is_valid)
+        for disposition, expected in (("Done", 1), ("None — This repairs synthetic fixtures without changing public behavior.", 0)):
+            candidate = body.split("## Documentation")[0] + "## Documentation\n" + disposition
+            with patch.dict(os.environ, {"GH_TOKEN": "synthetic", "GH_REPO": "example/repository"}, clear=True), \
+                 patch.object(sys, "argv", ["check_pr_hygiene.py", "--pr-number", "188"]), \
+                 patch.object(check_pr_hygiene, "fetch_github_api", return_value={"body": candidate}) as fetch, \
+                 patch("sys.stdout", new_callable=io.StringIO), patch("sys.stderr", new_callable=io.StringIO):
+                self.assertEqual(check_pr_hygiene.main(), expected)
+                self.assertEqual(fetch.call_count, 1)
 
 
 if __name__ == "__main__":
