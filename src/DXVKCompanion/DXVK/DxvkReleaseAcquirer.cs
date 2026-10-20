@@ -27,6 +27,7 @@ public sealed class DxvkReleaseAcquirer
     private readonly DxvkGithubClient _github;
     private readonly string _root;
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _gates = new(StringComparer.Ordinal);
+    internal Action<string>? BeforePublication { get; set; }
 
     public DxvkReleaseAcquirer(DxvkGithubClient github, string sourceRoot)
     {
@@ -89,7 +90,11 @@ public sealed class DxvkReleaseAcquirer
                 throw new InvalidDataException("Official asset checksum mismatch.");
 
             EnsureRoot();
-            staging = Path.Combine(_root, ".acquire-" + Guid.NewGuid().ToString("N"));
+            // Recognition also scans immediate release directories. Keep all staging payloads one level deeper.
+            string stagingRoot = Path.Combine(_root, ".companion-staging");
+            Directory.CreateDirectory(stagingRoot);
+            if (!IsPlain(stagingRoot)) throw new InvalidDataException("Acquisition staging links are not supported.");
+            staging = Path.Combine(stagingRoot, Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(staging);
             File.WriteAllText(Path.Combine(staging, MarkerName), "1");
             var manifest = new Manifest { Origin = release, ArchiveSha256 = archiveHash };
@@ -147,8 +152,10 @@ public sealed class DxvkReleaseAcquirer
             manifest.Files = manifest.Files.OrderBy(f => f.Path, StringComparer.Ordinal).ToList();
             await File.WriteAllTextAsync(Path.Combine(staging, ManifestName), JsonSerializer.Serialize(manifest), token);
             if (!ValidateManifest(staging, tag, out _)) throw new InvalidDataException("Staged release verification failed.");
+            BeforePublication?.Invoke(staging);
             token.ThrowIfCancellationRequested();
             EnsureRoot();
+            if (!IsPlain(stagingRoot) || !IsPlain(staging)) throw new InvalidDataException("Acquisition staging changed before publication.");
             // Same-volume rename publishes marker, manifest and DLLs together. Never overwrite an existing version.
             try { Directory.Move(staging, destination); }
             catch (IOException) when (IsCompleteLocalRelease(destination, tag, out _))
@@ -296,7 +303,7 @@ public sealed class DxvkReleaseAcquirer
         // Only this operation's random staging directory is eligible. Never traverse a substituted link.
         try
         {
-            if (!IsPlain(_root) || !IsPlain(staging)) return;
+            if (!IsPlain(_root) || !IsPlain(Path.GetDirectoryName(staging)!) || !IsPlain(staging)) return;
             foreach (string child in Directory.EnumerateFileSystemEntries(staging))
             {
                 if (!IsPlain(child)) return;

@@ -1384,7 +1384,15 @@ namespace DXVKCompanion.DXVK
         {
             string gameDir = Path.GetDirectoryName(profile.ExePath) ?? string.Empty;
             var detector = new ExistingDxvkDetector(_installer.DxvkSourceDir);
-            return detector.AssessDirectory(gameDir, profile.Architecture);
+            var assessment = detector.AssessDirectory(gameDir, profile.Architecture);
+            if (assessment.CanBeAdopted && !DxvkLocalReleaseLibrary.IsRecognizedSourceEligible(
+                DxvkSourceDir, assessment.MatchedVersion!, profile.Api, profile.Architecture))
+                return new ExistingDxvkAssessment
+                {
+                    Status = ExistingDxvkStatus.RecognizedUnknownVersion, DetectedDlls = assessment.DetectedDlls,
+                    Evidence = new[] { "Local acquired source verification failed; no verified official identity is available." }
+                };
+            return assessment;
         }
 
         public Task<bool> AdoptExistingAsync(GameProfile profile)
@@ -1481,9 +1489,7 @@ namespace DXVKCompanion.DXVK
                     return false;
                 }
 
-                string gameDir = Path.GetDirectoryName(profile.ExePath) ?? string.Empty;
-                var detector = new ExistingDxvkDetector(_installer.DxvkSourceDir);
-                var assessment = detector.AssessDirectory(gameDir, profile.Architecture);
+                var assessment = AssessExistingDxvk(profile);
                 if (!assessment.CanBeAdopted)
                 {
                     LastRefusalReason = $"Existing DLLs cannot be adopted (status: {assessment.Status}).";

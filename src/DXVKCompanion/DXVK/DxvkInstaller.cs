@@ -1226,6 +1226,12 @@ namespace DXVKCompanion.DXVK
                     return false;
                 }
 
+                if (!DxvkLocalReleaseLibrary.IsRecognizedSourceEligible(_dxvkSourceDir, assessment.MatchedVersion, profile.Api, profile.Architecture))
+                {
+                    LastRefusalReason = "Existing DXVK source is unpublished, invalid or unsupported; adoption refused.";
+                    return false;
+                }
+
                 var existingInstallation = _gameLibraryStore.FindInstallationForExecutable(profile.ExePath)
                     ?? _gameLibraryStore.FindByInstallationPath(Path.GetDirectoryName(profile.ExePath) ?? string.Empty);
 

@@ -42,6 +42,17 @@ namespace DXVKCompanion.DXVK
             return null;
         }
 
+        internal static bool IsRecognizedSourceEligible(string root, string tag, GraphicsApi api, string? architecture)
+        {
+            try
+            {
+                if (!IsSafeReleaseDirectoryName(tag)) return false;
+                string directory = Path.Combine(root, tag);
+                return !DxvkReleaseAcquirer.HasAcquisitionRecord(directory) || IsVersionAvailable(root, tag, api, architecture);
+            }
+            catch { return false; }
+        }
+
         private static bool IsPathWithinRoot(string path, string fullSourceRootWithSlash)
         {
             if (string.IsNullOrWhiteSpace(path))

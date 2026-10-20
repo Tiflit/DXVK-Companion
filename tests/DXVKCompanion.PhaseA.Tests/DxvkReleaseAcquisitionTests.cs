@@ -387,4 +387,54 @@ public sealed class DxvkReleaseAcquisitionTests
         var rollback = SyntheticSafetyFixture.CreateRollback(engine, library);
         return (SyntheticSafetyFixture.CreateManager(installer, rollback, fixture.Github, profiles, library), library, profiles);
     }
+
+    [Fact]
+    public async Task UnpublishedStage_IsNeitherSelectableNorRecognizable_InterruptedPublicationCanRetry()
+    {
+        using var fixture = new OfficialAcquisitionFixture();
+        string game = Path.Combine(fixture.Directory.RootPath, "RecognitionGame");
+        System.IO.Directory.CreateDirectory(game);
+        fixture.Acquirer.BeforePublication = stage =>
+        {
+            foreach (string dll in new[] { "d3d11.dll", "dxgi.dll" })
+                File.Copy(Path.Combine(stage, "x64", dll), Path.Combine(game, dll));
+            Assert.Empty(DxvkLocalReleaseLibrary.GetAvailableVersions(fixture.Source, GraphicsApi.DX11, "x64"));
+            Assert.False(new ExistingDxvkDetector(fixture.Source).AssessDirectory(game, "x64").CanBeAdopted);
+            throw new IOException("Synthetic publication interruption.");
+        };
+        await Assert.ThrowsAsync<IOException>(() => fixture.Acquirer.AcquireAsync("v2.5"));
+        Assert.False(System.IO.Directory.Exists(Path.Combine(fixture.Source, "v2.5")));
+        fixture.Acquirer.BeforePublication = null;
+        await fixture.Acquirer.AcquireAsync("v2.5");
+        Assert.True(new ExistingDxvkDetector(fixture.Source).AssessDirectory(game, "x64").CanBeAdopted);
+    }
+
+    [Fact]
+    public async Task InvalidAcquiredManifest_BlocksManagerRecognitionAndBothAdoptionEntryPoints()
+    {
+        using var fixture = new OfficialAcquisitionFixture();
+        await fixture.Acquirer.AcquireAsync("v2.5");
+        string game = Path.Combine(fixture.Directory.RootPath, "AdoptionGame");
+        System.IO.Directory.CreateDirectory(game);
+        string executable = Path.Combine(game, "Game.exe");
+        File.WriteAllBytes(executable, new byte[] { 0x4d, 0x5a, 0x90, 0 });
+        foreach (string dll in new[] { "d3d11.dll", "dxgi.dll" })
+            File.Copy(Path.Combine(fixture.Source, "v2.5", "x64", dll), Path.Combine(game, dll));
+        var profile = new GameProfile(executable) { Api = GraphicsApi.DX11, Architecture = "x64" };
+        var services = CreateManager(fixture);
+        services.Profiles.Save(profile);
+        Assert.True(services.Manager.AssessExistingDxvk(profile).CanBeAdopted);
+        File.WriteAllText(Path.Combine(fixture.Source, "v2.5", DxvkReleaseAcquirer.ManifestName), "{}");
+        var rawAssessment = new ExistingDxvkDetector(fixture.Source).AssessDirectory(game, "x64");
+        Assert.True(rawAssessment.CanBeAdopted); // Demonstrates the old hash-only recognizer's limitation.
+        Assert.False(services.Manager.AssessExistingDxvk(profile).CanBeAdopted);
+        Assert.False(await services.Manager.AdoptExistingAsync(profile));
+        var installer = SyntheticSafetyFixture.CreateInstaller(fixture.Http,
+            new MultiFileTransactionEngine(Path.Combine(fixture.Directory.RootPath, "backups")), services.Library, fixture.Source);
+        Assert.False(installer.AdoptExisting(profile, rawAssessment));
+        Assert.Empty(services.Library.GetAll());
+        Assert.False(profile.DxvkEnabled);
+        Assert.Equal("v2.5:d3d11", File.ReadAllText(Path.Combine(game, "d3d11.dll")));
+        Assert.Equal(2, fixture.Requests.Count);
+    }
 }
