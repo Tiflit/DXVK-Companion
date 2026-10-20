@@ -232,6 +232,17 @@ class PublicationPreflightTests(unittest.TestCase):
         for secret in ("PrivateSentinel", "Synthetic Person", "person@example.test"):
             self.assertNotIn(secret, output)
 
+    def test_repeated_filename_keeps_its_ordinal_across_commits(self):
+        for name, text in (("first.txt", "safe first"), ("second.txt", "safe second"),
+                           ("first.txt", "PrivateSentinel")):
+            self.write(name, text)
+            self.git("add", "--", name)
+            self.git("commit", "-m", "Synthetic update")
+        code, report, _ = self.check("--commits", self.base + "..HEAD", "--private-terms", self.terms())
+        self.assertEqual(code, 1)
+        findings = [finding for finding in report["findings"] if finding["category"] == "PrivateTerm"]
+        self.assertEqual(findings, [{"category": "PrivateTerm", "source": "file", "item": 1, "line": 0}])
+
     def test_noreply_email_does_not_exempt_a_different_author_name(self):
         env = dict(self.env, GIT_AUTHOR_NAME="Synthetic Personal Name")
         self.commit_file(env=env)

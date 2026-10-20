@@ -231,8 +231,9 @@ class Inspection:
     def __init__(self, mode: str, terms: tuple[str, ...], approved: set[tuple[str, str]]):
         self.mode, self.terms, self.approved = mode, terms, approved
         self.digest = hashlib.sha256()
-        self.findings: set[tuple[str, int, int]] = set()
+        self.findings: set[tuple[str, str, int, int]] = set()
         self.paths: set[str] = set()
+        self.path_ordinals: dict[str, int] = {}
         self.blobs: set[str] = set()
         self.commits = 0
         self.total = 0
@@ -247,26 +248,30 @@ class Inspection:
             self.digest.update(len(part).to_bytes(8, "big"))
             self.digest.update(part)
 
-    def scan(self, text: str, item: int):
+    def scan(self, text: str, item: int, source: str = "file"):
         for line, category in scan_for_privacy_violations(text):
-            self.findings.add((category, item, line))
+            self.findings.add((category, source, item, line))
         folded = unicodedata.normalize("NFC", text).casefold()
         if any(term in folded for term in self.terms):
-            self.findings.add(("PrivateTerm", item, 0))
+            self.findings.add(("PrivateTerm", source, item, 0))
 
-    def filename(self, raw: bytes, key: str | None = None) -> str:
+    def filename(self, raw: bytes, key: str | None = None) -> int:
         path = decode_text(raw)
         if (not path or len(raw) > 4096 or any(ord(c) < 32 for c in path)
                 or path.startswith("/") or any(part in ("", ".", "..") for part in path.split("/"))):
             raise Refusal("UnsupportedFilename")
-        self.paths.add(path if key is None else key)
+        selected_key = path if key is None else key
+        self.paths.add(selected_key)
+        if selected_key not in self.path_ordinals:
+            self.path_ordinals[selected_key] = len(self.paths)
+        ordinal = self.path_ordinals[selected_key]
         if len(self.paths) > MAX_FILES:
             raise Refusal("TooManyFiles")
-        self.scan(path, len(self.paths))
+        self.scan(path, ordinal)
         name = PurePosixPath(path)
         if name.suffix.lower() not in TEXT_SUFFIXES and name.name.lower() not in TEXT_NAMES:
             raise Refusal("UnsupportedCandidateType")
-        return path
+        return ordinal
 
     def changes(self, git: GitReader, raw: bytes):
         if not raw:
@@ -280,7 +285,7 @@ class Inspection:
             match = RAW_HEADER.fullmatch(fields[pos])
             if not match:
                 raise Refusal("UnsupportedGitChange")
-            self.filename(fields[pos + 1])
+            item = self.filename(fields[pos + 1])
             self.feed(b"change", fields[pos] + b"\0" + fields[pos + 1])
             old_mode, new_mode, old_oid, new_oid, _ = match.groups()
             for mode, oid_raw in ((old_mode, old_oid), (new_mode, new_oid)):
@@ -297,7 +302,7 @@ class Inspection:
                     data = git.object("blob", oid)
                     text = decode_text(data)
                     self.feed(oid.encode("ascii"), data)
-                    self.scan(text, len(self.paths))
+                    self.scan(text, item)
                     self.blobs.add(oid)
 
     def commit(self, git: GitReader, oid: str) -> list[str]:
@@ -305,7 +310,7 @@ class Inspection:
         text = decode_text(data)
         self.commits += 1
         self.feed(oid.encode("ascii"), data)
-        self.scan(text, self.commits)
+        self.scan(text, self.commits, source="commit")
         if "\n\n" not in text:
             raise Refusal("MalformedCommitMetadata")
         headers, _ = text.split("\n\n", 1)
@@ -334,7 +339,7 @@ class Inspection:
                 noreply = NOREPLY.fullmatch(email)
                 if not ((noreply and name.casefold() == noreply.group(1).casefold())
                         or (name, email) in self.approved):
-                    self.findings.add(("UnapprovedCommitIdentity", self.commits, 0))
+                    self.findings.add(("UnapprovedCommitIdentity", "commit", self.commits, 0))
                 identities.append(key)
         if sorted(identities) != ["author", "committer"] or len(parents) > 8:
             raise Refusal("MalformedCommitMetadata")
@@ -349,7 +354,8 @@ class Inspection:
             "base_oid": self.base_oid, "tip_oid": self.tip_oid,
             "files": len(self.paths), "blobs": len(self.blobs), "commits": self.commits,
             "inspected_bytes": self.total,
-            "findings": [{"category": c, "item": i, "line": line} for c, i, line in findings[:MAX_FINDINGS]],
+            "findings": [{"category": c, "source": source, "item": i, "line": line}
+                         for c, source, i, line in findings[:MAX_FINDINGS]],
             "additional_findings": max(0, len(findings) - MAX_FINDINGS),
             "reason": reason,
             "limits": {"object_bytes": MAX_OBJECT, "total_bytes": MAX_TOTAL,
