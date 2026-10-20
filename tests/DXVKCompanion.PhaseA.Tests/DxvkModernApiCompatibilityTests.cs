@@ -192,7 +192,7 @@ namespace DXVKCompanion.PhaseATests
                 Path.Combine(storageDir.RootPath, "backups"));
             var engine = new MultiFileTransactionEngine(Path.Combine(storageDir.RootPath, "backups"));
             using var http = new HttpClient();
-            var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
+            var installer = SyntheticSafetyFixture.CreateInstaller(http, engine, store, sourceDir.RootPath);
 
             var profile = new GameProfile(exePath)
             {
@@ -226,7 +226,7 @@ namespace DXVKCompanion.PhaseATests
                 Path.Combine(storageDir.RootPath, "backups"));
             var engine = new MultiFileTransactionEngine(Path.Combine(storageDir.RootPath, "backups"));
             using var http = new HttpClient();
-            var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
+            var installer = SyntheticSafetyFixture.CreateInstaller(http, engine, store, sourceDir.RootPath);
             var release = new ReleaseInfo { Version = "2.5", DownloadUrl = "" };
 
             // 1. Positive DX9 deployment: deploys d3d9.dll only
@@ -288,7 +288,7 @@ namespace DXVKCompanion.PhaseATests
                 Path.Combine(storageDir.RootPath, "backups"));
             var engine = new MultiFileTransactionEngine(Path.Combine(storageDir.RootPath, "backups"));
             using var http = new HttpClient();
-            var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
+            var installer = SyntheticSafetyFixture.CreateInstaller(http, engine, store, sourceDir.RootPath);
 
             var profile = new GameProfile(exePath)
             {
@@ -299,7 +299,7 @@ namespace DXVKCompanion.PhaseATests
 
             // Step 1: Establish genuine managed installation under supported DX11
             bool initialInstall = await installer.ApplyToGameAsync(profile, release);
-            Assert.True(initialInstall);
+            Assert.True(initialInstall, SyntheticSafetyFixture.RefusalCategory(installer.LastRefusalReason));
 
             var installation = store.FindByInstallationPath(gameDir.RootPath);
             Assert.NotNull(installation);
@@ -344,12 +344,12 @@ namespace DXVKCompanion.PhaseATests
                 Path.Combine(storageDir.RootPath, "backups"));
             var engine = new MultiFileTransactionEngine(Path.Combine(storageDir.RootPath, "backups"));
             using var http = new HttpClient();
-            var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
-            var rollback = new DxvkRollback(engine, store);
+            var installer = SyntheticSafetyFixture.CreateInstaller(http, engine, store, sourceDir.RootPath);
+            var rollback = SyntheticSafetyFixture.CreateRollback(engine, store);
             var profileStore = new ProfileStore(Path.Combine(storageDir.RootPath, "games.json"));
             var cacheStore = new CacheStore(Path.Combine(storageDir.RootPath, "cache.json"));
             var github = new DxvkGithubClient(http, cacheStore);
-            var manager = new DxvkManager(installer, rollback, github, profileStore, store);
+            var manager = SyntheticSafetyFixture.CreateManager(installer, rollback, github, profileStore, store);
 
             var profile = profileStore.GetOrCreate(exePath);
             profile.Api = api;
@@ -401,10 +401,10 @@ namespace DXVKCompanion.PhaseATests
             var profileStore = new ProfileStore(Path.Combine(storageDir.RootPath, "games.json"));
             var engine = new MultiFileTransactionEngine(Path.Combine(storageDir.RootPath, "backups"));
             using var http = new HttpClient();
-            var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
-            var rollback = new DxvkRollback(engine, store);
+            var installer = SyntheticSafetyFixture.CreateInstaller(http, engine, store, sourceDir.RootPath);
+            var rollback = SyntheticSafetyFixture.CreateRollback(engine, store);
             var github = new DxvkGithubClient(http, new CacheStore(Path.Combine(storageDir.RootPath, "cache.json")));
-            var manager = new DxvkManager(installer, rollback, github, profileStore, store);
+            var manager = SyntheticSafetyFixture.CreateManager(installer, rollback, github, profileStore, store);
 
             // 1. Unsupported API (DX12) with Pending Install
             var profile = profileStore.GetOrCreate(exePath);
@@ -513,10 +513,10 @@ namespace DXVKCompanion.PhaseATests
             var profileStore = new ProfileStore(Path.Combine(storageDir.RootPath, "games.json"));
             var engine = new MultiFileTransactionEngine(Path.Combine(storageDir.RootPath, "backups"));
             using var http = new HttpClient();
-            var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
-            var rollback = new DxvkRollback(engine, store);
+            var installer = SyntheticSafetyFixture.CreateInstaller(http, engine, store, sourceDir.RootPath);
+            var rollback = SyntheticSafetyFixture.CreateRollback(engine, store);
             var github = new DxvkGithubClient(http, new CacheStore(Path.Combine(storageDir.RootPath, "cache.json")));
-            var manager = new DxvkManager(installer, rollback, github, profileStore, store);
+            var manager = SyntheticSafetyFixture.CreateManager(installer, rollback, github, profileStore, store);
 
             var profile = profileStore.GetOrCreate(exePath);
             profile.Api = GraphicsApi.DX11;
@@ -526,7 +526,7 @@ namespace DXVKCompanion.PhaseATests
             // Deploy DXVK under DX11
             var release = new ReleaseInfo { Version = "2.5", DownloadUrl = "" };
             bool enabled = await manager.EnableDxvkAsync(profile, "2.5");
-            Assert.True(enabled);
+            Assert.True(enabled, SyntheticSafetyFixture.RefusalCategory(manager.LastRefusalReason));
             Assert.True(profile.DxvkEnabled);
             Assert.Equal("dxvk-2.5-d3d11", File.ReadAllText(d3d11Path));
 
@@ -565,10 +565,10 @@ namespace DXVKCompanion.PhaseATests
             var profileStore = new ProfileStore(Path.Combine(storageDir, "games.json"));
             var engine = new MultiFileTransactionEngine(Path.Combine(storageDir, "backups"));
             using var http = new HttpClient();
-            var installer = new DxvkInstaller(http, engine, store, sourceDir);
-            var rollback = new DxvkRollback(engine, store);
+            var installer = SyntheticSafetyFixture.CreateInstaller(http, engine, store, sourceDir);
+            var rollback = SyntheticSafetyFixture.CreateRollback(engine, store);
             var github = new DxvkGithubClient(http, new CacheStore(Path.Combine(storageDir, "cache.json")));
-            var manager = new DxvkManager(installer, rollback, github, profileStore, store);
+            var manager = SyntheticSafetyFixture.CreateManager(installer, rollback, github, profileStore, store);
 
             // --- Game 1: Tests queued RequestDisable (game running) + persisted Restore after exit (F3) ---
             string game1Dir = Path.Combine(gamesDir, "Game1");
@@ -681,12 +681,12 @@ namespace DXVKCompanion.PhaseATests
                 Path.Combine(storageDir.RootPath, "backups"));
             var engine = new MultiFileTransactionEngine(Path.Combine(storageDir.RootPath, "backups"));
             using var http = new HttpClient();
-            var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
-            var rollback = new DxvkRollback(engine, store);
+            var installer = SyntheticSafetyFixture.CreateInstaller(http, engine, store, sourceDir.RootPath);
+            var rollback = SyntheticSafetyFixture.CreateRollback(engine, store);
             var profileStore = new ProfileStore(Path.Combine(storageDir.RootPath, "games.json"));
             var cacheStore = new CacheStore(Path.Combine(storageDir.RootPath, "cache.json"));
             var github = new DxvkGithubClient(http, cacheStore);
-            var manager = new DxvkManager(installer, rollback, github, profileStore, store);
+            var manager = SyntheticSafetyFixture.CreateManager(installer, rollback, github, profileStore, store);
 
             // Refuses adoption for DX12
             var profile12 = profileStore.GetOrCreate(exePath);
@@ -738,7 +738,7 @@ namespace DXVKCompanion.PhaseATests
                 Path.Combine(storageDir.RootPath, "backups"));
             var engine = new MultiFileTransactionEngine(Path.Combine(storageDir.RootPath, "backups"));
             using var http = new HttpClient();
-            var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
+            var installer = SyntheticSafetyFixture.CreateInstaller(http, engine, store, sourceDir.RootPath);
 
             var profile = new GameProfile(exePath)
             {

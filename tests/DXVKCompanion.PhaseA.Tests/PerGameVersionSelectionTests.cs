@@ -176,10 +176,10 @@ public sealed class PerGameVersionSelectionTests : IDisposable
         var profileStore = new ProfileStore(profilesPath);
         var cacheStore = new CacheStore(cachePath);
         var engine = new MultiFileTransactionEngine(backupsPath);
-        var installer = new DxvkInstaller(httpClient, engine, libraryStore, _sourceDir.RootPath);
-        var rollback = new DxvkRollback(engine, libraryStore);
+        var installer = SyntheticSafetyFixture.CreateInstaller(httpClient, engine, libraryStore, _sourceDir.RootPath);
+        var rollback = SyntheticSafetyFixture.CreateRollback(engine, libraryStore);
         var github = new DxvkGithubClient(httpClient, cacheStore);
-        var manager = new DxvkManager(installer, rollback, github, profileStore, libraryStore);
+        var manager = SyntheticSafetyFixture.CreateManager(installer, rollback, github, profileStore, libraryStore);
 
         return (manager, libraryStore, profileStore, cacheStore);
     }

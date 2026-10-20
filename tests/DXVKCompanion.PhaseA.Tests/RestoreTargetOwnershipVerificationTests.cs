@@ -34,8 +34,8 @@ public sealed class RestoreTargetOwnershipVerificationTests
             Path.Combine(storageDir.RootPath, "backups"));
         var engine = new MultiFileTransactionEngine(Path.Combine(storageDir.RootPath, "backups"));
         using var http = new HttpClient();
-        var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
-        var rollback = new DxvkRollback(engine, store);
+        var installer = SyntheticSafetyFixture.CreateInstaller(http, engine, store, sourceDir.RootPath);
+        var rollback = SyntheticSafetyFixture.CreateRollback(engine, store);
 
         var profile = new GameProfile(exePath)
         {
@@ -104,8 +104,8 @@ public sealed class RestoreTargetOwnershipVerificationTests
             Path.Combine(storageDir.RootPath, "backups"));
         var engine = new MultiFileTransactionEngine(Path.Combine(storageDir.RootPath, "backups"));
         using var http = new HttpClient();
-        var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
-        var rollback = new DxvkRollback(engine, store);
+        var installer = SyntheticSafetyFixture.CreateInstaller(http, engine, store, sourceDir.RootPath);
+        var rollback = SyntheticSafetyFixture.CreateRollback(engine, store);
 
         var profile = new GameProfile(exePath)
         {
@@ -166,7 +166,7 @@ public sealed class RestoreTargetOwnershipVerificationTests
             Path.Combine(storageDir.RootPath, "game-library.json"),
             Path.Combine(storageDir.RootPath, "backups"));
         var engine = new MultiFileTransactionEngine(Path.Combine(storageDir.RootPath, "backups"));
-        var rollback = new DxvkRollback(engine, store);
+        var rollback = SyntheticSafetyFixture.CreateRollback(engine, store);
 
         var profile = new GameProfile(exePath)
         {
@@ -257,7 +257,7 @@ public sealed class RestoreTargetOwnershipVerificationTests
             Path.Combine(storageDir.RootPath, "game-library.json"),
             Path.Combine(storageDir.RootPath, "backups"));
         var engine = new MultiFileTransactionEngine(Path.Combine(storageDir.RootPath, "backups"));
-        var rollback = new DxvkRollback(engine, store);
+        var rollback = SyntheticSafetyFixture.CreateRollback(engine, store);
 
         var profile = new GameProfile(exePath)
         {
@@ -304,7 +304,7 @@ public sealed class RestoreTargetOwnershipVerificationTests
             Path.Combine(storageDir.RootPath, "game-library.json"),
             Path.Combine(storageDir.RootPath, "backups"));
         var engine = new MultiFileTransactionEngine(Path.Combine(storageDir.RootPath, "backups"));
-        var rollback = new DxvkRollback(engine, store);
+        var rollback = SyntheticSafetyFixture.CreateRollback(engine, store);
 
         var profile = new GameProfile(exePath)
         {
@@ -347,7 +347,7 @@ public sealed class RestoreTargetOwnershipVerificationTests
             Path.Combine(storageDir.RootPath, "game-library.json"),
             Path.Combine(storageDir.RootPath, "backups"));
         var engine = new MultiFileTransactionEngine(Path.Combine(storageDir.RootPath, "backups"));
-        var rollback = new DxvkRollback(engine, store);
+        var rollback = SyntheticSafetyFixture.CreateRollback(engine, store);
 
         var profile = new GameProfile(exePath)
         {
@@ -404,8 +404,8 @@ public sealed class RestoreTargetOwnershipVerificationTests
             Path.Combine(storageDir.RootPath, "backups"));
         var engine = new MultiFileTransactionEngine(Path.Combine(storageDir.RootPath, "backups"));
         using var http = new HttpClient();
-        var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
-        var rollback = new DxvkRollback(engine, store);
+        var installer = SyntheticSafetyFixture.CreateInstaller(http, engine, store, sourceDir.RootPath);
+        var rollback = SyntheticSafetyFixture.CreateRollback(engine, store);
 
         var profile = new GameProfile(exePath)
         {
@@ -466,7 +466,7 @@ public sealed class RestoreTargetOwnershipVerificationTests
         Assert.Null(instResolved.ManagedDxvkVersion);
 
         // 7. Verify ManagedFileInspector inspects against original baselines and keeps Restored state
-        var inspector = new ManagedFileInspector(store);
+        var inspector = SyntheticSafetyFixture.CreateInspector(store);
         bool inspectChanged = inspector.InspectInstallation(instResolved);
         Assert.False(inspectChanged);
         Assert.Equal(RestorationState.Restored, instResolved.RestorationState);
@@ -496,8 +496,8 @@ public sealed class RestoreTargetOwnershipVerificationTests
         var store = new GameLibraryStore(storePath, backupsPath);
         var engine = new MultiFileTransactionEngine(backupsPath);
         using var http = new HttpClient();
-        var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
-        var rollback = new DxvkRollback(engine, store);
+        var installer = SyntheticSafetyFixture.CreateInstaller(http, engine, store, sourceDir.RootPath);
+        var rollback = SyntheticSafetyFixture.CreateRollback(engine, store);
 
         var profile = new GameProfile(exePath)
         {
@@ -545,8 +545,8 @@ public sealed class RestoreTargetOwnershipVerificationTests
             Path.Combine(storageDir.RootPath, "backups"));
         var engine = new MultiFileTransactionEngine(Path.Combine(storageDir.RootPath, "backups"));
         using var http = new HttpClient();
-        var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
-        var rollback = new DxvkRollback(engine, store);
+        var installer = SyntheticSafetyFixture.CreateInstaller(http, engine, store, sourceDir.RootPath);
+        var rollback = SyntheticSafetyFixture.CreateRollback(engine, store);
         var profilePath = Path.Combine(storageDir.RootPath, "profiles.json");
         var profileStore = new ProfileStore(profilePath);
 
@@ -557,7 +557,7 @@ public sealed class RestoreTargetOwnershipVerificationTests
 
         var cacheDir = Path.Combine(storageDir.RootPath, "cache");
         var cacheStore = new CacheStore(cacheDir);
-        var manager = new DxvkManager(installer, rollback, new DxvkGithubClient(http, cacheStore), profileStore, store);
+        var manager = SyntheticSafetyFixture.CreateManager(installer, rollback, new DxvkGithubClient(http, cacheStore), profileStore, store);
 
         var installOk = await manager.EnableDxvkAsync(profile, "2.5");
         Assert.True(installOk);

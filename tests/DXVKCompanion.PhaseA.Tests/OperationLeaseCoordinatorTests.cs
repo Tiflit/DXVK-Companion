@@ -789,8 +789,11 @@ public sealed class OperationLeaseCoordinatorTests
             // Exercise independent child helper timeout: child self-terminates within its independent timeout (2000 ms) without parent kill
             int childTimeoutBudget = maxTotalLifetimeMs - cleanupReservationMs - (int)overallSw.ElapsedMilliseconds;
             if (childTimeoutBudget <= 0) throw new TimeoutException("Child timeout budget expired.");
-            bool childTimedOutAndExited = helper.WaitForExit(childTimeoutBudget);
-            Assert.True(childTimedOutAndExited, "Child helper process failed to self-terminate within its independent timeout.");
+            // Do not block an xUnit worker while waiting for the independently bounded child.
+            // Keep the same operational/cleanup budgets; a timeout still fails this test.
+            using var exitDeadline = new CancellationTokenSource(childTimeoutBudget);
+            await helper.WaitForExitAsync(exitDeadline.Token);
+            Assert.Equal(0, helper.ExitCode);
 
             // Once child self-terminated and released lock, coordinator acquires target lease successfully
             await using var successLease = await coordinator.TryAcquireOperationScopeAsync(targetPath, timeout: TimeSpan.FromMilliseconds(500));
