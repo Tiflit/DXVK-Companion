@@ -52,13 +52,13 @@ public sealed class FirstRunQueuedEnableTests
         using (var gzStream = new GZipStream(memoryStream, CompressionLevel.Optimal, leaveOpen: true))
         using (var tarWriter = new TarWriter(gzStream))
         {
-            var d3d11Entry = new PaxTarEntry(TarEntryType.RegularFile, $"dxvk-{version}/x64/d3d11.dll")
+            var d3d11Entry = new PaxTarEntry(TarEntryType.RegularFile, $"dxvk-{version.TrimStart('v')}/x64/d3d11.dll")
             {
                 DataStream = new MemoryStream(d3d11Bytes)
             };
             tarWriter.WriteEntry(d3d11Entry);
 
-            var dxgiEntry = new PaxTarEntry(TarEntryType.RegularFile, $"dxvk-{version}/x64/dxgi.dll")
+            var dxgiEntry = new PaxTarEntry(TarEntryType.RegularFile, $"dxvk-{version.TrimStart('v')}/x64/dxgi.dll")
             {
                 DataStream = new MemoryStream(dxgiBytes)
             };
@@ -110,10 +110,10 @@ public sealed class FirstRunQueuedEnableTests
         var profileStore = new ProfileStore(profilesPath);
         var cacheStore = new CacheStore(cachePath);
         var engine = new MultiFileTransactionEngine(backupsPath);
-        var installer = new DxvkInstaller(httpClient, engine, libraryStore, sourceDir.RootPath);
-        var rollback = new DxvkRollback(engine, libraryStore);
+        var installer = SyntheticSafetyFixture.CreateInstaller(httpClient, engine, libraryStore, sourceDir.RootPath);
+        var rollback = SyntheticSafetyFixture.CreateRollback(engine, libraryStore);
         var github = new DxvkGithubClient(httpClient, cacheStore);
-        var manager = new DxvkManager(installer, rollback, github, profileStore, libraryStore);
+        var manager = SyntheticSafetyFixture.CreateManager(installer, rollback, github, profileStore, libraryStore);
 
         return (manager, libraryStore, profileStore, cacheStore, installer);
     }
@@ -138,7 +138,8 @@ public sealed class FirstRunQueuedEnableTests
 
         var httpHandler = new RecordingFakeHttpMessageHandler(req =>
         {
-            if (string.Equals(req.RequestUri?.AbsoluteUri, latestUrl, StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(req.RequestUri?.AbsoluteUri, latestUrl, StringComparison.OrdinalIgnoreCase) ||
+                req.RequestUri?.AbsoluteUri == "https://api.github.com/repos/doitsujin/dxvk/releases/tags/v3.1.1")
             {
                 var json = JsonSerializer.Serialize(new
                 {
@@ -240,7 +241,8 @@ public sealed class FirstRunQueuedEnableTests
 
         var httpHandler = new RecordingFakeHttpMessageHandler(req =>
         {
-            if (string.Equals(req.RequestUri?.AbsoluteUri, latestUrl, StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(req.RequestUri?.AbsoluteUri, latestUrl, StringComparison.OrdinalIgnoreCase) ||
+                req.RequestUri?.AbsoluteUri == "https://api.github.com/repos/doitsujin/dxvk/releases/tags/v3.1.1")
             {
                 var json = JsonSerializer.Serialize(new
                 {
@@ -430,7 +432,8 @@ public sealed class FirstRunQueuedEnableTests
 
         var httpHandler = new RecordingFakeHttpMessageHandler(req =>
         {
-            if (string.Equals(req.RequestUri?.AbsoluteUri, latestUrl, StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(req.RequestUri?.AbsoluteUri, latestUrl, StringComparison.OrdinalIgnoreCase) ||
+                req.RequestUri?.AbsoluteUri == "https://api.github.com/repos/doitsujin/dxvk/releases/tags/v3.1.1")
             {
                 var json = JsonSerializer.Serialize(new
                 {
@@ -665,7 +668,8 @@ public sealed class FirstRunQueuedEnableTests
 
         var httpHandler = new RecordingFakeHttpMessageHandler(req =>
         {
-            if (string.Equals(req.RequestUri?.AbsoluteUri, latestUrl, StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(req.RequestUri?.AbsoluteUri, latestUrl, StringComparison.OrdinalIgnoreCase) ||
+                req.RequestUri?.AbsoluteUri == "https://api.github.com/repos/doitsujin/dxvk/releases/tags/v3.1.1")
             {
                 var json = JsonSerializer.Serialize(new
                 {

@@ -94,6 +94,114 @@ internal sealed class OfficialAcquisitionFixture : IDisposable
 
 public sealed class DxvkReleaseAcquisitionTests
 {
+    [Fact]
+    public async Task Installer_SharedAcquirer_IgnoresAssertedUrl_PublishesVerifiedPayload_AndReconstructedGameReusesOffline()
+    {
+        using var fixture = new OfficialAcquisitionFixture();
+        using var gameA = new SyntheticTestDirectory();
+        using var gameB = new SyntheticTestDirectory();
+        string libraryPath = fixture.Directory.GetPath("library.json");
+        string backups = fixture.Directory.GetPath("backups");
+        var store = new GameLibraryStore(libraryPath, backups);
+        var installer = SyntheticSafetyFixture.CreateInstaller(fixture.Http,
+            new MultiFileTransactionEngine(backups), store, fixture.Source);
+        var profileA = new GameProfile(gameA.CreateFile("Game.exe", "synthetic")) { Api = GraphicsApi.DX11, Architecture = "x64" };
+        var untrusted = new ReleaseInfo { Version = "v2.5", DownloadUrl = "https://example.invalid/asserted.tar.gz" };
+        var acquisition = installer.GetReleaseAcquirer(fixture.Github).AcquireAsync("v2.5");
+        var installation = installer.ApplyToGameAsync(profileA, untrusted);
+        await Task.WhenAll(acquisition, installation);
+        Assert.True(await installation, SyntheticSafetyFixture.RefusalCategory(installer.LastRefusalReason));
+        Assert.Equal(2, fixture.Requests.Count); // One exact-tag lookup and one archive, shared by UI/install paths.
+        Assert.All(fixture.Requests, url => Assert.DoesNotContain("example.invalid", url));
+        Assert.True(DxvkReleaseAcquirer.ValidateManifest(Path.Combine(fixture.Source, "v2.5"), "v2.5", out var digestVerified));
+        Assert.True(digestVerified);
+        Assert.Equal("v2.5:d3d11", File.ReadAllText(gameA.GetPath("d3d11.dll")));
+
+        fixture.Offline = true;
+        var reloadedStore = new GameLibraryStore(libraryPath, backups);
+        var reloadedInstaller = SyntheticSafetyFixture.CreateInstaller(fixture.Http,
+            new MultiFileTransactionEngine(backups), reloadedStore, fixture.Source);
+        var profileB = new GameProfile(gameB.CreateFile("Game.exe", "synthetic")) { Api = GraphicsApi.DX11, Architecture = "x64" };
+        Assert.True(await reloadedInstaller.ApplyToGameAsync(profileB, untrusted), SyntheticSafetyFixture.RefusalCategory(reloadedInstaller.LastRefusalReason));
+        Assert.Equal(2, fixture.Requests.Count);
+        Assert.Equal("v2.5:d3d11", File.ReadAllText(gameB.GetPath("d3d11.dll")));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Installer_FailedAcquisition_PreservesGameAndOtherRelease_NoPublishedPartial_ThenRetries(bool digestMismatch)
+    {
+        using var fixture = new OfficialAcquisitionFixture();
+        using var game = new SyntheticTestDirectory();
+        string native = game.CreateFile("d3d11.dll", "native-original");
+        string config = game.CreateFile("dxvk.conf", "# untouched user configuration");
+        string older = Path.Combine(fixture.Source, "v2.4", "x64", "d3d11.dll");
+        System.IO.Directory.CreateDirectory(Path.GetDirectoryName(older)!);
+        File.WriteAllText(older, "retained-older-version");
+        var store = new GameLibraryStore(fixture.Directory.GetPath("library.json"), fixture.Directory.GetPath("backups"));
+        var installer = SyntheticSafetyFixture.CreateInstaller(fixture.Http,
+            new MultiFileTransactionEngine(fixture.Directory.GetPath("backups")), store, fixture.Source);
+        var profile = new GameProfile(game.CreateFile("Game.exe", "synthetic")) { Api = GraphicsApi.DX11, Architecture = "x64" };
+        var release = new ReleaseInfo { Version = "v2.5", DownloadUrl = "https://example.invalid/asserted.tar.gz" };
+        fixture.Override = (request, _) =>
+        {
+            var metadata = OfficialAcquisitionFixture.Metadata("v2.5", fixture.Archives["v2.5"]);
+            if (digestMismatch) metadata["assets"]![0]!["digest"] = "sha256:" + new string('0', 64);
+            return Task.FromResult(request.RequestUri!.Host == "api.github.com" ? OfficialAcquisitionFixture.Json(metadata)
+                : new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(digestMismatch ? fixture.Archives["v2.5"] : fixture.Archives["v2.5"][..^8]) });
+        };
+        Assert.False(await installer.ApplyToGameAsync(profile, release));
+        Assert.Equal("native-original", File.ReadAllText(native));
+        Assert.Equal("# untouched user configuration", File.ReadAllText(config));
+        Assert.False(File.Exists(game.GetPath("dxgi.dll")));
+        Assert.Equal("retained-older-version", File.ReadAllText(older));
+        Assert.False(System.IO.Directory.Exists(Path.Combine(fixture.Source, "v2.5")));
+        fixture.Override = null;
+        Assert.True(await installer.ApplyToGameAsync(profile, release), SyntheticSafetyFixture.RefusalCategory(installer.LastRefusalReason));
+        Assert.True(DxvkReleaseAcquirer.ValidateManifest(Path.Combine(fixture.Source, "v2.5"), "v2.5", out _));
+        Assert.Equal("retained-older-version", File.ReadAllText(older));
+    }
+
+    [Fact]
+    public async Task Installer_PartialExistingSource_RefusesWithoutNetworkOrOverwrite()
+    {
+        using var fixture = new OfficialAcquisitionFixture();
+        using var game = new SyntheticTestDirectory();
+        string partial = Path.Combine(fixture.Source, "v2.5", "x64", "d3d11.dll");
+        System.IO.Directory.CreateDirectory(Path.GetDirectoryName(partial)!);
+        File.WriteAllText(partial, "partial-sentinel");
+        var store = new GameLibraryStore(fixture.Directory.GetPath("library.json"), fixture.Directory.GetPath("backups"));
+        var installer = SyntheticSafetyFixture.CreateInstaller(fixture.Http,
+            new MultiFileTransactionEngine(fixture.Directory.GetPath("backups")), store, fixture.Source);
+        var profile = new GameProfile(game.CreateFile("Game.exe", "synthetic")) { Api = GraphicsApi.DX11, Architecture = "x64" };
+        Assert.False(await installer.ApplyToGameAsync(profile, new ReleaseInfo { Version = "v2.5" }));
+        Assert.Empty(fixture.Requests);
+        Assert.Equal("partial-sentinel", File.ReadAllText(partial));
+        Assert.False(File.Exists(game.GetPath("d3d11.dll")));
+    }
+
+    [Fact]
+    public async Task Installer_RechecksUnknownActivityAfterAcquisition_WithoutGameMutation()
+    {
+        using var fixture = new OfficialAcquisitionFixture();
+        using var game = new SyntheticTestDirectory();
+        var store = new GameLibraryStore(fixture.Directory.GetPath("library.json"), fixture.Directory.GetPath("backups"));
+        var installer = SyntheticSafetyFixture.CreateInstaller(fixture.Http,
+            new MultiFileTransactionEngine(fixture.Directory.GetPath("backups")), store, fixture.Source);
+        fixture.Override = (request, _) =>
+        {
+            if (request.RequestUri!.Host == "api.github.com") return Task.FromResult(OfficialAcquisitionFixture.Json(OfficialAcquisitionFixture.Metadata("v2.5", fixture.Archives["v2.5"])));
+            installer.ActivityInspector = new ProcessActivityInspector(processEnumerator: () => throw new InvalidOperationException("Synthetic unknown activity"));
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(fixture.Archives["v2.5"]) });
+        };
+        var profile = new GameProfile(game.CreateFile("Game.exe", "synthetic")) { Api = GraphicsApi.DX11, Architecture = "x64" };
+        Assert.False(await installer.ApplyToGameAsync(profile, new ReleaseInfo { Version = "v2.5", DownloadUrl = "https://example.invalid/asserted.tar.gz" }));
+        Assert.Equal("ActivityUncertain", SyntheticSafetyFixture.RefusalCategory(installer.LastRefusalReason));
+        Assert.True(DxvkReleaseAcquirer.ValidateManifest(Path.Combine(fixture.Source, "v2.5"), "v2.5", out _));
+        Assert.False(File.Exists(game.GetPath("d3d11.dll")));
+    }
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
