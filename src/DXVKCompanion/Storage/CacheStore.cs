@@ -46,10 +46,6 @@ namespace DXVKCompanion.Storage
 
         public CachedRelease? LoadCachedRelease()
         {
-            var dir = Path.GetDirectoryName(_cacheFile);
-            if (!string.IsNullOrEmpty(dir))
-                Directory.CreateDirectory(dir);
-
             if (File.Exists(_cacheFile))
             {
                 try

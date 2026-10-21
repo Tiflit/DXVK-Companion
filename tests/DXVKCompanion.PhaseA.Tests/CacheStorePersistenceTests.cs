@@ -11,6 +11,23 @@ namespace DXVKCompanion.PhaseA.Tests
 {
     public class CacheStorePersistenceTests
     {
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public void LoadMissingCache_DoesNotCreateOrReplaceItsParent(bool blockedParent)
+        {
+            using var testDir = new SyntheticTestDirectory();
+            string parent = Path.Combine(testDir.RootPath, "cache-parent");
+            if (blockedParent) File.WriteAllText(parent, "synthetic parent sentinel");
+            var store = new CacheStore(Path.Combine(parent, "release-cache.json"));
+
+            Assert.Null(store.LoadCachedRelease());
+
+            Assert.False(Directory.Exists(parent));
+            if (blockedParent) Assert.Equal("synthetic parent sentinel", File.ReadAllText(parent));
+            else Assert.False(File.Exists(parent));
+        }
+
         [Fact]
         public void CacheStore_FirstSave_RoundTripsRepresentativeMetadataAndETag_IndentedJson()
         {

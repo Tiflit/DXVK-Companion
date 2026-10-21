@@ -251,7 +251,7 @@ namespace DXVKCompanion.DXVK
                     bool ok = await DownloadAndExtractAsync(release);
                     if (!ok)
                     {
-                        LastRefusalReason = $"Failed to download or extract DXVK {release.Version}.";
+                        LastRefusalReason = $"DXVK {release.Version} is unavailable locally and could not be acquired. Keep the installed version. To retry offline when no work is queued, select a downloaded exact DXVK Version in Game Details and Save.";
                         return false;
                     }
 

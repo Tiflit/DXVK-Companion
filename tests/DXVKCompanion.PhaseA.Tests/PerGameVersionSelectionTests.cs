@@ -361,11 +361,14 @@ public sealed class PerGameVersionSelectionTests : IDisposable
 
         var results = await manager.UpdateAllEnabledAsync();
 
-        // Pinned game updated successfully despite metadata 500 failure
-        Assert.Single(results);
+        // Pinned update succeeds; unresolved Latest is explicitly reported, not omitted.
+        Assert.Equal(2, results.Count);
         Assert.True(results.ContainsKey(profile1.ExePath));
         Assert.Equal(DxvkActionResult.Applied, results[profile1.ExePath]);
         Assert.Equal("v2.4", profile1.DxvkVersion);
+        Assert.Equal(DxvkActionResult.Failed, results[profile2.ExePath]);
+        Assert.Equal("v2.3", profile2.DxvkVersion);
+        Assert.Contains("Latest DXVK metadata is unavailable", manager.LastRefusalReason);
     }
 
     [Fact]
