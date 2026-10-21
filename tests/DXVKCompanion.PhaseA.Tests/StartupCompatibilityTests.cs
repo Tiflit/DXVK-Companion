@@ -9,6 +9,33 @@ namespace DXVKCompanion.PhaseA.Tests
 {
     public class StartupCompatibilityTests
     {
+        [Theory]
+        [InlineData("--no-auto-discovery")]
+        [InlineData("--unsupported")]
+        public void ProgramPreflight_NewerSchemaKeepsPriorityAndPreservesLibrary(string argument)
+        {
+            using var root = new SyntheticTestDirectory();
+            string path = Path.Combine(root.RootPath, "game-library.json");
+            File.WriteAllText(path, "{\"SchemaVersion\":999,\"Installations\":[]}");
+            byte[] before = File.ReadAllBytes(path);
+            var options = Program.PrepareStartup(new[] { argument }, path, out var preflight);
+            Assert.Null(options);
+            Assert.True(preflight.ShouldRefuse);
+            Assert.Equal(before, File.ReadAllBytes(path));
+            Assert.Single(Directory.GetFiles(root.RootPath, "*", SearchOption.AllDirectories));
+        }
+
+        [Fact]
+        public void ProgramPreflight_InvalidArgumentsDoNotInitializeMissingRuntimeDirectories()
+        {
+            using var root = new SyntheticTestDirectory();
+            var options = Program.PrepareStartup(new[] { "--unsupported" },
+                Path.Combine(root.RootPath, "uncreated", "game-library.json"), out var preflight);
+            Assert.Null(options);
+            Assert.False(preflight.ShouldRefuse);
+            Assert.Empty(Directory.GetFileSystemEntries(root.RootPath));
+        }
+
         [Fact]
         public void Evaluate_MissingLibraryFile_ReturnsContinue()
         {

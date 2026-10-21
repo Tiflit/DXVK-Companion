@@ -85,7 +85,8 @@ namespace DXVKCompanion.UI
                 _pendingUpdateUrl = null;
             };
 
-            _menu = new TrayMenu(_trayIcon, profiles, dxvk, settings, _gameLibraryStore);
+            _menu = new TrayMenu(_trayIcon, profiles, dxvk, settings, _gameLibraryStore,
+                automaticDiscoveryEnabled: _monitor.AutomaticDiscoveryEnabled);
 
             _dxvk.OnPendingActionCancelled += (installation, action, reason) =>
             {

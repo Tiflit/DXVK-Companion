@@ -15,13 +15,17 @@ namespace DXVKCompanion
     internal static class Program
     {
         [STAThread]
-        static void Main()
+        static void Main(string[] args)
         {
-            var preflight = StartupCompatibility.Evaluate(GameLibraryPaths.GameLibraryFile);
-            if (preflight.ShouldRefuse)
+            var options = PrepareStartup(args, GameLibraryPaths.GameLibraryFile, out var preflight);
+            if (options == null)
             {
                 ApplicationConfiguration.Initialize();
-                StartupCompatibility.PresentRefusal(preflight);
+                if (preflight.ShouldRefuse)
+                    StartupCompatibility.PresentRefusal(preflight);
+                else
+                    MessageBox.Show("Unsupported startup arguments.\n\n" + StartupOptions.Usage,
+                        "DXVK Companion - Startup Arguments", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
 
@@ -52,7 +56,7 @@ namespace DXVKCompanion
             var moduleScanner = new ModuleScanner();
             var peParser = new PeParser();
             var classifier = new ApiClassifier(moduleScanner, peParser);
-            var monitor = new ProcessMonitor(detector, exitHandler, classifier, gameLibraryStore);
+            using var monitor = CreateMonitor(options, detector, exitHandler, classifier, gameLibraryStore);
             monitor.ProfileStore = profiles;
 
             // DXVK
@@ -68,5 +72,20 @@ namespace DXVKCompanion
 
             Application.Run();
         }
+
+        // Both refusal paths precede directory creation, logging, stores and monitoring.
+        internal static StartupOptions? PrepareStartup(string[] args, string libraryPath, out StartupPreflightResult preflight)
+        {
+            preflight = StartupCompatibility.Evaluate(libraryPath);
+            if (preflight.ShouldRefuse) return null;
+            return StartupOptions.TryParse(args, out var options) ? options : null;
+        }
+
+        internal static ProcessMonitor CreateMonitor(
+            StartupOptions options, GameDetector detector, ProcessExitHandler exitHandler,
+            ApiClassifier classifier, GameLibraryStore? store,
+            Func<System.Collections.Generic.IEnumerable<System.Diagnostics.Process>>? processEnumerator = null)
+            => new ProcessMonitor(detector, exitHandler, classifier, store, null, processEnumerator,
+                startTimer: true, automaticDiscoveryEnabled: options.AutomaticDiscoveryEnabled);
     }
 }

@@ -113,6 +113,25 @@ The user explicitly chooses operations from the main UI.
 
 Manual mode is intended for users who want complete control.
 
+### Optional startup control for automatic discovery
+
+Starting `DXVK-Companion.exe --no-auto-discovery` pauses passive application
+discovery for that invocation. A normal start without the switch preserves the
+default discovery behavior. The tray menu displays **Automatic discovery off**;
+this choice does not change saved global or per-game policies.
+
+While paused, no discovery-driven notifications, auto-enable/reapply admissions,
+or monitor-driven game-exit callbacks occur. Newly queued actions therefore do not
+receive automatic processing on game exit during that invocation; existing
+explicit retry and guarded startup processing remain available. Independent
+startup inspection, release checks and stored policies continue normally.
+
+Explicit operations retain installation-activity inspection, Running/Unknown
+refusal, leases, compatibility/anti-cheat checks and transaction/restoration
+protections. Relevant safety inspection can still enumerate processes. This is
+not an isolation, offline, zero-host-access or blanket automation-off mode. See
+[startup usage and limits](../validation/AUTOMATIC-DISCOVERY-STARTUP.md).
+
 ## 3.2 Automated (Experimental)
 
 Automated mode allows Companion to make routine DXVK management decisions.
