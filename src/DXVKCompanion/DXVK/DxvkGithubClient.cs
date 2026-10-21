@@ -189,17 +189,23 @@ namespace DXVKCompanion.DXVK
             {
                 using var request = new HttpRequestMessage(HttpMethod.Get, ApiUrl);
 
-                if (cached != null && !string.IsNullOrWhiteSpace(cached.ETag))
-                    request.Headers.IfNoneMatch.Add(new EntityTagHeaderValue(cached.ETag));
+                // A validator is only useful with metadata to revalidate. Corrupt,
+                // combined or wildcard cache values must not prevent a normal fetch.
+                EntityTagHeaderValue? validator = null;
+                bool conditional = cached?.HasValidRelease == true &&
+                    EntityTagHeaderValue.TryParse(cached.ETag, out validator) &&
+                    validator.Tag != "*";
+                if (conditional)
+                    request.Headers.IfNoneMatch.Add(validator!);
 
                 using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                 cts.CancelAfter(RequestTimeout);
 
                 using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cts.Token);
 
-                if (response.StatusCode == System.Net.HttpStatusCode.NotModified && cached != null && cached.HasValidRelease)
+                if (response.StatusCode == System.Net.HttpStatusCode.NotModified && conditional)
                 {
-                    _cacheStore.SaveCachedRelease(cached.Release, cached.ETag, cachedAt: now, lastAttemptAt: now);
+                    _cacheStore.SaveCachedRelease(cached!.Release, cached.ETag, cachedAt: now, lastAttemptAt: now);
                     return cached.Release;
                 }
 
@@ -210,7 +216,7 @@ namespace DXVKCompanion.DXVK
                 using var doc = JsonDocument.Parse(bytes);
                 var release = ParseOfficialRelease(doc.RootElement)
                     ?? throw new InvalidDataException("GitHub API response did not identify one stable official Windows release asset.");
-                string? etag = response.Headers.ETag?.Tag;
+                string? etag = response.Headers.ETag?.ToString();
 
                 _cacheStore.SaveCachedRelease(release, etag, cachedAt: now, lastAttemptAt: now);
                 return release;

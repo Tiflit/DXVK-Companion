@@ -255,6 +255,149 @@ namespace DXVKCompanion.PhaseA.Tests
 
     public class DxvkGithubClientTests
     {
+        [Theory]
+        [InlineData("unquoted", false)]
+        [InlineData("*", false)]
+        [InlineData("\"first\", \"second\"", false)]
+        [InlineData("\"tag\"\r\nX-Synthetic: value", false)]
+        [InlineData("unquoted", true)]
+        [InlineData("*", true)]
+        [InlineData("\"first\", \"second\"", true)]
+        [InlineData("\"tag\"\r\nX-Synthetic: value", true)]
+        public async Task InvalidCachedValidator_RequestsUnconditionally_AndPersistsRecoveryOrOfflineThrottle(string validator, bool offline)
+        {
+            using var testDir = new SyntheticTestDirectory();
+            string cacheFile = Path.Combine(testDir.RootPath, "release-cache.json");
+            var store = new CacheStore(cacheFile);
+            var now = new DateTime(2026, 10, 21, 12, 0, 0, DateTimeKind.Utc);
+            var oldTime = now.AddDays(-2);
+            store.SaveCachedRelease(new ReleaseInfo { Version = "v2.4" }, validator, oldTime, oldTime);
+            var response = offline
+                ? CreateJsonResponse(HttpStatusCode.ServiceUnavailable, "{}")
+                : CreateJsonResponse(HttpStatusCode.OK,
+                    CreateReleaseJson("v2.5", "dxvk-2.5.tar.gz", "https://github.com/doitsujin/dxvk/releases/download/v2.5/dxvk-2.5.tar.gz"), "\"recovered\"");
+            var handler = new FakeHttpMessageHandler(request =>
+            {
+                Assert.Equal("https://api.github.com/repos/doitsujin/dxvk/releases/latest", request.RequestUri!.AbsoluteUri);
+                Assert.False(request.Headers.Contains("If-None-Match"));
+                return response;
+            });
+            using var http = new HttpClient(handler);
+            var client = new DxvkGithubClient(http, store, () => now);
+
+            var result = await client.FetchLatestReleaseAsync();
+
+            Assert.NotNull(result);
+            Assert.Equal(offline ? "v2.4" : "v2.5", result.Version);
+            Assert.Single(handler.CapturedRequests);
+            Assert.True(response.IsDisposed);
+            Assert.True(handler.AttachedRequestContents.Single().IsDisposed);
+            var saved = new CacheStore(cacheFile).LoadCachedRelease()!;
+            Assert.Equal(offline ? oldTime : now, saved.CachedAt);
+            Assert.Equal(now, saved.LastAttemptAt);
+            Assert.Equal(offline ? validator : "\"recovered\"", saved.ETag);
+
+            // The persisted result (including failure fallback) throttles a new client.
+            var reconstructed = new DxvkGithubClient(http, new CacheStore(cacheFile), () => now.AddHours(23));
+            Assert.Equal(result.Version, (await reconstructed.FetchLatestReleaseAsync())!.Version);
+            Assert.Single(handler.CapturedRequests);
+        }
+
+        [Fact]
+        public async Task WeakResponseValidator_RoundTripsAcrossReconstruction_AndConditional304()
+        {
+            using var testDir = new SyntheticTestDirectory();
+            string cacheFile = Path.Combine(testDir.RootPath, "release-cache.json");
+            var now = new DateTime(2026, 10, 21, 12, 0, 0, DateTimeKind.Utc);
+            var first = CreateJsonResponse(HttpStatusCode.OK,
+                CreateReleaseJson("v2.5", "dxvk-2.5.tar.gz", "https://github.com/doitsujin/dxvk/releases/download/v2.5/dxvk-2.5.tar.gz"));
+            first.Headers.ETag = new EntityTagHeaderValue("\"weak-release\"", isWeak: true);
+            var second = CreateJsonResponse(HttpStatusCode.NotModified, "");
+            int requests = 0;
+            var handler = new FakeHttpMessageHandler(request =>
+            {
+                Assert.Equal("https://api.github.com/repos/doitsujin/dxvk/releases/latest", request.RequestUri!.AbsoluteUri);
+                if (++requests == 1)
+                {
+                    Assert.False(request.Headers.Contains("If-None-Match"));
+                    return first;
+                }
+                var validator = Assert.Single(request.Headers.IfNoneMatch);
+                Assert.True(validator.IsWeak);
+                Assert.Equal("W/\"weak-release\"", validator.ToString());
+                return second;
+            });
+            using var http = new HttpClient(handler);
+            var client = new DxvkGithubClient(http, new CacheStore(cacheFile), () => now);
+            Assert.Equal("v2.5", (await client.FetchLatestReleaseAsync())!.Version);
+            Assert.Equal("W/\"weak-release\"", new CacheStore(cacheFile).LoadCachedRelease()!.ETag);
+
+            now = now.AddHours(25);
+            var reconstructed = new DxvkGithubClient(http, new CacheStore(cacheFile), () => now);
+            Assert.Equal("v2.5", (await reconstructed.FetchLatestReleaseAsync())!.Version);
+            var saved = new CacheStore(cacheFile).LoadCachedRelease()!;
+            Assert.Equal("W/\"weak-release\"", saved.ETag);
+            Assert.Equal(now, saved.CachedAt);
+            Assert.Equal(now, saved.LastAttemptAt);
+            Assert.True(first.IsDisposed);
+            Assert.True(second.IsDisposed);
+            Assert.All(handler.AttachedRequestContents, content => Assert.True(content.IsDisposed));
+            Assert.Equal("v2.5", (await reconstructed.FetchLatestReleaseAsync())!.Version);
+            Assert.Equal(2, requests);
+        }
+
+        [Fact]
+        public async Task CachedValidatorWithoutUsableRelease_RequestsUnconditionally_AndRecovers()
+        {
+            using var testDir = new SyntheticTestDirectory();
+            string cacheFile = Path.Combine(testDir.RootPath, "release-cache.json");
+            var store = new CacheStore(cacheFile);
+            var now = new DateTime(2026, 10, 21, 12, 0, 0, DateTimeKind.Utc);
+            store.SaveCachedRelease(new ReleaseInfo(), "\"orphan-validator\"", now.AddDays(-2), now.AddDays(-2));
+            var handler = new FakeHttpMessageHandler(request =>
+            {
+                Assert.False(request.Headers.Contains("If-None-Match"));
+                return CreateJsonResponse(HttpStatusCode.OK,
+                    CreateReleaseJson("v2.5", "dxvk-2.5.tar.gz", "https://github.com/doitsujin/dxvk/releases/download/v2.5/dxvk-2.5.tar.gz"));
+            });
+            using var http = new HttpClient(handler);
+            Assert.Equal("v2.5", (await new DxvkGithubClient(http, store, () => now).FetchLatestReleaseAsync())!.Version);
+            Assert.Single(handler.CapturedRequests);
+            Assert.Equal("v2.5", new CacheStore(cacheFile).LoadCachedRelease()!.Release.Version);
+        }
+
+        [Theory]
+        [InlineData(null)]
+        [InlineData("unquoted")]
+        [InlineData("*")]
+        public async Task Unsolicited304_PreservesPriorMetadataWithoutRefreshingIt_AndThrottles(string? validator)
+        {
+            using var testDir = new SyntheticTestDirectory();
+            string cacheFile = Path.Combine(testDir.RootPath, "release-cache.json");
+            var store = new CacheStore(cacheFile);
+            var now = new DateTime(2026, 10, 21, 12, 0, 0, DateTimeKind.Utc);
+            var oldTime = now.AddDays(-2);
+            store.SaveCachedRelease(new ReleaseInfo { Version = "v2.4" }, validator, oldTime, oldTime);
+            var response = CreateJsonResponse(HttpStatusCode.NotModified, "");
+            var handler = new FakeHttpMessageHandler(request =>
+            {
+                Assert.False(request.Headers.Contains("If-None-Match"));
+                return response;
+            });
+            using var http = new HttpClient(handler);
+            var client = new DxvkGithubClient(http, store, () => now);
+            Assert.Equal("v2.4", (await client.FetchLatestReleaseAsync())!.Version);
+            Assert.Single(handler.CapturedRequests);
+            Assert.True(response.IsDisposed);
+            var saved = new CacheStore(cacheFile).LoadCachedRelease()!;
+            Assert.Equal(oldTime, saved.CachedAt);
+            Assert.Equal(now, saved.LastAttemptAt);
+            Assert.Equal(validator, saved.ETag);
+            var reconstructed = new DxvkGithubClient(http, new CacheStore(cacheFile), () => now.AddHours(23));
+            Assert.Equal("v2.4", (await reconstructed.FetchLatestReleaseAsync())!.Version);
+            Assert.Single(handler.CapturedRequests);
+        }
+
         [Fact]
         public async Task FetchLatestReleaseAsync_WhenCacheIsFresh_ReturnsCachedRelease_DoesNotInvokeNetwork()
         {
