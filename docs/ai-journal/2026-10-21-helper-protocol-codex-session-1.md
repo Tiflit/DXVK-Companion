@@ -1,0 +1,9 @@
+# Cloud lock-helper handshake — Codex session
+
+Owner merged #211 and instructed “Merged / Continue” under the standing Codex implementation assignment. Independent main `c133030c2f0cd9a6667f6c20c807b32389d5aac3`; unchanged policy `1fae6e06f94111f67fa1da6df87a43257a37609c`. #212 scopes a test-only reliability repair before #159 packaged acceptance. #94 stays paused.
+
+Post-merge run 39632024254 passed 1,067/1,068 tests; the timeout helper's parent acquired a lease where the fixture assumed exclusion. Source inspection found the child autonomously releasing two seconds after LOCKED, regardless of parent scheduling. This is a demonstrated possible protocol race, not a diagnosis of all historical startup/budget failures. No blind retry was selected.
+
+Wrote delayed-parent and missing-arm regressions before protocol repair, without execution/observed-red claims. Child now waits for an owned marker after the parent exclusion attempt, then starts its unchanged two-second self-exit. A startup-aware monotonic watchdog bounds missing arming. Existing 20/12-second total lifetimes, four-second cleanup reservations, 200/500 ms coordinator waits and elapsed assertions remain. Equivalent null checks use fixed phase diagnostics; helper signal/exit awaits avoid test-context recapture. No global serialization or production change.
+
+Five scoped paths, clean isolated worktree; no local suites/apps/helpers/scanners or packages/devices. Grouped implementing-agent self-review and revision-bound cloud artifacts follow in the PR completion comment. No human interruption needed; human next for merge after verification. #159 integrated coverage/packaged acceptance and historical unexplained failures remain open.
