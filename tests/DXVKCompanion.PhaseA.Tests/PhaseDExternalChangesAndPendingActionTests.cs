@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
 using System.Threading.Tasks;
@@ -206,16 +207,18 @@ public sealed class PhaseDExternalChangesAndPendingActionTests
         var release = new ReleaseInfo { Version = "2.5", DownloadUrl = "" };
 
         // Install DXVK
+        var phase = Stopwatch.StartNew();
         var installOk = await installer.ApplyToGameAsync(profile, release);
-        Assert.True(installOk);
+        Assert.True(installOk, $"Fixture phase=Apply; elapsedMs={phase.ElapsedMilliseconds}; category={SyntheticSafetyFixture.RefusalCategory(installer.LastRefusalReason)}");
         Assert.Equal("dxvk-2.5-d3d11", File.ReadAllText(d3d11Path));
 
         // 2. Steam updates the game to Version B: d3d11.dll is overwritten by game update
         File.WriteAllText(d3d11Path, "native-version-B-d3d11");
 
         // 3. User authorizes Reapply with updateBaseline = true
+        phase.Restart();
         var reapplyOk = await installer.ReapplyAsync(profile, updateBaseline: true);
-        Assert.True(reapplyOk);
+        Assert.True(reapplyOk, $"Fixture phase=Reapply; elapsedMs={phase.ElapsedMilliseconds}; category={SyntheticSafetyFixture.RefusalCategory(installer.LastRefusalReason)}");
         Assert.Equal("dxvk-2.5-d3d11", File.ReadAllText(d3d11Path));
 
         var installation = store.FindByInstallationPath(gameDir.RootPath);
@@ -230,8 +233,9 @@ public sealed class PhaseDExternalChangesAndPendingActionTests
         Assert.Equal("native-version-B-d3d11", File.ReadAllText(backupPath));
 
         // 4. Rollback should restore Version B!
+        phase.Restart();
         var rollbackOk = await rollback.RestoreOriginalDllsAsync(profile);
-        Assert.True(rollbackOk);
+        Assert.True(rollbackOk, $"Fixture phase=Restore; elapsedMs={phase.ElapsedMilliseconds}; category={SyntheticSafetyFixture.RefusalCategory(rollback.LastRefusalReason)}");
         Assert.Equal("native-version-B-d3d11", File.ReadAllText(d3d11Path));
     }
 
