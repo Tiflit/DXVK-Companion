@@ -17,7 +17,9 @@ internal static class SyntheticSafetyFixture
         HelperStartupSignal,
         HelperSelfExit,
         HelperCleanup,
-        PostHelperLease
+        PostHelperLease,
+        HelperExclusion,
+        HelperTimerArm
     }
 
     // Explicit enum phases prevent callers from inserting arbitrary paths/output.

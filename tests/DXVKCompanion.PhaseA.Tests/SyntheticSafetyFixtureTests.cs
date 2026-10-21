@@ -10,6 +10,19 @@ namespace DXVKCompanion.PhaseATests;
 public sealed class SyntheticSafetyFixtureTests
 {
     [Fact]
+    public void HelperProtocolDiagnostics_IdentifyPhaseWithoutEchoingRefusalText()
+    {
+        foreach (var phase in new[] { SyntheticSafetyFixture.Phase.HelperExclusion, SyntheticSafetyFixture.Phase.HelperTimerArm })
+        {
+            string diagnostic = SyntheticSafetyFixture.Diagnostic(phase, 123, "DO_NOT_ECHO_SENTINEL");
+            Assert.Contains($"phase={phase};", diagnostic);
+            Assert.Contains("elapsedMs=123;", diagnostic);
+            Assert.Contains("category=OtherRefusal", diagnostic);
+            Assert.DoesNotContain("DO_NOT_ECHO_SENTINEL", diagnostic);
+        }
+    }
+
+    [Fact]
     public async Task ActualInspector_RefusesUnreadableSharedNamespace_ButIndependentFixtureDetectsReplacement()
     {
         using var game = new SyntheticTestDirectory();

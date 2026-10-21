@@ -14,6 +14,87 @@ namespace DXVKCompanion.PhaseATests;
 
 public sealed class OperationLeaseCoordinatorTests
 {
+    private static int RemainingHelperBudget(Stopwatch overall, int operationalBudgetMs, SyntheticSafetyFixture.Phase phase)
+    {
+        int remaining = operationalBudgetMs - (int)overall.ElapsedMilliseconds;
+        if (remaining <= 0)
+            throw new TimeoutException(SyntheticSafetyFixture.Diagnostic(phase, overall.ElapsedMilliseconds));
+        return remaining;
+    }
+
+    private static async Task ReadHelperSignalAsync(Process helper, string expected,
+        Stopwatch overall, int operationalBudgetMs, SyntheticSafetyFixture.Phase phase)
+    {
+        int remaining = RemainingHelperBudget(overall, operationalBudgetMs, phase);
+        string? signal;
+        try
+        {
+            signal = await helper.StandardOutput.ReadLineAsync()
+                .WaitAsync(TimeSpan.FromMilliseconds(remaining)).ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+            throw new TimeoutException(SyntheticSafetyFixture.Diagnostic(phase, overall.ElapsedMilliseconds));
+        }
+        Assert.True(string.Equals(expected, signal, StringComparison.Ordinal),
+            SyntheticSafetyFixture.Diagnostic(phase, overall.ElapsedMilliseconds));
+    }
+
+    private static async Task WaitForHelperExitAsync(Process helper, Stopwatch overall, int operationalBudgetMs)
+    {
+        using var deadline = new CancellationTokenSource(RemainingHelperBudget(overall,
+            operationalBudgetMs, SyntheticSafetyFixture.Phase.HelperSelfExit));
+        try
+        {
+            await helper.WaitForExitAsync(deadline.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (deadline.IsCancellationRequested)
+        {
+            throw new TimeoutException(SyntheticSafetyFixture.Diagnostic(
+                SyntheticSafetyFixture.Phase.HelperSelfExit, overall.ElapsedMilliseconds));
+        }
+    }
+
+    private static ProcessStartInfo CreateTimedLockHelper(string lockPath, string armPath, DateTime deadlineUtc)
+    {
+        // Only this test's private paths and a deadline cross the child boundary.
+        // UTC accounts for startup; the child uses a monotonic watch thereafter.
+        string script = $$"""
+            $handle = $null
+            try {
+                $watch = [Diagnostics.Stopwatch]::StartNew()
+                $budget = ([DateTime]::new({{deadlineUtc.Ticks}}, [DateTimeKind]::Utc) - [DateTime]::UtcNow).TotalMilliseconds
+                if ($budget -le 0) { exit 2 }
+                $handle = [IO.FileStream]::new('{{lockPath.Replace("'", "''")}}', [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None, 4096, [IO.FileOptions]::DeleteOnClose)
+                [Console]::Out.WriteLine('LOCKED')
+                [Console]::Out.Flush()
+                while (-not [IO.File]::Exists('{{armPath.Replace("'", "''")}}')) {
+                    if ($watch.Elapsed.TotalMilliseconds -ge $budget) { exit 2 }
+                    [Threading.Thread]::Sleep(10)
+                }
+                if (($budget - $watch.Elapsed.TotalMilliseconds) -lt 2000) { exit 3 }
+                [Console]::Out.WriteLine('TIMER_STARTED')
+                [Console]::Out.Flush()
+                [Threading.Thread]::Sleep(2000)
+                if ($watch.Elapsed.TotalMilliseconds -gt $budget) { exit 4 }
+                exit 0
+            } catch { exit 1 }
+            finally { if ($null -ne $handle) { $handle.Dispose() } }
+            """;
+        var info = new ProcessStartInfo("powershell.exe")
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        };
+        info.ArgumentList.Add("-NoProfile");
+        info.ArgumentList.Add("-NonInteractive");
+        info.ArgumentList.Add("-Command");
+        info.ArgumentList.Add(script);
+        return info;
+    }
+
     [Fact]
     public async Task TryAcquireOperationScopeAsync_SingleTarget_AcquiresSuccessfully()
     {
@@ -318,8 +399,10 @@ public sealed class OperationLeaseCoordinatorTests
         Assert.True(lease.IsValidForStore(storeB));
     }
 
-    [Fact]
-    public async Task InterProcessLocking_OwnedCloudHelper_ExcludesParentDuringHold()
+    [Theory]
+    [InlineData(0)]
+    [InlineData(2200)]
+    public async Task InterProcessLocking_OwnedCloudHelper_ExcludesParentDuringHold(int parentDelayMs)
     {
         if (!OperatingSystem.IsWindows() || !string.Equals(Environment.GetEnvironmentVariable("GITHUB_ACTIONS"), "true", StringComparison.OrdinalIgnoreCase))
             return;
@@ -335,20 +418,13 @@ public sealed class OperationLeaseCoordinatorTests
         string lockName = OperationResourceIdentity.GetTargetLockFileName(canonicalTarget);
         string fullLockPath = Path.Combine(coordDir.RootPath, lockName);
 
-        // Prepare child helper process: holds lock exclusively for 2000 ms using DeleteOnClose
-        var psi = new ProcessStartInfo
-        {
-            FileName = "powershell.exe",
-            Arguments = $"-NoProfile -NonInteractive -Command \"try {{ $f = new-object System.IO.FileStream('{fullLockPath.Replace("'", "''")}', [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None, 4096, [System.IO.FileOptions]::DeleteOnClose); [Console]::Out.WriteLine('LOCKED'); [Console]::Out.Flush(); Start-Sleep -Milliseconds 2000; $f.Dispose(); exit 0 }} catch {{ [Console]::Error.WriteLine($_); exit 1 }}\"",
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true
-        };
-
         var overallSw = Stopwatch.StartNew();
         const int maxTotalLifetimeMs = 20000;
         const int cleanupReservationMs = 4000;
+        const int operationalBudgetMs = maxTotalLifetimeMs - cleanupReservationMs;
+        string armPath = Path.Combine(coordDir.RootPath, "self-exit.signal");
+        var psi = CreateTimedLockHelper(fullLockPath, armPath,
+            DateTime.UtcNow.AddMilliseconds(RemainingHelperBudget(overallSw, operationalBudgetMs, SyntheticSafetyFixture.Phase.HelperStartupSignal)));
         Process? helper = null;
         bool helperExited = false;
         try
@@ -356,38 +432,30 @@ public sealed class OperationLeaseCoordinatorTests
             helper = Process.Start(psi);
             Assert.NotNull(helper);
 
-            // Wait for helper to confirm lock acquisition via stdout (bounded within operational budget before cleanup reservation)
-            int startupBudget = maxTotalLifetimeMs - cleanupReservationMs - (int)overallSw.ElapsedMilliseconds;
-            if (startupBudget <= 0) throw new TimeoutException("Startup budget expired before child start.");
-            var readTask = helper.StandardOutput.ReadLineAsync();
-            var readCompleted = await Task.WhenAny(readTask, Task.Delay(startupBudget));
-            if (readCompleted != readTask)
-            {
-                try { helper.Kill(entireProcessTree: true); } catch { }
-                throw new TimeoutException("Timed out waiting for LOCKED signal from cloud helper.");
-            }
-            string? signal = await readTask;
-            Assert.Equal("LOCKED", signal);
+            await ReadHelperSignalAsync(helper, "LOCKED", overallSw, operationalBudgetMs,
+                SyntheticSafetyFixture.Phase.HelperStartupSignal);
+
+            // Deliberately exceed the old autonomous two-second hold window.
+            // The child must still hold until the parent explicitly arms self-exit.
+            if (parentDelayMs > 0) await Task.Delay(parentDelayMs);
 
             // Parent attempt to acquire with 200 ms budget must time out and return null
             var sw = Stopwatch.StartNew();
             await using var refusedLease = await coordinator.TryAcquireOperationScopeAsync(targetPath, timeout: TimeSpan.FromMilliseconds(200));
             sw.Stop();
 
-            Assert.Null(refusedLease);
+            Assert.True(refusedLease is null, SyntheticSafetyFixture.Diagnostic(
+                SyntheticSafetyFixture.Phase.HelperExclusion, overallSw.ElapsedMilliseconds, coordinator.LastAcquisitionError));
             Assert.True(sw.ElapsedMilliseconds >= 150, $"Expected timeout around 200 ms, actual: {sw.ElapsedMilliseconds} ms");
 
-            // Wait for helper to exit naturally (bounded within remaining operational budget)
-            int exitBudget = maxTotalLifetimeMs - cleanupReservationMs - (int)overallSw.ElapsedMilliseconds;
-            if (exitBudget <= 0) throw new TimeoutException("Exit budget expired before child natural exit.");
-            var exitTask = helper.WaitForExitAsync();
-            var exitCompleted = await Task.WhenAny(exitTask, Task.Delay(exitBudget));
-            if (exitCompleted != exitTask)
-            {
-                try { helper.Kill(entireProcessTree: true); } catch { }
-                throw new TimeoutException("Timed out waiting for cloud helper process to exit.");
-            }
-            await exitTask;
+            // Start the unchanged self-exit interval only after exclusion was observed.
+            if (RemainingHelperBudget(overallSw, operationalBudgetMs, SyntheticSafetyFixture.Phase.HelperTimerArm) < 2000)
+                throw new TimeoutException(SyntheticSafetyFixture.Diagnostic(SyntheticSafetyFixture.Phase.HelperTimerArm, overallSw.ElapsedMilliseconds));
+            File.WriteAllText(armPath, "START");
+            await ReadHelperSignalAsync(helper, "TIMER_STARTED", overallSw, operationalBudgetMs,
+                SyntheticSafetyFixture.Phase.HelperTimerArm);
+            await WaitForHelperExitAsync(helper, overallSw, operationalBudgetMs);
+            Assert.Equal(0, helper.ExitCode);
 
             // Once helper process exited and released handle, parent can immediately acquire
             await using var successLease = await coordinator.TryAcquireOperationScopeAsync(targetPath, timeout: TimeSpan.FromMilliseconds(500));
@@ -429,6 +497,62 @@ public sealed class OperationLeaseCoordinatorTests
             }
 
             Assert.True(helperExited, "Child helper process failed to terminate within bounded cleanup reservation.");
+        }
+    }
+
+    [Fact]
+    public async Task InterProcessLocking_UnarmedHelper_ExitsAtWatchdogWithoutParentKill()
+    {
+        if (!OperatingSystem.IsWindows() || !string.Equals(Environment.GetEnvironmentVariable("GITHUB_ACTIONS"), "true", StringComparison.OrdinalIgnoreCase))
+            return;
+
+        var tempDir = new SyntheticTestDirectory();
+        var coordDir = new SyntheticTestDirectory();
+        var coordinator = new OperationLeaseCoordinator(coordDir.RootPath);
+        string target = Path.Combine(tempDir.RootPath, "UnarmedHelperTarget");
+        Directory.CreateDirectory(target);
+        string lockPath = Path.Combine(coordDir.RootPath,
+            OperationResourceIdentity.GetTargetLockFileName(OperationResourceIdentity.ResolveCanonicalPath(target)));
+        string armPath = Path.Combine(coordDir.RootPath, "self-exit.signal");
+        const int maxTotalLifetimeMs = 12000;
+        const int cleanupReservationMs = 4000;
+        var overall = Stopwatch.StartNew();
+        Process? helper = null;
+        bool helperExited = false;
+        try
+        {
+            // No arm marker is ever written. The child must independently exit 2,
+            // including when its own deadline expires during process startup.
+            helper = Process.Start(CreateTimedLockHelper(lockPath, armPath, DateTime.UtcNow.AddSeconds(2)));
+            Assert.NotNull(helper);
+            await WaitForHelperExitAsync(helper, overall, maxTotalLifetimeMs - cleanupReservationMs);
+            Assert.Equal(2, helper.ExitCode);
+            Assert.False(File.Exists(armPath));
+            await using var lease = await coordinator.TryAcquireOperationScopeAsync(target, timeout: TimeSpan.FromMilliseconds(500));
+            Assert.True(lease is not null, SyntheticSafetyFixture.Diagnostic(
+                SyntheticSafetyFixture.Phase.PostHelperLease, overall.ElapsedMilliseconds, coordinator.LastAcquisitionError));
+            Assert.True(lease!.IsAcquired);
+        }
+        finally
+        {
+            if (helper != null)
+            {
+                if (!helper.HasExited)
+                {
+                    try { helper.Kill(entireProcessTree: true); } catch { }
+                }
+                int remaining = maxTotalLifetimeMs - (int)overall.ElapsedMilliseconds;
+                helperExited = remaining > 0 ? helper.WaitForExit(remaining) : helper.HasExited;
+            }
+            else helperExited = true;
+            if (helperExited)
+            {
+                helper?.Dispose();
+                coordDir.Dispose();
+                tempDir.Dispose();
+            }
+            Assert.True(helperExited, SyntheticSafetyFixture.Diagnostic(
+                SyntheticSafetyFixture.Phase.HelperCleanup, overall.ElapsedMilliseconds));
         }
     }
 
@@ -750,20 +874,13 @@ public sealed class OperationLeaseCoordinatorTests
         string lockName = OperationResourceIdentity.GetTargetLockFileName(canonicalTarget);
         string fullLockPath = Path.Combine(coordDir.RootPath, lockName);
 
-        // Helper holds lock with an independent self-timeout (2000 ms), well within 20s profile
-        var psi = new ProcessStartInfo
-        {
-            FileName = "powershell.exe",
-            Arguments = $"-NoProfile -NonInteractive -Command \"try {{ $f = new-object System.IO.FileStream('{fullLockPath.Replace("'", "''")}', [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None, 4096, [System.IO.FileOptions]::DeleteOnClose); [Console]::Out.WriteLine('LOCKED'); [Console]::Out.Flush(); Start-Sleep -Milliseconds 2000; $f.Dispose(); exit 0 }} catch {{ exit 1 }}\"",
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true
-        };
-
         var overallSw = Stopwatch.StartNew();
         const int maxTotalLifetimeMs = 12000;
         const int cleanupReservationMs = 4000;
+        const int operationalBudgetMs = maxTotalLifetimeMs - cleanupReservationMs;
+        string armPath = Path.Combine(coordDir.RootPath, "self-exit.signal");
+        var psi = CreateTimedLockHelper(fullLockPath, armPath,
+            DateTime.UtcNow.AddMilliseconds(RemainingHelperBudget(overallSw, operationalBudgetMs, SyntheticSafetyFixture.Phase.HelperStartupSignal)));
         Process? helper = null;
         bool helperExited = false;
         try
@@ -771,36 +888,24 @@ public sealed class OperationLeaseCoordinatorTests
             helper = Process.Start(psi);
             Assert.NotNull(helper);
 
-            int startupBudget = maxTotalLifetimeMs - cleanupReservationMs - (int)overallSw.ElapsedMilliseconds;
-            if (startupBudget <= 0) throw new TimeoutException("Startup budget expired before child start.");
-            var readTask = helper.StandardOutput.ReadLineAsync();
-            var readCompleted = await Task.WhenAny(readTask, Task.Delay(startupBudget));
-            Assert.True(ReferenceEquals(readTask, readCompleted), SyntheticSafetyFixture.Diagnostic(SyntheticSafetyFixture.Phase.HelperStartupSignal, overallSw.ElapsedMilliseconds));
-            string? signal = await readTask;
-            Assert.True(string.Equals("LOCKED", signal, StringComparison.Ordinal), SyntheticSafetyFixture.Diagnostic(SyntheticSafetyFixture.Phase.HelperStartupSignal, overallSw.ElapsedMilliseconds));
+            await ReadHelperSignalAsync(helper, "LOCKED", overallSw, operationalBudgetMs,
+                SyntheticSafetyFixture.Phase.HelperStartupSignal);
 
             // Parent attempts acquisition with 200 ms timeout and must be excluded while child holds lock
             var sw = Stopwatch.StartNew();
             await using var refusedLease = await coordinator.TryAcquireOperationScopeAsync(targetPath, timeout: TimeSpan.FromMilliseconds(200));
             sw.Stop();
-            Assert.Null(refusedLease);
+            Assert.True(refusedLease is null, SyntheticSafetyFixture.Diagnostic(
+                SyntheticSafetyFixture.Phase.HelperExclusion, overallSw.ElapsedMilliseconds, coordinator.LastAcquisitionError));
             Assert.InRange(sw.ElapsedMilliseconds, 150, 2000);
 
-            // Exercise independent child helper timeout: child self-terminates within its independent timeout (2000 ms) without parent kill
-            int childTimeoutBudget = maxTotalLifetimeMs - cleanupReservationMs - (int)overallSw.ElapsedMilliseconds;
-            if (childTimeoutBudget <= 0) throw new TimeoutException("Child timeout budget expired.");
-            // Do not block an xUnit worker while waiting for the independently bounded child.
-            // Keep the same operational/cleanup budgets; a timeout still fails this test.
-            using var exitDeadline = new CancellationTokenSource(childTimeoutBudget);
-            try
-            {
-                await helper.WaitForExitAsync(exitDeadline.Token);
-            }
-            catch (OperationCanceledException) when (exitDeadline.IsCancellationRequested)
-            {
-                throw new TimeoutException(SyntheticSafetyFixture.Diagnostic(
-                    SyntheticSafetyFixture.Phase.HelperSelfExit, overallSw.ElapsedMilliseconds));
-            }
+            // Parent completion arms the unchanged independent two-second self-exit.
+            if (RemainingHelperBudget(overallSw, operationalBudgetMs, SyntheticSafetyFixture.Phase.HelperTimerArm) < 2000)
+                throw new TimeoutException(SyntheticSafetyFixture.Diagnostic(SyntheticSafetyFixture.Phase.HelperTimerArm, overallSw.ElapsedMilliseconds));
+            File.WriteAllText(armPath, "START");
+            await ReadHelperSignalAsync(helper, "TIMER_STARTED", overallSw, operationalBudgetMs,
+                SyntheticSafetyFixture.Phase.HelperTimerArm);
+            await WaitForHelperExitAsync(helper, overallSw, operationalBudgetMs);
             Assert.Equal(0, helper.ExitCode);
 
             // Once child self-terminated and released lock, coordinator acquires target lease successfully
