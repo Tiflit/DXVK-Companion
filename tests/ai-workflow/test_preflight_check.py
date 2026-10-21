@@ -37,6 +37,27 @@ class TestPreflightCheck(unittest.TestCase):
     def tearDown(self):
         self.temp_dir.cleanup()
 
+    def test_documentation_evidence_is_explicit_and_never_expands_scope(self):
+        issue = "### Allowed paths\n- src/f.cs\n"
+        pr = ("## Primary Issue\nFixes #188\n## Summary\nS\n## Scope\nS\n"
+              "## Verification\nV\n## Documentation\n"
+              "`docs/guide.md` — Explains the revised offline validation contract.")
+        files = [{"filename": "src/f.cs"}]
+        unknown = preflight_check.run_preflight(issue, pr, files)
+        self.assertTrue(unknown.is_valid)
+        self.assertTrue(any("inclusion: NOT VERIFIED" in d for d in unknown.hygiene_diagnostics))
+        absent = preflight_check.run_preflight(issue, pr, files, documentation_changed_files=[])
+        self.assertFalse(absent.hygiene_valid)
+        self.assertTrue(absent.scope_valid)
+        matched = preflight_check.run_preflight(issue, pr, files,
+            documentation_changed_files=["docs/guide.md"], documentation_repository_files=["docs/guide.md"])
+        self.assertTrue(matched.is_valid)
+        violation = preflight_check.run_preflight(issue, pr, [{"filename": "docs/ai-journal/session.md"}])
+        self.assertFalse(violation.scope_valid)
+        unsafe = preflight_check.run_preflight(issue, pr.replace("docs/guide.md", "../PrivateSentinel.md"), files)
+        self.assertFalse(unsafe.hygiene_valid)
+        self.assertNotIn("PrivateSentinel", str(unsafe.hygiene_diagnostics))
+
     def _write_file(self, name: str, content: str, encoding: str = "utf-8") -> Path:
         file_path = self.dir_path / name
         file_path.write_text(content, encoding=encoding)
@@ -82,7 +103,7 @@ class TestPreflightCheck(unittest.TestCase):
             "## Verification\n"
             "Valid verification.\n\n"
             "## Documentation\n"
-            "Valid documentation.\n"
+            "None — Only synthetic fixtures change; user behavior remains unchanged.\n"
         )
         files_data = [{"filename": "src/DXVKCompanion/Utils/CompanionVersion.cs"}]
 
@@ -103,7 +124,7 @@ class TestPreflightCheck(unittest.TestCase):
         # 1. Unconstrained displays explicit PASS (Unconstrained)
         issue_unconstrained = "### Allowed paths\n- Unconstrained\n"
         pr_content = (
-            "## Primary Issue\nFixes #1\n\n## Summary\nS\n\n## Scope\nSc\n\n## Verification\nV\n\n## Documentation\nD\n"
+            "## Primary Issue\nFixes #1\n\n## Summary\nS\n\n## Scope\nSc\n\n## Verification\nV\n\n## Documentation\nNone — Only synthetic fixtures change; user behavior remains unchanged.\n"
         )
         argv_unconstrained = self._create_standard_inputs(
             issue_unconstrained,
@@ -145,7 +166,7 @@ class TestPreflightCheck(unittest.TestCase):
             "## Verification\n"
             "Valid verification.\n\n"
             "## Documentation\n"
-            "Valid documentation.\n"
+            "None — Only synthetic fixtures change; user behavior remains unchanged.\n"
         )
         files_data = [{"filename": "src/DXVKCompanion/Diagnostics/DiagnosticReportGenerator.cs"}]
 
@@ -179,7 +200,7 @@ class TestPreflightCheck(unittest.TestCase):
             "## Verification\n"
             "Valid verification.\n\n"
             "## Documentation\n"
-            "Valid documentation.\n"
+            "None — Only synthetic fixtures change; user behavior remains unchanged.\n"
         )
         files_data = [{"filename": "src/DXVKCompanion/Diagnostics/DiagnosticReportGenerator.cs"}]
 
@@ -204,7 +225,7 @@ class TestPreflightCheck(unittest.TestCase):
         )
         pr_content = (
             "## Primary Issue\nFixes #1\n\n"
-            "## Summary\nS\n\n## Scope\nSc\n\n## Verification\nV\n\n## Documentation\nD\n"
+            "## Summary\nS\n\n## Scope\nSc\n\n## Verification\nV\n\n## Documentation\nNone — Only synthetic fixtures change; user behavior remains unchanged.\n"
         )
         # 1. Allowed file passes
         argv1 = self._create_standard_inputs(
@@ -247,7 +268,7 @@ class TestPreflightCheck(unittest.TestCase):
     def test_missing_or_empty_allowed_paths(self):
         pr_content = (
             "## Primary Issue\nFixes #1\n\n"
-            "## Summary\nS\n\n## Scope\nSc\n\n## Verification\nV\n\n## Documentation\nD\n"
+            "## Summary\nS\n\n## Scope\nSc\n\n## Verification\nV\n\n## Documentation\nNone — Only synthetic fixtures change; user behavior remains unchanged.\n"
         )
         files = [{"filename": "src/any.cs"}]
 
@@ -273,7 +294,7 @@ class TestPreflightCheck(unittest.TestCase):
         )
         pr_content = (
             "## Primary Issue\nFixes #1\n\n"
-            "## Summary\nS\n\n## Scope\nSc\n\n## Verification\nV\n\n## Documentation\nD\n"
+            "## Summary\nS\n\n## Scope\nSc\n\n## Verification\nV\n\n## Documentation\nNone — Only synthetic fixtures change; user behavior remains unchanged.\n"
         )
         argv = self._create_standard_inputs(issue_content, pr_content, [{"filename": "src/extra.cs"}])
 
@@ -292,7 +313,7 @@ class TestPreflightCheck(unittest.TestCase):
         )
         pr_content = (
             "## Primary Issue\nFixes #1\n\n"
-            "## Summary\nS\n\n## Scope\nSc\n\n## Verification\nV\n\n## Documentation\nD\n"
+            "## Summary\nS\n\n## Scope\nSc\n\n## Verification\nV\n\n## Documentation\nNone — Only synthetic fixtures change; user behavior remains unchanged.\n"
         )
         files = [
             {
@@ -316,7 +337,7 @@ class TestPreflightCheck(unittest.TestCase):
     def test_sensitive_filenames_rename_sources_and_newlines(self):
         issue_content = "### Allowed paths\n- src/valid.cs\n"
         pr_content = (
-            "## Primary Issue\nFixes #1\n\n## Summary\nS\n\n## Scope\nSc\n\n## Verification\nV\n\n## Documentation\nD\n"
+            "## Primary Issue\nFixes #1\n\n## Summary\nS\n\n## Scope\nSc\n\n## Verification\nV\n\n## Documentation\nNone — Only synthetic fixtures change; user behavior remains unchanged.\n"
         )
         files = [
             {
@@ -341,7 +362,7 @@ class TestPreflightCheck(unittest.TestCase):
     def test_large_violation_list_capping_and_truncation(self):
         issue_content = "### Allowed paths\n- src/allowed.cs\n"
         pr_content = (
-            "## Primary Issue\nFixes #1\n\n## Summary\nS\n\n## Scope\nSc\n\n## Verification\nV\n\n## Documentation\nD\n"
+            "## Primary Issue\nFixes #1\n\n## Summary\nS\n\n## Scope\nSc\n\n## Verification\nV\n\n## Documentation\nNone — Only synthetic fixtures change; user behavior remains unchanged.\n"
         )
         files = [{"filename": f"src/violating_{i}.cs"} for i in range(10)]
         argv = self._create_standard_inputs(issue_content, pr_content, files)
@@ -365,7 +386,7 @@ class TestPreflightCheck(unittest.TestCase):
             b"## Summary\nSummary\n\n"
             b"## Scope\nScope\n\n"
             b"## Verification\nVerification\n\n"
-            b"## Documentation\nDocumentation\n"
+            b"## Documentation\nNone - Only synthetic fixtures change; user behavior remains unchanged.\n"
         )
         files_bytes = bom + json.dumps([{"filename": "src/bom_file.cs"}]).encode("utf-8")
 
@@ -394,7 +415,7 @@ class TestPreflightCheck(unittest.TestCase):
 
         # Missing primary issue
         pr_missing = (
-            "## Summary\nS\n\n## Scope\nSc\n\n## Verification\nV\n\n## Documentation\nD\n"
+            "## Summary\nS\n\n## Scope\nSc\n\n## Verification\nV\n\n## Documentation\nNone — Only synthetic fixtures change; user behavior remains unchanged.\n"
         )
         argv1 = self._create_standard_inputs(issue_content, pr_missing, files)
         stdout1 = io.StringIO()
@@ -405,7 +426,7 @@ class TestPreflightCheck(unittest.TestCase):
         # Conflicting primary issues
         pr_conflicting = (
             "## Primary Issue\nFixes #80\nFixes #82\n\n"
-            "## Summary\nS\n\n## Scope\nSc\n\n## Verification\nV\n\n## Documentation\nD\n"
+            "## Summary\nS\n\n## Scope\nSc\n\n## Verification\nV\n\n## Documentation\nNone — Only synthetic fixtures change; user behavior remains unchanged.\n"
         )
         argv2 = self._create_standard_inputs(issue_content, pr_conflicting, files)
         stdout2 = io.StringIO()
@@ -419,7 +440,7 @@ class TestPreflightCheck(unittest.TestCase):
 
         pr_missing_heading = (
             "## Primary Issue\nFixes #1\n\n"
-            "## Summary\nS\n\n## Scope\nSc\n\n## Documentation\nD\n"
+            "## Summary\nS\n\n## Scope\nSc\n\n## Documentation\nNone — Only synthetic fixtures change; user behavior remains unchanged.\n"
         )
         argv = self._create_standard_inputs(issue_content, pr_missing_heading, files)
         stdout = io.StringIO()
@@ -435,7 +456,7 @@ class TestPreflightCheck(unittest.TestCase):
         issue_file = self._write_file("issue.md", "### Allowed paths\n- src/f.cs\n")
         pr_file = self._write_file(
             "pr.md",
-            "## Primary Issue\nFixes #1\n\n## Summary\nS\n\n## Scope\nSc\n\n## Verification\nV\n\n## Documentation\nD\n",
+            "## Primary Issue\nFixes #1\n\n## Summary\nS\n\n## Scope\nSc\n\n## Verification\nV\n\n## Documentation\nNone — Only synthetic fixtures change; user behavior remains unchanged.\n",
         )
 
         bad_cases = [
@@ -533,7 +554,7 @@ class TestPreflightCheck(unittest.TestCase):
         pr_content = (
             "## Primary Issue\nFixes #1\n\n"
             "## Summary\nToken ghp_anotherSecretToken99999999999999999999\n\n"
-            "## Scope\nSc\n\n## Verification\nV\n\n## Documentation\nD\n"
+            "## Scope\nSc\n\n## Verification\nV\n\n## Documentation\nNone — Only synthetic fixtures change; user behavior remains unchanged.\n"
         )
         files = [{"filename": "src/file.cs"}]
         argv = self._create_standard_inputs(issue_content, pr_content, files)
@@ -563,7 +584,7 @@ class TestPreflightCheck(unittest.TestCase):
         )
         pr_content = (
             "## Primary Issue\nFixes #85\n\n"
-            "## Summary\nSummary\n\n## Scope\nScope\n\n## Verification\nVerification\n\n## Documentation\nDocumentation\n"
+            "## Summary\nSummary\n\n## Scope\nScope\n\n## Verification\nVerification\n\n## Documentation\nNone — Only synthetic fixtures change; user behavior remains unchanged.\n"
         )
         files = [{"filename": "src/DXVKCompanion/Utils/CompanionVersion.cs"}]
         argv = self._create_standard_inputs(issue_content, pr_content, files)
@@ -582,7 +603,7 @@ class TestPreflightCheck(unittest.TestCase):
     def test_in_process_guards_against_writes_and_network(self):
         issue_content = "### Allowed paths\n- src/f.cs\n"
         pr_content = (
-            "## Primary Issue\nFixes #1\n\n## Summary\nS\n\n## Scope\nSc\n\n## Verification\nV\n\n## Documentation\nD\n"
+            "## Primary Issue\nFixes #1\n\n## Summary\nS\n\n## Scope\nSc\n\n## Verification\nV\n\n## Documentation\nNone — Only synthetic fixtures change; user behavior remains unchanged.\n"
         )
         files = [{"filename": "src/f.cs"}]
         argv = self._create_standard_inputs(issue_content, pr_content, files)
@@ -631,7 +652,7 @@ class TestPreflightCheck(unittest.TestCase):
 
             pr_f = clean_path / "pr.md"
             pr_f.write_text(
-                "## Primary Issue\nFixes #1\n\n## Summary\nS\n\n## Scope\nSc\n\n## Verification\nV\n\n## Documentation\nD\n",
+                "## Primary Issue\nFixes #1\n\n## Summary\nS\n\n## Scope\nSc\n\n## Verification\nV\n\n## Documentation\nNone — Only synthetic fixtures change; user behavior remains unchanged.\n",
                 encoding="utf-8",
             )
 
