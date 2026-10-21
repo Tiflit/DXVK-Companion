@@ -108,6 +108,151 @@ namespace DXVKCompanion.PhaseA.Tests
         }
     }
 
+    public sealed class LatestOfficialMetadataTests
+    {
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public async Task Latest_SelectsExactWindowsAsset_PersistsOriginAndDigest_WithoutArchiveDownload(bool digest)
+        {
+            using var fixture = new OfficialAcquisitionFixture();
+            var metadata = OfficialAcquisitionFixture.Metadata("v2.5", fixture.Archives["v2.5"], digest);
+            var assets = metadata["assets"]!.AsArray();
+            var native = assets[0]!.DeepClone();
+            native["name"] = "dxvk-native-2.5-steamrt-sniper.tar.gz";
+            native["browser_download_url"] = "https://example.invalid/native.tar.gz";
+            assets.Insert(0, native);
+            assets.Insert(0, new JsonObject { ["name"] = "source.tar.gz", ["browser_download_url"] = "https://example.invalid/source.tar.gz" });
+            fixture.Override = (request, _) =>
+            {
+                Assert.Equal("https://api.github.com/repos/doitsujin/dxvk/releases/latest", request.RequestUri!.AbsoluteUri);
+                return Task.FromResult(OfficialAcquisitionFixture.Json(metadata));
+            };
+            var result = await fixture.Github.FetchLatestReleaseAsync();
+            Assert.NotNull(result);
+            Assert.Equal("v2.5", result.Version);
+            Assert.Equal(OfficialAcquisitionFixture.AssetUrl("v2.5"), result.DownloadUrl);
+            Assert.Equal(100, result.ReleaseId);
+            Assert.Equal(200, result.AssetId);
+            Assert.Equal(fixture.Archives["v2.5"].Length, result.AssetSize);
+            Assert.Equal("dxvk-2.5.tar.gz", result.AssetName);
+            Assert.Equal((string?)assets[assets.Count - 1]!["digest"], result.AssetDigest);
+            var cached = new CacheStore(Path.Combine(fixture.Directory.RootPath, "cache.json")).LoadCachedRelease();
+            Assert.NotNull(cached);
+            Assert.Equal(result.AssetId, cached.Release.AssetId);
+            Assert.Equal(result.AssetDigest, cached.Release.AssetDigest);
+            Assert.Equal(result.AssetSize, cached.Release.AssetSize);
+            Assert.Single(fixture.Requests);
+            Assert.False(Directory.Exists(fixture.Source));
+        }
+
+        [Fact]
+        public async Task Latest_LegacyFreshCache_IsReusedWithoutInventedProvenanceOrNetwork()
+        {
+            using var fixture = new OfficialAcquisitionFixture();
+            var now = new DateTime(2026, 10, 20, 12, 0, 0, DateTimeKind.Utc);
+            fixture.Github.UtcNowSeam = () => now;
+            var cache = new CacheStore(Path.Combine(fixture.Directory.RootPath, "cache.json"));
+            cache.SaveCachedRelease(new ReleaseInfo { Version = "v2.4", DownloadUrl = "https://example.invalid/legacy.tar.gz" },
+                "\"legacy-etag\"", now, now);
+            fixture.Offline = true;
+            var result = await fixture.Github.FetchLatestReleaseAsync();
+            Assert.NotNull(result);
+            Assert.Equal("v2.4", result.Version);
+            Assert.Equal("https://example.invalid/legacy.tar.gz", result.DownloadUrl);
+            Assert.Equal(0, result.AssetId);
+            Assert.Null(result.AssetDigest);
+            Assert.Empty(fixture.Requests);
+        }
+
+        [Theory]
+        [InlineData("native-only")]
+        [InlineData("duplicate")]
+        [InlineData("draft")]
+        [InlineData("prerelease")]
+        [InlineData("tag")]
+        [InlineData("url")]
+        [InlineData("digest")]
+        [InlineData("size")]
+        [InlineData("asset-id")]
+        public async Task Latest_InvalidFreshIdentity_RetainsPriorCacheAndThrottlesAttempt(string fault)
+        {
+            using var fixture = new OfficialAcquisitionFixture();
+            var metadata = OfficialAcquisitionFixture.Metadata("v2.5", fixture.Archives["v2.5"]);
+            var assets = metadata["assets"]!.AsArray();
+            var asset = assets[0]!;
+            switch (fault)
+            {
+                case "native-only": asset["name"] = "dxvk-native-2.5.tar.gz"; break;
+                case "duplicate": assets.Add(asset.DeepClone()); break;
+                case "draft": metadata["draft"] = true; break;
+                case "prerelease": metadata["prerelease"] = true; break;
+                case "tag": metadata["tag_name"] = "v2.5/../other"; break;
+                case "url": asset["browser_download_url"] = "https://example.invalid/dxvk-2.5.tar.gz"; break;
+                case "digest": asset["digest"] = "sha256:invalid"; break;
+                case "size": asset["size"] = DxvkReleaseAcquirer.MaximumArchiveBytes + 1L; break;
+                case "asset-id": asset["id"] = 0; break;
+            }
+            var time = new DateTime(2026, 10, 20, 12, 0, 0, DateTimeKind.Utc);
+            fixture.Github.UtcNowSeam = () => time;
+            var cache = new CacheStore(Path.Combine(fixture.Directory.RootPath, "cache.json"));
+            var previous = new ReleaseInfo { Version = "v2.4", DownloadUrl = OfficialAcquisitionFixture.AssetUrl("v2.4") };
+            cache.SaveCachedRelease(previous, "\"old-etag\"", time.AddDays(-2), time.AddDays(-2));
+            fixture.Override = (_, _) => Task.FromResult(OfficialAcquisitionFixture.Json(metadata));
+            var result = await fixture.Github.FetchLatestReleaseAsync();
+            Assert.NotNull(result);
+            Assert.Equal("v2.4", result.Version);
+            Assert.Equal("v2.4", cache.LoadCachedRelease()!.Release.Version);
+            Assert.Equal(time, cache.LoadCachedRelease()!.EffectiveLastAttempt);
+            Assert.Equal("v2.4", (await fixture.Github.FetchLatestReleaseAsync())!.Version);
+            Assert.Single(fixture.Requests);
+        }
+
+        [Fact]
+        public async Task Latest_OversizedStreamingBody_StopsReadingAndDisposes_ThenThrottles()
+        {
+            using var fixture = new OfficialAcquisitionFixture();
+            var stream = new OversizedMetadataStream();
+            fixture.Override = (_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StreamContent(stream) });
+            Assert.Null(await fixture.Github.FetchLatestReleaseAsync());
+            Assert.InRange(stream.BytesRead, DxvkGithubClient.MaximumMetadataBytes + 1L, DxvkGithubClient.MaximumMetadataBytes + 81920L);
+            Assert.True(stream.Disposed);
+            Assert.Null(await fixture.Github.FetchLatestReleaseAsync());
+            Assert.Single(fixture.Requests);
+        }
+
+        private sealed class OversizedMetadataStream : Stream
+        {
+            internal long BytesRead;
+            internal bool Disposed;
+            public override bool CanRead => !Disposed;
+            public override bool CanSeek => false;
+            public override bool CanWrite => false;
+            public override long Length => throw new NotSupportedException();
+            public override long Position { get => BytesRead; set => throw new NotSupportedException(); }
+            public override int Read(byte[] buffer, int offset, int count)
+            {
+                int amount = (int)Math.Min(count, 2L * DxvkGithubClient.MaximumMetadataBytes - BytesRead);
+                Array.Fill(buffer, (byte)' ', offset, amount);
+                BytesRead += amount;
+                return amount;
+            }
+            public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken token = default)
+            {
+                token.ThrowIfCancellationRequested();
+                int amount = (int)Math.Min(buffer.Length, 2L * DxvkGithubClient.MaximumMetadataBytes - BytesRead);
+                buffer.Span[..amount].Fill((byte)' ');
+                BytesRead += amount;
+                return ValueTask.FromResult(amount);
+            }
+            protected override void Dispose(bool disposing) { Disposed = true; base.Dispose(disposing); }
+            public override void Flush() => throw new NotSupportedException();
+            public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+            public override void SetLength(long value) => throw new NotSupportedException();
+            public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        }
+    }
+
     public class DxvkGithubClientTests
     {
         [Fact]
@@ -117,7 +262,7 @@ namespace DXVKCompanion.PhaseA.Tests
             string cacheFile = Path.Combine(testDir.RootPath, "release-cache.json");
             var store = new CacheStore(cacheFile);
 
-            var initialRelease = new ReleaseInfo { Version = "v2.4", DownloadUrl = "https://example.com/v2.4.tar.gz" };
+            var initialRelease = new ReleaseInfo { Version = "v2.4", DownloadUrl = "https://github.com/doitsujin/dxvk/releases/download/v2.4/dxvk-2.4.tar.gz" };
             store.SaveCachedRelease(initialRelease, "\"etag-2.4\"");
 
             int callCount = 0;
@@ -133,7 +278,7 @@ namespace DXVKCompanion.PhaseA.Tests
 
             Assert.NotNull(result);
             Assert.Equal("v2.4", result.Version);
-            Assert.Equal("https://example.com/v2.4.tar.gz", result.DownloadUrl);
+            Assert.Equal("https://github.com/doitsujin/dxvk/releases/download/v2.4/dxvk-2.4.tar.gz", result.DownloadUrl);
             Assert.Equal(0, callCount);
             await AssertClientUsableAsync(httpClient);
         }
@@ -182,7 +327,7 @@ namespace DXVKCompanion.PhaseA.Tests
             string cacheFile = Path.Combine(testDir.RootPath, "release-cache.json");
             var store = new CacheStore(cacheFile);
 
-            string json = CreateMultiAssetReleaseJson("v2.5.1", "dxvk-2.5.1.tar.gz", "https://example.com/dxvk-2.5.1.tar.gz");
+            string json = CreateMultiAssetReleaseJson("v2.5.1", "dxvk-2.5.1.tar.gz", "https://github.com/doitsujin/dxvk/releases/download/v2.5.1/dxvk-2.5.1.tar.gz");
             var trackingResponse = CreateJsonResponse(HttpStatusCode.OK, json, "\"v2.5.1-etag\"");
             var trackingContent = (TrackingHttpContent)trackingResponse.Content!;
 
@@ -194,7 +339,7 @@ namespace DXVKCompanion.PhaseA.Tests
 
             Assert.NotNull(result);
             Assert.Equal("v2.5.1", result.Version);
-            Assert.Equal("https://example.com/dxvk-2.5.1.tar.gz", result.DownloadUrl);
+            Assert.Equal("https://github.com/doitsujin/dxvk/releases/download/v2.5.1/dxvk-2.5.1.tar.gz", result.DownloadUrl);
 
             Assert.True(handler.AttachedRequestContents[0].IsDisposed);
             Assert.True(trackingResponse.IsDisposed);
@@ -209,7 +354,7 @@ namespace DXVKCompanion.PhaseA.Tests
             string cacheFile = Path.Combine(testDir.RootPath, "release-cache.json");
             var store = new CacheStore(cacheFile);
 
-            var initialRelease = new ReleaseInfo { Version = "v2.4", DownloadUrl = "https://example.com/v2.4.tar.gz" };
+            var initialRelease = new ReleaseInfo { Version = "v2.4", DownloadUrl = "https://github.com/doitsujin/dxvk/releases/download/v2.4/dxvk-2.4.tar.gz" };
             store.SaveCachedRelease(initialRelease, "\"etag-v2.4\"");
 
             // Synthetically expire cache file by writing expired CachedAt
@@ -259,7 +404,7 @@ namespace DXVKCompanion.PhaseA.Tests
             string cacheFile = Path.Combine(testDir.RootPath, "release-cache.json");
             var store = new CacheStore(cacheFile);
 
-            var initialRelease = new ReleaseInfo { Version = "v2.3", DownloadUrl = "https://example.com/v2.3.tar.gz" };
+            var initialRelease = new ReleaseInfo { Version = "v2.3", DownloadUrl = "https://github.com/doitsujin/dxvk/releases/download/v2.3/dxvk-2.3.tar.gz" };
             store.SaveCachedRelease(initialRelease, "\"etag-v2.3\"");
 
             // Expire cache
@@ -317,7 +462,7 @@ namespace DXVKCompanion.PhaseA.Tests
             string cacheFile = Path.Combine(testDir.RootPath, "release-cache.json");
             var store = new CacheStore(cacheFile);
 
-            var initialRelease = new ReleaseInfo { Version = "v2.3.1", DownloadUrl = "https://example.com/v2.3.1.tar.gz" };
+            var initialRelease = new ReleaseInfo { Version = "v2.3.1", DownloadUrl = "https://github.com/doitsujin/dxvk/releases/download/v2.3.1/dxvk-2.3.1.tar.gz" };
             store.SaveCachedRelease(initialRelease, "\"etag-v2.3.1\"");
 
             var expired = store.LoadCachedRelease()!;
@@ -374,7 +519,7 @@ namespace DXVKCompanion.PhaseA.Tests
             string cacheFile = Path.Combine(testDir.RootPath, "release-cache.json");
             var store = new CacheStore(cacheFile);
 
-            var initialRelease = new ReleaseInfo { Version = "v2.2", DownloadUrl = "https://example.com/v2.2.tar.gz" };
+            var initialRelease = new ReleaseInfo { Version = "v2.2", DownloadUrl = "https://github.com/doitsujin/dxvk/releases/download/v2.2/dxvk-2.2.tar.gz" };
             store.SaveCachedRelease(initialRelease, "\"etag-v2.2\"");
 
             var expired = store.LoadCachedRelease()!;
@@ -408,7 +553,7 @@ namespace DXVKCompanion.PhaseA.Tests
             string cacheFile = Path.Combine(testDir.RootPath, "release-cache.json");
             var store = new CacheStore(cacheFile);
 
-            var initialRelease = new ReleaseInfo { Version = "v2.1", DownloadUrl = "https://example.com/v2.1.tar.gz" };
+            var initialRelease = new ReleaseInfo { Version = "v2.1", DownloadUrl = "https://github.com/doitsujin/dxvk/releases/download/v2.1/dxvk-2.1.tar.gz" };
             store.SaveCachedRelease(initialRelease, "\"etag-v2.1\"");
 
             var expired = store.LoadCachedRelease()!;
@@ -419,7 +564,7 @@ namespace DXVKCompanion.PhaseA.Tests
             // Inject failure on staging write
             store.CustomTempWriter = (_, _) => throw new IOException("Disk failure during staged cache write");
 
-            string json = CreateReleaseJson("v2.5", "dxvk-2.5.tar.gz", "https://example.com/dxvk-2.5.tar.gz");
+            string json = CreateReleaseJson("v2.5", "dxvk-2.5.tar.gz", "https://github.com/doitsujin/dxvk/releases/download/v2.5/dxvk-2.5.tar.gz");
             var trackingResponse = CreateJsonResponse(HttpStatusCode.OK, json, "\"v2.5-etag\"");
             var trackingContent = (TrackingHttpContent)trackingResponse.Content!;
 
@@ -446,7 +591,7 @@ namespace DXVKCompanion.PhaseA.Tests
             string cacheFile = Path.Combine(testDir.RootPath, "release-cache.json");
             var store = new CacheStore(cacheFile);
 
-            var initialRelease = new ReleaseInfo { Version = "v2.1", DownloadUrl = "https://example.com/v2.1.tar.gz" };
+            var initialRelease = new ReleaseInfo { Version = "v2.1", DownloadUrl = "https://github.com/doitsujin/dxvk/releases/download/v2.1/dxvk-2.1.tar.gz" };
             store.SaveCachedRelease(initialRelease, "\"etag-v2.1\"");
 
             var expired = store.LoadCachedRelease()!;
@@ -483,7 +628,7 @@ namespace DXVKCompanion.PhaseA.Tests
             string cacheFile = Path.Combine(testDir.RootPath, "release-cache.json");
             var store = new CacheStore(cacheFile);
 
-            var initialRelease = new ReleaseInfo { Version = "v2.0", DownloadUrl = "https://example.com/v2.0.tar.gz" };
+            var initialRelease = new ReleaseInfo { Version = "v2.0", DownloadUrl = "https://github.com/doitsujin/dxvk/releases/download/v2.0/dxvk-2.0.tar.gz" };
             store.SaveCachedRelease(initialRelease, "\"etag-v2.0\"");
 
             var expired = store.LoadCachedRelease()!;
@@ -515,7 +660,7 @@ namespace DXVKCompanion.PhaseA.Tests
             string cacheFile = Path.Combine(testDir.RootPath, "release-cache.json");
             var store = new CacheStore(cacheFile);
 
-            var initialRelease = new ReleaseInfo { Version = "v2.0", DownloadUrl = "https://example.com/v2.0.tar.gz" };
+            var initialRelease = new ReleaseInfo { Version = "v2.0", DownloadUrl = "https://github.com/doitsujin/dxvk/releases/download/v2.0/dxvk-2.0.tar.gz" };
             store.SaveCachedRelease(initialRelease, "\"etag-v2.0\"");
 
             var expired = store.LoadCachedRelease()!;
@@ -547,7 +692,7 @@ namespace DXVKCompanion.PhaseA.Tests
             string cacheFile = Path.Combine(testDir.RootPath, "release-cache.json");
             var store = new CacheStore(cacheFile);
 
-            string json25 = CreateReleaseJson("v2.5", "dxvk-2.5.tar.gz", "https://example.com/dxvk-2.5.tar.gz");
+            string json25 = CreateReleaseJson("v2.5", "dxvk-2.5.tar.gz", "https://github.com/doitsujin/dxvk/releases/download/v2.5/dxvk-2.5.tar.gz");
             int requestCount = 0;
 
             var responses = new List<TrackingHttpResponseMessage>();
@@ -668,7 +813,7 @@ namespace DXVKCompanion.PhaseA.Tests
             var store = new CacheStore(cacheFile);
             var fakeNow = new DateTime(2026, 10, 17, 12, 0, 0, DateTimeKind.Utc);
 
-            string validJson = CreateReleaseJson("v2.5", "dxvk-2.5.tar.gz", "https://example.com/dxvk-2.5.tar.gz");
+            string validJson = CreateReleaseJson("v2.5", "dxvk-2.5.tar.gz", "https://github.com/doitsujin/dxvk/releases/download/v2.5/dxvk-2.5.tar.gz");
             int requestCount = 0;
             var handler = new FakeHttpMessageHandler(req =>
             {
@@ -718,7 +863,7 @@ namespace DXVKCompanion.PhaseA.Tests
             // Induce backup-copy failure by creating directory at CorruptBackupFile
             Directory.CreateDirectory(store.CorruptBackupFile);
 
-            string validJson = CreateReleaseJson("v2.5", "dxvk-2.5.tar.gz", "https://example.com/dxvk-2.5.tar.gz");
+            string validJson = CreateReleaseJson("v2.5", "dxvk-2.5.tar.gz", "https://github.com/doitsujin/dxvk/releases/download/v2.5/dxvk-2.5.tar.gz");
             int requestCount = 0;
             var handler = new FakeHttpMessageHandler(req =>
             {
@@ -784,11 +929,13 @@ namespace DXVKCompanion.PhaseA.Tests
         {
             var payload = new
             {
+                id = 100, draft = false, prerelease = false,
                 tag_name = tagName,
                 assets = new[]
                 {
                     new
                     {
+                        id = 200, size = 1024,
                         name = assetName,
                         browser_download_url = downloadUrl
                     }
@@ -801,12 +948,13 @@ namespace DXVKCompanion.PhaseA.Tests
         {
             var payload = new
             {
+                id = 100, draft = false, prerelease = false,
                 tag_name = tagName,
                 assets = new[]
                 {
-                    new { name = "dxvk-unrelated.zip", browser_download_url = "https://example.com/dxvk-unrelated.zip" },
-                    new { name = "notes.txt", browser_download_url = "https://example.com/notes.txt" },
-                    new { name = tarGzName, browser_download_url = tarGzUrl }
+                    new { id = 201, size = 1024, name = "dxvk-unrelated.zip", browser_download_url = "https://example.com/dxvk-unrelated.zip" },
+                    new { id = 202, size = 1024, name = "notes.txt", browser_download_url = "https://example.com/notes.txt" },
+                    new { id = 200, size = 1024, name = tarGzName, browser_download_url = tarGzUrl }
                 }
             };
             return JsonSerializer.Serialize(payload);

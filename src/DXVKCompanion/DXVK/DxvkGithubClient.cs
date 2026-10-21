@@ -195,7 +195,7 @@ namespace DXVKCompanion.DXVK
                 using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                 cts.CancelAfter(RequestTimeout);
 
-                using var response = await _httpClient.SendAsync(request, cts.Token);
+                using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cts.Token);
 
                 if (response.StatusCode == System.Net.HttpStatusCode.NotModified && cached != null && cached.HasValidRelease)
                 {
@@ -205,45 +205,11 @@ namespace DXVKCompanion.DXVK
 
                 response.EnsureSuccessStatusCode();
 
-                string json = await response.Content.ReadAsStringAsync();
-                using var doc = JsonDocument.Parse(json);
-
-                string tagName = "";
-                if (doc.RootElement.TryGetProperty("tag_name", out var tagProp))
-                {
-                    tagName = tagProp.GetString() ?? "";
-                }
-
-                string assetUrl = "";
-                if (doc.RootElement.TryGetProperty("assets", out var assetsProp) && assetsProp.ValueKind == JsonValueKind.Array)
-                {
-                    foreach (var asset in assetsProp.EnumerateArray())
-                    {
-                        string name = "";
-                        if (asset.TryGetProperty("name", out var nameProp))
-                        {
-                            name = nameProp.GetString() ?? "";
-                        }
-
-                        if (name.EndsWith(".tar.gz", StringComparison.OrdinalIgnoreCase))
-                        {
-                            if (asset.TryGetProperty("browser_download_url", out var urlProp))
-                            {
-                                assetUrl = urlProp.GetString() ?? "";
-                            }
-                            break;
-                        }
-                    }
-                }
-
-                if (string.IsNullOrWhiteSpace(tagName) ||
-                    string.Equals(tagName, "unknown", StringComparison.OrdinalIgnoreCase) ||
-                    string.IsNullOrWhiteSpace(assetUrl))
-                {
-                    throw new InvalidOperationException("GitHub API response contained invalid or missing release metadata.");
-                }
-
-                var release = new ReleaseInfo { Version = tagName, DownloadUrl = assetUrl };
+                await using var stream = await response.Content.ReadAsStreamAsync(cts.Token);
+                byte[] bytes = await ReadBoundedAsync(stream, MaximumMetadataBytes, cts.Token);
+                using var doc = JsonDocument.Parse(bytes);
+                var release = ParseOfficialRelease(doc.RootElement)
+                    ?? throw new InvalidDataException("GitHub API response did not identify one stable official Windows release asset.");
                 string? etag = response.Headers.ETag?.Tag;
 
                 _cacheStore.SaveCachedRelease(release, etag, cachedAt: now, lastAttemptAt: now);

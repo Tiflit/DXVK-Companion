@@ -213,10 +213,11 @@ public sealed class PerGameVersionSelectionTests : IDisposable
             {
                 var releaseJson = JsonSerializer.Serialize(new
                 {
+                    id = 100, draft = false, prerelease = false,
                     tag_name = "v2.5",
                     assets = new[]
                     {
-                        new { name = "dxvk-2.5.tar.gz", browser_download_url = "https://example.com/dxvk-2.5.tar.gz" }
+                        new { id = 200, size = 1024, name = "dxvk-2.5.tar.gz", browser_download_url = "https://github.com/doitsujin/dxvk/releases/download/v2.5/dxvk-2.5.tar.gz" }
                     }
                 });
                 return new HttpResponseMessage(HttpStatusCode.OK)
