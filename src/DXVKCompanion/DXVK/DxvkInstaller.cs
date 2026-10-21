@@ -246,11 +246,8 @@ namespace DXVKCompanion.DXVK
 
                 if (!DxvkLocalReleaseLibrary.IsVersionAvailable(_dxvkSourceDir, release.Version, profile.Api, profile.Architecture))
                 {
-                    if (Directory.Exists(versionDir) || File.Exists(versionDir))
-                    {
-                        LastRefusalReason = "Existing DXVK release is incomplete or invalid. Retained source files were not changed.";
-                        return false;
-                    }
+                    // The shared acquirer rechecks existing publication under its tag gate.
+                    // Do not turn a concurrent successful publication into a false refusal here.
                     bool ok = await DownloadAndExtractAsync(release);
                     if (!ok)
                     {
