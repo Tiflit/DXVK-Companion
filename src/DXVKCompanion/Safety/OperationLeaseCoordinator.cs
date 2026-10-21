@@ -16,6 +16,19 @@ namespace DXVKCompanion.Safety
         public string CoordinationDirectory { get; }
         public string? LastAcquisitionError { get; private set; }
 
+        // Diagnostic evidence only, like LastAcquisitionError: the most recent
+        // acquisition on this instance, not per-caller concurrent telemetry.
+        internal string? LastAcquisitionDiagnostic { get; private set; }
+
+        private enum AcquisitionPhase { DirectorySetup, Open, Publish, ConflictScan, RetryDelay, BetweenStores }
+
+        private void RecordAcquisitionDiagnostic(bool isTarget, AcquisitionPhase phase,
+            long started, int attempts, bool cancelled = false)
+        {
+            LastAcquisitionDiagnostic = $"Lease role={(isTarget ? "Target" : "Store")}; phase={phase}; " +
+                $"elapsedMs={(long)Stopwatch.GetElapsedTime(started).TotalMilliseconds}; attempts={attempts}; cancelled={cancelled}";
+        }
+
         internal Func<string, FileStream>? CustomOpenLockFileStream { get; set; }
         internal Func<string, IEnumerable<string>>? CustomEnumerateFiles { get; set; }
 
@@ -66,12 +79,14 @@ namespace DXVKCompanion.Safety
             }
 
             LastAcquisitionError = null;
+            LastAcquisitionDiagnostic = null;
             string canonicalTarget = OperationResourceIdentity.ResolveCanonicalPath(installationRoot);
             string targetKey = OperationResourceIdentity.GetTargetLockFileName(canonicalTarget);
 
             var sw = Stopwatch.StartNew();
 
             // Tier 1: Target lease first
+            long diagnosticStart = Stopwatch.GetTimestamp();
             var targetLease = await TryAcquireFileLockAsync(targetKey, canonicalTarget, isTarget: true, timeout, ct).ConfigureAwait(false);
             if (targetLease == null)
             {
@@ -99,6 +114,8 @@ namespace DXVKCompanion.Safety
                         var remaining = timeout - sw.Elapsed;
                         if (remaining <= TimeSpan.Zero)
                         {
+                            RecordAcquisitionDiagnostic(false, AcquisitionPhase.BetweenStores,
+                                diagnosticStart, 0, ct.IsCancellationRequested);
                             return null;
                         }
 
@@ -150,12 +167,14 @@ namespace DXVKCompanion.Safety
             }
 
             LastAcquisitionError = null;
+            LastAcquisitionDiagnostic = null;
             string canonicalTarget = OperationResourceIdentity.ResolveCanonicalPath(installationRoot);
             string targetKey = OperationResourceIdentity.GetTargetLockFileName(canonicalTarget);
 
             var sw = Stopwatch.StartNew();
 
             // Tier 1: Target lease first
+            long diagnosticStart = Stopwatch.GetTimestamp();
             var targetLease = TryAcquireFileLockSync(targetKey, canonicalTarget, isTarget: true, timeout);
             if (targetLease == null)
             {
@@ -183,6 +202,7 @@ namespace DXVKCompanion.Safety
                         var remaining = timeout - sw.Elapsed;
                         if (remaining <= TimeSpan.Zero)
                         {
+                            RecordAcquisitionDiagnostic(false, AcquisitionPhase.BetweenStores, diagnosticStart, 0);
                             return null;
                         }
 
@@ -225,6 +245,7 @@ namespace DXVKCompanion.Safety
             }
 
             LastAcquisitionError = null;
+            LastAcquisitionDiagnostic = null;
             string canonicalStore = OperationResourceIdentity.ResolveCanonicalPath(storePath);
             string storeKey = OperationResourceIdentity.GetStoreLockFileName(canonicalStore);
 
@@ -241,6 +262,7 @@ namespace DXVKCompanion.Safety
             }
 
             LastAcquisitionError = null;
+            LastAcquisitionDiagnostic = null;
             string canonicalStore = OperationResourceIdentity.ResolveCanonicalPath(storePath);
             string storeKey = OperationResourceIdentity.GetStoreLockFileName(canonicalStore);
 
@@ -254,6 +276,9 @@ namespace DXVKCompanion.Safety
             TimeSpan timeout,
             CancellationToken ct)
         {
+            long diagnosticStart = Stopwatch.GetTimestamp();
+            var phase = AcquisitionPhase.DirectorySetup;
+            int attempts = 0;
             string lockFilePath = Path.Combine(CoordinationDirectory, lockKey);
             try
             {
@@ -262,6 +287,7 @@ namespace DXVKCompanion.Safety
             catch (Exception ex)
             {
                 LastAcquisitionError = $"Cannot create coordination directory '{CoordinationDirectory}': {ex.Message}";
+                RecordAcquisitionDiagnostic(isTarget, phase, diagnosticStart, attempts, ct.IsCancellationRequested);
                 return null;
             }
 
@@ -269,6 +295,8 @@ namespace DXVKCompanion.Safety
             var sw = Stopwatch.StartNew();
             while (sw.Elapsed < timeout && !ct.IsCancellationRequested)
             {
+                phase = AcquisitionPhase.Open;
+                attempts++;
                 FileStream? stream = null;
                 try
                 {
@@ -281,6 +309,7 @@ namespace DXVKCompanion.Safety
                         FileOptions.DeleteOnClose);
 
                     lastAcquisitionException = null;
+                    phase = AcquisitionPhase.Publish;
                     byte[] pathBytes = System.Text.Encoding.UTF8.GetBytes(canonicalPath);
                     stream.SetLength(0);
                     stream.Write(pathBytes, 0, pathBytes.Length);
@@ -294,6 +323,7 @@ namespace DXVKCompanion.Safety
                         break;
                     }
 
+                    if (isTarget) phase = AcquisitionPhase.ConflictScan;
                     bool hasConflict = isTarget && await HasConflictingTargetLockAsync(lockFilePath, canonicalPath, remainingBudget, ct).ConfigureAwait(false);
 
                     if (hasConflict || sw.Elapsed >= timeout || ct.IsCancellationRequested)
@@ -340,6 +370,7 @@ namespace DXVKCompanion.Safety
                     break;
                 }
 
+                phase = AcquisitionPhase.RetryDelay;
                 await Task.Delay(delayMs, ct).ConfigureAwait(false);
             }
 
@@ -348,6 +379,7 @@ namespace DXVKCompanion.Safety
                 LastAcquisitionError = $"Access denied to coordination directory or lock file '{lockFilePath}': {uae.Message}";
             }
 
+            RecordAcquisitionDiagnostic(isTarget, phase, diagnosticStart, attempts, ct.IsCancellationRequested);
             return null;
         }
 
@@ -357,6 +389,9 @@ namespace DXVKCompanion.Safety
             bool isTarget,
             TimeSpan timeout)
         {
+            long diagnosticStart = Stopwatch.GetTimestamp();
+            var phase = AcquisitionPhase.DirectorySetup;
+            int attempts = 0;
             string lockFilePath = Path.Combine(CoordinationDirectory, lockKey);
             try
             {
@@ -365,6 +400,7 @@ namespace DXVKCompanion.Safety
             catch (Exception ex)
             {
                 LastAcquisitionError = $"Cannot create coordination directory '{CoordinationDirectory}': {ex.Message}";
+                RecordAcquisitionDiagnostic(isTarget, phase, diagnosticStart, attempts);
                 return null;
             }
 
@@ -372,6 +408,8 @@ namespace DXVKCompanion.Safety
             var sw = Stopwatch.StartNew();
             while (sw.Elapsed < timeout)
             {
+                phase = AcquisitionPhase.Open;
+                attempts++;
                 FileStream? stream = null;
                 try
                 {
@@ -384,6 +422,7 @@ namespace DXVKCompanion.Safety
                         FileOptions.DeleteOnClose);
 
                     lastAcquisitionException = null;
+                    phase = AcquisitionPhase.Publish;
                     byte[] pathBytes = System.Text.Encoding.UTF8.GetBytes(canonicalPath);
                     stream.SetLength(0);
                     stream.Write(pathBytes, 0, pathBytes.Length);
@@ -397,6 +436,7 @@ namespace DXVKCompanion.Safety
                         break;
                     }
 
+                    if (isTarget) phase = AcquisitionPhase.ConflictScan;
                     bool hasConflict = isTarget && HasConflictingTargetLockSync(lockFilePath, canonicalPath, remainingBudget);
 
                     if (hasConflict || sw.Elapsed >= timeout)
@@ -443,6 +483,7 @@ namespace DXVKCompanion.Safety
                     break;
                 }
 
+                phase = AcquisitionPhase.RetryDelay;
                 Thread.Sleep(delayMs);
             }
 
@@ -451,6 +492,7 @@ namespace DXVKCompanion.Safety
                 LastAcquisitionError = $"Access denied to coordination directory or lock file '{lockFilePath}': {uae.Message}";
             }
 
+            RecordAcquisitionDiagnostic(isTarget, phase, diagnosticStart, attempts);
             return null;
         }
 
