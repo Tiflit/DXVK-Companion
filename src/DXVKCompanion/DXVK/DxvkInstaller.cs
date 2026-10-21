@@ -1,12 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.IO.Compression;
 using System.Linq;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
-using System.Formats.Tar;
 using DXVKCompanion.Models;
 using DXVKCompanion.Safety;
 using DXVKCompanion.Storage;
@@ -16,9 +14,6 @@ namespace DXVKCompanion.DXVK
 {
     public class DxvkInstaller
     {
-        private static readonly TimeSpan DownloadTimeout = TimeSpan.FromSeconds(60);
-
-        private readonly FileUtils _files;
         private readonly HttpClient _httpClient;
         private readonly MultiFileTransactionEngine _transactionEngine;
         private readonly GameLibraryStore _gameLibraryStore;
@@ -38,7 +33,6 @@ namespace DXVKCompanion.DXVK
             _transactionEngine = transactionEngine ?? new MultiFileTransactionEngine(GameLibraryPaths.BackupsDir);
             _gameLibraryStore = gameLibraryStore ?? new GameLibraryStore();
             _dxvkSourceDir = dxvkSourceDir ?? Paths.DxvkDir;
-            _files = files ?? new FileUtils();
         }
 
         internal DxvkInstaller(
@@ -63,9 +57,11 @@ namespace DXVKCompanion.DXVK
         public string DxvkSourceDir => _dxvkSourceDir;
         private DxvkReleaseAcquirer? _releaseAcquirer;
         private readonly object _releaseAcquirerGate = new();
-        internal DxvkReleaseAcquirer GetReleaseAcquirer(DxvkGithubClient github)
+        internal DxvkReleaseAcquirer GetReleaseAcquirer(DxvkGithubClient? github = null)
         {
-            lock (_releaseAcquirerGate) return _releaseAcquirer ??= new DxvkReleaseAcquirer(github, _dxvkSourceDir);
+            // CacheStore construction performs no IO. The fallback client is used
+            // only for exact-tag metadata, which never reads/writes the Latest cache.
+            lock (_releaseAcquirerGate) return _releaseAcquirer ??= new DxvkReleaseAcquirer(github ?? new DxvkGithubClient(_httpClient, new CacheStore()), _dxvkSourceDir);
         }
         public string? LastRefusalReason { get; private set; }
         internal ProfileStore? ProfileStore { get; set; }
@@ -90,59 +86,20 @@ namespace DXVKCompanion.DXVK
 
         private async Task<bool> DownloadAndExtractAsync(ReleaseInfo release)
         {
-            if (string.IsNullOrWhiteSpace(release.DownloadUrl))
-                return false;
-
             try
             {
-                Paths.EnsureDirectories();
-
-                using var cts = new CancellationTokenSource(DownloadTimeout);
-                var data = await _httpClient.GetByteArrayAsync(release.DownloadUrl, cts.Token);
-
-                using var gzStream = new GZipStream(new MemoryStream(data), CompressionMode.Decompress);
-                using var tar = new TarReader(gzStream);
-
-                string versionDir = Path.Combine(_dxvkSourceDir, SanitizeVersion(release.Version));
-
-                TarEntry? entry;
-                while ((entry = tar.GetNextEntry()) != null)
-                {
-                    if (entry.EntryType != TarEntryType.RegularFile)
-                        continue;
-
-                    string name = entry.Name.Replace('\\', '/').ToLowerInvariant();
-
-                    bool isDx9 = name.EndsWith("x32/d3d9.dll") || name.EndsWith("x64/d3d9.dll");
-                    bool isDx11 = name.EndsWith("x32/d3d11.dll") || name.EndsWith("x64/d3d11.dll");
-                    bool isDxgi = name.EndsWith("x32/dxgi.dll") || name.EndsWith("x64/dxgi.dll");
-
-                    if (!isDx9 && !isDx11 && !isDxgi)
-                        continue;
-
-                    using var ms = new MemoryStream();
-                    entry.DataStream?.CopyTo(ms);
-                    var bytes = ms.ToArray();
-
-                    string arch = name.Contains("x32/") ? "x32" : "x64";
-                    string dllName = Path.GetFileName(name);
-
-                    string dllDir = Path.Combine(versionDir, arch);
-                    Directory.CreateDirectory(dllDir);
-
-                    _files.WriteBytes(Path.Combine(dllDir, dllName), bytes);
-                }
-
+                // Exact-tag acquisition obtains official metadata itself; never use an asserted URL.
+                await GetReleaseAcquirer().AcquireAsync(release.Version);
                 return true;
             }
             catch (OperationCanceledException)
             {
-                Logger.Log($"DxvkInstaller: download of {release.Version} timed out after {DownloadTimeout.TotalSeconds}s.");
+                Logger.Log("DxvkInstaller: official release acquisition cancelled or timed out.");
                 return false;
             }
             catch (Exception ex)
             {
-                Logger.Log($"DxvkInstaller: failed to download/extract {release.Version}: {ex.GetType().Name} - {ex.Message}");
+                Logger.Log($"DxvkInstaller: official release acquisition failed ({ex.GetType().Name}).");
                 return false;
             }
         }
@@ -271,7 +228,12 @@ namespace DXVKCompanion.DXVK
                     return false;
                 }
 
-                string arch = string.Equals(profile.Architecture, "x32", StringComparison.OrdinalIgnoreCase) ? "x32" : "x64";
+                string? arch = DxvkLocalReleaseLibrary.NormalizeArchitecture(profile.Architecture);
+                if (arch == null)
+                {
+                    LastRefusalReason = "Cannot select DXVK source for an unknown architecture.";
+                    return false;
+                }
                 string versionDir = Path.Combine(_dxvkSourceDir, SanitizeVersion(release.Version));
                 string dxvkArchDir = Path.Combine(versionDir, arch);
 
@@ -282,12 +244,20 @@ namespace DXVKCompanion.DXVK
                     return false;
                 }
 
-                if (!Directory.Exists(dxvkArchDir) || !Directory.EnumerateFiles(dxvkArchDir).Any())
+                if (!DxvkLocalReleaseLibrary.IsVersionAvailable(_dxvkSourceDir, release.Version, profile.Api, profile.Architecture))
                 {
+                    // The shared acquirer rechecks existing publication under its tag gate.
+                    // Do not turn a concurrent successful publication into a false refusal here.
                     bool ok = await DownloadAndExtractAsync(release);
                     if (!ok)
                     {
                         LastRefusalReason = $"Failed to download or extract DXVK {release.Version}.";
+                        return false;
+                    }
+
+                    if (!DxvkLocalReleaseLibrary.IsVersionAvailable(_dxvkSourceDir, release.Version, profile.Api, profile.Architecture))
+                    {
+                        LastRefusalReason = "Acquired official release does not contain the required architecture/API payload.";
                         return false;
                     }
 

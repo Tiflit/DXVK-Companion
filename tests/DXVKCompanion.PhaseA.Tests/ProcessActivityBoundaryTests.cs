@@ -61,6 +61,11 @@ public sealed class ProcessActivityBoundaryTests
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
+            if (request.RequestUri?.AbsoluteUri == "https://api.github.com/repos/doitsujin/dxvk/releases/tags/v2.6")
+                return OfficialAcquisitionFixture.Json(OfficialAcquisitionFixture.Metadata("v2.6", _responseData));
+            if (request.RequestUri?.AbsoluteUri != OfficialAcquisitionFixture.AssetUrl("v2.6"))
+                throw new InvalidOperationException("Unexpected request in synthetic acquisition fixture.");
+
             _downloadStartedTcs.TrySetResult(true);
             await _continueDownloadTcs.Task.WaitAsync(cancellationToken);
 
@@ -473,7 +478,7 @@ public sealed class ProcessActivityBoundaryTests
         };
 
         var profile = new GameProfile(exePath) { Api = GraphicsApi.DX11, Architecture = "x64" };
-        var release = new ReleaseInfo { Version = "2.6", DownloadUrl = "https://synthetic.test/dxvk-2.6.tar.gz" };
+        var release = new ReleaseInfo { Version = "v2.6", DownloadUrl = OfficialAcquisitionFixture.AssetUrl("v2.6") };
 
         Task<bool>? applyTask = null;
         bool result = false;
@@ -601,7 +606,7 @@ public sealed class ProcessActivityBoundaryTests
         profile.Architecture = "x64";
         profileStore.Save(profile);
 
-        var release = new ReleaseInfo { Version = "2.6", DownloadUrl = "https://synthetic.test/dxvk-2.6.tar.gz" };
+        var release = new ReleaseInfo { Version = "v2.6", DownloadUrl = OfficialAcquisitionFixture.AssetUrl("v2.6") };
 
         Task<bool>? applyTask = null;
         bool result = false;
