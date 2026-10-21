@@ -21,6 +21,162 @@ namespace DXVKCompanion.PhaseA.Tests
 {
     public class DailyReleaseCheckTests
     {
+        [Theory]
+        [InlineData(true, 200, false)]
+        [InlineData(false, 200, true)]
+        [InlineData(true, 304, true)]
+        [InlineData(true, 500, false)]
+        [InlineData(false, 500, true)]
+        [InlineData(true, -1, true)]
+        [InlineData(false, -1, false)]
+        public async Task DailyReleaseCheck_UnwritableCache_ThrottlesRepeatedAttemptsAndPreservesFallback(
+            bool priorCache, int status, bool failReplace)
+        {
+            using var testDir = new SyntheticTestDirectory();
+            string cacheFile = Path.Combine(testDir.RootPath, "release-cache.json");
+            var now = new DateTime(2026, 10, 21, 0, 0, 0, DateTimeKind.Utc);
+            var store = new CacheStore(cacheFile);
+            if (priorCache)
+                store.SaveCachedRelease(new ReleaseInfo { Version = "v2.5" }, "\"old\"", now.AddDays(-2), now.AddDays(-2));
+            byte[]? priorBytes = priorCache ? File.ReadAllBytes(cacheFile) : null;
+            int failedWrites = 0;
+            if (failReplace)
+                store.CustomCommitReplace = (_, _) => { failedWrites++; throw new IOException("Synthetic replacement failure."); };
+            else
+                store.CustomTempWriter = (_, _) => { failedWrites++; throw new IOException("Synthetic staging failure."); };
+
+            int requests = 0;
+            using var http = new HttpClient(new RecordingHttpMessageHandler(request =>
+            {
+                requests++;
+                Assert.Equal(priorCache, request.Headers.IfNoneMatch.Count == 1);
+                if (status == -1) throw new OperationCanceledException("Synthetic cancellation.");
+                return CreateJsonResponse((HttpStatusCode)status, CreateReleaseJson("v3.1", "dxvk-3.1.tar.gz",
+                    "https://github.com/doitsujin/dxvk/releases/download/v3.1/dxvk-3.1.tar.gz"));
+            }));
+            var client = new DxvkGithubClient(http, store, () => now);
+
+            for (int i = 0; i < 3; i++)
+            {
+                var result = await client.FetchLatestReleaseAsync();
+                if (priorCache) Assert.Equal("v2.5", result?.Version);
+                else Assert.Null(result);
+                now = now.AddHours(1);
+            }
+
+            Assert.Equal(1, requests);
+            Assert.Equal(status == 200 || status == 304 ? 2 : 1, failedWrites);
+            if (priorCache)
+            {
+                Assert.Equal(priorBytes, File.ReadAllBytes(cacheFile));
+                var reloaded = store.LoadCachedRelease();
+                Assert.NotNull(reloaded);
+                Assert.Equal("\"old\"", reloaded.ETag);
+                Assert.Equal(now.AddHours(-3).AddDays(-2), reloaded.CachedAt);
+            }
+            else Assert.False(File.Exists(cacheFile));
+            Assert.False(File.Exists(store.AttemptFile));
+        }
+
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public async Task DailyReleaseCheck_UnwritableCache_ConcurrentCallersWaitAndShareOneAttempt(bool priorCache)
+        {
+            using var testDir = new SyntheticTestDirectory();
+            var store = new CacheStore(Path.Combine(testDir.RootPath, "release-cache.json"));
+            var now = new DateTime(2026, 10, 21, 0, 0, 0, DateTimeKind.Utc);
+            if (priorCache)
+                store.SaveCachedRelease(new ReleaseInfo { Version = "v2.5" }, "\"old\"", now.AddDays(-2), now.AddDays(-2));
+            store.CustomTempWriter = (_, _) => throw new IOException("Synthetic staging failure.");
+            var entered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            int requests = 0;
+            using var http = new HttpClient(RecordingHttpMessageHandler.CreateAsync(async _ =>
+            {
+                Interlocked.Increment(ref requests);
+                entered.TrySetResult(true);
+                await release.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                return CreateJsonResponse(HttpStatusCode.OK, CreateReleaseJson("v3.1", "dxvk-3.1.tar.gz",
+                    "https://github.com/doitsujin/dxvk/releases/download/v3.1/dxvk-3.1.tar.gz"));
+            }));
+            var client = new DxvkGithubClient(http, store, () => now);
+            var calls = new List<Task<ReleaseInfo?>> { client.FetchLatestReleaseAsync() };
+            try
+            {
+                await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                for (int i = 0; i < 7; i++) calls.Add(client.FetchLatestReleaseAsync());
+                Assert.All(calls, call => Assert.False(call.IsCompleted));
+            }
+            finally { release.TrySetResult(true); }
+            var results = await Task.WhenAll(calls).WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.Equal(1, requests);
+            foreach (var result in results)
+            {
+                if (priorCache) Assert.Equal("v2.5", result?.Version);
+                else Assert.Null(result);
+            }
+        }
+
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public async Task DailyReleaseCheck_UnwritableCache_ExactBoundaryRetriesAndSuccessfulSaveSurvivesReconstruction(bool priorCache)
+        {
+            using var testDir = new SyntheticTestDirectory();
+            string cacheFile = Path.Combine(testDir.RootPath, "release-cache.json");
+            var store = new CacheStore(cacheFile);
+            var firstAttempt = new DateTime(2026, 10, 21, 0, 0, 0, DateTimeKind.Utc);
+            var now = firstAttempt;
+            if (priorCache)
+                store.SaveCachedRelease(new ReleaseInfo { Version = "v2.5" }, "\"old\"", now.AddDays(-2), now.AddDays(-2));
+            store.CustomTempWriter = (_, _) => throw new IOException("Synthetic staging failure.");
+            int requests = 0;
+            using var http = new HttpClient(new RecordingHttpMessageHandler(_ =>
+            {
+                requests++;
+                return CreateJsonResponse(HttpStatusCode.OK, CreateReleaseJson("v3.1", "dxvk-3.1.tar.gz",
+                    "https://github.com/doitsujin/dxvk/releases/download/v3.1/dxvk-3.1.tar.gz"), "\"new\"");
+            }));
+            var client = new DxvkGithubClient(http, store, () => now);
+            Assert.Equal(priorCache ? "v2.5" : null, (await client.FetchLatestReleaseAsync())?.Version);
+            now = firstAttempt.AddHours(24).AddTicks(-1);
+            Assert.Equal(priorCache ? "v2.5" : null, (await client.FetchLatestReleaseAsync())?.Version);
+            Assert.Equal(1, requests);
+            store.CustomTempWriter = null;
+            now = firstAttempt.AddHours(24);
+            Assert.Equal("v3.1", (await client.FetchLatestReleaseAsync())?.Version);
+            Assert.Equal(2, requests);
+            Assert.Equal(now, store.LoadCachedRelease()?.LastAttemptAt);
+            Assert.Equal("v3.1", (await new DxvkGithubClient(http, new CacheStore(cacheFile), () => now)
+                .FetchLatestReleaseAsync())?.Version);
+            Assert.Equal(2, requests);
+        }
+
+        [Fact]
+        public async Task DailyReleaseCheck_UnwritableCache_UsesExternallyRepairedMetadataWithinPrivateWindow()
+        {
+            using var testDir = new SyntheticTestDirectory();
+            var store = new CacheStore(Path.Combine(testDir.RootPath, "release-cache.json"));
+            var now = new DateTime(2026, 10, 21, 0, 0, 0, DateTimeKind.Utc);
+            store.CustomTempWriter = (_, _) => throw new IOException("Synthetic staging failure.");
+            int requests = 0;
+            using var http = new HttpClient(new RecordingHttpMessageHandler(_ =>
+            {
+                requests++;
+                return new HttpResponseMessage(HttpStatusCode.InternalServerError);
+            }));
+            var client = new DxvkGithubClient(http, store, () => now);
+            Assert.Null(await client.FetchLatestReleaseAsync());
+            store.CustomTempWriter = null;
+            // Even stale repaired metadata is a usable fallback, not a reason to retry early.
+            store.SaveCachedRelease(new ReleaseInfo { Version = "v2.8" }, "\"repaired\"", now.AddDays(-2), now.AddDays(-2));
+            byte[] repairedBytes = File.ReadAllBytes(store.CacheFile);
+            Assert.Equal("v2.8", (await client.FetchLatestReleaseAsync())?.Version);
+            Assert.Equal(1, requests);
+            Assert.Equal(repairedBytes, File.ReadAllBytes(store.CacheFile));
+        }
+
         [Fact]
         public async Task DailyReleaseCheck_FreshCache_DoesNotInvokeNetwork_ReturnsCachedRelease()
         {
