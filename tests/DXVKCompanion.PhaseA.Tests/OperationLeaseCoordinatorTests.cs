@@ -775,9 +775,9 @@ public sealed class OperationLeaseCoordinatorTests
             if (startupBudget <= 0) throw new TimeoutException("Startup budget expired before child start.");
             var readTask = helper.StandardOutput.ReadLineAsync();
             var readCompleted = await Task.WhenAny(readTask, Task.Delay(startupBudget));
-            Assert.Same(readTask, readCompleted);
+            Assert.True(ReferenceEquals(readTask, readCompleted), SyntheticSafetyFixture.Diagnostic(SyntheticSafetyFixture.Phase.HelperStartupSignal, overallSw.ElapsedMilliseconds));
             string? signal = await readTask;
-            Assert.Equal("LOCKED", signal);
+            Assert.True(string.Equals("LOCKED", signal, StringComparison.Ordinal), SyntheticSafetyFixture.Diagnostic(SyntheticSafetyFixture.Phase.HelperStartupSignal, overallSw.ElapsedMilliseconds));
 
             // Parent attempts acquisition with 200 ms timeout and must be excluded while child holds lock
             var sw = Stopwatch.StartNew();
@@ -792,13 +792,21 @@ public sealed class OperationLeaseCoordinatorTests
             // Do not block an xUnit worker while waiting for the independently bounded child.
             // Keep the same operational/cleanup budgets; a timeout still fails this test.
             using var exitDeadline = new CancellationTokenSource(childTimeoutBudget);
-            await helper.WaitForExitAsync(exitDeadline.Token);
+            try
+            {
+                await helper.WaitForExitAsync(exitDeadline.Token);
+            }
+            catch (OperationCanceledException) when (exitDeadline.IsCancellationRequested)
+            {
+                throw new TimeoutException(SyntheticSafetyFixture.Diagnostic(
+                    SyntheticSafetyFixture.Phase.HelperSelfExit, overallSw.ElapsedMilliseconds));
+            }
             Assert.Equal(0, helper.ExitCode);
 
             // Once child self-terminated and released lock, coordinator acquires target lease successfully
             await using var successLease = await coordinator.TryAcquireOperationScopeAsync(targetPath, timeout: TimeSpan.FromMilliseconds(500));
-            Assert.NotNull(successLease);
-            Assert.True(successLease.IsAcquired);
+            Assert.True(successLease is not null, SyntheticSafetyFixture.Diagnostic(SyntheticSafetyFixture.Phase.PostHelperLease, overallSw.ElapsedMilliseconds, coordinator.LastAcquisitionError));
+            Assert.True(successLease!.IsAcquired);
         }
         finally
         {
@@ -830,7 +838,7 @@ public sealed class OperationLeaseCoordinatorTests
                 tempDir.Dispose();
             }
 
-            Assert.True(helperExited, "Child helper process failed to terminate within cleanup reservation.");
+            Assert.True(helperExited, SyntheticSafetyFixture.Diagnostic(SyntheticSafetyFixture.Phase.HelperCleanup, overallSw.ElapsedMilliseconds));
         }
     }
 

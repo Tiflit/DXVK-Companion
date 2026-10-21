@@ -11,6 +11,19 @@ namespace DXVKCompanion.PhaseATests;
 // Keep real leases and transactions, but make the synthetic process universe explicit.
 internal static class SyntheticSafetyFixture
 {
+    internal enum Phase
+    {
+        StoreLeaseSetup,
+        HelperStartupSignal,
+        HelperSelfExit,
+        HelperCleanup,
+        PostHelperLease
+    }
+
+    // Explicit enum phases prevent callers from inserting arbitrary paths/output.
+    internal static string Diagnostic(Phase phase, long elapsedMilliseconds, string? refusal = null)
+        => $"Synthetic phase={phase}; elapsedMs={Math.Max(0, elapsedMilliseconds)}; category={RefusalCategory(refusal)}";
+
     private static readonly IProcessActivityInspector Inactive = new ProcessActivityInspector(
         processEnumerator: () => Array.Empty<Process>());
 
