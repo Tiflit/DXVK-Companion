@@ -11,6 +11,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using DXVKCompanion.Models;
+using DXVKCompanion.Safety;
 
 namespace DXVKCompanion.DXVK;
 
@@ -64,6 +65,12 @@ public sealed class DxvkReleaseAcquirer
     }
 
     internal Action? BeforeGateWait { get; set; }
+    private IOperationLeaseCoordinator? _processLeaseCoordinator;
+    internal IOperationLeaseCoordinator ProcessLeaseCoordinator
+    {
+        get => _processLeaseCoordinator ??= new OperationLeaseCoordinator();
+        set => _processLeaseCoordinator = value;
+    }
     internal Action<string>? BeforePublication { get; set; }
 
     public DxvkReleaseAcquirer(DxvkGithubClient github, string sourceRoot)
@@ -99,6 +106,7 @@ public sealed class DxvkReleaseAcquirer
         var gate = RentGate(destination);
         bool entered = false;
         string? staging = null;
+        IOperationLease? processLease = null;
         try
         {
             BeforeGateWait?.Invoke();
@@ -106,6 +114,24 @@ public sealed class DxvkReleaseAcquirer
             entered = true;
             cancellationToken.ThrowIfCancellationRequested();
             EnsureRoot();
+            if (Directory.Exists(destination) || File.Exists(destination))
+            {
+                if (IsCompleteLocalRelease(destination, tag, out bool upstream)) return new(tag, true, upstream, HasAcquisitionRecord(destination));
+                throw new InvalidDataException("Existing release is incomplete or invalid. Retained files were not changed.");
+            }
+            try
+            {
+                processLease = await ProcessLeaseCoordinator.TryAcquireStoreLeaseAsync(destination,
+                    OperationLeaseCoordinator.DefaultTimeout, cancellationToken);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+            {
+                throw new IOException("Release acquisition coordination is unavailable. Retained sources were not changed; retry after pending work completes.");
+            }
+            cancellationToken.ThrowIfCancellationRequested();
+            if (processLease == null)
+                throw new IOException("Release acquisition is busy or coordination is unavailable. Retained sources were not changed; retry after pending work completes.");
+            // A cooperating process may have published while this caller waited.
             if (Directory.Exists(destination) || File.Exists(destination))
             {
                 if (IsCompleteLocalRelease(destination, tag, out bool upstream)) return new(tag, true, upstream, HasAcquisitionRecord(destination));
@@ -208,7 +234,11 @@ public sealed class DxvkReleaseAcquirer
         finally
         {
             try { if (staging != null) TryDeleteOwnedStaging(staging); }
-            finally { ReturnGate(destination, gate, entered); }
+            finally
+            {
+                try { processLease?.Dispose(); }
+                finally { ReturnGate(destination, gate, entered); }
+            }
         }
     }
 

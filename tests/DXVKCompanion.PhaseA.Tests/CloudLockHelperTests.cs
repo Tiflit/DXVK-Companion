@@ -18,6 +18,82 @@ public sealed class CloudLockHelperCollection { }
 [Collection("Cloud lock helpers")]
 public sealed class CloudLockHelperTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task InterProcessReleaseLease_BlocksHttpUntilOwnedHelperNaturallyExits(bool acquisition)
+    {
+        if (!OperatingSystem.IsWindows() || !string.Equals(Environment.GetEnvironmentVariable("GITHUB_ACTIONS"), "true", StringComparison.OrdinalIgnoreCase))
+            return;
+        var fixture = new OfficialAcquisitionFixture();
+        var coordination = new SyntheticTestDirectory();
+        var store = new CacheStore(fixture.Directory.GetPath("latest.json"));
+        var now = new DateTime(2026, 10, 21, 0, 0, 0, DateTimeKind.Utc);
+        store.SaveCachedRelease(new ReleaseInfo { Version = "v2.4" }, "\"old\"", now.AddDays(-2), now.AddDays(-2));
+        byte[] before = File.ReadAllBytes(store.CacheFile);
+        string resource = acquisition ? Path.Combine(fixture.Source, "v2.5") : store.CacheFile;
+        var coordinator = new OperationLeaseCoordinator(coordination.RootPath);
+        fixture.Acquirer.ProcessLeaseCoordinator = coordinator;
+        DxvkGithubClient? client = null;
+        if (!acquisition)
+        {
+            fixture.Override = (_, _) => Task.FromResult(OfficialAcquisitionFixture.Json(
+                OfficialAcquisitionFixture.Metadata("v2.5", fixture.Archives["v2.5"])));
+            client = new DxvkGithubClient(fixture.Http, store, () => now) { ProcessLeaseCoordinator = coordinator };
+        }
+        string lockPath = Path.Combine(coordination.RootPath, OperationResourceIdentity.GetStoreLockFileName(resource));
+        string armPath = Path.Combine(coordination.RootPath, "self-exit.signal");
+        var overall = Stopwatch.StartNew();
+        const int maxTotalLifetimeMs = 20000;
+        const int operationalBudgetMs = maxTotalLifetimeMs - 4000;
+        Process? helper = null;
+        bool exited = false;
+        try
+        {
+            helper = Process.Start(CreateTimedLockHelper(lockPath, armPath,
+                DateTime.UtcNow.AddMilliseconds(RemainingHelperBudget(overall, operationalBudgetMs, SyntheticSafetyFixture.Phase.HelperStartupSignal))));
+            Assert.NotNull(helper);
+            await ReadHelperSignalAsync(helper, "LOCKED", overall, operationalBudgetMs, SyntheticSafetyFixture.Phase.HelperStartupSignal);
+            using var deadline = new CancellationTokenSource(RemainingHelperBudget(overall, operationalBudgetMs, SyntheticSafetyFixture.Phase.HelperExclusion));
+            if (acquisition) await Assert.ThrowsAsync<IOException>(() => fixture.Acquirer.AcquireAsync("v2.5", deadline.Token));
+            else Assert.Equal("v2.4", (await client!.FetchLatestReleaseAsync(deadline.Token))?.Version);
+            Assert.Empty(fixture.Requests);
+            Assert.Equal(before, File.ReadAllBytes(store.CacheFile));
+            Assert.False(File.Exists(store.AttemptFile));
+            if (RemainingHelperBudget(overall, operationalBudgetMs, SyntheticSafetyFixture.Phase.HelperTimerArm) < 2000)
+                throw new TimeoutException(SyntheticSafetyFixture.Diagnostic(SyntheticSafetyFixture.Phase.HelperTimerArm, overall.ElapsedMilliseconds));
+            File.WriteAllText(armPath, "START");
+            await ReadHelperSignalAsync(helper, "TIMER_STARTED", overall, operationalBudgetMs, SyntheticSafetyFixture.Phase.HelperTimerArm);
+            await WaitForHelperExitAsync(helper, overall, operationalBudgetMs);
+            Assert.Equal(0, helper.ExitCode);
+            if (acquisition)
+            {
+                Assert.False((await fixture.Acquirer.AcquireAsync("v2.5", deadline.Token)).Reused);
+                Assert.True(DxvkReleaseAcquirer.ValidateManifest(Path.Combine(fixture.Source, "v2.5"), "v2.5", out _));
+                Assert.Equal(before, File.ReadAllBytes(store.CacheFile));
+            }
+            else Assert.Equal("v2.5", (await client!.FetchLatestReleaseAsync(deadline.Token))?.Version);
+            Assert.Equal(acquisition ? 2 : 1, fixture.Requests.Count);
+        }
+        finally
+        {
+            if (helper != null)
+            {
+                if (!helper.HasExited) { try { helper.Kill(entireProcessTree: true); } catch { } }
+                int remaining = maxTotalLifetimeMs - (int)overall.ElapsedMilliseconds;
+                exited = remaining > 0 ? helper.WaitForExit(remaining) : helper.HasExited;
+            }
+            else exited = true;
+            if (exited)
+            {
+                helper?.Dispose();
+                coordination.Dispose();
+                fixture.Dispose();
+            }
+            Assert.True(exited, "Child helper process failed to terminate within bounded cleanup reservation.");
+        }
+    }
+
     private static string SchedulingDiagnostic(Process helper)
     {
         ThreadPool.GetAvailableThreads(out int availableWorkers, out _);

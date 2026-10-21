@@ -9,6 +9,7 @@ using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using DXVKCompanion.Models;
+using DXVKCompanion.Safety;
 using DXVKCompanion.Storage;
 using DXVKCompanion.Utils;
 
@@ -71,6 +72,12 @@ namespace DXVKCompanion.DXVK
         }
 
         internal Action? BeforeSharedCacheWait { get; set; }
+        private IOperationLeaseCoordinator? _processLeaseCoordinator;
+        internal IOperationLeaseCoordinator ProcessLeaseCoordinator
+        {
+            get => _processLeaseCoordinator ??= new OperationLeaseCoordinator();
+            set => _processLeaseCoordinator = value;
+        }
 
         public const int CatalogPageSize = 30;
         public const int MaximumCatalogPages = 32;
@@ -210,6 +217,7 @@ namespace DXVKCompanion.DXVK
             LatestCacheGate? shared = null;
             string? cacheKey = null;
             bool sharedEntered = false;
+            IOperationLease? processLease = null;
             try
             {
                 try { cacheKey = Path.GetFullPath(_cacheStore.CacheFile); }
@@ -244,6 +252,24 @@ namespace DXVKCompanion.DXVK
                     return null;
                 }
 
+                if (cacheKey != null)
+                {
+                    try
+                    {
+                        processLease = await ProcessLeaseCoordinator.TryAcquireStoreLeaseAsync(cacheKey,
+                            OperationLeaseCoordinator.DefaultTimeout, cancellationToken);
+                    }
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+                    {
+                        Logger.Log("DxvkGithubClient: cross-process cache coordination unavailable; no HTTP attempted.");
+                    }
+                    cancellationToken.ThrowIfCancellationRequested();
+                    now = UtcNowSeam();
+                    cached = _cacheStore.LoadCachedRelease();
+                    if (processLease == null || (cached != null && !cached.IsDue(now)))
+                        return cached?.HasValidRelease == true ? cached.Release : null;
+                }
+
                 _lastLatestAttempt = now;
                 return await FetchFromNetworkUnderGateAsync(cached, now, cancellationToken);
             }
@@ -251,7 +277,11 @@ namespace DXVKCompanion.DXVK
             {
                 try
                 {
-                    if (shared != null) ReturnCacheGate(cacheKey!, shared, sharedEntered, _lastLatestAttempt);
+                    try { processLease?.Dispose(); }
+                    finally
+                    {
+                        if (shared != null) ReturnCacheGate(cacheKey!, shared, sharedEntered, _lastLatestAttempt);
+                    }
                 }
                 finally { _gate.Release(); }
             }
