@@ -18,6 +18,7 @@ try:
     from .generate_review_packet import (
         parse_iso8601_utc,
         resolve_trx_artifact_for_attempt,
+        resolve_provenance_artifact_for_attempt,
     )
     from .parse_contract import ContractParseError, extract_primary_issue
     from .parse_trx import (
@@ -45,6 +46,7 @@ except ImportError:
     from generate_review_packet import (
         parse_iso8601_utc,
         resolve_trx_artifact_for_attempt,
+        resolve_provenance_artifact_for_attempt,
     )
     from parse_contract import ContractParseError, extract_primary_issue
     from parse_trx import (
@@ -540,14 +542,9 @@ def collect_handoff_snapshot(
             ci_jobs = client.get_workflow_run_jobs(int(ci_run_id), attempt=ci_run_attempt) if ci_run_id else []
 
             # 1. Process build-provenance
-            prov_candidates = [a for a in artifacts if a.get("name") == "build-provenance"]
-            if len(prov_candidates) > 1:
-                uncertainties.append(f"Ambiguous build-provenance artifacts: found {len(prov_candidates)} candidates; rejected")
-                prov_art = None
-            elif len(prov_candidates) == 1:
-                prov_art = prov_candidates[0]
-            else:
-                prov_art = None
+            prov_art, prov_unavailable = resolve_provenance_artifact_for_attempt(artifacts, ci_jobs, str(ci_run_attempt))
+            if not prov_art:
+                uncertainties.append(prov_unavailable or "No attributable build-provenance artifact found")
 
             if prov_art and hasattr(client, "download_bytes"):
                 try:
@@ -606,11 +603,8 @@ def collect_handoff_snapshot(
 
                             if prov_base_sha and is_valid_sha(prov_base_sha) and live_pr_base_sha and prov_base_sha != live_pr_base_sha:
                                 uncertainties.append(f"Base SHA disagreement: provenance recorded {prov_base_sha[:7]} vs live PR base {live_pr_base_sha[:7]} (BASE MOVED)")
-                except Exception as e:
-                    uncertainties.append(f"Provenance artifact parsing failed: {sanitize_diagnostic(str(e))}")
-            else:
-                if not prov_art and len(prov_candidates) == 0:
-                    uncertainties.append("No 'build-provenance' artifact found for triggering run")
+                except Exception:
+                    uncertainties.append("Provenance artifact parsing failed.")
 
             # 2. Process TRX test results using attempt attribution helper
             selected_trx, trx_unavail_reason = resolve_trx_artifact_for_attempt(

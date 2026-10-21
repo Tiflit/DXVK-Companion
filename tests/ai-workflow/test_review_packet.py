@@ -345,7 +345,7 @@ class TestReviewPacket(unittest.TestCase):
 
             def get_run_artifacts(self, run_id):
                 return [
-                    {"name": "build-provenance", "archive_download_url": "https://api.github.com/art/prov/zip"},
+                    {"name": "build-provenance", "created_at": "2026-10-04T00:11:50Z", "archive_download_url": "https://api.github.com/art/prov/zip"},
                     {
                         "name": "phase-a-test-results",
                         "archive_download_url": "https://api.github.com/art/trx/zip",
@@ -421,6 +421,34 @@ class TestReviewPacket(unittest.TestCase):
             self.assertIn("Failed: 1", failure_text)
             self.assertIn("run 37164136438, attempt 1, artifact 303", failure_text)
             self.assertIn("Synthetic.Failure: Assertion failed", failure_text)
+
+            # Existing assertions above stay intact. Duplicate provenance must
+            # resolve by attempt window, not the deliberately reversed ID order.
+            class RerunClient(MockClient):
+                stale_identity = False
+                def __init__(self):
+                    super().__init__()
+                    self.downloads = []
+                def get_run_artifacts(self, run_id):
+                    return [
+                        {"id": 20, "name": "build-provenance", "created_at": "2026-10-04T00:11:50Z", "archive_download_url": "https://api.github.com/art/current/zip"},
+                        {"id": 99, "name": "build-provenance", "created_at": "2026-10-04T00:09:00Z", "archive_download_url": "https://api.github.com/art/old/zip"},
+                    ]
+                def download_bytes(self, url, max_bytes=50*1024*1024, timeout=30):
+                    self.downloads.append(url)
+                    if url.endswith("current/zip"):
+                        content = prov_json.replace('"run_attempt": "1"', '"run_attempt": "2"') if self.stale_identity else prov_json
+                        return make_zip({"build-provenance.json": content})
+                    raise AssertionError("Out-of-window artifact must not be downloaded")
+            rerun_client = RerunClient()
+            rerun_dir = Path(tmpdir) / "rerun-packet"
+            self.assertEqual(generate_review_packet.generate_packet(event, rerun_client, rerun_dir), 0)
+            self.assertIn("Tested checkout SHA: `faec613332c3a7d5fcee44fc8b257839d150dddf`", (rerun_dir / "review_packet.md").read_text())
+            self.assertEqual(rerun_client.downloads, ["https://api.github.com/art/current/zip"])
+            rerun_client.stale_identity = True
+            stale_dir = Path(tmpdir) / "stale-identity"
+            self.assertEqual(generate_review_packet.generate_packet(event, rerun_client, stale_dir), 0)
+            self.assertIn("Attempt mismatch", (stale_dir / "review_packet.md").read_text())
 
     def test_generate_packet_declines_ambiguous_pr_associations(self):
         # Multiple associated PRs without explicit disambiguation must fail (F3).
@@ -550,10 +578,10 @@ class TestReviewPacket(unittest.TestCase):
                 super().__init__(token="dummy", repo="Tiflit/DXVK-Companion")
             def get_pr(self, num): return {"head": {"sha": "0abef8d34a836494cdd882b844c781e32fa35322"}, "base": {"sha": "1111111111111111111111111111111111111111"}}
             def get_issue(self, num): return {}
-            def get_workflow_run_jobs(self, run_id, attempt=None): return []
+            def get_workflow_run_jobs(self, run_id, attempt=None): return [{"started_at": "2026-10-04T00:10:00Z", "completed_at": "2026-10-04T00:12:00Z"}]
             def compare_commits(self, base_sha, head_sha): return {"files": []}
             def get_run_artifacts(self, run_id):
-                return [{"name": "build-provenance", "archive_download_url": "https://api.github.com/prov"}]
+                return [{"name": "build-provenance", "created_at": "2026-10-04T00:11:50Z", "archive_download_url": "https://api.github.com/prov"}]
             def download_bytes(self, url, max_bytes=50*1024*1024, timeout=30): return zip_bytes
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -640,10 +668,10 @@ class TestReviewPacket(unittest.TestCase):
                 super().__init__(token="dummy", repo="Tiflit/DXVK-Companion")
             def get_pr(self, num): return {"head": {"sha": "0abef8d34a836494cdd882b844c781e32fa35322"}, "base": {"sha": "1111111111111111111111111111111111111111"}}
             def get_issue(self, num): return {}
-            def get_workflow_run_jobs(self, run_id, attempt=None): return []
+            def get_workflow_run_jobs(self, run_id, attempt=None): return [{"started_at": "2026-10-04T00:10:00Z", "completed_at": "2026-10-04T00:12:00Z"}]
             def compare_commits(self, base_sha, head_sha): return {"files": []}
             def get_run_artifacts(self, run_id):
-                return [{"name": "build-provenance", "archive_download_url": "https://api.github.com/prov"}]
+                return [{"name": "build-provenance", "created_at": "2026-10-04T00:11:50Z", "archive_download_url": "https://api.github.com/prov"}]
             def download_bytes(self, url, max_bytes=50*1024*1024, timeout=30): return zip_bytes
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -703,10 +731,10 @@ class TestReviewPacket(unittest.TestCase):
                 super().__init__(token="dummy", repo="Tiflit/DXVK-Companion")
             def get_pr(self, num): return {"head": {"sha": "0abef8d34a836494cdd882b844c781e32fa35322"}, "base": {"sha": "1111111111111111111111111111111111111111"}}
             def get_issue(self, num): return {}
-            def get_workflow_run_jobs(self, run_id, attempt=None): return []
+            def get_workflow_run_jobs(self, run_id, attempt=None): return [{"started_at": "2026-10-04T00:10:00Z", "completed_at": "2026-10-04T00:12:00Z"}]
             def compare_commits(self, base_sha, head_sha): return {"files": []}
             def get_run_artifacts(self, run_id):
-                return [{"name": "build-provenance", "archive_download_url": "https://api.github.com/prov"}]
+                return [{"name": "build-provenance", "created_at": "2026-10-04T00:11:50Z", "archive_download_url": "https://api.github.com/prov"}]
             def download_bytes(self, url, max_bytes=50*1024*1024, timeout=30): return zip_bytes
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -981,6 +1009,41 @@ class TestReviewPacket(unittest.TestCase):
         art, err = generate_review_packet.resolve_trx_artifact_for_attempt(artifacts, ci_jobs, "1")
         self.assertIsNone(art)
         self.assertIn("missing job started_at or completed_at timestamps", err)
+
+
+class TestProvenanceAttemptSelection(unittest.TestCase):
+    jobs = [{"started_at": "2026-10-20T12:00:00Z", "completed_at": "2026-10-20T12:05:00Z"}]
+
+    def artifact(self, identifier=20, created="2026-10-20T12:02:00Z"):
+        return {"id": identifier, "name": "build-provenance", "created_at": created}
+
+    def select(self, artifacts, jobs=None):
+        return generate_review_packet.resolve_provenance_artifact_for_attempt(artifacts, self.jobs if jobs is None else jobs, "2")
+
+    def test_order_and_id_are_not_chronology(self):
+        current = self.artifact()
+        old = self.artifact(99, "2026-10-20T11:00:00Z")
+        for artifacts in ([old, current], [current, old], [current]):
+            selected, reason = self.select(artifacts)
+            self.assertIs(selected, current)
+            self.assertIsNone(reason)
+
+    def test_missing_stale_and_ambiguous_metadata_refuse(self):
+        for artifacts, jobs in (([], self.jobs), ([self.artifact()], []),
+                                ([self.artifact()], [{}]),
+                                ([self.artifact()], self.jobs + [{}]),
+                                ([self.artifact(created=None)], self.jobs),
+                                ([self.artifact(created="PrivateSentinel")], self.jobs),
+                                ([self.artifact(created="2026-10-20T11:00:00Z")], self.jobs),
+                                ([self.artifact(created="2026-10-20T12:06:00Z")], self.jobs),
+                                ([self.artifact(), self.artifact(30)], self.jobs),
+                                ([self.artifact(), self.artifact(99, None)], self.jobs),
+                                ([self.artifact()], [{"started_at": "2026-10-20T12:05:00Z", "completed_at": "2026-10-20T12:00:00Z"}])):
+            with self.subTest(artifacts=artifacts, jobs=jobs):
+                selected, reason = self.select(artifacts, jobs)
+                self.assertIsNone(selected)
+                self.assertTrue(reason)
+                self.assertNotIn("PrivateSentinel", reason)
 
 
 if __name__ == "__main__":

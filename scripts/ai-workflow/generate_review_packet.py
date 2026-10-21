@@ -464,11 +464,30 @@ def resolve_trx_artifact_for_attempt(
     ci_jobs: List[Dict[str, Any]],
     run_attempt: str,
 ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
-    """Centralizes TRX artifact-attempt attribution before downloading/parsing.
+    """Preserve the existing TRX attribution entry point."""
+    return _resolve_artifact_for_attempt(artifacts, ci_jobs, run_attempt, "phase-a-test-results", "TRX")
+
+
+def resolve_provenance_artifact_for_attempt(
+    artifacts: List[Dict[str, Any]],
+    ci_jobs: List[Dict[str, Any]],
+    run_attempt: str,
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Select by attempt interval before retaining all existing JSON identity checks."""
+    return _resolve_artifact_for_attempt(artifacts, ci_jobs, run_attempt, "build-provenance", "build-provenance")
+
+
+def _resolve_artifact_for_attempt(
+    artifacts: List[Dict[str, Any]],
+    ci_jobs: List[Dict[str, Any]],
+    run_attempt: str,
+    artifact_name: str,
+    description: str,
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Centralizes named artifact-attempt attribution before downloading/parsing.
 
     Attribution Rules:
-    1. Only artifacts named 'phase-a-test-results' are candidates. If none exist,
-       returns (None, "No TRX artifact found").
+    1. Only artifacts of the requested internal name are candidates.
     2. Missing matching jobs for the attempt -> UNAVAILABLE. Attempt identity cannot
        be established.
     3. Missing job start/completion timestamps or invalid interval -> UNAVAILABLE.
@@ -489,15 +508,15 @@ def resolve_trx_artifact_for_attempt(
     Returns:
         (selected_artifact, error_reason)
     """
-    candidate_artifacts = [a for a in artifacts if a.get("name") == "phase-a-test-results"]
+    candidate_artifacts = [a for a in artifacts if a.get("name") == artifact_name]
     if not candidate_artifacts:
-        return None, "No TRX artifact found"
+        return None, f"No {description} artifact found"
 
     # Rule 2: Missing matching jobs -> UNAVAILABLE
     if not ci_jobs:
         return (
             None,
-            f"Ambiguous artifact attribution: cannot attribute TRX artifact to attempt {run_attempt}; no matching jobs found for attempt",
+            f"Ambiguous artifact attribution: cannot attribute {description} artifact to attempt {run_attempt}; no matching jobs found for attempt",
         )
 
     # Rule 3: Missing job timestamps or invalid interval -> UNAVAILABLE
@@ -505,9 +524,13 @@ def resolve_trx_artifact_for_attempt(
     job_ends: List[datetime.datetime] = []
     for j in ci_jobs:
         s = parse_iso8601_utc(j.get("started_at"))
+        c = parse_iso8601_utc(j.get("completed_at"))
+        if s is None or c is None:
+            return None, f"Ambiguous artifact attribution: cannot establish attempt {run_attempt} execution interval; missing job started_at or completed_at timestamps"
+        if s > c:
+            return None, f"Ambiguous artifact attribution: invalid attempt {run_attempt} execution interval (start follows end)"
         if s is not None:
             job_starts.append(s)
-        c = parse_iso8601_utc(j.get("completed_at"))
         if c is not None:
             job_ends.append(c)
 
@@ -523,7 +546,7 @@ def resolve_trx_artifact_for_attempt(
     if interval_start > interval_end:
         return (
             None,
-            f"Ambiguous artifact attribution: invalid attempt {run_attempt} execution interval (start precedes end: {interval_start.isoformat()} > {interval_end.isoformat()})",
+            f"Ambiguous artifact attribution: invalid attempt {run_attempt} execution interval (start follows end)",
         )
 
     # Rule 4: Candidate artifact metadata check
@@ -533,7 +556,7 @@ def resolve_trx_artifact_for_attempt(
         if created_dt is None:
             return (
                 None,
-                f"Ambiguous artifact attribution: candidate TRX artifact (id: {art.get('id')}) is missing or has unparseable created_at metadata",
+                f"Ambiguous artifact attribution: candidate {description} artifact is missing or has unparseable created_at metadata",
             )
 
     # Rule 5: Check artifact timestamps against attempt interval [interval_start, interval_end]
@@ -544,19 +567,16 @@ def resolve_trx_artifact_for_attempt(
     ]
 
     if not matching_candidates:
-        candidate_created_strs = [str(a.get("created_at")) for a in candidate_artifacts]
         return (
             None,
-            f"Artifact outside attempt {run_attempt} execution interval "
-            f"[{interval_start.isoformat()}, {interval_end.isoformat()}]: "
-            f"candidate created_at timestamps: {candidate_created_strs}",
+            f"Artifact outside attempt {run_attempt} execution interval",
         )
 
     # Rule 6: Ambiguous candidates -> UNAVAILABLE
     if len(matching_candidates) > 1:
         return (
             None,
-            f"Ambiguous artifact attribution: {len(matching_candidates)} duplicate 'phase-a-test-results' artifacts found within attempt {run_attempt} interval",
+            f"Ambiguous artifact attribution: {len(matching_candidates)} duplicate '{artifact_name}' artifacts found within attempt {run_attempt} interval",
         )
 
     # Exactly one candidate matched within the interval
@@ -712,8 +732,9 @@ def generate_packet(
                 trx_totals = {"status": "unavailable", "reason": "Failed to download/parse TRX artifact."}
 
     # Process build-provenance artifacts
-    prov_artifacts = [a for a in artifacts if a.get("name") == "build-provenance"]
-    selected_prov = prov_artifacts[0] if len(prov_artifacts) == 1 else (prov_artifacts[-1] if prov_artifacts else None)
+    selected_prov, provenance_unavailable = resolve_provenance_artifact_for_attempt(artifacts, ci_jobs, run_attempt)
+    if not selected_prov:
+        provenance_diagnostic = provenance_unavailable or "No attributable build-provenance artifact found"
     if selected_prov:
         art_download_url = selected_prov.get("archive_download_url", "")
         if art_download_url:
@@ -737,8 +758,10 @@ def generate_packet(
                         build_provenance = parsed_prov
                 else:
                     provenance_diagnostic = "build-provenance.json not found inside artifact zip"
-            except Exception as e:
-                provenance_diagnostic = f"Failed to download/parse build-provenance: {e}"
+            except Exception:
+                provenance_diagnostic = "Failed to download/parse build-provenance."
+        else:
+            provenance_diagnostic = "Attributed build-provenance artifact has no download URL."
 
     capture_time = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
