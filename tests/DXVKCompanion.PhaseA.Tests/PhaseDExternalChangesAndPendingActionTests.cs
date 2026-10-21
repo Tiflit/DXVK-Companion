@@ -31,7 +31,7 @@ public sealed class PhaseDExternalChangesAndPendingActionTests
             Path.Combine(storageDir.RootPath, "backups"));
         var engine = new MultiFileTransactionEngine(Path.Combine(storageDir.RootPath, "backups"));
         using var http = new HttpClient();
-        var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
+        var installer = SyntheticSafetyFixture.CreateInstaller(http, engine, store, sourceDir.RootPath);
 
         var profile = new GameProfile(exePath)
         {
@@ -49,7 +49,7 @@ public sealed class PhaseDExternalChangesAndPendingActionTests
         // External action deletes d3d11.dll
         File.Delete(d3d11Path);
 
-        var inspector = new ManagedFileInspector(store);
+        var inspector = SyntheticSafetyFixture.CreateInspector(store);
         var installation = store.FindByInstallationPath(gameDir.RootPath);
         Assert.NotNull(installation);
 
@@ -87,7 +87,7 @@ public sealed class PhaseDExternalChangesAndPendingActionTests
             Path.Combine(storageDir.RootPath, "backups"));
         var engine = new MultiFileTransactionEngine(Path.Combine(storageDir.RootPath, "backups"));
         using var http = new HttpClient();
-        var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
+        var installer = SyntheticSafetyFixture.CreateInstaller(http, engine, store, sourceDir.RootPath);
 
         var profile = new GameProfile(exePath)
         {
@@ -104,7 +104,7 @@ public sealed class PhaseDExternalChangesAndPendingActionTests
         // External game patch overwrites d3d11.dll with different content
         File.WriteAllText(d3d11Path, "game-patch-new-d3d11");
 
-        var inspector = new ManagedFileInspector(store);
+        var inspector = SyntheticSafetyFixture.CreateInspector(store);
         var installation = store.FindByInstallationPath(gameDir.RootPath);
         Assert.NotNull(installation);
 
@@ -142,7 +142,7 @@ public sealed class PhaseDExternalChangesAndPendingActionTests
             Path.Combine(storageDir.RootPath, "backups"));
         var engine = new MultiFileTransactionEngine(Path.Combine(storageDir.RootPath, "backups"));
         using var http = new HttpClient();
-        var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
+        var installer = SyntheticSafetyFixture.CreateInstaller(http, engine, store, sourceDir.RootPath);
 
         var profile = new GameProfile(exePath)
         {
@@ -165,7 +165,7 @@ public sealed class PhaseDExternalChangesAndPendingActionTests
         var d3d11Path = Path.Combine(gameDir.RootPath, "d3d11.dll");
         File.WriteAllText(d3d11Path, "game-update-changed-dll");
 
-        var inspector = new ManagedFileInspector(store);
+        var inspector = SyntheticSafetyFixture.CreateInspector(store);
         bool changed = inspector.InspectInstallation(installation);
         Assert.True(changed);
 
@@ -195,8 +195,8 @@ public sealed class PhaseDExternalChangesAndPendingActionTests
             Path.Combine(storageDir.RootPath, "backups"));
         var engine = new MultiFileTransactionEngine(Path.Combine(storageDir.RootPath, "backups"));
         using var http = new HttpClient();
-        var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
-        var rollback = new DxvkRollback(engine, store);
+        var installer = SyntheticSafetyFixture.CreateInstaller(http, engine, store, sourceDir.RootPath);
+        var rollback = SyntheticSafetyFixture.CreateRollback(engine, store);
 
         var profile = new GameProfile(exePath)
         {
@@ -243,12 +243,14 @@ public sealed class PhaseDExternalChangesAndPendingActionTests
         var libraryPath = Path.Combine(storageDir.RootPath, "game-library.json");
 
         var store = new GameLibraryStore(libraryPath, Path.Combine(storageDir.RootPath, "backups"));
+        SyntheticSafetyFixture.ConfigureStore(store);
         var installation = store.GetOrCreateInstallation(gameDir.RootPath, "Game");
         installation.PendingAction = PendingAction.Install("2.5", "Queued offline");
         store.Save(installation);
 
         // Simulate application restart: load a fresh GameLibraryStore instance from the same JSON
         var freshStore = new GameLibraryStore(libraryPath, Path.Combine(storageDir.RootPath, "backups"));
+        SyntheticSafetyFixture.ConfigureStore(freshStore);
         var loaded = freshStore.FindByInstallationPath(gameDir.RootPath);
 
         Assert.NotNull(loaded);
@@ -278,11 +280,11 @@ public sealed class PhaseDExternalChangesAndPendingActionTests
         var profileStore = new ProfileStore(Path.Combine(storageDir.RootPath, "games.json"));
         var engine = new MultiFileTransactionEngine(Path.Combine(storageDir.RootPath, "backups"));
         using var http = new HttpClient();
-        var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
-        var rollback = new DxvkRollback(engine, store);
+        var installer = SyntheticSafetyFixture.CreateInstaller(http, engine, store, sourceDir.RootPath);
+        var rollback = SyntheticSafetyFixture.CreateRollback(engine, store);
         var github = new DxvkGithubClient(http, new CacheStore(Path.Combine(storageDir.RootPath, "cache.json")));
 
-        var manager = new DxvkManager(installer, rollback, github, profileStore, store);
+        var manager = SyntheticSafetyFixture.CreateManager(installer, rollback, github, profileStore, store);
 
         var profile = profileStore.GetOrCreate(exePath);
         profile.Api = GraphicsApi.DX11;

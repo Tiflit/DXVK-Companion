@@ -1077,8 +1077,10 @@ public sealed class OperationExclusionBoundaryTests
         var profile = profileStore.GetOrCreate("C:\\fake\\game.exe");
 
         // Acquire lease for a completely different store
+        var setupWatch = System.Diagnostics.Stopwatch.StartNew();
         using var wrongLease = coordinator.TryAcquireStoreLease(wrongStorePath, TimeSpan.FromMilliseconds(500));
-        Assert.NotNull(wrongLease);
+        Assert.True(wrongLease is not null, SyntheticSafetyFixture.Diagnostic(
+            SyntheticSafetyFixture.Phase.StoreLeaseSetup, setupWatch.ElapsedMilliseconds, coordinator.LastAcquisitionError));
 
         // 1. Save must throw ArgumentException for mismatched lease, NOT fall back to acquiring fresh lease
         Assert.Throws<ArgumentException>(() => profileStore.Save(profile, wrongLease));
@@ -1090,10 +1092,12 @@ public sealed class OperationExclusionBoundaryTests
         Assert.Contains("Invalid, mismatched, or disposed", refusalReason);
 
         // 3. Disposed lease must also be rejected
+        setupWatch.Restart();
         using (var validLease = coordinator.TryAcquireStoreLease(profilesPath, TimeSpan.FromMilliseconds(500)))
         {
-            Assert.NotNull(validLease);
-            validLease.Dispose();
+            Assert.True(validLease is not null, SyntheticSafetyFixture.Diagnostic(
+                SyntheticSafetyFixture.Phase.StoreLeaseSetup, setupWatch.ElapsedMilliseconds, coordinator.LastAcquisitionError));
+            validLease!.Dispose();
 
             Assert.Throws<ArgumentException>(() => profileStore.Save(profile, validLease));
             Assert.False(profileStore.TryCheckCanModifyProfileStore(out var disposedRefusal, validLease));

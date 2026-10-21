@@ -95,10 +95,10 @@ public sealed class PersistedDeploymentLifecycleAcceptanceTests
         var profileStore1 = new ProfileStore(profilesPath);
         var libraryStore1 = new GameLibraryStore(libraryPath, backupsPath, profilesPath);
         var engine1 = new MultiFileTransactionEngine(backupsPath);
-        var installer1 = new DxvkInstaller(httpClient, engine1, libraryStore1, sourceDir.RootPath);
-        var rollback1 = new DxvkRollback(engine1, libraryStore1);
+        var installer1 = SyntheticSafetyFixture.CreateInstaller(httpClient, engine1, libraryStore1, sourceDir.RootPath);
+        var rollback1 = SyntheticSafetyFixture.CreateRollback(engine1, libraryStore1);
         var github1 = new DxvkGithubClient(httpClient, cacheStore1);
-        var manager1 = new DxvkManager(installer1, rollback1, github1, profileStore1, libraryStore1);
+        var manager1 = SyntheticSafetyFixture.CreateManager(installer1, rollback1, github1, profileStore1, libraryStore1);
 
         var profile1 = profileStore1.GetOrCreate(exePath);
         profile1.Api = GraphicsApi.DX11;
@@ -152,10 +152,10 @@ public sealed class PersistedDeploymentLifecycleAcceptanceTests
         var profileStore2 = new ProfileStore(profilesPath);
         var libraryStore2 = new GameLibraryStore(libraryPath, backupsPath, profilesPath);
         var engine2 = new MultiFileTransactionEngine(backupsPath);
-        var installer2 = new DxvkInstaller(httpClient, engine2, libraryStore2, sourceDir.RootPath);
-        var rollback2 = new DxvkRollback(engine2, libraryStore2);
+        var installer2 = SyntheticSafetyFixture.CreateInstaller(httpClient, engine2, libraryStore2, sourceDir.RootPath);
+        var rollback2 = SyntheticSafetyFixture.CreateRollback(engine2, libraryStore2);
         var github2 = new DxvkGithubClient(httpClient, cacheStore2);
-        var manager2 = new DxvkManager(installer2, rollback2, github2, profileStore2, libraryStore2);
+        var manager2 = SyntheticSafetyFixture.CreateManager(installer2, rollback2, github2, profileStore2, libraryStore2);
 
         var profile2 = profileStore2.GetOrCreate(exePath);
         var latest2 = await manager2.GetLatestReleaseAsync();
@@ -196,10 +196,10 @@ public sealed class PersistedDeploymentLifecycleAcceptanceTests
         var profileStore3 = new ProfileStore(profilesPath);
         var libraryStore3 = new GameLibraryStore(libraryPath, backupsPath, profilesPath);
         var engine3 = new MultiFileTransactionEngine(backupsPath);
-        var installer3 = new DxvkInstaller(httpClient, engine3, libraryStore3, sourceDir.RootPath);
-        var rollback3 = new DxvkRollback(engine3, libraryStore3);
+        var installer3 = SyntheticSafetyFixture.CreateInstaller(httpClient, engine3, libraryStore3, sourceDir.RootPath);
+        var rollback3 = SyntheticSafetyFixture.CreateRollback(engine3, libraryStore3);
         var github3 = new DxvkGithubClient(httpClient, new CacheStore(cachePath));
-        var manager3 = new DxvkManager(installer3, rollback3, github3, profileStore3, libraryStore3);
+        var manager3 = SyntheticSafetyFixture.CreateManager(installer3, rollback3, github3, profileStore3, libraryStore3);
 
         var profile3 = profileStore3.GetOrCreate(exePath);
         var restoreResult = await manager3.RequestDisableByPathAsync(profile3);
@@ -228,10 +228,10 @@ public sealed class PersistedDeploymentLifecycleAcceptanceTests
         var profileStore4 = new ProfileStore(profilesPath);
         var libraryStore4 = new GameLibraryStore(libraryPath, backupsPath, profilesPath);
         var engine4 = new MultiFileTransactionEngine(backupsPath);
-        var installer4 = new DxvkInstaller(httpClient, engine4, libraryStore4, sourceDir.RootPath);
-        var rollback4 = new DxvkRollback(engine4, libraryStore4);
+        var installer4 = SyntheticSafetyFixture.CreateInstaller(httpClient, engine4, libraryStore4, sourceDir.RootPath);
+        var rollback4 = SyntheticSafetyFixture.CreateRollback(engine4, libraryStore4);
         var github4 = new DxvkGithubClient(httpClient, new CacheStore(cachePath));
-        var manager4 = new DxvkManager(installer4, rollback4, github4, profileStore4, libraryStore4);
+        var manager4 = SyntheticSafetyFixture.CreateManager(installer4, rollback4, github4, profileStore4, libraryStore4);
 
         var profile4 = profileStore4.GetOrCreate(exePath);
         var repeatRestoreResult = await manager4.RequestDisableByPathAsync(profile4);
@@ -243,7 +243,7 @@ public sealed class PersistedDeploymentLifecycleAcceptanceTests
         Assert.False(File.Exists(dxgiPath));
 
         // Verify ManagedFileInspector scan verifies original baseline cleanly without attention or refusal
-        var inspector = new ManagedFileInspector(libraryStore4);
+        var inspector = SyntheticSafetyFixture.CreateInspector(libraryStore4);
         var inst4 = libraryStore4.FindByInstallationPath(gameDir.RootPath)!;
         bool scanChanged = inspector.InspectInstallation(inst4);
         Assert.False(scanChanged);
@@ -297,10 +297,10 @@ public sealed class PersistedDeploymentLifecycleAcceptanceTests
         var profileStore1 = new ProfileStore(profilesPath);
         var libraryStore1 = new GameLibraryStore(libraryPath, backupsPath, profilesPath);
         var engine1 = new MultiFileTransactionEngine(backupsPath);
-        var installer1 = new DxvkInstaller(httpClient, engine1, libraryStore1, sourceDir.RootPath);
-        var rollback1 = new DxvkRollback(engine1, libraryStore1);
+        var installer1 = SyntheticSafetyFixture.CreateInstaller(httpClient, engine1, libraryStore1, sourceDir.RootPath);
+        var rollback1 = SyntheticSafetyFixture.CreateRollback(engine1, libraryStore1);
         var github1 = new DxvkGithubClient(httpClient, cacheStore1);
-        var manager1 = new DxvkManager(installer1, rollback1, github1, profileStore1, libraryStore1);
+        var manager1 = SyntheticSafetyFixture.CreateManager(installer1, rollback1, github1, profileStore1, libraryStore1);
 
         var profile1 = profileStore1.GetOrCreate(exePath);
         profile1.Api = GraphicsApi.DX11;
@@ -318,10 +318,10 @@ public sealed class PersistedDeploymentLifecycleAcceptanceTests
         var profileStore2 = new ProfileStore(profilesPath);
         var libraryStore2 = new GameLibraryStore(libraryPath, backupsPath, profilesPath);
         var engine2 = new MultiFileTransactionEngine(backupsPath);
-        var installer2 = new DxvkInstaller(httpClient, engine2, libraryStore2, sourceDir.RootPath);
-        var rollback2 = new DxvkRollback(engine2, libraryStore2);
+        var installer2 = SyntheticSafetyFixture.CreateInstaller(httpClient, engine2, libraryStore2, sourceDir.RootPath);
+        var rollback2 = SyntheticSafetyFixture.CreateRollback(engine2, libraryStore2);
         var github2 = new DxvkGithubClient(httpClient, cacheStore2);
-        var manager2 = new DxvkManager(installer2, rollback2, github2, profileStore2, libraryStore2);
+        var manager2 = SyntheticSafetyFixture.CreateManager(installer2, rollback2, github2, profileStore2, libraryStore2);
 
         var profile2 = profileStore2.GetOrCreate(exePath);
         var updateOk = await manager2.RequestUpdateByPathAsync(profile2);
@@ -331,10 +331,10 @@ public sealed class PersistedDeploymentLifecycleAcceptanceTests
         var profileStore3 = new ProfileStore(profilesPath);
         var libraryStore3 = new GameLibraryStore(libraryPath, backupsPath, profilesPath);
         var engine3 = new MultiFileTransactionEngine(backupsPath);
-        var installer3 = new DxvkInstaller(httpClient, engine3, libraryStore3, sourceDir.RootPath);
-        var rollback3 = new DxvkRollback(engine3, libraryStore3);
+        var installer3 = SyntheticSafetyFixture.CreateInstaller(httpClient, engine3, libraryStore3, sourceDir.RootPath);
+        var rollback3 = SyntheticSafetyFixture.CreateRollback(engine3, libraryStore3);
         var github3 = new DxvkGithubClient(httpClient, new CacheStore(cachePath));
-        var manager3 = new DxvkManager(installer3, rollback3, github3, profileStore3, libraryStore3);
+        var manager3 = SyntheticSafetyFixture.CreateManager(installer3, rollback3, github3, profileStore3, libraryStore3);
 
         var profile3 = profileStore3.GetOrCreate(exePath);
         var inst3 = libraryStore3.FindByInstallationPath(gameDir.RootPath)!;
