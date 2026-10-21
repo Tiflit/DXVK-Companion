@@ -23,6 +23,8 @@ namespace DXVKCompanion.DXVK
 
     public class DxvkManager
     {
+        private const string LatestMetadataUnavailableReason = "Latest DXVK metadata is unavailable. Keep the installed version. To retry offline when no work is queued, select a downloaded exact DXVK Version in Game Details and Save. If none is available, connect for the next daily metadata check.";
+
         private enum PendingAction { None = 0, Enable = 1, Disable = 2 }
 
         private readonly DxvkInstaller _installer;
@@ -731,6 +733,7 @@ namespace DXVKCompanion.DXVK
         /// <summary>Updates every currently-enabled profile that isn't already on its target version.</summary>
         public async Task<Dictionary<string, DxvkActionResult>> UpdateAllEnabledAsync()
         {
+            LastRefusalReason = null;
             var results = new Dictionary<string, DxvkActionResult>();
             var allProfiles = _profiles.GetAll().ToList();
             var enabledProfiles = allProfiles.Where(p =>
@@ -772,6 +775,7 @@ namespace DXVKCompanion.DXVK
                 }
             }
 
+            string? batchRefusalReason = null;
             foreach (var profile in enabledProfiles)
             {
                 var installation = ResolveInstallation(profile.ExePath);
@@ -785,13 +789,24 @@ namespace DXVKCompanion.DXVK
                 }
                 else
                 {
-                    if (latest != null && UpdateAvailable(profile, latest))
+                    if (latest == null)
+                    {
+                        results[profile.ExePath] = DxvkActionResult.Failed;
+                        LastRefusalReason = LatestMetadataUnavailableReason;
+                    }
+                    else if (UpdateAvailable(profile, latest))
                     {
                         results[profile.ExePath] = await RequestUpdateByPathAsync(profile, "latest");
                     }
                 }
+
+                // A later successful per-game operation clears LastRefusalReason.
+                // Preserve an actual batch failure for the existing result presenter.
+                if (results.TryGetValue(profile.ExePath, out var result) && result == DxvkActionResult.Failed)
+                    batchRefusalReason ??= LastRefusalReason ?? "One or more DXVK updates could not be completed.";
             }
 
+            LastRefusalReason = batchRefusalReason;
             return results;
         }
 
@@ -1242,7 +1257,10 @@ namespace DXVKCompanion.DXVK
                 {
                     release = await GetLatestReleaseAsync();
                     if (release == null)
+                    {
+                        LastRefusalReason = LatestMetadataUnavailableReason;
                         return false;
+                    }
                 }
 
                 bool ok = await _installer.ApplyToGameAsync(profile, release, leaseToken).ConfigureAwait(false);
