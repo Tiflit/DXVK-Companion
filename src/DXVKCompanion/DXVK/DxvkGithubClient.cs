@@ -27,6 +27,51 @@ namespace DXVKCompanion.DXVK
         // Clear after a committed write: persisted state remains authoritative.
         private DateTime? _lastLatestAttempt;
 
+        // Registry lifetime includes queued users; only active participants
+        // share unpersisted attempt state. Idle entries retain no cache identity.
+        private sealed class LatestCacheGate
+        {
+            internal readonly SemaphoreSlim Semaphore = new(1, 1);
+            internal int Users;
+            internal DateTime? UnpersistedAttempt;
+        }
+        private static readonly object CacheGateRegistryLock = new();
+        private static readonly Dictionary<string, LatestCacheGate> CacheGates = new(
+            OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+
+        private static LatestCacheGate RentCacheGate(string key)
+        {
+            lock (CacheGateRegistryLock)
+            {
+                if (!CacheGates.TryGetValue(key, out var gate))
+                {
+                    gate = new LatestCacheGate();
+                    CacheGates.Add(key, gate);
+                }
+                gate.Users++;
+                return gate;
+            }
+        }
+
+        private static void ReturnCacheGate(string key, LatestCacheGate gate, bool entered, DateTime? attempt)
+        {
+            if (entered)
+            {
+                gate.UnpersistedAttempt = attempt;
+                gate.Semaphore.Release();
+            }
+            lock (CacheGateRegistryLock)
+            {
+                if (--gate.Users == 0)
+                {
+                    CacheGates.Remove(key);
+                    gate.Semaphore.Dispose();
+                }
+            }
+        }
+
+        internal Action? BeforeSharedCacheWait { get; set; }
+
         public const int CatalogPageSize = 30;
         public const int MaximumCatalogPages = 32;
         internal const int MaximumMetadataBytes = 2 * 1024 * 1024;
@@ -162,10 +207,29 @@ namespace DXVKCompanion.DXVK
             }
 
             await _gate.WaitAsync(cancellationToken);
+            LatestCacheGate? shared = null;
+            string? cacheKey = null;
+            bool sharedEntered = false;
             try
             {
+                try { cacheKey = Path.GetFullPath(_cacheStore.CacheFile); }
+                catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+                {
+                    // Unusable storage still follows the existing network/cache
+                    // failure path, protected by this client's private gate.
+                }
+                if (cacheKey != null)
+                {
+                    shared = RentCacheGate(cacheKey);
+                    BeforeSharedCacheWait?.Invoke();
+                    await shared.Semaphore.WaitAsync(cancellationToken);
+                    sharedEntered = true;
+                    if (shared.UnpersistedAttempt.HasValue &&
+                        (!_lastLatestAttempt.HasValue || shared.UnpersistedAttempt.Value > _lastLatestAttempt.Value))
+                        _lastLatestAttempt = shared.UnpersistedAttempt;
+                }
                 now = UtcNowSeam();
-                // Re-evaluate persisted state after acquiring the gate (concurrent caller might have satisfied it)
+                // Another client/store may have committed an attempt while we waited.
                 cached = _cacheStore.LoadCachedRelease();
                 if ((cached != null && !cached.IsDue(now)) ||
                     (_lastLatestAttempt.HasValue && now - _lastLatestAttempt.Value < TimeSpan.FromHours(24)))
@@ -185,7 +249,11 @@ namespace DXVKCompanion.DXVK
             }
             finally
             {
-                _gate.Release();
+                try
+                {
+                    if (shared != null) ReturnCacheGate(cacheKey!, shared, sharedEntered, _lastLatestAttempt);
+                }
+                finally { _gate.Release(); }
             }
         }
 

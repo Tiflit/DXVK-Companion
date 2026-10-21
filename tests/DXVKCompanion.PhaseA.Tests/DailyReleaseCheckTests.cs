@@ -21,6 +21,244 @@ namespace DXVKCompanion.PhaseA.Tests
 {
     public class DailyReleaseCheckTests
     {
+        [Fact]
+        public async Task LatestClient_UnnormalizableCachePath_PreservesPrivateFailureFallback()
+        {
+            using var directory = new SyntheticTestDirectory();
+            var store = new CacheStore(Path.Combine(directory.RootPath, "invalid\0cache.json"));
+            int requests = 0;
+            using var http = new HttpClient(new RecordingHttpMessageHandler(_ =>
+            {
+                requests++;
+                return CreateJsonResponse(HttpStatusCode.OK, CreateReleaseJson("v3.1", "dxvk-3.1.tar.gz",
+                    "https://github.com/doitsujin/dxvk/releases/download/v3.1/dxvk-3.1.tar.gz"));
+            }));
+            var client = new DxvkGithubClient(http, store);
+            Assert.Null(await client.FetchLatestReleaseAsync());
+            Assert.Null(await client.FetchLatestReleaseAsync());
+            Assert.Equal(1, requests);
+            Assert.Empty(Directory.EnumerateFileSystemEntries(directory.RootPath));
+        }
+
+        [Theory]
+        [InlineData(200, true, false)]
+        [InlineData(200, false, false)]
+        [InlineData(304, true, false)]
+        [InlineData(500, true, false)]
+        [InlineData(500, false, false)]
+        [InlineData(200, true, true)]
+        [InlineData(200, false, true)]
+        [InlineData(304, true, true)]
+        [InlineData(500, true, true)]
+        [InlineData(500, false, true)]
+        public async Task DistinctLatestClients_ShareCheck_FallbackAndDailyWindow(int status, bool priorCache, bool unwritable)
+        {
+            using var directory = new SyntheticTestDirectory();
+            string cache = Path.Combine(directory.RootPath, "release-cache.json");
+            var now = new DateTime(2026, 10, 21, 0, 0, 0, DateTimeKind.Utc);
+            var initialTime = now;
+            var stores = new List<CacheStore> { new(cache) };
+            if (priorCache)
+                stores[0].SaveCachedRelease(new ReleaseInfo { Version = "v2.5" }, "\"old\"", now.AddDays(-2), now.AddDays(-2));
+            byte[]? original = priorCache ? File.ReadAllBytes(cache) : null;
+            var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var queued = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            int requests = 0;
+            using var http = new HttpClient(RecordingHttpMessageHandler.CreateAsync(async request =>
+            {
+                int attempt = Interlocked.Increment(ref requests);
+                if (attempt == 1)
+                {
+                    Assert.Equal(priorCache, request.Headers.IfNoneMatch.Count == 1);
+                    entered.TrySetResult();
+                    await release.Task.WaitAsync(deadline.Token);
+                }
+                return CreateJsonResponse(attempt == 1 ? (HttpStatusCode)status : HttpStatusCode.OK,
+                    CreateReleaseJson("v3.1", "dxvk-3.1.tar.gz", "https://github.com/doitsujin/dxvk/releases/download/v3.1/dxvk-3.1.tar.gz"), "\"new\"");
+            }));
+            if (unwritable) stores[0].CustomTempWriter = (_, _) => throw new IOException("Synthetic cache write failure.");
+            var clients = new List<DxvkGithubClient> { new(http, stores[0], () => now) };
+            var calls = new List<Task<ReleaseInfo?>> { clients[0].FetchLatestReleaseAsync(deadline.Token) };
+            try
+            {
+                await entered.Task.WaitAsync(deadline.Token);
+                int arrivals = 0;
+                for (int i = 0; i < 3; i++)
+                {
+                    string alias = Path.GetFullPath(Path.Combine(directory.RootPath, ".", "release-cache.json"));
+                    if (i == 1 && OperatingSystem.IsWindows()) alias = alias.ToUpperInvariant();
+                    var store = new CacheStore(alias);
+                    if (unwritable) store.CustomTempWriter = (_, _) => throw new IOException("Synthetic cache write failure.");
+                    stores.Add(store);
+                    var client = new DxvkGithubClient(http, store, () => now)
+                    {
+                        BeforeSharedCacheWait = () => { if (Interlocked.Increment(ref arrivals) == 3) queued.TrySetResult(); }
+                    };
+                    clients.Add(client);
+                    calls.Add(client.FetchLatestReleaseAsync(deadline.Token));
+                }
+                await queued.Task.WaitAsync(deadline.Token);
+                Assert.All(calls, call => Assert.False(call.IsCompleted));
+                Assert.Equal(1, requests);
+            }
+            finally { release.TrySetResult(); }
+            var results = await Task.WhenAll(calls).WaitAsync(deadline.Token);
+            string? expected = status == 200 && !unwritable ? "v3.1" : priorCache ? "v2.5" : null;
+            Assert.All(results, result => Assert.Equal(expected, result?.Version));
+            Assert.Equal(1, requests);
+            if (unwritable)
+            {
+                if (priorCache) Assert.Equal(original, File.ReadAllBytes(cache));
+                else Assert.False(File.Exists(cache));
+                Assert.False(File.Exists(stores[0].AttemptFile));
+            }
+            else Assert.Equal(initialTime, stores[0].LoadCachedRelease()?.LastAttemptAt);
+
+            now = initialTime.AddHours(24).AddTicks(-1);
+            foreach (var client in clients) Assert.Equal(expected, (await client.FetchLatestReleaseAsync(deadline.Token))?.Version);
+            Assert.Equal(1, requests);
+            foreach (var store in stores) store.CustomTempWriter = null;
+            now = initialTime.AddHours(24);
+            Assert.Equal("v3.1", (await clients[1].FetchLatestReleaseAsync(deadline.Token))?.Version);
+            Assert.Equal(2, requests);
+            Assert.Equal(now, stores[0].LoadCachedRelease()?.LastAttemptAt);
+            Assert.Equal("v3.1", (await new DxvkGithubClient(http, new CacheStore(cache), () => now).FetchLatestReleaseAsync(deadline.Token))?.Version);
+            Assert.Equal(2, requests);
+        }
+
+        [Fact]
+        public async Task DistinctLatestClients_DifferentCaches_ProceedIndependently()
+        {
+            using var directory = new SyntheticTestDirectory();
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            int requests = 0;
+            using var http = new HttpClient(RecordingHttpMessageHandler.CreateAsync(async _ =>
+            {
+                if (Interlocked.Increment(ref requests) == 2) entered.TrySetResult();
+                await release.Task.WaitAsync(deadline.Token);
+                return CreateJsonResponse(HttpStatusCode.OK, CreateReleaseJson("v3.1", "dxvk-3.1.tar.gz",
+                    "https://github.com/doitsujin/dxvk/releases/download/v3.1/dxvk-3.1.tar.gz"));
+            }));
+            var first = new CacheStore(Path.Combine(directory.RootPath, "first.json"));
+            var second = new CacheStore(Path.Combine(directory.RootPath, "second.json"));
+            var a = new DxvkGithubClient(http, first).FetchLatestReleaseAsync(deadline.Token);
+            var b = new DxvkGithubClient(http, second).FetchLatestReleaseAsync(deadline.Token);
+            try { await entered.Task.WaitAsync(deadline.Token); }
+            finally { release.TrySetResult(); }
+            Assert.Equal("v3.1", (await a)?.Version);
+            Assert.Equal("v3.1", (await b)?.Version);
+            Assert.Equal(2, requests);
+            Assert.Equal("v3.1", first.LoadCachedRelease()?.Release.Version);
+            Assert.Equal("v3.1", second.LoadCachedRelease()?.Release.Version);
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task DistinctLatestClients_CancelledWaiter_DoesNotWriteOrCancelLeader(bool beforeWait)
+        {
+            using var directory = new SyntheticTestDirectory();
+            string cache = Path.Combine(directory.RootPath, "cache.json");
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            int requests = 0;
+            using var http = new HttpClient(RecordingHttpMessageHandler.CreateTokenAware(async (_, token) =>
+            {
+                Interlocked.Increment(ref requests);
+                started.TrySetResult();
+                await release.Task.WaitAsync(token);
+                return CreateJsonResponse(HttpStatusCode.OK, CreateReleaseJson("v3.1", "dxvk-3.1.tar.gz",
+                    "https://github.com/doitsujin/dxvk/releases/download/v3.1/dxvk-3.1.tar.gz"));
+            }));
+            var leader = new DxvkGithubClient(http, new CacheStore(cache)).FetchLatestReleaseAsync(deadline.Token);
+            try
+            {
+                await started.Task.WaitAsync(deadline.Token);
+                using var cancel = new CancellationTokenSource();
+                int writes = 0;
+                var store = new CacheStore(cache) { CustomTempWriter = (_, _) => { writes++; throw new IOException("Unexpected waiter write."); } };
+                var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                var waiter = new DxvkGithubClient(http, store)
+                {
+                    BeforeSharedCacheWait = () => { entered.TrySetResult(); if (beforeWait) cancel.Cancel(); }
+                };
+                var call = waiter.FetchLatestReleaseAsync(cancel.Token);
+                await entered.Task.WaitAsync(deadline.Token);
+                cancel.Cancel();
+                await Assert.ThrowsAnyAsync<OperationCanceledException>(() => call);
+                Assert.Equal(0, writes);
+                Assert.Equal(1, requests);
+                Assert.False(File.Exists(cache));
+            }
+            finally { release.TrySetResult(); }
+            Assert.Equal("v3.1", (await leader)?.Version);
+            Assert.Equal("v3.1", (await new DxvkGithubClient(http, new CacheStore(cache)).FetchLatestReleaseAsync(deadline.Token))?.Version);
+            Assert.Equal(1, requests);
+        }
+
+        [Fact]
+        public async Task DistinctLatestClients_CancelledLeader_PersistsExistingFailureWindowForWaiter()
+        {
+            using var directory = new SyntheticTestDirectory();
+            string cache = Path.Combine(directory.RootPath, "cache.json");
+            var now = new DateTime(2026, 10, 21, 0, 0, 0, DateTimeKind.Utc);
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            using var cancel = CancellationTokenSource.CreateLinkedTokenSource(deadline.Token);
+            var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            int requests = 0;
+            using var http = new HttpClient(RecordingHttpMessageHandler.CreateTokenAware(async (_, token) =>
+            {
+                if (Interlocked.Increment(ref requests) == 1)
+                {
+                    started.TrySetResult();
+                    await Task.Delay(Timeout.Infinite, token);
+                }
+                return CreateJsonResponse(HttpStatusCode.OK, CreateReleaseJson("v3.1", "dxvk-3.1.tar.gz",
+                    "https://github.com/doitsujin/dxvk/releases/download/v3.1/dxvk-3.1.tar.gz"));
+            }));
+            var leader = new DxvkGithubClient(http, new CacheStore(cache), () => now).FetchLatestReleaseAsync(cancel.Token);
+            await started.Task.WaitAsync(deadline.Token);
+            var other = new DxvkGithubClient(http, new CacheStore(cache), () => now) { BeforeSharedCacheWait = () => entered.TrySetResult() };
+            var follower = other.FetchLatestReleaseAsync(deadline.Token);
+            try { await entered.Task.WaitAsync(deadline.Token); }
+            finally { cancel.Cancel(); }
+            Assert.Null(await leader);
+            Assert.Null(await follower);
+            Assert.Equal(1, requests);
+            Assert.Equal(now, new CacheStore(cache).LoadCachedRelease()?.LastAttemptAt);
+            now = now.AddHours(24);
+            Assert.Equal("v3.1", (await other.FetchLatestReleaseAsync(deadline.Token))?.Version);
+            Assert.Equal(2, requests);
+        }
+
+        [Fact]
+        public async Task DistinctLatestClients_PreWaitException_ReleasesRegistrationAndInstanceGate()
+        {
+            using var directory = new SyntheticTestDirectory();
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            string cache = Path.Combine(directory.RootPath, "cache.json");
+            int requests = 0;
+            using var http = new HttpClient(new RecordingHttpMessageHandler(_ =>
+            {
+                requests++;
+                return CreateJsonResponse(HttpStatusCode.OK, CreateReleaseJson("v3.1", "dxvk-3.1.tar.gz",
+                    "https://github.com/doitsujin/dxvk/releases/download/v3.1/dxvk-3.1.tar.gz"));
+            }));
+            var client = new DxvkGithubClient(http, new CacheStore(cache)) { BeforeSharedCacheWait = () => throw new InvalidOperationException("Synthetic pre-wait failure.") };
+            await Assert.ThrowsAsync<InvalidOperationException>(() => client.FetchLatestReleaseAsync(deadline.Token));
+            Assert.Equal(0, requests);
+            client.BeforeSharedCacheWait = null;
+            Assert.Equal("v3.1", (await client.FetchLatestReleaseAsync(deadline.Token))?.Version);
+            Assert.Equal("v3.1", (await new DxvkGithubClient(http, new CacheStore(cache)).FetchLatestReleaseAsync(deadline.Token))?.Version);
+            Assert.Equal(1, requests);
+        }
+
         [Theory]
         [InlineData(true, 200, false)]
         [InlineData(false, 200, true)]
