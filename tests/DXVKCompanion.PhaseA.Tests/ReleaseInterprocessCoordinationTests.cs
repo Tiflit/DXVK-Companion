@@ -9,6 +9,85 @@ namespace DXVKCompanion.PhaseATests;
 
 public sealed class ReleaseInterprocessCoordinationTests
 {
+    private sealed class RendezvousCoordinator(OperationLeaseCoordinator inner) : IOperationLeaseCoordinator
+    {
+        internal readonly TaskCompletionSource Entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal readonly TaskCompletionSource Continue = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public string CoordinationDirectory => inner.CoordinationDirectory;
+        public string? LastAcquisitionError => inner.LastAcquisitionError;
+        public async ValueTask<IOperationLease?> TryAcquireStoreLeaseAsync(string path, TimeSpan timeout = default, CancellationToken ct = default)
+        {
+            Entered.TrySetResult();
+            await Continue.Task.WaitAsync(ct);
+            return await inner.TryAcquireStoreLeaseAsync(path, timeout, ct);
+        }
+        public IOperationLease? TryAcquireStoreLease(string path, TimeSpan timeout = default) => throw new NotSupportedException();
+        public ValueTask<IOperationLease?> TryAcquireOperationScopeAsync(string root, string? storePath = null, TimeSpan timeout = default, CancellationToken ct = default) => throw new NotSupportedException();
+        public ValueTask<IOperationLease?> TryAcquireOperationScopeAsync(string root, IEnumerable<string>? paths, TimeSpan timeout = default, CancellationToken ct = default) => throw new NotSupportedException();
+        public IOperationLease? TryAcquireOperationScope(string root, string? path = null, TimeSpan timeout = default) => throw new NotSupportedException();
+        public IOperationLease? TryAcquireOperationScope(string root, IEnumerable<string>? paths, TimeSpan timeout = default) => throw new NotSupportedException();
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task LeaseRecheck_ObservesPeerCommitOrPublication_WithoutDuplicateHttp(bool acquisition)
+    {
+        using var fixture = new OfficialAcquisitionFixture();
+        using var peer = new OfficialAcquisitionFixture();
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        string coordination = fixture.Directory.GetPath("coordination");
+        string destination = Path.Combine(fixture.Source, "v2.5");
+        var store = new CacheStore(fixture.Directory.GetPath("latest.json"));
+        var now = new DateTime(2026, 10, 21, 0, 0, 0, DateTimeKind.Utc);
+        if (acquisition)
+        {
+            peer.Acquirer.ProcessLeaseCoordinator = new OperationLeaseCoordinator(peer.Directory.GetPath("coordination"));
+            await peer.Acquirer.AcquireAsync("v2.5", deadline.Token);
+        }
+        else store.SaveCachedRelease(new ReleaseInfo { Version = "v2.4" }, "\"old\"", now.AddDays(-2), now.AddDays(-2));
+        var gate = new RendezvousCoordinator(new OperationLeaseCoordinator(coordination));
+        fixture.Acquirer.ProcessLeaseCoordinator = gate;
+        fixture.Override = acquisition ? null : (_, _) => Task.FromResult(OfficialAcquisitionFixture.Json(
+            OfficialAcquisitionFixture.Metadata("v2.5", fixture.Archives["v2.5"])));
+        var client = new DxvkGithubClient(fixture.Http, store, () => now) { ProcessLeaseCoordinator = gate };
+        Task<DxvkReleaseAcquirer.AcquisitionResult>? acquiring = null;
+        Task<ReleaseInfo?>? checking = null;
+        using (var held = new OperationLeaseCoordinator(coordination).TryAcquireStoreLease(acquisition ? destination : store.CacheFile))
+        {
+            Assert.NotNull(held);
+            if (acquisition) acquiring = fixture.Acquirer.AcquireAsync("v2.5", deadline.Token);
+            else checking = client.FetchLatestReleaseAsync(deadline.Token);
+            await gate.Entered.Task.WaitAsync(deadline.Token);
+            // Simulate a cooperating peer's commit while it owns the real OS lease.
+            if (acquisition)
+            {
+                string source = Path.Combine(peer.Source, "v2.5");
+                foreach (string file in Directory.GetFiles(source, "*", SearchOption.AllDirectories))
+                {
+                    string target = Path.Combine(destination, Path.GetRelativePath(source, file));
+                    Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+                    File.Copy(file, target);
+                }
+            }
+            else store.SaveCachedRelease(new ReleaseInfo { Version = "v2.5" }, "\"peer\"", now, now);
+        }
+        gate.Continue.TrySetResult();
+        if (acquisition)
+        {
+            Assert.True((await acquiring!.WaitAsync(deadline.Token)).Reused);
+            Assert.True(DxvkReleaseAcquirer.ValidateManifest(destination, "v2.5", out var verified));
+            Assert.True(verified);
+        }
+        else
+        {
+            Assert.Equal("v2.5", (await checking!.WaitAsync(deadline.Token))?.Version);
+            Assert.Equal("\"peer\"", store.LoadCachedRelease()?.ETag);
+            Assert.Equal(now, store.LoadCachedRelease()?.LastAttemptAt);
+        }
+        Assert.Empty(fixture.Requests);
+    }
+
     private static DxvkGithubClient Latest(OfficialAcquisitionFixture fixture, CacheStore store,
         OperationLeaseCoordinator coordinator, Func<DateTime>? clock = null)
     {
