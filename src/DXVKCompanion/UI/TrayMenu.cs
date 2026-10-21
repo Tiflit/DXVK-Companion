@@ -19,6 +19,7 @@ namespace DXVKCompanion.UI
         private readonly DxvkManager _dxvk;
         private readonly SettingsStore _settings;
         private readonly GameLibraryStore _gameLibraryStore;
+        private readonly bool _automaticDiscoveryEnabled;
 
         private Process? _activeProcess;
         private GameProfile? _activeProfile;
@@ -29,12 +30,20 @@ namespace DXVKCompanion.UI
             DxvkManager dxvk,
             SettingsStore settings,
             GameLibraryStore? gameLibraryStore = null)
+            : this(tray, profiles, dxvk, settings, gameLibraryStore, automaticDiscoveryEnabled: true)
+        {
+        }
+
+        internal TrayMenu(
+            NotifyIcon tray, ProfileStore profiles, DxvkManager dxvk, SettingsStore settings,
+            GameLibraryStore? gameLibraryStore, bool automaticDiscoveryEnabled)
         {
             _tray = tray;
             _profiles = profiles;
             _dxvk = dxvk;
             _settings = settings;
             _gameLibraryStore = gameLibraryStore ?? new GameLibraryStore();
+            _automaticDiscoveryEnabled = automaticDiscoveryEnabled;
 
             _tray.ContextMenuStrip = BuildMenu();
         }
@@ -61,6 +70,8 @@ namespace DXVKCompanion.UI
                 Font = new Font(FontFamily.GenericSansSerif, 9, FontStyle.Bold)
             };
             menu.Items.Add(header);
+            var discoveryStatus = CreateDiscoveryStatus(_automaticDiscoveryEnabled);
+            if (discoveryStatus != null) menu.Items.Add(discoveryStatus);
             menu.Items.Add(new ToolStripSeparator());
 
             menu.Items.Add("Manage Games...", null, (_, _) => OpenManageGames());
@@ -72,6 +83,13 @@ namespace DXVKCompanion.UI
 
             return menu;
         }
+
+        internal static ToolStripMenuItem? CreateDiscoveryStatus(bool automaticDiscoveryEnabled)
+            => automaticDiscoveryEnabled ? null : new ToolStripMenuItem("Automatic discovery off")
+            {
+                Enabled = false,
+                ToolTipText = "Discovery and game-exit notifications are paused until a normal restart. Activity safety checks remain active."
+            };
 
         private void OpenGameDetails()
         {

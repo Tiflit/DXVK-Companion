@@ -31,6 +31,8 @@ namespace DXVKCompanion.Monitoring
         private readonly Dictionary<int, (Process Process, DateTime StartTime, string ExePath, Guid RegistrationToken)> _attachedExitProcesses = new();
 
         private readonly System.Threading.Timer? _timer;
+        internal bool AutomaticDiscoveryEnabled { get; }
+        internal bool HasPollingTimer => _timer != null;
         private readonly GameDetector _detector;
         private readonly ProcessExitHandler _exitHandler;
         private readonly ApiClassifier _classifier;
@@ -100,7 +102,8 @@ namespace DXVKCompanion.Monitoring
             GameLibraryStore? libraryStore,
             Func<TimeSpan>? clock,
             Func<IEnumerable<Process>>? processEnumerator,
-            bool startTimer = false)
+            bool startTimer = false,
+            bool automaticDiscoveryEnabled = true)
         {
             _detector = detector ?? throw new ArgumentNullException(nameof(detector));
             _exitHandler = exitHandler ?? throw new ArgumentNullException(nameof(exitHandler));
@@ -116,10 +119,11 @@ namespace DXVKCompanion.Monitoring
             _libraryStore = libraryStore;
             _clock = clock ?? DefaultClock;
             _processEnumerator = processEnumerator;
+            AutomaticDiscoveryEnabled = automaticDiscoveryEnabled;
 
             _exitHandler.ProcessInstanceExited += OnProcessInstanceExited;
 
-            if (startTimer)
+            if (startTimer && AutomaticDiscoveryEnabled)
             {
                 _timer = new System.Threading.Timer(PollProcesses, null, 0, 2000);
             }
@@ -234,7 +238,7 @@ namespace DXVKCompanion.Monitoring
 
         private void PollProcesses(object? state)
         {
-            if (_disposed) return;
+            if (_disposed || !AutomaticDiscoveryEnabled) return;
             if (!Monitor.TryEnter(_pollLock)) return;
 
             try
