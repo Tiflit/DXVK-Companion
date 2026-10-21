@@ -29,14 +29,14 @@ namespace DXVKCompanion.PhaseA.Tests
             var store = new CacheStore(cacheFile);
 
             var baseTime = new DateTime(2026, 10, 17, 10, 0, 0, DateTimeKind.Utc);
-            var initialRelease = new ReleaseInfo { Version = "v2.5", DownloadUrl = "https://example.com/v2.5.tar.gz" };
+            var initialRelease = new ReleaseInfo { Version = "v2.5", DownloadUrl = "https://github.com/doitsujin/dxvk/releases/download/v2.5/dxvk-2.5.tar.gz" };
             store.SaveCachedRelease(initialRelease, "\"etag-2.5\"", cachedAt: baseTime, lastAttemptAt: baseTime);
 
             int networkCallCount = 0;
             var handler = new RecordingHttpMessageHandler(_ =>
             {
                 Interlocked.Increment(ref networkCallCount);
-                return CreateJsonResponse(HttpStatusCode.OK, CreateReleaseJson("v2.6", "v2.6.tar.gz", "https://example.com/v2.6.tar.gz"));
+                return CreateJsonResponse(HttpStatusCode.OK, CreateReleaseJson("v2.6", "dxvk-2.6.tar.gz", "https://github.com/doitsujin/dxvk/releases/download/v2.6/dxvk-2.6.tar.gz"));
             });
 
             using var httpClient = new HttpClient(handler);
@@ -63,7 +63,7 @@ namespace DXVKCompanion.PhaseA.Tests
                 Interlocked.Increment(ref networkCallCount);
                 return CreateJsonResponse(
                     HttpStatusCode.OK,
-                    CreateReleaseJson("v3.0", "dxvk-3.0.tar.gz", "https://example.com/dxvk-3.0.tar.gz"),
+                    CreateReleaseJson("v3.0", "dxvk-3.0.tar.gz", "https://github.com/doitsujin/dxvk/releases/download/v3.0/dxvk-3.0.tar.gz"),
                     "\"etag-3.0\"");
             });
 
@@ -94,7 +94,7 @@ namespace DXVKCompanion.PhaseA.Tests
 
             var baseTime = new DateTime(2026, 10, 17, 0, 0, 0, DateTimeKind.Utc);
             store.SaveCachedRelease(
-                new ReleaseInfo { Version = "v2.5", DownloadUrl = "https://example.com/v2.5.tar.gz" },
+                new ReleaseInfo { Version = "v2.5", DownloadUrl = "https://github.com/doitsujin/dxvk/releases/download/v2.5/dxvk-2.5.tar.gz" },
                 "\"etag-2.5\"",
                 cachedAt: baseTime,
                 lastAttemptAt: baseTime);
@@ -105,7 +105,7 @@ namespace DXVKCompanion.PhaseA.Tests
                 Interlocked.Increment(ref networkCallCount);
                 return CreateJsonResponse(
                     HttpStatusCode.OK,
-                    CreateReleaseJson("v2.6", "v2.6.tar.gz", "https://example.com/v2.6.tar.gz"),
+                    CreateReleaseJson("v2.6", "dxvk-2.6.tar.gz", "https://github.com/doitsujin/dxvk/releases/download/v2.6/dxvk-2.6.tar.gz"),
                     "\"etag-2.6\"");
             });
 
@@ -142,7 +142,7 @@ namespace DXVKCompanion.PhaseA.Tests
                 await Task.Delay(50);
                 return CreateJsonResponse(
                     HttpStatusCode.OK,
-                    CreateReleaseJson("v3.1", "dxvk-3.1.tar.gz", "https://example.com/dxvk-3.1.tar.gz"),
+                    CreateReleaseJson("v3.1", "dxvk-3.1.tar.gz", "https://github.com/doitsujin/dxvk/releases/download/v3.1/dxvk-3.1.tar.gz"),
                     "\"etag-3.1\"");
             });
 
@@ -175,7 +175,7 @@ namespace DXVKCompanion.PhaseA.Tests
 
             var t0 = new DateTime(2026, 10, 17, 0, 0, 0, DateTimeKind.Utc);
             store.SaveCachedRelease(
-                new ReleaseInfo { Version = "v2.5", DownloadUrl = "https://example.com/v2.5.tar.gz" },
+                new ReleaseInfo { Version = "v2.5", DownloadUrl = "https://github.com/doitsujin/dxvk/releases/download/v2.5/dxvk-2.5.tar.gz" },
                 "\"etag-2.5\"",
                 cachedAt: t0,
                 lastAttemptAt: t0);
@@ -218,7 +218,7 @@ namespace DXVKCompanion.PhaseA.Tests
 
             var t0 = new DateTime(2026, 10, 17, 0, 0, 0, DateTimeKind.Utc);
             store.SaveCachedRelease(
-                new ReleaseInfo { Version = "v2.4", DownloadUrl = "https://example.com/v2.4.tar.gz" },
+                new ReleaseInfo { Version = "v2.4", DownloadUrl = "https://github.com/doitsujin/dxvk/releases/download/v2.4/dxvk-2.4.tar.gz" },
                 "\"etag-2.4\"",
                 cachedAt: t0,
                 lastAttemptAt: t0);
@@ -260,7 +260,7 @@ namespace DXVKCompanion.PhaseA.Tests
 
             var t0 = new DateTime(2026, 10, 17, 0, 0, 0, DateTimeKind.Utc);
             initialStore.SaveCachedRelease(
-                new ReleaseInfo { Version = "v2.4", DownloadUrl = "https://example.com/v2.4.tar.gz" },
+                new ReleaseInfo { Version = "v2.4", DownloadUrl = "https://github.com/doitsujin/dxvk/releases/download/v2.4/dxvk-2.4.tar.gz" },
                 "\"etag-2.4\"",
                 cachedAt: t0,
                 lastAttemptAt: t0);
@@ -375,7 +375,7 @@ namespace DXVKCompanion.PhaseA.Tests
             string legacyJson = $@"{{
   ""Release"": {{
     ""Version"": ""v2.4"",
-    ""DownloadUrl"": ""https://example.com/v2.4.tar.gz""
+    ""DownloadUrl"": ""https://github.com/doitsujin/dxvk/releases/download/v2.4/dxvk-2.4.tar.gz""
   }},
   ""CachedAt"": ""{baseTime:O}"",
   ""ETag"": ""\""etag-legacy\""""
@@ -386,7 +386,7 @@ namespace DXVKCompanion.PhaseA.Tests
             var handler = new RecordingHttpMessageHandler(_ =>
             {
                 Interlocked.Increment(ref networkCallCount);
-                return CreateJsonResponse(HttpStatusCode.OK, CreateReleaseJson("v2.5", "v2.5.tar.gz", "https://example.com/v2.5.tar.gz"));
+                return CreateJsonResponse(HttpStatusCode.OK, CreateReleaseJson("v2.5", "dxvk-2.5.tar.gz", "https://github.com/doitsujin/dxvk/releases/download/v2.5/dxvk-2.5.tar.gz"));
             });
 
             using var httpClient = new HttpClient(handler);
@@ -434,7 +434,7 @@ namespace DXVKCompanion.PhaseA.Tests
             var t0 = new DateTime(2026, 10, 17, 0, 0, 0, DateTimeKind.Utc);
             var initialStore = new CacheStore(cacheFile);
             initialStore.SaveCachedRelease(
-                new ReleaseInfo { Version = "v3.1.1", DownloadUrl = "https://example.com/v3.1.1.tar.gz" },
+                new ReleaseInfo { Version = "v3.1.1", DownloadUrl = "https://github.com/doitsujin/dxvk/releases/download/v3.1.1/dxvk-3.1.1.tar.gz" },
                 "\"etag-3.1.1\"",
                 cachedAt: t0,
                 lastAttemptAt: t0);
@@ -824,11 +824,13 @@ namespace DXVKCompanion.PhaseA.Tests
         {
             var payload = new
             {
+                id = 100, draft = false, prerelease = false,
                 tag_name = tagName,
                 assets = new[]
                 {
                     new
                     {
+                        id = 200, size = 1024,
                         name = assetName,
                         browser_download_url = downloadUrl
                     }

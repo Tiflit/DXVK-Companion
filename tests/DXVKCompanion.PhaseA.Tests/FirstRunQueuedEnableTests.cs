@@ -134,7 +134,7 @@ public sealed class FirstRunQueuedEnableTests
         byte[] archiveBytes = CreateSyntheticTarGz("v3.1.1", syntheticD3D11, syntheticDxgi);
 
         string latestUrl = "https://api.github.com/repos/doitsujin/dxvk/releases/latest";
-        string downloadUrl = "https://fake.github.com/releases/download/v3.1.1/dxvk-3.1.1.tar.gz";
+        string downloadUrl = "https://github.com/doitsujin/dxvk/releases/download/v3.1.1/dxvk-3.1.1.tar.gz";
 
         var httpHandler = new RecordingFakeHttpMessageHandler(req =>
         {
@@ -142,10 +142,11 @@ public sealed class FirstRunQueuedEnableTests
             {
                 var json = JsonSerializer.Serialize(new
                 {
+                    id = 100, draft = false, prerelease = false,
                     tag_name = "v3.1.1",
                     assets = new[]
                     {
-                        new { name = "dxvk-3.1.1.tar.gz", browser_download_url = downloadUrl }
+                        new { id = 200, size = archiveBytes.Length, name = "dxvk-3.1.1.tar.gz", browser_download_url = downloadUrl }
                     }
                 });
                 return new HttpResponseMessage(HttpStatusCode.OK)
@@ -235,7 +236,7 @@ public sealed class FirstRunQueuedEnableTests
         byte[] archiveBytes = CreateSyntheticTarGz("v3.1.1", syntheticD3D11, syntheticDxgi);
 
         string latestUrl = "https://api.github.com/repos/doitsujin/dxvk/releases/latest";
-        string downloadUrl = "https://fake.github.com/releases/download/v3.1.1/dxvk-3.1.1.tar.gz";
+        string downloadUrl = "https://github.com/doitsujin/dxvk/releases/download/v3.1.1/dxvk-3.1.1.tar.gz";
 
         var httpHandler = new RecordingFakeHttpMessageHandler(req =>
         {
@@ -243,10 +244,11 @@ public sealed class FirstRunQueuedEnableTests
             {
                 var json = JsonSerializer.Serialize(new
                 {
+                    id = 100, draft = false, prerelease = false,
                     tag_name = "v3.1.1",
                     assets = new[]
                     {
-                        new { name = "dxvk-3.1.1.tar.gz", browser_download_url = downloadUrl }
+                        new { id = 200, size = archiveBytes.Length, name = "dxvk-3.1.1.tar.gz", browser_download_url = downloadUrl }
                     }
                 });
                 return new HttpResponseMessage(HttpStatusCode.OK)
@@ -424,7 +426,7 @@ public sealed class FirstRunQueuedEnableTests
         byte[] archiveBytes = CreateSyntheticTarGz("v3.1.1", d3d11Bytes, dxgiBytes);
 
         string latestUrl = "https://api.github.com/repos/doitsujin/dxvk/releases/latest";
-        string downloadUrl = "https://fake.github.com/releases/download/v3.1.1/dxvk-3.1.1.tar.gz";
+        string downloadUrl = "https://github.com/doitsujin/dxvk/releases/download/v3.1.1/dxvk-3.1.1.tar.gz";
 
         var httpHandler = new RecordingFakeHttpMessageHandler(req =>
         {
@@ -432,10 +434,11 @@ public sealed class FirstRunQueuedEnableTests
             {
                 var json = JsonSerializer.Serialize(new
                 {
+                    id = 100, draft = false, prerelease = false,
                     tag_name = "v3.1.1",
                     assets = new[]
                     {
-                        new { name = "dxvk-3.1.1.tar.gz", browser_download_url = downloadUrl }
+                        new { id = 200, size = archiveBytes.Length, name = "dxvk-3.1.1.tar.gz", browser_download_url = downloadUrl }
                     }
                 });
                 return new HttpResponseMessage(HttpStatusCode.OK)
@@ -658,7 +661,7 @@ public sealed class FirstRunQueuedEnableTests
         byte[] archiveBytes = CreateSyntheticTarGz("v3.1.1", v311D3D11, v311Dxgi);
 
         string latestUrl = "https://api.github.com/repos/doitsujin/dxvk/releases/latest";
-        string downloadUrl = "https://fake.github.com/releases/download/v3.1.1/dxvk-3.1.1.tar.gz";
+        string downloadUrl = "https://github.com/doitsujin/dxvk/releases/download/v3.1.1/dxvk-3.1.1.tar.gz";
 
         var httpHandler = new RecordingFakeHttpMessageHandler(req =>
         {
@@ -666,10 +669,11 @@ public sealed class FirstRunQueuedEnableTests
             {
                 var json = JsonSerializer.Serialize(new
                 {
+                    id = 100, draft = false, prerelease = false,
                     tag_name = "v3.1.1",
                     assets = new[]
                     {
-                        new { name = "dxvk-3.1.1.tar.gz", browser_download_url = downloadUrl }
+                        new { id = 200, size = archiveBytes.Length, name = "dxvk-3.1.1.tar.gz", browser_download_url = downloadUrl }
                     }
                 });
                 return new HttpResponseMessage(HttpStatusCode.OK)
