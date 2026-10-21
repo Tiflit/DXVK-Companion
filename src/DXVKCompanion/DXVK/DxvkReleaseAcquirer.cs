@@ -1,6 +1,5 @@
 using System;
 using System.Buffers.Binary;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Formats.Tar;
 using System.IO;
@@ -26,7 +25,45 @@ public sealed class DxvkReleaseAcquirer
     private static readonly string[] KnownDlls = { "d3d8.dll", "d3d9.dll", "d3d10.dll", "d3d10_1.dll", "d3d10core.dll", "d3d11.dll", "dxgi.dll" };
     private readonly DxvkGithubClient _github;
     private readonly string _root;
-    private readonly ConcurrentDictionary<string, SemaphoreSlim> _gates = new(StringComparer.Ordinal);
+    // Count holders and waiters under the registry lock. Idle destinations do
+    // not retain gates, and a cancelled waiter cannot retire a live holder's gate.
+    private sealed class AcquisitionGate
+    {
+        internal readonly SemaphoreSlim Semaphore = new(1, 1);
+        internal int Users;
+    }
+    private static readonly object GateRegistryLock = new();
+    private static readonly Dictionary<string, AcquisitionGate> Gates = new(
+        OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+
+    private static AcquisitionGate RentGate(string destination)
+    {
+        lock (GateRegistryLock)
+        {
+            if (!Gates.TryGetValue(destination, out var gate))
+            {
+                gate = new AcquisitionGate();
+                Gates.Add(destination, gate);
+            }
+            gate.Users++;
+            return gate;
+        }
+    }
+
+    private static void ReturnGate(string destination, AcquisitionGate gate, bool entered)
+    {
+        if (entered) gate.Semaphore.Release();
+        lock (GateRegistryLock)
+        {
+            if (--gate.Users == 0)
+            {
+                Gates.Remove(destination);
+                gate.Semaphore.Dispose();
+            }
+        }
+    }
+
+    internal Action? BeforeGateWait { get; set; }
     internal Action<string>? BeforePublication { get; set; }
 
     public DxvkReleaseAcquirer(DxvkGithubClient github, string sourceRoot)
@@ -58,14 +95,17 @@ public sealed class DxvkReleaseAcquirer
     private async Task<AcquisitionResult> AcquireCoreAsync(string tag, CancellationToken cancellationToken)
     {
         if (!DxvkGithubClient.IsOfficialTag(tag)) throw new InvalidDataException("Invalid official release tag.");
-        var gate = _gates.GetOrAdd(tag, _ => new SemaphoreSlim(1, 1));
-        await gate.WaitAsync(cancellationToken);
+        string destination = Path.GetFullPath(Path.Combine(_root, tag));
+        var gate = RentGate(destination);
+        bool entered = false;
         string? staging = null;
         try
         {
+            BeforeGateWait?.Invoke();
+            await gate.Semaphore.WaitAsync(cancellationToken);
+            entered = true;
             cancellationToken.ThrowIfCancellationRequested();
             EnsureRoot();
-            string destination = Path.Combine(_root, tag);
             if (Directory.Exists(destination) || File.Exists(destination))
             {
                 if (IsCompleteLocalRelease(destination, tag, out bool upstream)) return new(tag, true, upstream, HasAcquisitionRecord(destination));
@@ -167,8 +207,8 @@ public sealed class DxvkReleaseAcquirer
         }
         finally
         {
-            if (staging != null) TryDeleteOwnedStaging(staging);
-            gate.Release();
+            try { if (staging != null) TryDeleteOwnedStaging(staging); }
+            finally { ReturnGate(destination, gate, entered); }
         }
     }
 

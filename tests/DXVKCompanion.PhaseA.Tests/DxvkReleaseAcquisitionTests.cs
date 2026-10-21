@@ -95,6 +95,206 @@ internal sealed class OfficialAcquisitionFixture : IDisposable
 public sealed class DxvkReleaseAcquisitionTests
 {
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task DistinctAcquirers_SameDestination_ShareRequestsAndRetainCompletePayload(bool alias)
+    {
+        using var fixture = new OfficialAcquisitionFixture();
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var queued = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        fixture.Override = async (request, token) =>
+        {
+            if (request.RequestUri!.Host == "api.github.com")
+            {
+                started.TrySetResult();
+                await release.Task.WaitAsync(token);
+                return OfficialAcquisitionFixture.Json(OfficialAcquisitionFixture.Metadata("v2.5", fixture.Archives["v2.5"]));
+            }
+            return new(HttpStatusCode.OK) { Content = new ByteArrayContent(fixture.Archives["v2.5"]) };
+        };
+        string sentinel = fixture.Directory.CreateFile("sources/v2.4/retained.txt", "older-source");
+        string root = alias ? Path.Combine(fixture.Source, ".") + Path.DirectorySeparatorChar : fixture.Source;
+        if (alias && OperatingSystem.IsWindows()) root = root.ToUpperInvariant();
+        var leader = fixture.Acquirer.AcquireAsync("v2.5", deadline.Token);
+        var calls = new List<Task<DxvkReleaseAcquirer.AcquisitionResult>> { leader };
+        try
+        {
+            await started.Task.WaitAsync(deadline.Token);
+            int arrivals = 0;
+            for (int i = 0; i < 6; i++)
+            {
+                var client = new DxvkGithubClient(fixture.Http, new CacheStore(fixture.Directory.GetPath($"cache-{i}.json")));
+                var other = new DxvkReleaseAcquirer(client, root)
+                {
+                    BeforeGateWait = () => { if (Interlocked.Increment(ref arrivals) == 6) queued.TrySetResult(); }
+                };
+                calls.Add(other.AcquireAsync("v2.5", deadline.Token));
+            }
+            await queued.Task.WaitAsync(deadline.Token);
+            Assert.Single(fixture.Requests); // Leader's exact-tag metadata request, still blocked.
+        }
+        finally { release.TrySetResult(); }
+        var results = await Task.WhenAll(calls).WaitAsync(deadline.Token);
+        Assert.Single(results, result => !result.Reused);
+        Assert.Equal(2, fixture.Requests.Count);
+        Assert.Equal("older-source", File.ReadAllText(sentinel));
+        Assert.Equal("v2.5:d3d11", File.ReadAllText(Path.Combine(fixture.Source, "v2.5", "x64", "d3d11.dll")));
+        Assert.True(DxvkReleaseAcquirer.ValidateManifest(Path.Combine(fixture.Source, "v2.5"), "v2.5", out var verified));
+        Assert.True(verified);
+        fixture.Offline = true;
+        Assert.True((await new DxvkReleaseAcquirer(fixture.Github, root).AcquireAsync("v2.5", deadline.Token)).Reused);
+        Assert.Equal(2, fixture.Requests.Count);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task DistinctAcquirers_CancelledWaiter_DoesNotCancelLeaderOrFollowingWaiter(bool cancelBeforeWait)
+    {
+        using var fixture = new OfficialAcquisitionFixture();
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        fixture.Override = async (request, token) =>
+        {
+            if (request.RequestUri!.Host == "api.github.com")
+            {
+                started.TrySetResult();
+                await release.Task.WaitAsync(token);
+                return OfficialAcquisitionFixture.Json(OfficialAcquisitionFixture.Metadata("v2.5", fixture.Archives["v2.5"]));
+            }
+            return new(HttpStatusCode.OK) { Content = new ByteArrayContent(fixture.Archives["v2.5"]) };
+        };
+        var leader = fixture.Acquirer.AcquireAsync("v2.5", deadline.Token);
+        Task<DxvkReleaseAcquirer.AcquisitionResult>? follower = null;
+        try
+        {
+            await started.Task.WaitAsync(deadline.Token);
+            using var cancel = new CancellationTokenSource();
+            var attempted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var cancelled = new DxvkReleaseAcquirer(fixture.Github, fixture.Source)
+            {
+                BeforeGateWait = () => { attempted.TrySetResult(); if (cancelBeforeWait) cancel.Cancel(); }
+            };
+            var cancelledCall = cancelled.AcquireAsync("v2.5", cancel.Token);
+            await attempted.Task.WaitAsync(deadline.Token);
+            cancel.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => cancelledCall);
+            var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var live = new DxvkReleaseAcquirer(fixture.Github, fixture.Source) { BeforeGateWait = () => entered.TrySetResult() };
+            follower = live.AcquireAsync("v2.5", deadline.Token);
+            await entered.Task.WaitAsync(deadline.Token);
+            Assert.Single(fixture.Requests);
+        }
+        finally { release.TrySetResult(); }
+        Assert.False((await leader.WaitAsync(deadline.Token)).Reused);
+        Assert.NotNull(follower);
+        Assert.True((await follower.WaitAsync(deadline.Token)).Reused);
+        Assert.Equal(2, fixture.Requests.Count);
+    }
+
+    [Fact]
+    public async Task DistinctAcquirers_CancelledLeader_LiveWaiterRetriesAndPublishes()
+    {
+        using var fixture = new OfficialAcquisitionFixture();
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        using var cancel = CancellationTokenSource.CreateLinkedTokenSource(deadline.Token);
+        int metadata = 0;
+        fixture.Override = async (request, token) =>
+        {
+            if (request.RequestUri!.Host == "api.github.com")
+            {
+                if (Interlocked.Increment(ref metadata) == 1)
+                {
+                    started.TrySetResult();
+                    await Task.Delay(Timeout.Infinite, token);
+                }
+                return OfficialAcquisitionFixture.Json(OfficialAcquisitionFixture.Metadata("v2.5", fixture.Archives["v2.5"]));
+            }
+            return new(HttpStatusCode.OK) { Content = new ByteArrayContent(fixture.Archives["v2.5"]) };
+        };
+        var leader = fixture.Acquirer.AcquireAsync("v2.5", cancel.Token);
+        await started.Task.WaitAsync(deadline.Token);
+        var other = new DxvkReleaseAcquirer(fixture.Github, fixture.Source) { BeforeGateWait = () => entered.TrySetResult() };
+        var follower = other.AcquireAsync("v2.5", deadline.Token);
+        try { await entered.Task.WaitAsync(deadline.Token); }
+        finally { cancel.Cancel(); }
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => leader);
+        Assert.False((await follower.WaitAsync(deadline.Token)).Reused);
+        Assert.Equal(3, fixture.Requests.Count);
+        Assert.True(DxvkReleaseAcquirer.ValidateManifest(Path.Combine(fixture.Source, "v2.5"), "v2.5", out _));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task DistinctAcquirers_UnrelatedDestinations_DoNotBlockEachOther(bool differentLibraries)
+    {
+        using var first = new OfficialAcquisitionFixture("v2.5", "v2.6");
+        using var second = new OfficialAcquisitionFixture("v2.5");
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        var bothStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        int arrivals = 0;
+        async Task<HttpResponseMessage> Respond(HttpRequestMessage request, CancellationToken token)
+        {
+            string tag = request.RequestUri!.Host == "api.github.com" ? request.RequestUri.AbsolutePath.Split('/')[^1]
+                : request.RequestUri.AbsolutePath.Split('/')[^2];
+            var bytes = first.Archives[tag];
+            if (request.RequestUri.Host == "api.github.com")
+            {
+                if (Interlocked.Increment(ref arrivals) == 2) bothStarted.TrySetResult();
+                await release.Task.WaitAsync(token);
+                return OfficialAcquisitionFixture.Json(OfficialAcquisitionFixture.Metadata(tag, bytes));
+            }
+            return new(HttpStatusCode.OK) { Content = new ByteArrayContent(bytes) };
+        }
+        first.Override = Respond;
+        second.Override = Respond;
+        var other = differentLibraries ? second.Acquirer : new DxvkReleaseAcquirer(first.Github, first.Source);
+        var a = first.Acquirer.AcquireAsync("v2.5", deadline.Token);
+        var b = other.AcquireAsync(differentLibraries ? "v2.5" : "v2.6", deadline.Token);
+        try { await bothStarted.Task.WaitAsync(deadline.Token); }
+        finally { release.TrySetResult(); }
+        Assert.False((await a.WaitAsync(deadline.Token)).Reused);
+        Assert.False((await b.WaitAsync(deadline.Token)).Reused);
+        Assert.Equal(4, first.Requests.Count + second.Requests.Count);
+    }
+
+    [Fact]
+    public async Task DistinctAcquirers_PublicationFailure_ReleasesGateForRetryAndPreservesSources()
+    {
+        using var fixture = new OfficialAcquisitionFixture();
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        string sentinel = fixture.Directory.CreateFile("sources/v2.4/retained.txt", "older-source");
+        fixture.Acquirer.BeforePublication = _ => throw new InvalidDataException("Synthetic publication refusal.");
+        await Assert.ThrowsAsync<InvalidDataException>(() => fixture.Acquirer.AcquireAsync("v2.5", deadline.Token));
+        Assert.False(System.IO.Directory.Exists(Path.Combine(fixture.Source, "v2.5")));
+        var other = new DxvkReleaseAcquirer(new DxvkGithubClient(fixture.Http,
+            new CacheStore(fixture.Directory.GetPath("other-cache.json"))), fixture.Source);
+        Assert.False((await other.AcquireAsync("v2.5", deadline.Token)).Reused);
+        Assert.Equal(4, fixture.Requests.Count);
+        Assert.Equal("older-source", File.ReadAllText(sentinel));
+        Assert.True(DxvkReleaseAcquirer.ValidateManifest(Path.Combine(fixture.Source, "v2.5"), "v2.5", out _));
+    }
+
+    [Fact]
+    public async Task DistinctAcquirers_PreWaitException_DoesNotLeaveGateHeld()
+    {
+        using var fixture = new OfficialAcquisitionFixture();
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        fixture.Acquirer.BeforeGateWait = () => throw new InvalidOperationException("Synthetic pre-wait failure.");
+        await Assert.ThrowsAsync<InvalidOperationException>(() => fixture.Acquirer.AcquireAsync("v2.5", deadline.Token));
+        Assert.Empty(fixture.Requests);
+        Assert.False((await new DxvkReleaseAcquirer(fixture.Github, fixture.Source).AcquireAsync("v2.5", deadline.Token)).Reused);
+        Assert.Equal(2, fixture.Requests.Count);
+    }
+
+    [Theory]
     [InlineData("x86", "x32")]
     [InlineData("amd64", "x64")]
     [InlineData("unknown", null)]
