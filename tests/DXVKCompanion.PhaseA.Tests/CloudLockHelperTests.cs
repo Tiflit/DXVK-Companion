@@ -18,6 +18,16 @@ public sealed class CloudLockHelperCollection { }
 [Collection("Cloud lock helpers")]
 public sealed class CloudLockHelperTests
 {
+    private static string SchedulingDiagnostic(Process helper)
+    {
+        ThreadPool.GetAvailableThreads(out int availableWorkers, out _);
+        ThreadPool.GetMinThreads(out int minimumWorkers, out _);
+        string childState;
+        try { childState = helper.HasExited ? $"Exited{helper.ExitCode}" : "Running"; }
+        catch { childState = "Unavailable"; }
+        return $"workers={ThreadPool.ThreadCount}; minWorkers={minimumWorkers}; availableWorkers={availableWorkers}; pendingWork={ThreadPool.PendingWorkItemCount}; child={childState}";
+    }
+
     private static int RemainingHelperBudget(Stopwatch overall, int operationalBudgetMs, SyntheticSafetyFixture.Phase phase)
     {
         int remaining = operationalBudgetMs - (int)overall.ElapsedMilliseconds;
@@ -30,15 +40,15 @@ public sealed class CloudLockHelperTests
         Stopwatch overall, int operationalBudgetMs, SyntheticSafetyFixture.Phase phase)
     {
         int remaining = RemainingHelperBudget(overall, operationalBudgetMs, phase);
+        var readTask = helper.StandardOutput.ReadLineAsync();
         string? signal;
         try
         {
-            signal = await helper.StandardOutput.ReadLineAsync()
-                .WaitAsync(TimeSpan.FromMilliseconds(remaining)).ConfigureAwait(false);
+            signal = await readTask.WaitAsync(TimeSpan.FromMilliseconds(remaining)).ConfigureAwait(false);
         }
         catch (TimeoutException)
         {
-            throw new TimeoutException(SyntheticSafetyFixture.Diagnostic(phase, overall.ElapsedMilliseconds));
+            throw new TimeoutException($"{SyntheticSafetyFixture.Diagnostic(phase, overall.ElapsedMilliseconds)}; readState={readTask.Status}; {SchedulingDiagnostic(helper)}");
         }
         Assert.True(string.Equals(expected, signal, StringComparison.Ordinal),
             SyntheticSafetyFixture.Diagnostic(phase, overall.ElapsedMilliseconds));
@@ -131,21 +141,24 @@ public sealed class CloudLockHelperTests
         {
             helper = Process.Start(psi);
             Assert.NotNull(helper);
+            long processStartedMs = overallSw.ElapsedMilliseconds;
 
             await ReadHelperSignalAsync(helper, "LOCKED", overallSw, operationalBudgetMs,
                 SyntheticSafetyFixture.Phase.HelperStartupSignal);
+            long signalMs = overallSw.ElapsedMilliseconds;
 
             // Deliberately exceed the old autonomous two-second hold window.
             // The child must still hold until the parent explicitly arms self-exit.
             if (parentDelayMs > 0) await Task.Delay(parentDelayMs);
+            long delayCompletedMs = overallSw.ElapsedMilliseconds;
 
             // Parent attempt to acquire with 200 ms budget must time out and return null
             var sw = Stopwatch.StartNew();
             await using var refusedLease = await coordinator.TryAcquireOperationScopeAsync(targetPath, timeout: TimeSpan.FromMilliseconds(200));
             sw.Stop();
 
-            Assert.True(refusedLease is null, SyntheticSafetyFixture.Diagnostic(
-                SyntheticSafetyFixture.Phase.HelperExclusion, overallSw.ElapsedMilliseconds, coordinator.LastAcquisitionError));
+            Assert.True(refusedLease is null, $"{SyntheticSafetyFixture.Diagnostic(
+                SyntheticSafetyFixture.Phase.HelperExclusion, overallSw.ElapsedMilliseconds, coordinator.LastAcquisitionError)}; processStartedMs={processStartedMs}; signalMs={signalMs}; delayCompletedMs={delayCompletedMs}; probeMs={sw.ElapsedMilliseconds}; {SchedulingDiagnostic(helper)}");
             Assert.True(sw.ElapsedMilliseconds >= 150, $"Expected timeout around 200 ms, actual: {sw.ElapsedMilliseconds} ms");
 
             // Start the unchanged self-exit interval only after exclusion was observed.
