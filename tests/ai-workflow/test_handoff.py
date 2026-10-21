@@ -102,7 +102,7 @@ class TestFailureSummaryHandoff(unittest.TestCase):
             def get_runs_for_commit(self, sha):
                 return [{"id": 101, "run_attempt": 2, "name": "Build and Test", "conclusion": "failure", "head_sha": "c" * 40 if self.foreign else head}]
             def get_run_artifacts(self, run):
-                return [{"id": 302, "name": "build-provenance", "archive_download_url": "https://api.github.com/synthetic/prov"},
+                return [{"id": 302, "name": "build-provenance", "created_at": "2026-10-20T12:02:00Z", "archive_download_url": "https://api.github.com/synthetic/prov"},
                         {"id": 303, "name": "phase-a-test-results", "archive_download_url": "https://api.github.com/synthetic/trx", "created_at": "2026-10-20T12:02:00Z"}]
             def get_workflow_run_jobs(self, run, attempt=None):
                 return [{"run_attempt": 2, "started_at": "2026-10-20T12:00:00Z", "completed_at": "2026-10-20T12:05:00Z"}]
@@ -125,6 +125,50 @@ def create_provenance_zip(prov_dict: dict) -> bytes:
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr("build-provenance.json", json.dumps(prov_dict))
     return buf.getvalue()
+
+
+class TestProvenanceRerunCollection(unittest.TestCase):
+    def test_duplicate_artifacts_keep_identity_guards_and_do_not_guess(self):
+        head, base = "a" * 40, "b" * 40
+        class Client:
+            reverse = False
+            recorded_attempt = "2"
+            recorded_run = "101"
+            recorded_head = head
+            ambiguous = False
+            def __init__(self): self.downloads = []
+            def get_pr(self, number):
+                return {"number": number, "title": "Synthetic", "state": "open", "merged": False, "body": "## Primary Issue\nFixes #199\n", "head": {"sha": head}, "base": {"sha": base, "ref": "main"}}
+            def get_repo(self): return {"default_branch": "main"}
+            def get_ref(self, ref): return {"object": {"sha": base}}
+            def get_issue(self, number): return {"title": "Synthetic", "state": "open", "body": "### Allowed paths\n- scripts/ai-workflow/**\n"}
+            def get_runs_for_commit(self, sha):
+                return [{"id": 101, "run_attempt": 2, "name": "Build and Test", "conclusion": "success", "head_sha": head}]
+            def get_run_artifacts(self, run):
+                artifacts = [
+                    {"id": 20, "name": "build-provenance", "created_at": "2026-10-20T12:02:00Z", "archive_download_url": "https://api.github.com/synthetic/current"},
+                    {"id": 99, "name": "build-provenance", "created_at": "2026-10-20T12:03:00Z" if self.ambiguous else "2026-10-20T11:02:00Z", "archive_download_url": "https://api.github.com/synthetic/old"}]
+                return artifacts[::-1] if self.reverse else artifacts
+            def get_workflow_run_jobs(self, run, attempt=None):
+                return [{"run_attempt": 2, "started_at": "2026-10-20T12:00:00Z", "completed_at": "2026-10-20T12:05:00Z"}]
+            def download_bytes(self, url):
+                self.downloads.append(url)
+                if not url.endswith("current"): raise AssertionError("Wrong artifact selected")
+                return create_provenance_zip({"head_sha": self.recorded_head, "ref": "refs/heads/topic", "run_id": self.recorded_run, "run_attempt": self.recorded_attempt})
+        for reverse in (False, True):
+            client = Client()
+            client.reverse = reverse
+            snap = generate_handoff.collect_handoff_snapshot(client, "Tiflit/DXVK-Companion", 9)
+            self.assertEqual(snap.tested_checkout_sha, head)
+            self.assertEqual(client.downloads, ["https://api.github.com/synthetic/current"])
+        for field, value in (("recorded_attempt", "1"), ("recorded_run", "999"), ("recorded_head", "c" * 40)):
+            client = Client()
+            setattr(client, field, value)
+            self.assertIsNone(generate_handoff.collect_handoff_snapshot(client, "Tiflit/DXVK-Companion", 9).tested_checkout_sha)
+        client = Client()
+        client.ambiguous = True
+        self.assertIsNone(generate_handoff.collect_handoff_snapshot(client, "Tiflit/DXVK-Companion", 9).tested_checkout_sha)
+        self.assertEqual(client.downloads, [])
 
 
 def create_trx_zip(total: int = 215, passed: int = 215, failed: int = 0) -> bytes:
@@ -467,6 +511,7 @@ class TestHandoffGenerator(unittest.TestCase):
                         {
                             "id": 1,
                             "name": "build-provenance",
+                            "created_at": "2026-10-04T12:02:00Z",
                             "archive_download_url": "https://api.github.com/artifacts/prov.zip",
                         },
                         {
@@ -549,12 +594,13 @@ class TestHandoffGenerator(unittest.TestCase):
                         {
                             "id": 1,
                             "name": "build-provenance",
+                            "created_at": "2026-10-04T12:02:00Z",
                             "archive_download_url": "https://api.github.com/artifacts/prov.zip",
                         }
                     ]
                 })
             if "/actions/runs/10/attempts/2/jobs" in url:
-                return MockHttpResponse({"jobs": []})
+                return MockHttpResponse({"jobs": [{"started_at": "2026-10-04T12:00:00Z", "completed_at": "2026-10-04T12:05:00Z"}]})
             if "prov.zip" in url:
                 return MockHttpResponse(mismatched_prov_bytes)
             return MockHttpResponse({})
@@ -980,12 +1026,13 @@ class TestHandoffGenerator(unittest.TestCase):
                         {
                             "id": 1,
                             "name": "build-provenance",
+                            "created_at": "2026-10-04T12:02:00Z",
                             "archive_download_url": "https://api.github.com/artifacts/prov.zip",
                         }
                     ]
                 })
             if "/actions/runs/10/attempts/2/jobs" in url:
-                return MockHttpResponse({"jobs": []})
+                return MockHttpResponse({"jobs": [{"started_at": "2026-10-04T12:00:00Z", "completed_at": "2026-10-04T12:05:00Z"}]})
             if "prov.zip" in url:
                 return MockHttpResponse(prov_bytes)
             return MockHttpResponse({})
@@ -1265,12 +1312,12 @@ class TestHandoffGenerator(unittest.TestCase):
             if "/actions/runs/1/artifacts" in url:
                 return MockHttpResponse({
                     "artifacts": [
-                        {"id": 10, "name": "build-provenance", "archive_download_url": "https://api.github.com/prov1.zip"},
-                        {"id": 11, "name": "build-provenance", "archive_download_url": "https://api.github.com/prov2.zip"},
+                        {"id": 10, "name": "build-provenance", "created_at": "2026-10-04T12:02:00Z", "archive_download_url": "https://api.github.com/prov1.zip"},
+                        {"id": 11, "name": "build-provenance", "created_at": "2026-10-04T12:03:00Z", "archive_download_url": "https://api.github.com/prov2.zip"},
                     ]
                 })
-            if "/actions/runs/1/jobs" in url:
-                return MockHttpResponse({"jobs": []})
+            if "/actions/runs/1/jobs" in url or "/actions/runs/1/attempts/1/jobs" in url:
+                return MockHttpResponse({"jobs": [{"started_at": "2026-10-04T12:00:00Z", "completed_at": "2026-10-04T12:05:00Z"}]})
             return MockHttpResponse({})
 
         mock_urlopen.side_effect = fake_urlopen
@@ -1281,7 +1328,7 @@ class TestHandoffGenerator(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         output = stdout_capture.getvalue()
-        self.assertIn("Ambiguous build-provenance artifacts: found 2 candidates; rejected", output)
+        self.assertIn("duplicate 'build-provenance' artifacts found within attempt 1 interval", output)
         self.assertIn("Tested Checkout SHA**: UNAVAILABLE / UNPROVEN", output)
 
     # =========================================================================
