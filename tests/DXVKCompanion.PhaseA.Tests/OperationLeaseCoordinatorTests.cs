@@ -14,6 +14,87 @@ namespace DXVKCompanion.PhaseATests;
 
 public sealed class OperationLeaseCoordinatorTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task LeaseFailureDiagnostic_SlowConflictScan_RefusesAndReleasesHandle(bool asynchronous)
+    {
+        using var storage = new SyntheticTestDirectory();
+        var coordinator = new OperationLeaseCoordinator(storage.GetPath("coordination"));
+        var target = storage.GetPath("PrivateSentinelGame");
+        coordinator.CustomEnumerateFiles = _ =>
+        {
+            Thread.Sleep(600);
+            return Array.Empty<string>();
+        };
+        using var refused = asynchronous
+            ? await coordinator.TryAcquireOperationScopeAsync(target, timeout: TimeSpan.FromMilliseconds(500))
+            : coordinator.TryAcquireOperationScope(target, timeout: TimeSpan.FromMilliseconds(500));
+        Assert.Null(refused);
+        string diagnostic = Assert.IsType<string>(coordinator.LastAcquisitionDiagnostic);
+        Assert.Contains("role=Target;", diagnostic);
+        Assert.Contains("phase=ConflictScan;", diagnostic);
+        Assert.Contains("attempts=1;", diagnostic);
+        Assert.Contains("cancelled=False", diagnostic);
+        Assert.DoesNotContain("PrivateSentinel", diagnostic);
+        Assert.DoesNotContain(storage.RootPath, diagnostic);
+
+        coordinator.CustomEnumerateFiles = null;
+        using var acquired = asynchronous
+            ? await coordinator.TryAcquireOperationScopeAsync(target)
+            : coordinator.TryAcquireOperationScope(target);
+        Assert.NotNull(acquired);
+        Assert.Null(coordinator.LastAcquisitionDiagnostic);
+    }
+
+    [Fact]
+    public async Task LeaseFailureDiagnostic_CancelledBeforeAcquisition_ReportsNoOpenAttempt()
+    {
+        using var storage = new SyntheticTestDirectory();
+        var coordinator = new OperationLeaseCoordinator(storage.GetPath("coordination"));
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        using var refused = await coordinator.TryAcquireStoreLeaseAsync(storage.GetPath("library.json"),
+            ct: cancellation.Token);
+        Assert.Null(refused);
+        string diagnostic = Assert.IsType<string>(coordinator.LastAcquisitionDiagnostic);
+        Assert.Contains("role=Store; phase=DirectorySetup;", diagnostic);
+        Assert.Contains("attempts=0; cancelled=True", diagnostic);
+        using var acquired = await coordinator.TryAcquireStoreLeaseAsync(storage.GetPath("library.json"));
+        Assert.NotNull(acquired);
+        Assert.Null(coordinator.LastAcquisitionDiagnostic);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task LeaseFailureDiagnostic_ContendedStore_RefusesThenClearsAfterRelease(bool asynchronous)
+    {
+        using var storage = new SyntheticTestDirectory();
+        var coordinator = new OperationLeaseCoordinator(storage.GetPath("coordination"));
+        var storePath = storage.GetPath("PrivateSentinelLibrary.json");
+        using (var held = coordinator.TryAcquireStoreLease(storePath))
+        {
+            Assert.NotNull(held);
+            using var refused = asynchronous
+                ? await coordinator.TryAcquireStoreLeaseAsync(storePath, TimeSpan.FromMilliseconds(30))
+                : coordinator.TryAcquireStoreLease(storePath, TimeSpan.FromMilliseconds(30));
+            Assert.Null(refused);
+            string diagnostic = Assert.IsType<string>(coordinator.LastAcquisitionDiagnostic);
+            Assert.Contains("role=Store;", diagnostic);
+            Assert.Contains("elapsedMs=", diagnostic);
+            Assert.Contains("attempts=", diagnostic);
+            Assert.Contains("cancelled=False", diagnostic);
+            Assert.DoesNotContain("PrivateSentinel", diagnostic);
+            Assert.DoesNotContain(storage.RootPath, diagnostic);
+        }
+        using var acquired = asynchronous
+            ? await coordinator.TryAcquireStoreLeaseAsync(storePath)
+            : coordinator.TryAcquireStoreLease(storePath);
+        Assert.NotNull(acquired);
+        Assert.Null(coordinator.LastAcquisitionDiagnostic);
+    }
+
     [Fact]
     public async Task TryAcquireOperationScopeAsync_SingleTarget_AcquiresSuccessfully()
     {

@@ -532,8 +532,11 @@ namespace DXVKCompanion.PhaseA.Tests
             // Assert: Refused installation-wide
             Assert.Equal(DxvkActionResult.Failed, result);
             Assert.NotNull(manager.LastRefusalReason);
-            Assert.Contains("Game.exe", manager.LastRefusalReason);
-            Assert.Contains("DX12", manager.LastRefusalReason);
+            string leaseDiagnostic = ((OperationLeaseCoordinator)manager.LeaseCoordinator).LastAcquisitionDiagnostic
+                ?? "NoLeaseFailureRecorded";
+            string failureDiagnostic = $"{leaseDiagnostic}; category={SyntheticSafetyFixture.RefusalCategory(manager.LastRefusalReason)}";
+            Assert.True(manager.LastRefusalReason.Contains("Game.exe", StringComparison.Ordinal), failureDiagnostic);
+            Assert.True(manager.LastRefusalReason.Contains("DX12", StringComparison.Ordinal), failureDiagnostic);
 
             var refreshedInst = store.FindByInstallationPath(gameDir.RootPath);
             Assert.NotNull(refreshedInst?.LastRefusalReason);
@@ -548,7 +551,10 @@ namespace DXVKCompanion.PhaseA.Tests
             bool installerResult = await installer.ApplyToGameAsync(profile, release);
             Assert.False(installerResult);
             Assert.NotNull(installer.LastRefusalReason);
-            Assert.Contains("Game.exe", installer.LastRefusalReason);
+            string installerLeaseDiagnostic = ((OperationLeaseCoordinator)installer.LeaseCoordinator).LastAcquisitionDiagnostic
+                ?? "NoLeaseFailureRecorded";
+            Assert.True(installer.LastRefusalReason.Contains("Game.exe", StringComparison.Ordinal),
+                $"{installerLeaseDiagnostic}; category={SyntheticSafetyFixture.RefusalCategory(installer.LastRefusalReason)}");
         }
 
         [Fact]
