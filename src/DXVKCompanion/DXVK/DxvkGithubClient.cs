@@ -22,6 +22,10 @@ namespace DXVKCompanion.DXVK
         private readonly HttpClient _httpClient;
         private readonly CacheStore _cacheStore;
         private readonly SemaphoreSlim _gate = new(1, 1);
+        // Accessed only under _gate. Disk persistence may fail, but this client
+        // must still honor the daily window and coalesce queued callers.
+        // Clear after a committed write: persisted state remains authoritative.
+        private DateTime? _lastLatestAttempt;
 
         public const int CatalogPageSize = 30;
         public const int MaximumCatalogPages = 32;
@@ -163,9 +167,10 @@ namespace DXVKCompanion.DXVK
                 now = UtcNowSeam();
                 // Re-evaluate persisted state after acquiring the gate (concurrent caller might have satisfied it)
                 cached = _cacheStore.LoadCachedRelease();
-                if (cached != null && !cached.IsDue(now))
+                if ((cached != null && !cached.IsDue(now)) ||
+                    (_lastLatestAttempt.HasValue && now - _lastLatestAttempt.Value < TimeSpan.FromHours(24)))
                 {
-                    if (cached.HasValidRelease)
+                    if (cached?.HasValidRelease == true)
                     {
                         Logger.Log($"DxvkGithubClient: using cached release {cached.Release.Version} after gate acquisition.");
                         return cached.Release;
@@ -175,6 +180,7 @@ namespace DXVKCompanion.DXVK
                     return null;
                 }
 
+                _lastLatestAttempt = now;
                 return await FetchFromNetworkUnderGateAsync(cached, now, cancellationToken);
             }
             finally
@@ -206,6 +212,7 @@ namespace DXVKCompanion.DXVK
                 if (response.StatusCode == System.Net.HttpStatusCode.NotModified && conditional)
                 {
                     _cacheStore.SaveCachedRelease(cached!.Release, cached.ETag, cachedAt: now, lastAttemptAt: now);
+                    _lastLatestAttempt = null;
                     return cached.Release;
                 }
 
@@ -219,6 +226,7 @@ namespace DXVKCompanion.DXVK
                 string? etag = response.Headers.ETag?.ToString();
 
                 _cacheStore.SaveCachedRelease(release, etag, cachedAt: now, lastAttemptAt: now);
+                _lastLatestAttempt = null;
                 return release;
             }
             catch (OperationCanceledException)
@@ -240,6 +248,7 @@ namespace DXVKCompanion.DXVK
             try
             {
                 _cacheStore.RecordFailedAttempt(attemptAt);
+                _lastLatestAttempt = null;
             }
             catch (Exception ex)
             {
