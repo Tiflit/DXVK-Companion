@@ -1,5 +1,6 @@
 using DXVKCompanion.DXVK;
 using DXVKCompanion.Models;
+using DXVKCompanion.Safety;
 using DXVKCompanion.Storage;
 using DXVKCompanion.UI;
 using Xunit;
