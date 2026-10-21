@@ -94,6 +94,36 @@ internal sealed class OfficialAcquisitionFixture : IDisposable
 
 public sealed class DxvkReleaseAcquisitionTests
 {
+    [Theory]
+    [InlineData("x86", "x32")]
+    [InlineData("amd64", "x64")]
+    [InlineData("unknown", null)]
+    public async Task Installer_UsesSameArchitectureNormalizationAsEligibility_UnknownDoesNotAcquire(string architecture, string? expectedDirectory)
+    {
+        using var fixture = new OfficialAcquisitionFixture();
+        using var game = new SyntheticTestDirectory();
+        if (expectedDirectory != null)
+            fixture.Archives["v2.5"] = OfficialAcquisitionFixture.Archive("v2.5",
+                ($"dxvk-2.5/{expectedDirectory}/d3d11.dll", TarEntryType.RegularFile, Encoding.UTF8.GetBytes("matching-architecture")),
+                ($"dxvk-2.5/{expectedDirectory}/dxgi.dll", TarEntryType.RegularFile, Encoding.UTF8.GetBytes("matching-dxgi")));
+        var store = new GameLibraryStore(fixture.Directory.GetPath("library.json"), fixture.Directory.GetPath("backups"));
+        var installer = SyntheticSafetyFixture.CreateInstaller(fixture.Http,
+            new MultiFileTransactionEngine(fixture.Directory.GetPath("backups")), store, fixture.Source);
+        var profile = new GameProfile(game.CreateFile("Game.exe", "synthetic")) { Api = GraphicsApi.DX11, Architecture = architecture };
+        bool result = await installer.ApplyToGameAsync(profile, new ReleaseInfo { Version = "v2.5" });
+        Assert.Equal(expectedDirectory != null, result);
+        if (expectedDirectory == null)
+        {
+            Assert.Empty(fixture.Requests);
+            Assert.False(File.Exists(game.GetPath("d3d11.dll")));
+        }
+        else
+        {
+            Assert.Equal("matching-architecture", File.ReadAllText(game.GetPath("d3d11.dll")));
+            Assert.True(File.Exists(Path.Combine(fixture.Source, "v2.5", expectedDirectory, "d3d11.dll")));
+        }
+    }
+
     [Fact]
     public async Task Installer_SharedAcquirer_IgnoresAssertedUrl_PublishesVerifiedPayload_AndReconstructedGameReusesOffline()
     {

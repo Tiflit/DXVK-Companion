@@ -228,7 +228,12 @@ namespace DXVKCompanion.DXVK
                     return false;
                 }
 
-                string arch = string.Equals(profile.Architecture, "x32", StringComparison.OrdinalIgnoreCase) ? "x32" : "x64";
+                string? arch = DxvkLocalReleaseLibrary.NormalizeArchitecture(profile.Architecture);
+                if (arch == null)
+                {
+                    LastRefusalReason = "Cannot select DXVK source for an unknown architecture.";
+                    return false;
+                }
                 string versionDir = Path.Combine(_dxvkSourceDir, SanitizeVersion(release.Version));
                 string dxvkArchDir = Path.Combine(versionDir, arch);
 
