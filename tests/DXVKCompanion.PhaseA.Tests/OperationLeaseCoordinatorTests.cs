@@ -40,6 +40,21 @@ public sealed class OperationLeaseCoordinatorTests
             SyntheticSafetyFixture.Diagnostic(phase, overall.ElapsedMilliseconds));
     }
 
+    private static async Task WaitForHelperExitAsync(Process helper, Stopwatch overall, int operationalBudgetMs)
+    {
+        using var deadline = new CancellationTokenSource(RemainingHelperBudget(overall,
+            operationalBudgetMs, SyntheticSafetyFixture.Phase.HelperSelfExit));
+        try
+        {
+            await helper.WaitForExitAsync(deadline.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (deadline.IsCancellationRequested)
+        {
+            throw new TimeoutException(SyntheticSafetyFixture.Diagnostic(
+                SyntheticSafetyFixture.Phase.HelperSelfExit, overall.ElapsedMilliseconds));
+        }
+    }
+
     private static ProcessStartInfo CreateTimedLockHelper(string lockPath, string armPath, DateTime deadlineUtc)
     {
         // Only this test's private paths and a deadline cross the child boundary.
@@ -418,15 +433,15 @@ public sealed class OperationLeaseCoordinatorTests
             Assert.NotNull(helper);
 
             await ReadHelperSignalAsync(helper, "LOCKED", overallSw, operationalBudgetMs,
-                SyntheticSafetyFixture.Phase.HelperStartupSignal).ConfigureAwait(false);
+                SyntheticSafetyFixture.Phase.HelperStartupSignal);
 
             // Deliberately exceed the old autonomous two-second hold window.
             // The child must still hold until the parent explicitly arms self-exit.
-            if (parentDelayMs > 0) await Task.Delay(parentDelayMs).ConfigureAwait(false);
+            if (parentDelayMs > 0) await Task.Delay(parentDelayMs);
 
             // Parent attempt to acquire with 200 ms budget must time out and return null
             var sw = Stopwatch.StartNew();
-            await using var refusedLease = await coordinator.TryAcquireOperationScopeAsync(targetPath, timeout: TimeSpan.FromMilliseconds(200)).ConfigureAwait(false);
+            await using var refusedLease = await coordinator.TryAcquireOperationScopeAsync(targetPath, timeout: TimeSpan.FromMilliseconds(200));
             sw.Stop();
 
             Assert.True(refusedLease is null, SyntheticSafetyFixture.Diagnostic(
@@ -438,17 +453,8 @@ public sealed class OperationLeaseCoordinatorTests
                 throw new TimeoutException(SyntheticSafetyFixture.Diagnostic(SyntheticSafetyFixture.Phase.HelperTimerArm, overallSw.ElapsedMilliseconds));
             File.WriteAllText(armPath, "START");
             await ReadHelperSignalAsync(helper, "TIMER_STARTED", overallSw, operationalBudgetMs,
-                SyntheticSafetyFixture.Phase.HelperTimerArm).ConfigureAwait(false);
-            using var exitDeadline = new CancellationTokenSource(RemainingHelperBudget(overallSw,
-                operationalBudgetMs, SyntheticSafetyFixture.Phase.HelperSelfExit));
-            try
-            {
-                await helper.WaitForExitAsync(exitDeadline.Token).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (exitDeadline.IsCancellationRequested)
-            {
-                throw new TimeoutException(SyntheticSafetyFixture.Diagnostic(SyntheticSafetyFixture.Phase.HelperSelfExit, overallSw.ElapsedMilliseconds));
-            }
+                SyntheticSafetyFixture.Phase.HelperTimerArm);
+            await WaitForHelperExitAsync(helper, overallSw, operationalBudgetMs);
             Assert.Equal(0, helper.ExitCode);
 
             // Once helper process exited and released handle, parent can immediately acquire
@@ -519,17 +525,7 @@ public sealed class OperationLeaseCoordinatorTests
             // including when its own deadline expires during process startup.
             helper = Process.Start(CreateTimedLockHelper(lockPath, armPath, DateTime.UtcNow.AddSeconds(2)));
             Assert.NotNull(helper);
-            using var deadline = new CancellationTokenSource(RemainingHelperBudget(overall,
-                maxTotalLifetimeMs - cleanupReservationMs, SyntheticSafetyFixture.Phase.HelperSelfExit));
-            try
-            {
-                await helper.WaitForExitAsync(deadline.Token).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (deadline.IsCancellationRequested)
-            {
-                throw new TimeoutException(SyntheticSafetyFixture.Diagnostic(
-                    SyntheticSafetyFixture.Phase.HelperSelfExit, overall.ElapsedMilliseconds));
-            }
+            await WaitForHelperExitAsync(helper, overall, maxTotalLifetimeMs - cleanupReservationMs);
             Assert.Equal(2, helper.ExitCode);
             Assert.False(File.Exists(armPath));
             await using var lease = await coordinator.TryAcquireOperationScopeAsync(target, timeout: TimeSpan.FromMilliseconds(500));
@@ -893,11 +889,11 @@ public sealed class OperationLeaseCoordinatorTests
             Assert.NotNull(helper);
 
             await ReadHelperSignalAsync(helper, "LOCKED", overallSw, operationalBudgetMs,
-                SyntheticSafetyFixture.Phase.HelperStartupSignal).ConfigureAwait(false);
+                SyntheticSafetyFixture.Phase.HelperStartupSignal);
 
             // Parent attempts acquisition with 200 ms timeout and must be excluded while child holds lock
             var sw = Stopwatch.StartNew();
-            await using var refusedLease = await coordinator.TryAcquireOperationScopeAsync(targetPath, timeout: TimeSpan.FromMilliseconds(200)).ConfigureAwait(false);
+            await using var refusedLease = await coordinator.TryAcquireOperationScopeAsync(targetPath, timeout: TimeSpan.FromMilliseconds(200));
             sw.Stop();
             Assert.True(refusedLease is null, SyntheticSafetyFixture.Diagnostic(
                 SyntheticSafetyFixture.Phase.HelperExclusion, overallSw.ElapsedMilliseconds, coordinator.LastAcquisitionError));
@@ -908,18 +904,8 @@ public sealed class OperationLeaseCoordinatorTests
                 throw new TimeoutException(SyntheticSafetyFixture.Diagnostic(SyntheticSafetyFixture.Phase.HelperTimerArm, overallSw.ElapsedMilliseconds));
             File.WriteAllText(armPath, "START");
             await ReadHelperSignalAsync(helper, "TIMER_STARTED", overallSw, operationalBudgetMs,
-                SyntheticSafetyFixture.Phase.HelperTimerArm).ConfigureAwait(false);
-            using var exitDeadline = new CancellationTokenSource(RemainingHelperBudget(overallSw,
-                operationalBudgetMs, SyntheticSafetyFixture.Phase.HelperSelfExit));
-            try
-            {
-                await helper.WaitForExitAsync(exitDeadline.Token).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (exitDeadline.IsCancellationRequested)
-            {
-                throw new TimeoutException(SyntheticSafetyFixture.Diagnostic(
-                    SyntheticSafetyFixture.Phase.HelperSelfExit, overallSw.ElapsedMilliseconds));
-            }
+                SyntheticSafetyFixture.Phase.HelperTimerArm);
+            await WaitForHelperExitAsync(helper, overallSw, operationalBudgetMs);
             Assert.Equal(0, helper.ExitCode);
 
             // Once child self-terminated and released lock, coordinator acquires target lease successfully
