@@ -1,0 +1,11 @@
+# Cloud child-process fixture isolation — Codex session
+
+Owner merged #213 and instructed “Merged / Continue” under the standing Codex implementation assignment. Main `688408b0d9e66815b6b5609f346d7f666f4630dc`; unchanged four-file policy `1fae6e06f94111f67fa1da6df87a43257a37609c`. #214 scopes this test-only follow-up; #94 remains paused.
+
+Post-merge run 39635477342 passed 1,069/1,071 tests. New diagnostics locate HelperStartupSignal at 8,004 ms, before the handshake; an unrelated lifecycle initial Apply also returned false without a reason. The prior protocol-race repair remains valid, but does not diagnose these failures. No blind retry was selected.
+
+Moved four helper methods/five cases and four private helpers verbatim into CloudLockHelperTests with a dedicated xUnit nonparallel collection. Source-block comparison verified unchanged contents; the rest of the suite and explicit concurrency tests retain their execution behavior. All guards, protocol/script, total/cleanup and coordinator budgets remain. Added only fixed phase/elapsed and whitelisted refusal-category messages to the lifecycle apply/reapply/restore assertions; file/baseline conditions stay intact.
+
+No new mirrored tests: existing delayed-parent, missing-arm, premature-exit and timeout cases exercise the isolated boundary. Cloud verification includes one passing full suite plus one bounded same-head confirmation due repeated post-merge failures; exact attempts/artifacts and labeled self-review follow in the PR completion comment. Five scoped paths, no production/project/dependency/workflow/permission/global-serialization change. No local execution or human interruption. Human next for merge; #159 coverage/packaged validation remains subsequent work with fresh host readiness.
+
+Initial isolated head `f38fbbaf3c3a2772db227a6a3f2175c8398f60b0`, run 39636702873: 1,069/1,071 passed. Delayed helper exclusion at 16,356 ms and SharedDirectory_Restore_SucceedsEvenWhenSiblingIncompatible failed; that fixture already uses private real leases/inactive activity. Isolation alone did not resolve the failures. Added only bounded numeric scheduling/milestone diagnostics inside the permitted helper file, preserving script/conditions/deadlines. No blind retry or claim of runner fault; the separate shared-directory test remains outside this contract's edit scope.
