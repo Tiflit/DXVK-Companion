@@ -1,0 +1,17 @@
+# Module evidence repair — #238
+
+Codex implements/self-reviews under the human's continuation after #237. Verified merge/main `e4212257f57ba1fedea921bbd14b7a1fcebd65e7` and successful main workflows. Policy remains `1fae6e06f94111f67fa1da6df87a43257a37609c`. Inspected dashboard, backlog and canonical runtime evidence requirement.
+
+D3D10 investigation found the real scanner drops core evidence already recognized by the classifier, and substring matching invents tracked evidence from lookalikes. Created a five-path contract before edits. Added exact ordinal case-insensitive filtering, core tracking, one-scan UsesDx10 and accurate D3D10 diagnostic names. Added 36 cases through the real filtering/classification path, preserving old assertions and API precedence. Validation note records primary upstream source/license inspection, already repaired extraction, and unresolved Windows deployment verification; no mapping change.
+
+Changed: two monitoring sources, one new regression file, validation note and this journal. Cloud CI pending; final revision-bound evidence/corrections will be in the PR completion comment. No local builds/tests/apps/helpers, new OS query, raw inventory, download or cleanup. Existing worktrees/evidence retained; packaged profiles ended, #94 paused, #233 queued. Out-of-scope item is the existing #167 D3D10 deployment verification, not a new execution assignment. Next: cloud verification/grouped self-review, then human review/merge. Human decision/status interruptions: none; tokens and human time not measured.
+
+## Approved diagnostic extension — #240
+
+Initial run 39707366959 attempt 1 passed 1,208/1,211; one planned unchanged-head confirmation passed 1,210/1,211 with a different existing service test failing. All 36 new cases passed twice. Failed TRX/provenance retained separately and checkout/tree verified; cause remains unproven. No further unchanged-head repeat.
+
+Human directly answered “Approve diagnostic-only scope extension” for the exact proposal in PR #239 comment 6330771449. Preserved #238 and created #240 with the original five paths plus the three approved test paths, because the parser uses the first scope block and body updates are append-only. Applied only the prepared four-test diagnostics using existing fixed lease snapshots and whitelisted refusal categories; original assertions/deadlines unchanged. One justified scope-approval interruption; no host readiness request or local execution. Updated evidence/next ownership follows in PR completion or blocker records. Verification now targets the changed diagnostic head; this does not claim a causal repair.
+
+## Second approved extension; short-session checkpoint
+
+Human approved the exact one-file diagnostic proposal in PR #239 comment 6330874333, asking to keep this session short and continue tomorrow. Added only six fixed diagnostic assertions in the three specified OperationLeaseCoordinator tests; old assertions, timeouts and production code unchanged. Successor contract preserves #240/#238 and adds this ninth path. Prior diagnostic-head cloud run 39708461694 passed 1,196/1,211; all 36 module cases and four instrumented service cases passed, 15 other cases failed. Cause unproven. Push the approved patch, allow one changed-head cloud verification, preserve its outcome for tomorrow; no repeat or further investigation tonight. No local execution or cleanup. Next owner Codex after the human resumes; PR remains draft pending complete verification.

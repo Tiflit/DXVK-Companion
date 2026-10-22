@@ -157,6 +157,8 @@ namespace DXVKCompanion.PhaseA.Tests
             Assert.Equal(DxvkActionResult.Failed, result);
 
             var refreshedInst = store.FindByInstallationPath(gameDir.RootPath);
+            string diagnostic = $"{((OperationLeaseCoordinator)manager.LeaseCoordinator).LastAcquisitionDiagnostic ?? "NoLeaseFailureRecorded"}; category={SyntheticSafetyFixture.RefusalCategory(manager.LastRefusalReason)}";
+            Assert.True(refreshedInst?.LastRefusalReason is not null, diagnostic);
             Assert.NotNull(refreshedInst?.LastRefusalReason);
             Assert.Contains("Launcher.exe", refreshedInst.LastRefusalReason);
             Assert.Contains("Unknown", refreshedInst.LastRefusalReason);
@@ -408,6 +410,8 @@ namespace DXVKCompanion.PhaseA.Tests
             Assert.NotNull(refreshedInst);
             Assert.Equal(RestorationState.None, refreshedInst.RestorationState);
             Assert.Empty(refreshedInst.ManagedFiles);
+            string diagnostic = $"{((OperationLeaseCoordinator)manager.LeaseCoordinator).LastAcquisitionDiagnostic ?? "NoLeaseFailureRecorded"}; category={SyntheticSafetyFixture.RefusalCategory(manager.LastRefusalReason)}";
+            Assert.True(refreshedInst.LastRefusalReason is not null, diagnostic);
             Assert.NotNull(refreshedInst.LastRefusalReason);
             Assert.Contains("Game_DX12.exe", refreshedInst.LastRefusalReason);
         }

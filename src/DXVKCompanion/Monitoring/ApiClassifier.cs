@@ -97,7 +97,10 @@ namespace DXVKCompanion.Monitoring
                 if (runtimeModules.Contains("d3d10.dll") || runtimeModules.Contains("d3d10core.dll"))
                 {
                     observed.Add(GraphicsApi.DX10);
-                    evidence.Add("Loaded runtime module: d3d10.dll");
+                    if (runtimeModules.Contains("d3d10.dll"))
+                        evidence.Add("Loaded runtime module: d3d10.dll");
+                    if (runtimeModules.Contains("d3d10core.dll"))
+                        evidence.Add("Loaded runtime module: d3d10core.dll");
                 }
 
                 if (runtimeModules.Contains("d3d9.dll"))
@@ -156,7 +159,10 @@ namespace DXVKCompanion.Monitoring
                         imports.Contains("d3d10core.dll", StringComparer.OrdinalIgnoreCase))
                     {
                         observed.Add(GraphicsApi.DX10);
-                        evidence.Add("Static PE import: d3d10.dll");
+                        if (imports.Contains("d3d10.dll", StringComparer.OrdinalIgnoreCase))
+                            evidence.Add("Static PE import: d3d10.dll");
+                        if (imports.Contains("d3d10core.dll", StringComparer.OrdinalIgnoreCase))
+                            evidence.Add("Static PE import: d3d10core.dll");
                     }
 
                     if (imports.Contains("d3d9.dll", StringComparer.OrdinalIgnoreCase))
