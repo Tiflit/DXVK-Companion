@@ -1,0 +1,103 @@
+# D3D10 deployment verification — #250
+
+## Status and scope
+
+The owner approved [#250](https://github.com/Tiflit/DXVK-Companion/issues/250)'s four-path implementation and **d3d10-probe-cpu-v1** hosted profile. The [attributed approval](https://github.com/Tiflit/DXVK-Companion/issues/250#issuecomment-6350042494) supersedes the preserved proposal's pending status for source/CPU CI only. Local builds, runtime execution, upstream binary acquisition and GPU use are **NOT RUN (pending human authorization)**.
+
+This validation tool does not change Companion's production mapping, ownership, eligibility, restoration or specifications. Initial scope: Windows x64, with official v3.1.1 proposed for a later trial. No x32, older-release, rendering, game, performance or general compatibility acceptance.
+
+## Source findings
+
+Starting main: `de9cdaacea5d9ff96df1db2a713f7fee572d8572`.
+
+- `DxvkCompatibility.GetRequiredDlls(DX10)` selects `d3d11.dll` and `dxgi.dll`. Local-release eligibility, apply and reapply consume this mapping; existing compatibility tests expect two files.
+- Acquisition already retains `d3d10core.dll`, superseding the old extraction omission in #167. `ExistingDxvkDetector.RelevantDlls` still omits the core. A future repair must cover recognition, missing-file refusal, legacy sources, baseline preservation and restore together.
+- Canonical section 13 leaves the D3D10 set pending verification; the safety supplement names three files. This task does not settle that specification choice.
+- Pinned v3.1.1 [build definition](https://github.com/doitsujin/dxvk/blob/b1a1c99ab52b687cf950d62c88bc2fa316b41663/src/d3d10/meson.build) installs the core linked to D3D11; [implementation](https://github.com/doitsujin/dxvk/blob/b1a1c99ab52b687cf950d62c88bc2fa316b41663/src/d3d10/d3d10_core.cpp) delegates device creation to D3D11.
+- [Upstream Windows guidance](https://github.com/doitsujin/dxvk/wiki/Windows), inspected 2026-10-22, documents system-directory loading and mixed-library failures. Copying another file does not establish that an application uses it.
+
+See [earlier source evidence](MODULE-EVIDENCE-INTEGRITY.md#d3d10-deployment-investigation-remains-separate). No upstream implementation or binary was copied by this task.
+
+## Probe design
+
+[Source](../../tools/validation/D3D10Probe.cpp) is an isolated native console executable using preinstalled MSVC/Windows SDK. Function pointer types derive from SDK declarations; no graphics import libraries are linked. Each runtime invocation chooses exactly one public entry point:
+
+| Route | Name-based load / export | Device request |
+|---|---|---|
+| `d3d10` | `d3d10.dll` / `D3D10CreateDevice` | 10.0; explicit adapter, hardware type |
+| `d3d10.1` | `d3d10_1.dll` / `D3D10CreateDevice1` | 10.1; explicit adapter, hardware type |
+| `d3d11` | `d3d11.dll` / `D3D11CreateDevice` | 11.0 only; explicit adapter, UNKNOWN type |
+
+Flags are zero; SDK versions use the corresponding header constants. D3D11 receives UNKNOWN with a nonnull adapter, as [Microsoft requires](https://learn.microsoft.com/en-us/windows/win32/api/d3d11/nf-d3d11-d3d11createdevice). [D3D10](https://learn.microsoft.com/en-us/windows/win32/api/d3d10misc/nf-d3d10misc-d3d10createdevice) and [D3D10.1](https://learn.microsoft.com/en-us/windows/win32/api/d3d10_1/nf-d3d10_1-d3d10createdevice1) use their distinct signatures/constants.
+
+The selected runtime loads first, followed by ordinary name-based `dxgi.dll` resolution for `CreateDXGIFactory`. Relevant loaded paths are recorded before factory/adapter selection. Already loaded modules participate in normal resolution; neither system DXGI nor candidate core is forced into the route. Explicit factory selection is part of this controlled probe, not proof of every game's initialization order. No search-path/environment/registry changes, hooks, import patches, direct core call, fallback or retries.
+
+Adapter ordinal (0–31) and expected vendor/device IDs are mandatory. IDs accept unsigned decimal or lowercase `0x` prefix, with a 16-bit maximum. Signs, whitespace, overflow, duplicate/missing/unknown options and extra arguments are rejected before graphics loading. The actual selected description and IDs are recorded; mismatch stops before device creation. Ordinals belong to the loaded DXGI implementation. IDs/ordinal do not independently distinguish physically identical adapters or prove every driver's internal selection behavior.
+
+Default/help prints usage without graphics work. Runtime syntax below is **reference only, not execution approval**:
+
+~~~text
+D3D10Probe.exe --run --route d3d10 --adapter ORDINAL --vendor VENDOR_ID --device DEVICE_ID
+~~~
+
+One fresh process per route. No window, swapchain, frame loop, game or child process. Context/device, adapter and factory are released before library references. No timer, forced termination or automatic handling of native crashes/hangs.
+
+## Evidence and interpretation
+
+Output is flushed UTF-8 JSON Lines with fixed events and hexadecimal HRESULT/ID strings. The probe writes no files itself. Runtime output includes **private absolute loaded paths**: retain locally and publish only sanitized summaries.
+
+Only its own process is inspected, with a 1,024-module cap and no retry. Six exact basenames are reported: `d3d10.dll`, `d3d10_1.dll`, `d3d10core.dll`, `d3d11.dll`, `dxgi.dll`, `vulkan-1.dll`. Paths resolve through read-only handles and are classified under canonical executable directory (`fixture`), system directory (`system`), or `other`. Location does not establish authenticity. A fixture under a system/game directory invalidates the later trial setup.
+
+Snapshots occur before graphics loading, after runtime/DXGI loading, and while a returned device is alive. Preloaded graphics, incomplete initial/loaded evidence or duplicate relevant basenames stop the route. Final incomplete/duplicate evidence prevents exit 0. Snapshots can race driver/background loading and are not an atomic history. Other module basenames/processes are not reported.
+
+| Exit | Meaning |
+|---|---|
+| 0 | Help, successful CPU self-checks, or successful runtime HRESULT + nonnull device + complete final evidence; inspect event type |
+| 1 | CPU self-check failure |
+| 2 | Invalid arguments; no runtime dispatch |
+| 3 | Runtime refusal/failure or incomplete evidence |
+| 4 | Caught C++ exception; inconclusive |
+
+The `device` record precedes COM cleanup. Runtime acceptance requires normal exit 0, expected route/adapter, complete output and post-exit evidence. Crash/hang/nonzero exit is not success despite earlier records. `feature_level` is requested for 10/10.1 and returned for 11; it proves no device creation on a failed call.
+
+Runtime exit 0 does **not** certify DXVK: Windows may create a native device. Record actual DLL origins and compare post-exit sizes/SHA-256 with the staged manifest. Disk hashes identify inspected file bytes, not executed-memory attestation. Module presence does not prove every call route or useful rendering. Failures retain their stage/HRESULT/paths rather than changing loading rules.
+
+## Approved CPU-only hosted verification
+
+[Workflow](../../.github/workflows/d3d10-probe-cpu.yml): one Windows worker, ten-minute cap, pull-request path filter for #250's four paths, contents-read permission. Logs identify actual checkout/source hash. Preinstalled `vswhere`/`VsDevCmd` locate MSVC; missing tools cause refusal rather than installation.
+
+~~~text
+cl /nologo /std:c++17 /EHsc /W4 /WX /MT tools\validation\D3D10Probe.cpp /Fe:OUTPUT\D3D10Probe.exe /Fo:OUTPUT\D3D10Probe.obj
+dumpbin /dependents OUTPUT\D3D10Probe.exe
+OUTPUT\D3D10Probe.exe --self-test
+~~~
+
+These are hosted commands, not a local profile. CI checks direct imports before execution. Its only execution is `--self-test`: CLI/gates/routes/ranges, injected dispatch (no real runtime callback), HRESULT/null/evidence outcome logic, JSON escaping/fixed output, hex formatting, path boundaries/normalization and UTF-8 conversion. `GetModuleHandleW` queries absence of the six names before/after without loading/initializing graphics. No module/adapter enumeration or DXGI/Vulkan/device call occurs in self-test. Presence/import checks support source review; they do not intercept every possible future call.
+
+No upstream package download, runtime route, GPU initialization, secrets, cache or artifact upload exists in this workflow. Normal existing CI remains separate and may upload its normal application artifacts. A future local trial needs an approved local build or separately authorized binary-delivery change: this workflow provides no downloadable probe package.
+
+Compilation and CPU checks do not execute/validate graphics ABI, driver routes or real-device COM cleanup. Actual counts/results belong in the revision-bound PR completion record.
+
+## Future runtime matrix — not activated
+
+After source/CPU review and human merge, prepare an exact host profile and obtain current availability acknowledgment. Proposed initial matrix on one explicitly selected development adapter:
+
+| x64 fixture | Local DXVK files | Fresh-process routes |
+|---|---|---|
+| Native | none | 10, 10.1, 11 control |
+| Current | `d3d11.dll`, `dxgi.dll` | 10, 10.1, 11 control |
+| Candidate | `d3d10core.dll`, `d3d11.dll`, `dxgi.dll` | 10, 10.1, 11 control |
+
+Three new separate directories with identical probe bytes, outside system/game folders. At most nine starts, one attempt per case. Later profile fixes exact commands, source/executable hashes, root, compiler/output effects, OS/driver/adapter identity, duration/memory/space budgets, stopping and retention. Include transitive loading, GPU/driver caches/logs and active overlays as measured limits; writes cannot be presumed confined to the root.
+
+Before any approved download, re-read official metadata and require exact pins:
+- [v3.1.1](https://github.com/doitsujin/dxvk/releases/tag/v3.1.1), source `b1a1c99ab52b687cf950d62c88bc2fa316b41663`.
+- Release `381956359`, Windows archive asset `566164743`, `dxvk-3.1.1.tar.gz`, 18,041,512 bytes.
+- SHA-256 `40565b4a724aadc4433fa4e010b4b23916d9b1f1baeee64e17186db94f54e608`.
+- [Official archive](https://github.com/doitsujin/dxvk/releases/download/v3.1.1/dxvk-3.1.1.tar.gz).
+
+Validate regular archive members, reject links/duplicates/traversal, verify x64 PE machine types and retain staged hashes. No binary is acquired here. Preserve archive, manifests, stdout/exit outcomes and prior evidence; no automatic cleanup. v2.4 is deferred: acquired official asset metadata has no published digest; a self-computed hash is not an independent upstream pin.
+
+Stop new work on unexpected origins/modules, identity mismatch, missing evidence, abnormal exit, hang or budget limit. Ordinary failed HRESULTs with complete evidence are matrix results, not retry permission. No forced termination, system DLL replacement, registry overrides, installations, games or environment mutation. A separately justified core/load-order diagnostic cannot replace the normal-route result.
+
+Measured results precede a coherent version-scoped mapping/eligibility/recognition/restore contract and explicit specification decision. Preserve DX9/DX11 behavior, source/architecture checks, native existing/absent baselines, external-change refusals and recovery evidence. A source dependency table or green CPU check alone does not finalize deployment.
