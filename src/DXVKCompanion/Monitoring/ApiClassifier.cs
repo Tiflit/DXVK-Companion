@@ -60,10 +60,9 @@ namespace DXVKCompanion.Monitoring
             {
                 architecture = _parser.GetArchitecture(resolvedExePath);
             }
-            if (architecture == "Unknown")
-            {
-                architecture = Environment.Is64BitOperatingSystem && !Is32BitProcess(process) ? "x64" : "x32";
-            }
+            // Graphics API evidence does not establish payload architecture. Keep
+            // unavailable PE evidence unknown so deployment can refuse safely;
+            // the OS/coordinator bitness is not the target executable's bitness.
 
             var scanResult = _scanner.ScanLoadedGraphicsModules(process);
             var runtimeModules = scanResult.Modules;
@@ -205,20 +204,6 @@ namespace DXVKCompanion.Monitoring
         public GraphicsApi Classify(Process process)
         {
             return ClassifyDetailed(process).PrimaryApi;
-        }
-
-        private static bool Is32BitProcess(Process process)
-        {
-            try
-            {
-                if (!Environment.Is64BitOperatingSystem) return true;
-                // If 64-bit OS and we cannot determine, default to 64-bit
-                return false;
-            }
-            catch
-            {
-                return false;
-            }
         }
     }
 }
