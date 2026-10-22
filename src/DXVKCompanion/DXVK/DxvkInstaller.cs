@@ -419,7 +419,9 @@ namespace DXVKCompanion.DXVK
                 var managedConf = installation.FindManagedFile(relConfPath);
                 bool updateManagedConf = managedConf != null
                     && managedConf.OriginalState != FileOriginalState.Unknown
-                    && !string.IsNullOrEmpty(managedConf.ManagedDxvkVersion)
+                    && !string.IsNullOrEmpty(managedConf.ExpectedManagedSha256)
+                    && !string.IsNullOrEmpty(installation.ManagedDxvkVersion)
+                    && installation.RestorationState != RestorationState.Restored
                     && File.Exists(targetConfPath);
                 if (DxvkConfigManager.RequiresConfigFile(config) || updateManagedConf)
                 {
@@ -956,7 +958,9 @@ namespace DXVKCompanion.DXVK
                 var managedConf = installation.FindManagedFile(relConfPath);
                 bool updateManagedConf = managedConf != null
                     && managedConf.OriginalState != FileOriginalState.Unknown
-                    && !string.IsNullOrEmpty(managedConf.ManagedDxvkVersion)
+                    && !string.IsNullOrEmpty(managedConf.ExpectedManagedSha256)
+                    && !string.IsNullOrEmpty(installation.ManagedDxvkVersion)
+                    && installation.RestorationState != RestorationState.Restored
                     && File.Exists(targetConfPath);
                 if (DxvkConfigManager.RequiresConfigFile(config) || updateManagedConf)
                 {
