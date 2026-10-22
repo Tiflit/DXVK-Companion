@@ -37,9 +37,9 @@ namespace DXVKCompanion.Monitoring
     /// </summary>
     public class ModuleScanner
     {
-        private static readonly string[] TrackedModules =
+        private static readonly HashSet<string> TrackedModules = new(StringComparer.OrdinalIgnoreCase)
         {
-            "d3d8.dll", "d3d9.dll", "d3d10.dll", "d3d11.dll", "d3d12.dll",
+            "d3d8.dll", "d3d9.dll", "d3d10.dll", "d3d10core.dll", "d3d11.dll", "d3d12.dll",
             "dxgi.dll", "vulkan-1.dll", "opengl32.dll", "ddraw.dll", "dgvoodoo.dll"
         };
 
@@ -88,24 +88,17 @@ namespace DXVKCompanion.Monitoring
                 {
                     foreach (string rawName in RawModuleEnumerator(process))
                     {
-                        string name = rawName.ToLowerInvariant();
-                        foreach (var tracked in TrackedModules)
-                        {
-                            if (name.Contains(tracked))
-                                found.Add(tracked);
-                        }
+                        if (TrackedModules.Contains(rawName))
+                            found.Add(rawName.ToLowerInvariant());
                     }
                     return ModuleScanResult.Complete(found);
                 }
 
                 foreach (ProcessModule module in process.Modules)
                 {
-                    string name = module.ModuleName.ToLowerInvariant();
-                    foreach (var tracked in TrackedModules)
-                    {
-                        if (name.Contains(tracked))
-                            found.Add(tracked);
-                    }
+                    string name = module.ModuleName;
+                    if (TrackedModules.Contains(name))
+                        found.Add(name.ToLowerInvariant());
                 }
                 return ModuleScanResult.Complete(found);
             }
@@ -135,7 +128,11 @@ namespace DXVKCompanion.Monitoring
         // Kept for any external/future callers that only care about one specific API —
         // internally, ApiClassifier now calls GetLoadedGraphicsModules directly instead.
         public bool UsesDx9(Process process) => GetLoadedGraphicsModules(process).Contains("d3d9.dll");
-        public bool UsesDx10(Process process) => GetLoadedGraphicsModules(process).Contains("d3d10.dll");
+        public bool UsesDx10(Process process)
+        {
+            var modules = GetLoadedGraphicsModules(process);
+            return modules.Contains("d3d10.dll") || modules.Contains("d3d10core.dll");
+        }
         public bool UsesDx11(Process process) => GetLoadedGraphicsModules(process).Contains("d3d11.dll");
         public bool UsesDx12(Process process) => GetLoadedGraphicsModules(process).Contains("d3d12.dll");
         public bool UsesVulkan(Process process) => GetLoadedGraphicsModules(process).Contains("vulkan-1.dll");

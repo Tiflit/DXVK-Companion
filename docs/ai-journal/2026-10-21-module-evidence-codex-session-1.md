@@ -1,0 +1,7 @@
+# Module evidence repair — #238
+
+Codex implements/self-reviews under the human's continuation after #237. Verified merge/main `e4212257f57ba1fedea921bbd14b7a1fcebd65e7` and successful main workflows. Policy remains `1fae6e06f94111f67fa1da6df87a43257a37609c`. Inspected dashboard, backlog and canonical runtime evidence requirement.
+
+D3D10 investigation found the real scanner drops core evidence already recognized by the classifier, and substring matching invents tracked evidence from lookalikes. Created a five-path contract before edits. Added exact ordinal case-insensitive filtering, core tracking, one-scan UsesDx10 and accurate D3D10 diagnostic names. Added 36 cases through the real filtering/classification path, preserving old assertions and API precedence. Validation note records primary upstream source/license inspection, already repaired extraction, and unresolved Windows deployment verification; no mapping change.
+
+Changed: two monitoring sources, one new regression file, validation note and this journal. Cloud CI pending; final revision-bound evidence/corrections will be in the PR completion comment. No local builds/tests/apps/helpers, new OS query, raw inventory, download or cleanup. Existing worktrees/evidence retained; packaged profiles ended, #94 paused, #233 queued. Out-of-scope item is the existing #167 D3D10 deployment verification, not a new execution assignment. Next: cloud verification/grouped self-review, then human review/merge. Human decision/status interruptions: none; tokens and human time not measured.
