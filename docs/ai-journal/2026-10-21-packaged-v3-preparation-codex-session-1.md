@@ -53,3 +53,39 @@ profile activation/current laptop readiness. Codex performs no host steps until
 that explicit approval and readiness. #159/#156 lifecycle acceptance remains
 incomplete; default discovery, real games, GPU/driver performance, true offline
 transport and full two-GUI concurrency are outside this proposed pass.
+
+## Subsequent execution and consolidation
+
+The preparation paragraphs above describe their original point in time.
+Documentation head `590e32fbd754856ffd62b877c75c5bb4a4d161f9` passed application
+run 39688729174 attempt 1 (1,145 tests) and workflow run 39688729181 (386 tests);
+retained provenance/TRX and exact merge parents/tree are in the PR completion
+record. #227/#226 were closed as superseded, preserving all worktrees/evidence.
+
+The owner subsequently approved v3 for later, supplied readiness, and approved
+the bounded restore supplement after clarifying an extra x32 deployment. The
+[final report](https://github.com/Tiflit/DXVK-Companion/issues/156#issuecomment-6329846388)
+and [preceding sequence/supplement record](https://github.com/Tiflit/DXVK-Companion/issues/156#issuecomment-6329760828)
+separate attributed human GUI reports from independent file/process verification.
+No retrospective acceptance of the original single-enable sequence is inferred.
+
+Both acquired releases matched 20 independent reference DLLs and origin/manifests.
+Final x32/v3.1 and x64/Latest-to-v3.1.1 DLL bytes/ownership matched; all six restored
+original files/file sets exactly matched raw baselines. Both 24-file release
+sources remained unchanged. Active managed versions/pending work cleared;
+historical architecture/ownership/legacy last-version fields remain. Existing
+config was unchanged and original DLLs absent, so do not claim changed-config or
+overwritten-original recovery coverage. Raw baseline/applied/restored and separate
+library/backup/source/launch evidence is retained privately.
+
+Three cumulative starts, all exit code 0, durations 180/104/66 seconds; final
+verification 16.76 minutes, under 1 GiB. The profile is **ENDED**: no further
+start/retry/cleanup is assigned. #156/#159 remain open with the qualification and
+remaining default-discovery/device/offline/concurrency limits. #94 stays paused.
+
+Exact coordinator transcription of the owner's next instruction: **“Continue”**.
+Consolidate these completed results in the same two #231 documentation paths and
+refresh existing cloud checks on PR #232. No new host run, source code, scope or
+policy change is assigned. This documentation follow-up preserves historical
+preparation prose with explicit current disposition and points to canonical
+evidence rather than publishing raw private files. Human next for review/merge.

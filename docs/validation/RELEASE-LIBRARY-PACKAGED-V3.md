@@ -1,4 +1,10 @@
-# Packaged release-library validation v3 — proposed, not activated
+# Packaged release-library validation v3 — ended with qualified results
+
+**Current status: ENDED.** Acquisition, final applied bytes and exact restoration
+were verified, with the sequence qualification and separately approved restore
+supplement recorded below. All three cumulative starts are consumed. The profile
+instructions and preparation pins are retained as history, not permission to
+resume this root or launch again. See [execution disposition](#execution-disposition--october-21-2026).
 
 This is a preparation artifact for [#231](https://github.com/Tiflit/DXVK-Companion/issues/231), following [#159](https://github.com/Tiflit/DXVK-Companion/issues/159). Merging this document or saying “continue” does **not** authorize host execution. Activation requires explicit approval of **release-library-packaged-v3** and current development-laptop availability. The earlier [#156 session ended with qualified results and a stop-rule violation](https://github.com/Tiflit/DXVK-Companion/issues/156#issuecomment-6241077412); it supplies no current readiness or permission to resume its root.
 
@@ -102,6 +108,49 @@ If any UI action is unavailable, blocked or ambiguous, report the observed block
 
 Keep complete raw evidence private under the root. Publish one original sanitized report using aliases and public pins: actual stage outcomes, human-observed UI versus independently inspected files, exact package/executable/upstream hashes, raw-baseline/applied/restored equality, policy/actual-version facts, backup/source retention, settings/pending/process/footprint, limits and any stop/deviation. Never paste raw logs, private JSON, paths/account/host IDs, process lists, unrelated screenshots or personal data. Preserve blocked/failed outcomes; no blanket release-ready/real-game/offline/network-isolation claim.
 
-**V3 preparation status: NOT RUN (pending explicit profile approval and current host readiness).** No new application/upstream binary was downloaded, fixture seeded, local test/helper/scanner launched or GUI/device run during this v3 preparation. Earlier runs/results remain preserved separately. The old profile is ended and untouched. Documentation merge is separate from execution approval; any later activation/outcome must be recorded with its actual human approval source and run evidence.
+**Historical preparation status at `590e32f`: NOT RUN (then pending explicit profile approval and current host readiness).** No new application/upstream binary was downloaded, fixture seeded, local test/helper/scanner launched or GUI/device run during that preparation. Subsequent execution is recorded below. Earlier roots/results remain preserved separately. Documentation merge grants no additional execution.
 
-Suggested explicit activation: **“Approve release-library-packaged-v3, including the non-admin host-context launcher with discovery paused, relevant safety inspection/private logs and the existing AppData lock location. The development laptop is available now; Codex may use the stated non-admin host-context launcher, and I can operate the three GUI sessions.”** If approved for later, execution remains blocked until fresh readiness is supplied. [AGENTS.md Local Execution Profiles](../../AGENTS.md#local-execution-profiles) requires authorization for exact host/resources/commands/limits and the user's advance-availability condition.
+Historical suggested activation wording (not reusable after this ended run): **“Approve release-library-packaged-v3, including the non-admin host-context launcher with discovery paused, relevant safety inspection/private logs and the existing AppData lock location. The development laptop is available now; Codex may use the stated non-admin host-context launcher, and I can operate the three GUI sessions.”** [AGENTS.md Local Execution Profiles](../../AGENTS.md#local-execution-profiles) requires authorization for exact host/resources/commands/limits and the user's advance-availability condition.
+
+## Execution disposition — October 21, 2026
+
+Canonical evidence: [stopped-run report and supplement proposal](https://github.com/Tiflit/DXVK-Companion/issues/156#issuecomment-6329760828)
+and [final restore report](https://github.com/Tiflit/DXVK-Companion/issues/156#issuecomment-6329846388).
+Coordinator transcriptions attribute the owner's approval for later and subsequent
+readiness, followed by **“Approve restore supplement; laptop available now”**.
+Shared credentials do not independently authenticate a human GitHub identity.
+
+The pinned merged-main package/provenance and both official reference archives
+matched their sizes/digests. Extracted executable: **71,769,010 bytes**, SHA-256
+`158fa728e298e6e8a04a6102faa1d09f27d7499dfda3d2e250e90fd5057eeb04`.
+Codex performed non-admin host-context launches with the exact switch/runtime
+override and file inspection; the human confirmed UI settings, operated the GUI
+and reported normal exits. Process completion/absence was independently checked.
+
+| Boundary | Evidence and qualification |
+|---|---|
+| Acquisition | Both releases acquired through the packaged UI; all 20 DLLs matched independent reference bytes, sizes/hashes, origin metadata, manifests and markers. Both targets were still baseline-identical afterward. |
+| Applied state | Final x32 exact v3.1 and x64 Latest resolved to v3.1.1. All four deployed d3d11/dxgi DLLs and ownership hashes matched the selected version/architecture. Original three files per target remained unchanged. |
+| Sequence deviation | The owner clarified that x32 was first enabled at v3.1.1, then changed to v3.1. Private logs record that extra deployment. Codex stopped before restart/restore; the prescribed single-enable sequence is not retroactively certified. |
+| Approved supplement | The owner separately approved only the final persistence/Disable step, without resetting the original cumulative limits. Human-reported persisted choices and successful Disable were followed by independent file/state verification. |
+| Exact restoration | All six original target files, raw bytes and relative file sets matched retained baselines; deployed DLLs absent. Both records Restored, active managed/per-file versions cleared, no pending work/refusal. |
+| Retained history | Historical architecture/ownership/hash records and legacy profile last-version strings remain as implemented; both legacy profiles are disabled. Do not describe every historical managed-related field as null. |
+| Retention and limits | All 24 release-source files remained byte-identical through the run. Three starts, exit code 0 each; recorded durations 180/104/66 seconds. Final verification at 16.76 minutes. Highest measured footprint checkpoint 510,704,287 bytes; final verification checkpoint 483,749,688 bytes, below 1 GiB. |
+
+Raw baseline/applied/restored targets, separate applied/final Profiles/library/
+Backups state, source snapshots and private launch/exit/log evidence are retained.
+Original DLLs were initially absent, so original-DLL backup files were zero
+before/after; retaining that empty state does not test overwritten-original DLL
+recovery. Existing dxvk.conf stayed unchanged; changed-config recovery was not
+exercised. A read-only inspection initially concatenated expected file names in
+a PowerShell expression; the corrected comparison matched the actual five files
+per applied fixture. No product/fixture mutation was used to repair that check.
+
+**Disposition:** useful packaged acquisition/selection/architecture-specific byte,
+reported restart-persistence, exact restoration and source-retention evidence,
+with the explicit sequence deviation and approved supplement. No blanket release,
+default-discovery, real-game/driver/GPU, changed-config/original-proxy recovery,
+daily-scheduler, offline-transport or full two-GUI concurrency acceptance. No
+observed nonfixture stored records in v3. All resources remain private/retained;
+no cleanup or fourth start is authorized. Earlier session deviations remain
+historical. #156/#159 remain open for disposition/remaining acceptance; #94 paused.
