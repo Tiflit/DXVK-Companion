@@ -267,10 +267,18 @@ Snapshot GraphicsSnapshot(const char* phase, const Locations& locations) {
         const size_t count = needed / sizeof(HMODULE);
         for (size_t i = 0; i < count; ++i) {
             std::array<wchar_t, 260> base{};
+            SetLastError(ERROR_SUCCESS);
             const DWORD length = K32GetModuleBaseNameW(GetCurrentProcess(), modules[i],
                 base.data(), static_cast<DWORD>(base.size()));
+            const DWORD queryError = GetLastError();
             if (length == 0 || length >= base.size()) {
                 result.complete = false;
+                const bool truncated = length >= base.size();
+                Record("module_error").String("phase", phase)
+                    .String("stage", "basename_query")
+                    .Number("module_index", static_cast<UINT>(i))
+                    .Number("win32_error", truncated ? ERROR_INSUFFICIENT_BUFFER : queryError)
+                    .Boolean("truncated", truncated).Emit();
                 continue;
             }
             for (size_t j = 0; j < GraphicsNames.size(); ++j) {
