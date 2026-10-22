@@ -100,4 +100,23 @@ public class DxvkConfigManagerTests
         Assert.Equal(Lines("dxvk.hud = fps,devinfo", "dxvk.hud = fps,devinfo"),
             DxvkConfigManager.GenerateConfigContent(config, Lines("dxvk.hud=compiler", "dxvk.hud=off")));
     }
+
+    [Fact]
+    public void GenerateManagedConfigContent_BothDisabled_RemovesAllExactAssignmentsOnly()
+    {
+        var existing = Lines("# before", "dxvk.hud = fps", " DXVK.HUD = compiler",
+            "dxvk.maxFrameRate=60", "DXVK.MAXFRAMERATE = 144", "dxvk.hudExtra = keep",
+            "dxvk.maxFrameRate.extra = keep", "# dxvk.hud = comment", "dxvk.hud",
+            "other.setting = keep=both", "# after");
+        Assert.Equal(Lines("# before", "dxvk.hudExtra = keep", "dxvk.maxFrameRate.extra = keep",
+                "# dxvk.hud = comment", "dxvk.hud", "other.setting = keep=both", "# after"),
+            DxvkConfigManager.GenerateManagedConfigContent(new DxvkConfiguration(), existing));
+    }
+
+    [Fact]
+    public void GenerateManagedConfigContent_OnlyManagedAssignments_ProducesInertExistingFile()
+    {
+        Assert.Equal(Environment.NewLine, DxvkConfigManager.GenerateManagedConfigContent(
+            new DxvkConfiguration(), Lines("dxvk.hud = fps", "dxvk.maxFrameRate = 144")));
+    }
 }

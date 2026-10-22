@@ -414,15 +414,24 @@ namespace DXVKCompanion.DXVK
                 }
 
                 // Invariant (Section 36): If configuration is needed, stage dxvk.conf atomically
-                if (DxvkConfigManager.RequiresConfigFile(config))
+                string relConfPath = ResolveInstallationRelativeFilePath(DxvkConfigManager.ConfigFileName);
+                string targetConfPath = Path.Combine(installation.InstallationPath, relConfPath);
+                var managedConf = installation.FindManagedFile(relConfPath);
+                bool updateManagedConf = managedConf != null
+                    && managedConf.OriginalState != FileOriginalState.Unknown
+                    && !string.IsNullOrEmpty(managedConf.ExpectedManagedSha256)
+                    && !string.IsNullOrEmpty(installation.ManagedDxvkVersion)
+                    && installation.RestorationState != RestorationState.Restored
+                    && File.Exists(targetConfPath);
+                if (DxvkConfigManager.RequiresConfigFile(config) || updateManagedConf)
                 {
                     stagingDir = Path.Combine(_transactionEngine.TransactionStoreRoot, ".staging", Guid.NewGuid().ToString("N"));
                     Directory.CreateDirectory(stagingDir);
 
-                    string relConfPath = ResolveInstallationRelativeFilePath(DxvkConfigManager.ConfigFileName);
-                    string targetConfPath = Path.Combine(installation.InstallationPath, relConfPath);
                     string? existingConf = File.Exists(targetConfPath) ? File.ReadAllText(targetConfPath) : null;
-                    string? confContent = DxvkConfigManager.GenerateConfigContent(config, existingConf);
+                    string? confContent = updateManagedConf
+                        ? DxvkConfigManager.GenerateManagedConfigContent(config, existingConf!)
+                        : DxvkConfigManager.GenerateConfigContent(config, existingConf);
 
                     if (!string.IsNullOrEmpty(confContent))
                     {
@@ -944,15 +953,24 @@ namespace DXVKCompanion.DXVK
                     FrameLimitEnabled = profile.FrameLimit > 0
                 };
 
-                if (DxvkConfigManager.RequiresConfigFile(config))
+                string relConfPath = ResolveInstallationRelativeFilePath(DxvkConfigManager.ConfigFileName);
+                string targetConfPath = Path.Combine(installation.InstallationPath, relConfPath);
+                var managedConf = installation.FindManagedFile(relConfPath);
+                bool updateManagedConf = managedConf != null
+                    && managedConf.OriginalState != FileOriginalState.Unknown
+                    && !string.IsNullOrEmpty(managedConf.ExpectedManagedSha256)
+                    && !string.IsNullOrEmpty(installation.ManagedDxvkVersion)
+                    && installation.RestorationState != RestorationState.Restored
+                    && File.Exists(targetConfPath);
+                if (DxvkConfigManager.RequiresConfigFile(config) || updateManagedConf)
                 {
                     stagingDir = Path.Combine(_transactionEngine.TransactionStoreRoot, ".staging", Guid.NewGuid().ToString("N"));
                     Directory.CreateDirectory(stagingDir);
 
-                    string relConfPath = ResolveInstallationRelativeFilePath(DxvkConfigManager.ConfigFileName);
-                    string targetConfPath = Path.Combine(installation.InstallationPath, relConfPath);
                     string? existingConf = File.Exists(targetConfPath) ? File.ReadAllText(targetConfPath) : null;
-                    string? confContent = DxvkConfigManager.GenerateConfigContent(config, existingConf);
+                    string? confContent = updateManagedConf
+                        ? DxvkConfigManager.GenerateManagedConfigContent(config, existingConf!)
+                        : DxvkConfigManager.GenerateConfigContent(config, existingConf);
 
                     if (!string.IsNullOrEmpty(confContent))
                     {
