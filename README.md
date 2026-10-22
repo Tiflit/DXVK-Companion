@@ -185,6 +185,7 @@ Automated standalone self-contained packaging is built on tag push via `.github/
 For complete specifications and architectural contracts, refer to the canonical specification and safety supplement:
 * [Canonical Project Specification](docs/spec/DXVK-COMPANION-SPEC.md)
 * [Phase A.5 Safety & Identity Design (Normative Supplement)](docs/spec/DXVK-Companion-PhaseA5-Safety-and-Identity-Design-FINAL.md)
+* [Component-management research and licence findings](docs/research/COMPANION-SOURCES.md): curated external references, deferred/excluded directions and Neural-Companion boundaries; not dependency or feature approval.
 
 > [!NOTE]
 > **Specification Authority & Precedence**: [`docs/spec/DXVK-COMPANION-SPEC.md`](docs/spec/DXVK-COMPANION-SPEC.md) is the canonical project specification, approved under [Issue #12](https://github.com/Tiflit/DXVK-Companion/issues/12). [`docs/spec/DXVK-Companion-PhaseA5-Safety-and-Identity-Design-FINAL.md`](docs/spec/DXVK-Companion-PhaseA5-Safety-and-Identity-Design-FINAL.md) serves as its normative safety and identity supplement. Superseded historical specifications are archived under `docs/spec/archive/`.
