@@ -50,6 +50,8 @@ Only its own process is inspected, with a 1,024-module cap and no retry. Six exa
 
 Snapshots occur before graphics loading, after runtime/DXGI loading, and while a returned device is alive. Preloaded graphics, incomplete initial/loaded evidence or duplicate relevant basenames stop the route. Final incomplete/duplicate evidence prevents exit 0. Snapshots can race driver/background loading and are not an atomic history. Other module basenames/processes are not reported.
 
+If an own-process basename query returns zero or reaches the fixed buffer capacity, the snapshot remains incomplete and emits a fixed `module_error` record: phase, `basename_query` stage, bounded enumeration index, numeric Win32 error and truncation flag. Last error is cleared immediately before the query; truncation uses `ERROR_INSUFFICIENT_BUFFER`. No unrelated basename/path, address or raw error string is disclosed. Zero error with zero length is retained honestly; it does not establish a cause. There is no retry, fallback API, larger buffer or conversion to success.
+
 | Exit | Meaning |
 |---|---|
 | 0 | Help, successful CPU self-checks, or successful runtime HRESULT + nonnull device + complete final evidence; inspect event type |
@@ -101,3 +103,11 @@ Validate regular archive members, reject links/duplicates/traversal, verify x64 
 Stop new work on unexpected origins/modules, identity mismatch, missing evidence, abnormal exit, hang or budget limit. Ordinary failed HRESULTs with complete evidence are matrix results, not retry permission. No forced termination, system DLL replacement, registry overrides, installations, games or environment mutation. A separately justified core/load-order diagnostic cannot replace the normal-route result.
 
 Measured results precede a coherent version-scoped mapping/eligibility/recognition/restore contract and explicit specification decision. Preserve DX9/DX11 behavior, source/architecture checks, native existing/absent baselines, external-change refusals and recovery evidence. A source dependency table or green CPU check alone does not finalize deployment.
+
+## First authorized local activation — 2026-10-22
+
+The owner approved **d3d10-local-v1** and current availability in [#252](https://github.com/Tiflit/DXVK-Companion/issues/252#issuecomment-6351043687). One local x64 build succeeded (only KERNEL32.dll direct dependency); its SHA-256 is `443196d5f7e4eccea23469e2947cdeff11af95d89a5bfb945740d3382456628b`. All 54 local CPU checks passed. Official archive pins matched; all 13 archive members passed bounded validation; three required payloads were x64 PE and three fixtures were staged with matching probe bytes.
+
+The FIRST native discovery call (D3D11 route, ordinal 0, expected IDs 0/0) reported Intel Iris Xe 8086:A7A0, refused at `adapter_identity_mismatch` and exited normally with code 3, without a device event. Initial and loaded snapshots were complete; the failure snapshot was incomplete. No `module_error` record appeared. The accepted source therefore narrows the silent branch to a failed/truncated basename query; exact index/error/cause was not recorded. Do not infer a driver defect, transient race or harmless unrelated module from this evidence.
+
+The profile stopped correctly: one build, one CPU invocation, ONE discovery invocation, ZERO of nine device-case starts. No repeat, forced termination, cleanup or game/personal-path access. The retained root measured 59,457,529 bytes. [Executed outcome](https://github.com/Tiflit/DXVK-Companion/issues/252#issuecomment-6351135026) preserves the incomplete result. [#253](https://github.com/Tiflit/DXVK-Companion/issues/253) adds only the diagnostic fields above, retaining every stop/completeness condition and all 54 CPU checks. It does not diagnose or repair the historical runtime cause. Source/CPU review precedes a separate changed-probe host continuation; the earlier activation remains stopped.
