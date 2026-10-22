@@ -12,6 +12,8 @@ The 36 added cases exercise the real scanner filter and classifier with syntheti
 
 ## D3D10 deployment investigation remains separate
 
+The initial module-evidence head's 36 new cases passed on both cloud attempts, while existing service tests failed (1,208/1,211 then 1,210/1,211 total passing). The cause is unproven. Human-approved successor #240 adds diagnostic messages to four existing assertions in three test files, retaining original conditions, deadlines and production behavior. No further unchanged-head repeat; final changed-head evidence belongs in PR #239's completion/blocker records. These messages contain only existing fixed lease diagnostics and whitelisted refusal categories, not raw refusal text or process data.
+
 Inspected upstream primary sources on 2026-10-21. GitHub annotated tags resolve v3.1.1 to `b1a1c99ab52b687cf950d62c88bc2fa316b41663` and v2.4 to `008afc1c5f287e82a553108790da6e10b1159200`; source links below pin those commits.
 
 - [v3.1.1 README](https://github.com/doitsujin/dxvk/blob/b1a1c99ab52b687cf950d62c88bc2fa316b41663/README.md#dll-dependencies): its D3D10 dependency list includes `d3d10core.dll`, `d3d11.dll`, and `dxgi.dll`. Instructions concern Wine; they do not establish every Windows game's loading behavior.

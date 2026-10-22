@@ -431,6 +431,8 @@ public sealed class PerGameVersionSelectionTests : IDisposable
         using var fakeProcess = Process.GetCurrentProcess();
 
         var result = await manager.RequestUpdateAsync(profile, fakeProcess);
+        string diagnostic = $"{((OperationLeaseCoordinator)manager.LeaseCoordinator).LastAcquisitionDiagnostic ?? "NoLeaseFailureRecorded"}; category={SyntheticSafetyFixture.RefusalCategory(manager.LastRefusalReason)}";
+        Assert.True(result == DxvkActionResult.Queued, diagnostic);
         Assert.Equal(DxvkActionResult.Queued, result);
 
         var reloadedInst = libraryStore.FindByInstallationPath(Path.GetDirectoryName(profile.ExePath)!);

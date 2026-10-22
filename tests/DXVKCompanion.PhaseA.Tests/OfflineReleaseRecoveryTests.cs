@@ -157,7 +157,10 @@ public sealed class OfflineReleaseRecoveryTests
         fixture.Offline = true;
         int initialRequests = fixture.Requests.Count;
 
-        Assert.Equal(DxvkActionResult.Applied, await context.Manager.RequestEnableByPathAsync(profile));
+        var result = await context.Manager.RequestEnableByPathAsync(profile);
+        string diagnostic = $"{((OperationLeaseCoordinator)context.Manager.LeaseCoordinator).LastAcquisitionDiagnostic ?? "NoLeaseFailureRecorded"}; category={SyntheticSafetyFixture.RefusalCategory(context.Manager.LastRefusalReason)}";
+        Assert.True(result == DxvkActionResult.Applied, diagnostic);
+        Assert.Equal(DxvkActionResult.Applied, result);
         Assert.Equal("v2.5", profile.DxvkVersion);
         Assert.Null(context.Library.FindInstallationForExecutable(profile.ExePath)!.ManagementPolicy.PinnedDxvkVersion);
         Assert.Equal(initialRequests + 1, fixture.Requests.Count);
