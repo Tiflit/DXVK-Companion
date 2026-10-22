@@ -189,6 +189,7 @@ public sealed class OperationLeaseCoordinatorTests
         File.WriteAllText(storePath, "{}");
 
         await using var lease = await coordinator.TryAcquireOperationScopeAsync(targetPath, storePath, timeout: TimeSpan.FromMilliseconds(500));
+        Assert.True(lease is not null, coordinator.LastAcquisitionDiagnostic ?? "NoLeaseFailureRecorded");
         Assert.NotNull(lease);
         Assert.True(lease.IsAcquired);
         Assert.True(lease.IsValidForTarget(targetPath));
@@ -288,6 +289,7 @@ public sealed class OperationLeaseCoordinatorTests
 
         using (var targetOnlyLease = coordinator.TryAcquireOperationScope(target))
         {
+            Assert.True(targetOnlyLease is not null, coordinator.LastAcquisitionDiagnostic ?? "NoLeaseFailureRecorded");
             Assert.NotNull(targetOnlyLease);
             Assert.Equal(OperationLeaseKind.Target, targetOnlyLease.Kind);
             Assert.True(targetOnlyLease.IsValidForTarget(target));
@@ -296,6 +298,7 @@ public sealed class OperationLeaseCoordinatorTests
 
         using (var storeOnlyLease = coordinator.TryAcquireStoreLease(store))
         {
+            Assert.True(storeOnlyLease is not null, coordinator.LastAcquisitionDiagnostic ?? "NoLeaseFailureRecorded");
             Assert.NotNull(storeOnlyLease);
             Assert.Equal(OperationLeaseKind.Store, storeOnlyLease.Kind);
             Assert.False(storeOnlyLease.IsValidForTarget(target));
@@ -304,6 +307,7 @@ public sealed class OperationLeaseCoordinatorTests
 
         using (var compositeLease = coordinator.TryAcquireOperationScope(target, store))
         {
+            Assert.True(compositeLease is not null, coordinator.LastAcquisitionDiagnostic ?? "NoLeaseFailureRecorded");
             Assert.NotNull(compositeLease);
             Assert.Equal(OperationLeaseKind.Composite, compositeLease.Kind);
             Assert.True(compositeLease.IsValidForTarget(target));
@@ -774,6 +778,7 @@ public sealed class OperationLeaseCoordinatorTests
 
         // First caller requests stores in order [A, B]
         using var lease1 = coordinator.TryAcquireOperationScope(target, new[] { storeA, storeB }, TimeSpan.FromMilliseconds(500));
+        Assert.True(lease1 is not null, coordinator.LastAcquisitionDiagnostic ?? "NoLeaseFailureRecorded");
         Assert.NotNull(lease1);
         Assert.True(lease1.IsAcquired);
         Assert.True(lease1.IsValidForStore(storeA));
@@ -782,6 +787,7 @@ public sealed class OperationLeaseCoordinatorTests
 
         // Second caller requests stores in reverse order [B, A]
         using var lease2 = coordinator.TryAcquireOperationScope(target, new[] { storeB, storeA }, TimeSpan.FromMilliseconds(500));
+        Assert.True(lease2 is not null, coordinator.LastAcquisitionDiagnostic ?? "NoLeaseFailureRecorded");
         Assert.NotNull(lease2);
         Assert.True(lease2.IsAcquired);
         Assert.True(lease2.IsValidForStore(storeA));
