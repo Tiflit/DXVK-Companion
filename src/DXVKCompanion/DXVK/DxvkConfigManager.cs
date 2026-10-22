@@ -17,8 +17,17 @@ namespace DXVKCompanion.DXVK
         }
 
         public static string? GenerateConfigContent(DxvkConfiguration config, string? existingContent = null)
+            => GenerateConfigContentCore(config, existingContent, updateManagedFile: false);
+
+        // Only the installer may use this for a present file with active ownership.
+        // The public helper still refuses to create/take control when no feature is enabled.
+        internal static string? GenerateManagedConfigContent(DxvkConfiguration config, string existingContent)
+            => GenerateConfigContentCore(config, existingContent, updateManagedFile: true);
+
+        private static string? GenerateConfigContentCore(
+            DxvkConfiguration config, string? existingContent, bool updateManagedFile)
         {
-            if (!RequiresConfigFile(config))
+            if (!RequiresConfigFile(config) && !updateManagedFile)
             {
                 // Invariant (Section 36): If no Companion-managed configuration is needed, do not create dxvk.conf
                 return null;
