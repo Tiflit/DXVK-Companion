@@ -949,8 +949,8 @@ int SelfTest() {
     for (DWORD error : {DWORD(ERROR_BAD_LENGTH), DWORD(ERROR_ACCESS_DENIED), DWORD(ERROR_INVALID_HANDLE)}) {
         FakeSnapshot captureFailure;
         captureFailure.captureError = error;
-        const auto failed = collectFake(captureFailure);
-        check("capture_error_retained_without_retry_or_release", !failed.complete &&
+        const auto captureResult = collectFake(captureFailure);
+        check("capture_error_retained_without_retry_or_release", !captureResult.complete &&
             captureFailure.captures == 1 && captureFailure.firstCalls == 0 && captureFailure.closes == 0 &&
             errorIs(captureFailure, "snapshot_capture", error));
     }
