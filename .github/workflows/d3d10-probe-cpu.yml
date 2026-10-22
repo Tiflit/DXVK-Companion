@@ -1,0 +1,62 @@
+name: D3D10 probe CPU checks
+
+on:
+  pull_request:
+    paths:
+      - tools/validation/D3D10Probe.cpp
+      - .github/workflows/d3d10-probe-cpu.yml
+      - docs/validation/D3D10-DEPLOYMENT-VERIFICATION.md
+      - docs/ai-journal/2026-10-22-d3d10-probe-codex-session-1.md
+
+permissions:
+  contents: read
+
+jobs:
+  probe-cpu:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Identify source and preinstalled compiler
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git rev-parse HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'Source identity unavailable' }
+          Get-FileHash tools/validation/D3D10Probe.cpp -Algorithm SHA256
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+          if (!(Test-Path -LiteralPath $vswhere)) { throw 'Preinstalled vswhere unavailable; no installation permitted' }
+          $installation = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if ($LASTEXITCODE -ne 0 -or @($installation).Count -ne 1 -or [string]::IsNullOrWhiteSpace($installation)) {
+            throw 'Preinstalled MSVC unavailable; no installation permitted'
+          }
+          $devcmd = Join-Path $installation 'Common7/Tools/VsDevCmd.bat'
+          if (!(Test-Path -LiteralPath $devcmd)) { throw 'Preinstalled compiler environment unavailable' }
+          "PROBE_VS=$installation" >> $env:GITHUB_ENV
+
+      - name: Compile x64 probe and inspect direct imports
+        shell: cmd
+        run: |
+          call "%PROBE_VS%\Common7\Tools\VsDevCmd.bat" -no_logo -arch=x64 -host_arch=x64
+          if errorlevel 1 exit /b 1
+          mkdir "%RUNNER_TEMP%\d3d10-probe"
+          if errorlevel 1 exit /b 1
+          cl /nologo /std:c++17 /EHsc /W4 /WX /MT tools\validation\D3D10Probe.cpp /Fe:"%RUNNER_TEMP%\d3d10-probe\D3D10Probe.exe" /Fo:"%RUNNER_TEMP%\d3d10-probe\D3D10Probe.obj"
+          if errorlevel 1 exit /b 1
+          dumpbin /dependents "%RUNNER_TEMP%\d3d10-probe\D3D10Probe.exe" > "%RUNNER_TEMP%\d3d10-probe\imports.txt"
+          if errorlevel 1 exit /b 1
+
+      - name: Verify no static graphics imports and run CPU self-checks only
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $probeDirectory = Join-Path $env:RUNNER_TEMP 'd3d10-probe'
+          $imports = Get-Content -LiteralPath (Join-Path $probeDirectory 'imports.txt') -Raw
+          Write-Output $imports
+          if ($imports -match '(?im)^\s*(?:d3d10(?:_1|core)?|d3d11|dxgi|vulkan-1)\.dll\s*$') {
+            throw 'Unexpected static graphics import; do not execute'
+          }
+          & (Join-Path $probeDirectory 'D3D10Probe.exe') --self-test
+          if ($LASTEXITCODE -ne 0) { throw 'CPU self-checks failed' }
