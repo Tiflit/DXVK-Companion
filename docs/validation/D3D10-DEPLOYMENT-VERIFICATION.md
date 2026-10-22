@@ -148,3 +148,43 @@ The changed probe needs source/CPU review and human merge before a new host prof
 The owner separately approved matrix-v3. One local x64 /W4 /WX build/import inspection succeeded and its single CPU invocation passed 114 checks. The two native D3D11 discovery calls both passed exact system-export ownership and exited normally at the expected identity guard, without a device call. The first had complete evidence; the second had four failure-phase basename_query errors, indices 24–27, each ERROR_INVALID_HANDLE (6), truncated=false. That snapshot remained incomplete and stopped the profile. **Zero configured DXVK calls and zero device cases** ran. See the [sanitized executed outcome](https://github.com/Tiflit/DXVK-Companion/issues/252#issuecomment-6353314873). All outputs remain retained; no retry, forced termination, cleanup or game/personal-file access.
 
 The numeric result establishes a failed API branch, not the identities of those entries or a root cause. [Microsoft](https://learn.microsoft.com/en-us/windows/win32/api/psapi/nf-psapi-getmodulebasenamew) documents limitations of live module queries. #257 uses copied captured entries to remove the enumerate-then-live-name-query gap; capture/traversal/canonicalization can still fail and must refuse. No source/CPU result can claim this historical cause repaired, certify actual Toolhelp behavior, or resume a stopped activation. Human source review/merge and a separately approved finite host profile/current availability precede any changed-code local test.
+
+## Completed matrix-v4 — 2026-10-22
+
+The owner approved **d3d10-matrix-v4** and current readiness in [#252](https://github.com/Tiflit/DXVK-Companion/issues/252#issuecomment-6353668075). Human-merged main was `20ff411ca560be448712cc3a249351cbc9ba7438`; the accepted probe blob was `42e684df7af9e673f195ea169d8204a153bd368a`, source SHA-256 `c20036de994aa703a4e8857029b47adc627be9e60d9fdd1edd03f40b15627c4b`. One local x64 /W4 /WX /MT build succeeded, KERNEL32.dll only direct dependency, executable SHA-256 `e8bb3a220086964af8d3166ed001fcf8229b4cdfdccbfbd4243ccfdc294be363`. Its single CPU invocation passed **151/151** checks.
+
+Retained official v3.1.1 release/archive pins above matched; staged payloads were x64 PE and byte-equal before/after each case:
+
+| Payload | Bytes | SHA-256 |
+|---|---:|---|
+| d3d10core.dll | 122894 | beffdd081dce91c2bccdc87845b88cbbb7848d39d4642143462d2556d69bd5d9 |
+| d3d11.dll | 7483406 | 0a203b6255c893430f0a8461c618962df04e62aa41538d5a875b21868317cf9f |
+| dxgi.dll | 5414926 | e3c1178eb7f0dd59f91bcfcc257549e5b9cfdb5e8508719293de7f8704f53160 |
+
+Current/candidate fixtures used exactly 27 ASCII bytes: `dxgi.hideNvidiaGpu = False` plus one LF, no BOM, SHA-256 `46d51bb5d683712ea5458d1a61eb348f3eb754da4920c3785b36685c29f6429c`. Child-only config selection and unique log directories prevented inherited DXVK/DXGI overrides and log reuse; parent/user/machine settings were unchanged. Native controls received no added DXVK setting. Per-call private logs verified the selected config/effective option.
+
+All **six discovery calls** passed evidence/provenance/expected identity-refusal checks and found one target ordinal independently per fixture. All **nine device calls** returned S_OK, nonnull devices and normal exit0:
+
+| Fixture | D3D11 (11.0) | D3D10 (10.0) | D3D10.1 (10.1) |
+|---|---|---|---|
+| Native | S_OK | S_OK | S_OK |
+| Current: d3d11.dll + dxgi.dll | S_OK | S_OK | S_OK |
+| Candidate: current + d3d10core.dll | S_OK | S_OK | S_OK |
+
+There were **54 complete module snapshots, zero module_error records and 30 verified export-owner proofs**. Both exact proven owner paths appeared in every required loaded/selected/device acceptance snapshot. Configured calls retained visible fixture/system DXGI duplicates, qualified by complete evidence and exact proofs rather than ignored. No retries or unplanned calls occurred.
+
+Device-lifetime module evidence distinguished the layouts:
+
+| Route | Native | Current | Candidate |
+|---|---|---|---|
+| D3D11 | System D3D11 | Fixture D3D11 | Fixture D3D11 |
+| D3D10 | System core + system D3D11 | **System core + fixture D3D11** | **Fixture core + fixture D3D11** |
+| D3D10.1 | System D3D11; no core reported | Fixture D3D11; no core reported | Fixture D3D11; no core reported |
+
+Current/candidate D3D10 and D3D10.1 DXVK D3D11 logs recorded internal initialization at feature levels10_0/10_1. Public D3D10/10.1 exports still belonged to their expected system libraries. A reported module and log are evidence, not proof of every downstream function owner. The probe's D3D10/10.1 feature field records the request; D3D11 returns its feature level.
+
+The activation ran 23:34:35–23:36:46 UTC and completed within its fixed 30-minute budget: one build, one CPU invocation, six discovery and nine device starts. Every returned process exited; no manual handling was needed. All private case outputs/logs/configs/proofs/manifests/hashes and earlier roots were retained. No game/personal-file access, download/extraction/install, forced termination, cleanup, source/specification change or merge. The [executed completion record](https://github.com/Tiflit/DXVK-Companion/issues/252#issuecomment-6353765990) closes the finite execution task; all local profiles remain ended.
+
+This establishes configured x64/v3.1.1 loading/device-creation results on one Windows host. Both layouts passed; adding the core changed the observed D3D10 core origin without changing success. It does not establish universal core necessity, default-game/rendering/performance compatibility, x32/other-release support or apply/adopt/restore safety. Earlier invalid-handle causes remain unknown; these successful captures do not retroactively diagnose them.
+
+The [non-normative deployment contract proposal](D3D10-DEPLOYMENT-CONTRACT-PROPOSAL.md) separates that measured result from a proposed three-file manager policy and defines coherent eligibility/recognition/ownership/restore regressions. Owner adoption and a separate assigned implementation contract precede any production or normative change. Merging evidence/proposal documentation is not adoption.
