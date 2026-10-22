@@ -4,7 +4,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
-#include <psapi.h>
+#include <tlhelp32.h>
 #include <d3d10_1.h>
 #include <d3d11.h>
 #include <dxgi.h>
@@ -247,10 +247,15 @@ bool CanonicalFile(const std::wstring& path, std::wstring& canonical) {
         OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (file == INVALID_HANDLE_VALUE) return false;
     std::array<wchar_t, 32768> buffer{};
+    SetLastError(ERROR_SUCCESS);
     const DWORD length = GetFinalPathNameByHandleW(file, buffer.data(),
         static_cast<DWORD>(buffer.size()), FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+    const DWORD queryError = GetLastError();
     CloseHandle(file);
-    if (length == 0 || length >= buffer.size()) return false;
+    if (length == 0 || length >= buffer.size()) {
+        SetLastError(length >= buffer.size() ? ERROR_INSUFFICIENT_BUFFER : queryError);
+        return false;
+    }
     canonical = StripExtendedPrefix(std::wstring(buffer.data(), length));
     return true;
 }
@@ -287,7 +292,12 @@ bool GetLocations(Locations& locations) {
     return true;
 }
 
-struct Snapshot { bool complete = true; bool duplicate = false; UINT count = 0; };
+struct Snapshot {
+    bool complete = true;
+    bool duplicate = false;
+    UINT count = 0;
+    std::vector<std::wstring> paths{};
+};
 
 struct ProofFacts {
     bool resolved = false;
@@ -296,6 +306,7 @@ struct ProofFacts {
     bool canonical = false;
     bool sameFile = false;
     bool expectedOrigin = false;
+    std::wstring path{};
 };
 
 bool Verified(const ProofFacts& proof) {
@@ -307,6 +318,19 @@ bool EvidenceAllowed(const Snapshot& snapshot, bool qualified,
     const ProofFacts& dxgi, const ProofFacts& runtime) {
     return snapshot.complete && Verified(dxgi) && Verified(runtime) &&
         (!snapshot.duplicate || qualified);
+}
+
+bool OwnerObserved(const Snapshot& snapshot, const std::wstring& path) {
+    if (path.empty()) return false;
+    for (const auto& observed : snapshot.paths)
+        if (_wcsicmp(path.c_str(), observed.c_str()) == 0) return true;
+    return false;
+}
+
+bool RuntimeEvidenceAllowed(const Snapshot& snapshot, bool qualified,
+    const ProofFacts& dxgi, const ProofFacts& runtime) {
+    return EvidenceAllowed(snapshot, qualified, dxgi, runtime) &&
+        OwnerObserved(snapshot, dxgi.path) && OwnerObserved(snapshot, runtime.path);
 }
 
 const char* PathOrigin(const std::wstring& path, const Locations& locations) {
@@ -344,6 +368,7 @@ ProofFacts VerifyExport(FARPROC address, HMODULE library, const wchar_t* library
     proof.canonical = proof.acquired && ModulePath(owner.Get(), path) &&
         ModulePath(library, heldPath) && Utf8(path, encodedPath);
     if (proof.canonical) {
+        proof.path = path;
         proof.sameFile = _wcsicmp(path.c_str(), heldPath.c_str()) == 0;
         if (expected == Origin::Unspecified) {
             // Legacy mode still proves exact ownership, but cannot admit duplicates.
@@ -366,57 +391,135 @@ ProofFacts VerifyExport(FARPROC address, HMODULE library, const wchar_t* library
     return proof;
 }
 
-Snapshot GraphicsSnapshot(const char* phase, const Locations& locations) {
+// Injected boundary keeps the traversal/error/lifetime checks CPU-only.
+struct SnapshotApi {
+    std::function<HANDLE(DWORD, DWORD)> capture;
+    std::function<BOOL(HANDLE, MODULEENTRY32W*)> first;
+    std::function<BOOL(HANDLE, MODULEENTRY32W*)> next;
+    std::function<DWORD()> error;
+    std::function<void(HANDLE)> close;
+    std::function<bool(const std::wstring&, std::wstring&)> canonical;
+    std::function<void(const Record&)> emit;
+};
+
+class SnapshotHandle {
+    HANDLE handle;
+    const std::function<void(HANDLE)>& close;
+public:
+    SnapshotHandle(HANDLE value, const std::function<void(HANDLE)>& cleanup) noexcept
+        : handle(value), close(cleanup) {}
+    ~SnapshotHandle() { if (handle != INVALID_HANDLE_VALUE && handle != nullptr) close(handle); }
+    HANDLE Get() const { return handle; }
+    SnapshotHandle(const SnapshotHandle&) = delete;
+    SnapshotHandle& operator=(const SnapshotHandle&) = delete;
+};
+
+Snapshot CollectSnapshot(const char* phase, const Locations& locations,
+    DWORD processId, const SnapshotApi& api) {
     Snapshot result;
-    std::array<HMODULE, 1024> modules{};
-    DWORD needed = 0;
-    std::array<UINT, GraphicsNames.size()> counts{};
-    if (!K32EnumProcessModules(GetCurrentProcess(), modules.data(),
-        static_cast<DWORD>(sizeof(modules)), &needed) ||
-        needed > sizeof(modules) || needed % sizeof(HMODULE) != 0) {
-        Record("module_error").String("phase", phase).String("stage", "enumeration").Emit();
+    const auto fail = [&](const char* stage, UINT index, DWORD error, bool truncated = false) {
         result.complete = false;
-    } else {
-        const size_t count = needed / sizeof(HMODULE);
-        for (size_t i = 0; i < count; ++i) {
-            std::array<wchar_t, 260> base{};
-            SetLastError(ERROR_SUCCESS);
-            const DWORD length = K32GetModuleBaseNameW(GetCurrentProcess(), modules[i],
-                base.data(), static_cast<DWORD>(base.size()));
-            const DWORD queryError = GetLastError();
-            if (length == 0 || length >= base.size()) {
-                result.complete = false;
-                const bool truncated = length >= base.size();
-                Record("module_error").String("phase", phase)
-                    .String("stage", "basename_query")
-                    .Number("module_index", static_cast<UINT>(i))
-                    .Number("win32_error", truncated ? ERROR_INSUFFICIENT_BUFFER : queryError)
-                    .Boolean("truncated", truncated).Emit();
-                continue;
+        api.emit(Record("module_error").String("phase", phase).String("stage", stage)
+            .Number("module_index", index).Number("win32_error", error).Boolean("truncated", truncated));
+    };
+    const auto collect = [&] {
+        // Exactly one calling-process module capture; never retry BAD_LENGTH.
+        const HANDLE captured = api.capture(TH32CS_SNAPMODULE, processId);
+        if (captured == INVALID_HANDLE_VALUE || captured == nullptr) {
+            fail("snapshot_capture", 0, api.error());
+            return;
+        }
+        SnapshotHandle snapshot(captured, api.close);
+        MODULEENTRY32W entry{};
+        entry.dwSize = static_cast<DWORD>(sizeof(entry));
+        if (!api.first(snapshot.Get(), &entry)) {
+            // Even NO_MORE_FILES is incomplete here: this executable must exist.
+            fail("snapshot_first", 0, api.error());
+            return;
+        }
+        std::array<UINT, GraphicsNames.size()> counts{};
+        for (UINT i = 0; i < 1024; ++i) {
+            if (entry.th32ProcessID != processId) {
+                fail("entry_pid", i, ERROR_INVALID_DATA);
+                return;
+            }
+            const size_t nameCapacity = sizeof(entry.szModule) / sizeof(wchar_t);
+            const size_t nameLength = wcsnlen_s(entry.szModule, nameCapacity);
+            // Reject boundary-length strings too: truncation cannot be excluded.
+            if (nameLength == 0 || nameLength >= nameCapacity - 1) {
+                fail("entry_name", i, nameLength == 0 ? ERROR_INVALID_DATA : ERROR_INSUFFICIENT_BUFFER,
+                    nameLength >= nameCapacity - 1);
+                return;
+            }
+            if (std::wstring_view(entry.szModule, nameLength).find_first_of(L"\\/:") != std::wstring_view::npos) {
+                fail("entry_name", i, ERROR_INVALID_DATA);
+                return;
             }
             for (size_t j = 0; j < GraphicsNames.size(); ++j) {
-                if (_wcsicmp(base.data(), GraphicsNames[j]) != 0) continue;
+                if (_wcsicmp(entry.szModule, GraphicsNames[j]) != 0) continue;
                 ++result.count;
                 if (++counts[j] > 1) result.duplicate = true;
+                const size_t pathCapacity = sizeof(entry.szExePath) / sizeof(wchar_t);
+                const size_t pathLength = wcsnlen_s(entry.szExePath, pathCapacity);
+                if (pathLength == 0 || pathLength >= pathCapacity - 1) {
+                    fail("entry_path", i, pathLength == 0 ? ERROR_INVALID_DATA : ERROR_INSUFFICIENT_BUFFER,
+                        pathLength >= pathCapacity - 1);
+                    return;
+                }
+                const std::wstring copiedPath(entry.szExePath, pathLength);
+                const size_t slash = copiedPath.find_last_of(L'\\');
+                const bool absolute = (copiedPath.size() > 2 && copiedPath[1] == L':' &&
+                    copiedPath[2] == L'\\') || copiedPath.rfind(L"\\\\", 0) == 0;
+                if (!absolute || slash == std::wstring::npos ||
+                    _wcsicmp(copiedPath.c_str() + slash + 1, GraphicsNames[j]) != 0) {
+                    fail("entry_path", i, ERROR_INVALID_DATA);
+                    return;
+                }
                 std::wstring path;
                 std::string encodedPath, encodedName;
-                if (!ModulePath(modules[i], path) || !Utf8(path, encodedPath) ||
-                    !Utf8(GraphicsNames[j], encodedName)) {
-                    result.complete = false;
-                    Record("module_error").String("phase", phase)
-                        .String("stage", "canonical_path").Emit();
-                    continue;
+                // Names/paths come from the captured entry, never a live HMODULE.
+                if (!api.canonical(copiedPath, path)) {
+                    fail("canonical_path", i, api.error());
+                    return;
                 }
-                const char* origin = PathOrigin(path, locations);
-                Record("module").String("phase", phase).String("name", encodedName)
-                    .String("origin", origin).String("path", encodedPath).Emit();
+                if (path.empty() || !Utf8(path, encodedPath) || !Utf8(GraphicsNames[j], encodedName)) {
+                    fail("path_encoding", i, ERROR_INVALID_DATA);
+                    return;
+                }
+                result.paths.push_back(path);
+                api.emit(Record("module").String("phase", phase).String("name", encodedName)
+                    .String("origin", PathOrigin(path, locations)).String("path", encodedPath));
+            }
+            entry = MODULEENTRY32W{};
+            entry.dwSize = static_cast<DWORD>(sizeof(entry));
+            if (!api.next(snapshot.Get(), &entry)) {
+                const DWORD error = api.error();
+                if (error != ERROR_NO_MORE_FILES) fail("snapshot_next", i, error);
+                return;
             }
         }
-    }
-    Record("graphics_modules").String("phase", phase)
+        // One bounded lookahead distinguishes EOF at 1024 from excess entries;
+        // the returned excess entry is never processed, resolved or disclosed.
+        fail("entry_limit", 1023, ERROR_INSUFFICIENT_BUFFER, true);
+    };
+    collect(); // Snapshot handle closes before emitting the final summary.
+    api.emit(Record("graphics_modules").String("phase", phase)
         .Number("count", result.count).Boolean("complete", result.complete)
-        .Boolean("duplicate_basename", result.duplicate).Emit();
+        .Boolean("duplicate_basename", result.duplicate));
     return result;
+}
+
+Snapshot GraphicsSnapshot(const char* phase, const Locations& locations) {
+    const SnapshotApi api{
+        [](DWORD flags, DWORD pid) { return CreateToolhelp32Snapshot(flags, pid); },
+        [](HANDLE handle, MODULEENTRY32W* entry) { return Module32FirstW(handle, entry); },
+        [](HANDLE handle, MODULEENTRY32W* entry) { return Module32NextW(handle, entry); },
+        [] { return GetLastError(); },
+        [](HANDLE handle) { CloseHandle(handle); },
+        CanonicalFile,
+        [](const Record& record) { record.Emit(); }
+    };
+    return CollectSnapshot(phase, locations, GetCurrentProcessId(), api);
 }
 
 int Failure(const char* stage, HRESULT hr, const Locations* locations = nullptr) {
@@ -458,7 +561,7 @@ int Runtime(const Options& o) {
         "CreateDXGIFactory", "dxgi", o.dxgiOrigin, locations, factoryOwner);
     const ProofFacts deviceProof = VerifyExport(deviceAddress, runtime.Get(), libraryName,
         deviceExport, "runtime", o.runtimeOrigin, locations, deviceOwner);
-    if (!EvidenceAllowed(loaded, Qualified(o), factoryProof, deviceProof))
+    if (!RuntimeEvidenceAllowed(loaded, Qualified(o), factoryProof, deviceProof))
         return Failure("export_provenance", E_UNEXPECTED, &locations);
     const auto createFactory = FunctionAt<decltype(&CreateDXGIFactory)>(factoryAddress);
     Com<IDXGIFactory> factory;
@@ -484,13 +587,13 @@ int Runtime(const Options& o) {
     // Factory/adapter discovery may load further modules. Refuse incomplete
     // evidence before the single device attempt as well as at its conclusion.
     const Snapshot selected = GraphicsSnapshot("selected", locations);
-    if (!EvidenceAllowed(selected, Qualified(o), factoryProof, deviceProof))
+    if (!RuntimeEvidenceAllowed(selected, Qualified(o), factoryProof, deviceProof))
         return Failure("selected_module_evidence", E_UNEXPECTED);
 
     const auto finish = [&](HRESULT code, bool nonnull, UINT featureLevel) {
         // Devices/context are still alive when module evidence is captured.
         const Snapshot final = GraphicsSnapshot("device", locations);
-        const bool evidence = EvidenceAllowed(final, Qualified(o), factoryProof, deviceProof);
+        const bool evidence = RuntimeEvidenceAllowed(final, Qualified(o), factoryProof, deviceProof);
         const bool created = DeviceCreated(code, nonnull);
         Record("device").String("hresult", Hex(static_cast<UINT>(code)))
             .Boolean("nonnull", nonnull).Boolean("created", created)
@@ -742,6 +845,233 @@ int SelfTest() {
         throw 1; // Exercise C++ unwinding only, never native fault injection.
     } catch (int) { }
     check("exception_balances_reference", releases == 3 && exactRelease);
+
+    // #257 exercises the production collector via fake snapshot APIs. These
+    // entries, handles, PIDs, paths and canonical results are all synthetic.
+    const auto entryFor = [](const wchar_t* name, const wchar_t* path) {
+        MODULEENTRY32W entry{};
+        entry.dwSize = static_cast<DWORD>(sizeof(entry));
+        entry.th32ProcessID = 123;
+        wcscpy_s(entry.szModule, name);
+        wcscpy_s(entry.szExePath, path);
+        return entry;
+    };
+    struct FakeSnapshot {
+        std::vector<MODULEENTRY32W> entries;
+        std::vector<std::wstring> canonicalInputs;
+        std::vector<std::string> events;
+        std::wstring canonicalOverride;
+        DWORD captureError = 0, firstError = 0, lastError = 0;
+        UINT captures = 0, firstCalls = 0, nextCalls = 0, closes = 0;
+        UINT failNextAt = 0;
+        size_t cursor = 0;
+        bool exactBoundary = true, canonicalFails = false, canonicalThrows = false;
+        bool nullCapture = false;
+        SnapshotApi Api() {
+            const HANDLE fake = reinterpret_cast<HANDLE>(static_cast<UINT_PTR>(1));
+            return {
+                [this, fake](DWORD flags, DWORD pid) {
+                    ++captures;
+                    exactBoundary &= flags == TH32CS_SNAPMODULE && pid == 123;
+                    lastError = captureError;
+                    return nullCapture ? nullptr : captureError ? INVALID_HANDLE_VALUE : fake;
+                },
+                [this, fake](HANDLE handle, MODULEENTRY32W* entry) -> BOOL {
+                    ++firstCalls;
+                    exactBoundary &= handle == fake && entry->dwSize == sizeof(*entry) && entry->szModule[0] == 0;
+                    cursor = 0;
+                    if (firstError || entries.empty()) {
+                        lastError = firstError ? firstError : ERROR_NO_MORE_FILES;
+                        return FALSE;
+                    }
+                    *entry = entries[0];
+                    return TRUE;
+                },
+                [this, fake](HANDLE handle, MODULEENTRY32W* entry) -> BOOL {
+                    ++nextCalls;
+                    exactBoundary &= handle == fake && entry->dwSize == sizeof(*entry) && entry->szModule[0] == 0;
+                    if (nextCalls == failNextAt) { lastError = ERROR_INVALID_HANDLE; return FALSE; }
+                    if (++cursor == entries.size()) { lastError = ERROR_NO_MORE_FILES; return FALSE; }
+                    *entry = entries[cursor];
+                    return TRUE;
+                },
+                [this] { return lastError; },
+                [this, fake](HANDLE handle) { ++closes; exactBoundary &= handle == fake; },
+                [this](const std::wstring& input, std::wstring& output) {
+                    canonicalInputs.push_back(input);
+                    if (canonicalThrows) throw 1;
+                    if (canonicalFails) { lastError = ERROR_FILE_NOT_FOUND; return false; }
+                    output = canonicalOverride.empty() ? input : canonicalOverride;
+                    return true;
+                },
+                [this](const Record& record) { events.push_back(record.Text()); }
+            };
+        }
+    };
+    const auto collectFake = [&](FakeSnapshot& fake) {
+        const auto api = fake.Api();
+        return CollectSnapshot("test", syntheticLocations, 123, api);
+    };
+    const auto errorIs = [](const FakeSnapshot& fake, const char* stage, DWORD code) {
+        UINT errors = 0;
+        bool matches = false;
+        for (const auto& event : fake.events) {
+            if (event.find("\"event\":\"module_error\"") == std::string::npos) continue;
+            ++errors;
+            matches = event.find(std::string("\"stage\":\"") + stage + "\"") != std::string::npos &&
+                event.find("\"win32_error\":" + std::to_string(code) + ",") != std::string::npos;
+        }
+        return errors == 1 && matches;
+    };
+    const auto unrelated = entryFor(L"unrelated.dll", L"C:\\unreported\\unrelated.dll");
+    FakeSnapshot emptyGraphics;
+    emptyGraphics.entries = {unrelated};
+    const auto none = collectFake(emptyGraphics);
+    check("captured_unrelated_entry_never_resolved_or_disclosed", none.complete && none.count == 0 &&
+        emptyGraphics.canonicalInputs.empty() && emptyGraphics.events.size() == 1 &&
+        emptyGraphics.events[0].find("unrelated") == std::string::npos);
+    check("capture_current_pid_modules_only_initialized_entries", emptyGraphics.exactBoundary &&
+        emptyGraphics.captures == 1 && emptyGraphics.firstCalls == 1 && emptyGraphics.nextCalls == 1 && emptyGraphics.closes == 1);
+    FakeSnapshot allNames;
+    for (const wchar_t* name : GraphicsNames) {
+        const auto path = std::wstring(L"C:\\fixture\\") + name;
+        allNames.entries.push_back(entryFor(name, path.c_str()));
+    }
+    const auto all = collectFake(allNames);
+    check("all_six_exact_names_from_copied_paths", all.complete && all.count == 6 && !all.duplicate &&
+        all.paths == allNames.canonicalInputs && all.paths.size() == 6 && allNames.closes == 1);
+    FakeSnapshot similarNames;
+    similarNames.entries = {entryFor(L"dxgi.dll.bak", L"C:\\unreported\\dxgi.dll.bak"),
+        entryFor(L"xdxgi.dll", L"C:\\unreported\\xdxgi.dll"), entryFor(L"D3D11.DLL", L"C:\\fixture\\D3D11.DLL")};
+    const auto similar = collectFake(similarNames);
+    check("exact_case_insensitive_filter_no_suffix_matches", similar.complete && similar.count == 1 &&
+        similarNames.canonicalInputs == std::vector<std::wstring>{L"C:\\fixture\\D3D11.DLL"});
+    for (DWORD error : {DWORD(ERROR_BAD_LENGTH), DWORD(ERROR_ACCESS_DENIED), DWORD(ERROR_INVALID_HANDLE)}) {
+        FakeSnapshot captureFailure;
+        captureFailure.captureError = error;
+        const auto captureResult = collectFake(captureFailure);
+        check("capture_error_retained_without_retry_or_release", !captureResult.complete &&
+            captureFailure.captures == 1 && captureFailure.firstCalls == 0 && captureFailure.closes == 0 &&
+            errorIs(captureFailure, "snapshot_capture", error));
+    }
+    FakeSnapshot nullSnapshot;
+    nullSnapshot.nullCapture = true;
+    check("null_snapshot_unknown_error_refused", !collectFake(nullSnapshot).complete &&
+        errorIs(nullSnapshot, "snapshot_capture", 0) && nullSnapshot.closes == 0);
+    FakeSnapshot emptyList;
+    check("empty_process_list_never_complete", !collectFake(emptyList).complete &&
+        errorIs(emptyList, "snapshot_first", ERROR_NO_MORE_FILES) && emptyList.closes == 1 && emptyList.nextCalls == 0);
+    FakeSnapshot firstFailure;
+    firstFailure.firstError = ERROR_ACCESS_DENIED;
+    check("first_error_closes_once", !collectFake(firstFailure).complete &&
+        errorIs(firstFailure, "snapshot_first", ERROR_ACCESS_DENIED) && firstFailure.closes == 1);
+    FakeSnapshot nextFailure;
+    nextFailure.entries = {allNames.entries[4], allNames.entries[3]};
+    nextFailure.failNextAt = 1;
+    const auto partial = collectFake(nextFailure);
+    check("next_error_not_end_of_list", !partial.complete && partial.count == 1 && partial.paths.size() == 1 &&
+        errorIs(nextFailure, "snapshot_next", ERROR_INVALID_HANDLE) && nextFailure.nextCalls == 1 &&
+        nextFailure.canonicalInputs.size() == 1 && nextFailure.closes == 1);
+    FakeSnapshot limit;
+    limit.entries.assign(1024, unrelated);
+    check("exact_1024_entries_with_proven_eof", collectFake(limit).complete && limit.nextCalls == 1024 && limit.closes == 1);
+    FakeSnapshot excess;
+    excess.entries.assign(1024, unrelated);
+    excess.entries.push_back(entryFor(L"dxgi.dll", L"invalid"));
+    check("excess_entry_never_processed", !collectFake(excess).complete && excess.nextCalls == 1024 &&
+        excess.canonicalInputs.empty() && excess.closes == 1 && errorIs(excess, "entry_limit", ERROR_INSUFFICIENT_BUFFER));
+    check("limit_error_index_bounded", excess.events[0].find("\"module_index\":1023,") != std::string::npos);
+    for (UINT malformed = 0; malformed < 4; ++malformed) {
+        FakeSnapshot nameFailure;
+        auto entry = unrelated;
+        if (malformed == 0) entry.szModule[0] = 0;
+        if (malformed == 1 || malformed == 2) {
+            for (auto& character : entry.szModule) character = L'x';
+            if (malformed == 2) entry.szModule[(sizeof(entry.szModule) / sizeof(wchar_t)) - 1] = 0;
+        }
+        if (malformed == 3) wcscpy_s(entry.szModule, L"folder\\dxgi.dll");
+        nameFailure.entries = {entry};
+        check("malformed_name_refuses_without_path_query", !collectFake(nameFailure).complete &&
+            nameFailure.canonicalInputs.empty() && nameFailure.closes == 1 && nameFailure.nextCalls == 0 &&
+            errorIs(nameFailure, "entry_name", malformed == 1 || malformed == 2 ? ERROR_INSUFFICIENT_BUFFER : ERROR_INVALID_DATA));
+    }
+    FakeSnapshot wrongPid;
+    auto foreign = unrelated;
+    foreign.th32ProcessID = 124;
+    wrongPid.entries = {foreign};
+    check("inconsistent_pid_refused", !collectFake(wrongPid).complete && wrongPid.closes == 1 &&
+        wrongPid.canonicalInputs.empty() && errorIs(wrongPid, "entry_pid", ERROR_INVALID_DATA));
+    for (UINT malformed = 0; malformed < 5; ++malformed) {
+        FakeSnapshot pathFailure;
+        auto entry = allNames.entries[4]; // dxgi.dll
+        if (malformed == 0) entry.szExePath[0] = 0;
+        if (malformed == 1 || malformed == 2) {
+            for (auto& character : entry.szExePath) character = L'x';
+            if (malformed == 2) entry.szExePath[MAX_PATH - 1] = 0;
+        }
+        if (malformed == 3) wcscpy_s(entry.szExePath, L"dxgi.dll");
+        if (malformed == 4) wcscpy_s(entry.szExePath, L"C:\\fixture\\other.dll");
+        pathFailure.entries = {entry};
+        check("malformed_path_refuses_before_file_access", !collectFake(pathFailure).complete &&
+            pathFailure.canonicalInputs.empty() && pathFailure.closes == 1 &&
+            errorIs(pathFailure, "entry_path", malformed == 1 || malformed == 2 ? ERROR_INSUFFICIENT_BUFFER : ERROR_INVALID_DATA));
+    }
+    FakeSnapshot canonicalFailure;
+    canonicalFailure.entries = {allNames.entries[4]};
+    canonicalFailure.canonicalFails = true;
+    check("canonical_failure_keeps_incomplete", !collectFake(canonicalFailure).complete &&
+        canonicalFailure.closes == 1 && errorIs(canonicalFailure, "canonical_path", ERROR_FILE_NOT_FOUND));
+    FakeSnapshot encodingFailure;
+    encodingFailure.entries = {allNames.entries[4]};
+    encodingFailure.canonicalOverride = std::wstring(1, wchar_t(0xd800));
+    check("copied_path_encoding_failure_refused", !collectFake(encodingFailure).complete &&
+        encodingFailure.closes == 1 && errorIs(encodingFailure, "path_encoding", ERROR_INVALID_DATA));
+    FakeSnapshot canonicalHandoff;
+    canonicalHandoff.entries = {allNames.entries[4]};
+    canonicalHandoff.canonicalOverride = L"C:\\system\\dxgi.dll";
+    const auto redirected = collectFake(canonicalHandoff);
+    check("canonical_result_not_copied_spelling_is_observed", redirected.complete &&
+        redirected.paths == std::vector<std::wstring>{L"C:\\system\\dxgi.dll"} &&
+        canonicalHandoff.canonicalInputs == std::vector<std::wstring>{L"C:\\fixture\\dxgi.dll"} &&
+        canonicalHandoff.events[0].find("\"origin\":\"system\"") != std::string::npos);
+    FakeSnapshot unwind;
+    unwind.entries = {allNames.entries[4]};
+    unwind.canonicalThrows = true;
+    bool unwound = false;
+    try { collectFake(unwind); } catch (int) { unwound = true; }
+    check("snapshot_reference_closes_on_exception", unwound && unwind.closes == 1 && unwind.captures == 1);
+
+    FakeSnapshot duplicateOwners;
+    duplicateOwners.entries = {allNames.entries[4], entryFor(L"dxgi.dll", L"C:\\system\\dxgi.dll"), allNames.entries[3]};
+    const auto capturedOwners = collectFake(duplicateOwners);
+    auto dxgiProof = good, runtimeProof = good;
+    dxgiProof.path = L"c:\\FIXTURE\\DXGI.DLL";
+    runtimeProof.path = L"C:\\fixture\\d3d11.dll";
+    check("captured_duplicates_retained_with_owners", capturedOwners.complete && capturedOwners.duplicate &&
+        capturedOwners.count == 3 && capturedOwners.paths.size() == 3 && duplicateOwners.closes == 1);
+    check("qualified_duplicate_requires_observed_owners", RuntimeEvidenceAllowed(capturedOwners, true, dxgiProof, runtimeProof) &&
+        !RuntimeEvidenceAllowed(capturedOwners, false, dxgiProof, runtimeProof));
+    FakeSnapshot uniqueOwners;
+    uniqueOwners.entries = {allNames.entries[4], allNames.entries[3]};
+    const auto capturedUnique = collectFake(uniqueOwners);
+    check("legacy_and_qualified_unique_owner_evidence", RuntimeEvidenceAllowed(capturedUnique, true, dxgiProof, runtimeProof) &&
+        RuntimeEvidenceAllowed(capturedUnique, false, dxgiProof, runtimeProof));
+    for (bool missingDxgi : {true, false}) {
+        auto snapshot = capturedOwners;
+        snapshot.paths = {missingDxgi ? runtimeProof.path : dxgiProof.path};
+        check("missing_either_exact_owner_path_refused", !RuntimeEvidenceAllowed(snapshot, true, dxgiProof, runtimeProof));
+    }
+    check("empty_proven_owner_path_refused", !RuntimeEvidenceAllowed(capturedOwners, true, good, runtimeProof) &&
+        !RuntimeEvidenceAllowed(capturedOwners, true, dxgiProof, good));
+    auto wrongOwnerPath = capturedOwners;
+    wrongOwnerPath.paths = {L"C:\\system\\dxgi.dll", runtimeProof.path};
+    check("same_basename_other_owner_path_refused", !RuntimeEvidenceAllowed(wrongOwnerPath, true, dxgiProof, runtimeProof));
+    auto incompleteOwners = capturedOwners;
+    incompleteOwners.complete = false;
+    check("observed_owners_cannot_override_incomplete", !RuntimeEvidenceAllowed(incompleteOwners, true, dxgiProof, runtimeProof));
+    auto badOwner = dxgiProof;
+    badOwner.sameModule = false;
+    check("observed_path_cannot_override_failed_export_proof", !RuntimeEvidenceAllowed(capturedOwners, true, badOwner, runtimeProof));
     check("no_graphics_after_cpu_checks", graphicsAbsent());
     Record("self_test").Number("total", total).Number("failed", failed)
         .String("architecture", "x64").Boolean("cpu_only", true).Emit();
