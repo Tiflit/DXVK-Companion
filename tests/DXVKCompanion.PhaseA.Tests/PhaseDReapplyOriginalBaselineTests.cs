@@ -1,5 +1,9 @@
 using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Net.Http;
 using System.Threading.Tasks;
 using DXVKCompanion.DXVK;
@@ -12,6 +16,87 @@ namespace DXVKCompanion.PhaseATests;
 
 public sealed class PhaseDReapplyOriginalBaselineTests
 {
+    private static string FailureDiagnostic(string phase, string? refusal, IOperationLeaseCoordinator coordinator)
+        => $"Reapply baseline phase={phase}; {(coordinator as OperationLeaseCoordinator)?.LastAcquisitionDiagnostic ?? "NoLeaseFailureRecorded"}; category={SyntheticSafetyFixture.RefusalCategory(refusal)}";
+
+    private static Dictionary<string, byte[]> SnapshotFiles(string root)
+        => Directory.GetFiles(root, "*", SearchOption.AllDirectories)
+            .ToDictionary(path => Path.GetRelativePath(root, path), File.ReadAllBytes, StringComparer.OrdinalIgnoreCase);
+
+    private static void AssertFilesUnchanged(Dictionary<string, byte[]> expected, string root)
+    {
+        var actual = SnapshotFiles(root);
+        Assert.Equal(expected.Keys.OrderBy(path => path, StringComparer.OrdinalIgnoreCase),
+            actual.Keys.OrderBy(path => path, StringComparer.OrdinalIgnoreCase));
+        foreach (var (path, bytes) in expected)
+            Assert.Equal(bytes, actual[path]);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Restore_ControlledActivity_RefusesWithoutMutation_ThenInactiveRestores(bool inaccessible)
+    {
+        using var gameDir = new SyntheticTestDirectory();
+        using var storageDir = new SyntheticTestDirectory();
+        using var sourceDir = new SyntheticTestDirectory();
+        var payload = Path.Combine(sourceDir.RootPath, "2.5", "x64");
+        Directory.CreateDirectory(payload);
+        File.WriteAllText(Path.Combine(payload, "d3d11.dll"), "synthetic-d3d11");
+        File.WriteAllText(Path.Combine(payload, "dxgi.dll"), "synthetic-dxgi");
+        var exePath = gameDir.CreateFile("Game.exe", "synthetic-never-executed");
+        gameDir.CreateFile("d3d11.dll", "original-native-d3d11");
+        gameDir.CreateFile("keep.bin", "unrelated-sentinel");
+        var originalGame = SnapshotFiles(gameDir.RootPath);
+
+        var store = new GameLibraryStore(Path.Combine(storageDir.RootPath, "game-library.json"),
+            Path.Combine(storageDir.RootPath, "backups"));
+        var engine = new MultiFileTransactionEngine(Path.Combine(storageDir.RootPath, "backups"));
+        using var http = new HttpClient();
+        var installer = SyntheticSafetyFixture.CreateInstaller(http, engine, store, sourceDir.RootPath);
+        var rollback = SyntheticSafetyFixture.CreateRollback(engine, store);
+        var profile = new GameProfile(exePath) { Api = GraphicsApi.DX11, Architecture = "x64" };
+        Assert.True(await installer.ApplyToGameAsync(profile, new ReleaseInfo { Version = "2.5", DownloadUrl = "" }),
+            FailureDiagnostic("Apply", installer.LastRefusalReason, installer.LeaseCoordinator));
+        File.WriteAllText(Path.Combine(storageDir.RootPath, "backups", "external.keep"), "unrelated-backup-sentinel");
+        var deployedGame = SnapshotFiles(gameDir.RootPath);
+        var storageBefore = SnapshotFiles(storageDir.RootPath);
+        var backupBefore = SnapshotFiles(Path.Combine(storageDir.RootPath, "backups"));
+        var originalHash = store.FindByInstallationPath(gameDir.RootPath)!.FindManagedFile("d3d11.dll")!.OriginalSha256;
+        Assert.NotNull(originalHash);
+
+        // Only this test-process handle is a stand-in. No host inventory or child is used;
+        // all candidate names, paths and lifetime observations are synthetic.
+        using var standIn = Process.GetCurrentProcess();
+        int enumerations = 0;
+        rollback.ActivityInspector = new ProcessActivityInspector(
+            processEnumerator: () => { enumerations++; return new[] { standIn }; },
+            processNameResolver: _ => inaccessible ? throw new Win32Exception(5) : "Game",
+            mainModulePathResolver: _ => exePath,
+            startTimeResolver: _ => new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+            hasExitedResolver: _ => false);
+
+        Assert.False(await rollback.RestoreOriginalDllsAsync(profile));
+        Assert.Equal(1, enumerations);
+        if (inaccessible)
+            Assert.Equal("ActivityUncertain", SyntheticSafetyFixture.RefusalCategory(rollback.LastRefusalReason));
+        else
+            Assert.True(rollback.LastRefusalReason?.Contains("currently running", StringComparison.Ordinal) == true,
+                "Expected fixed running-activity refusal category.");
+        AssertFilesUnchanged(deployedGame, gameDir.RootPath);
+        AssertFilesUnchanged(storageBefore, storageDir.RootPath);
+
+        rollback = SyntheticSafetyFixture.CreateRollback(engine, store);
+        Assert.True(await rollback.RestoreOriginalDllsAsync(profile),
+            FailureDiagnostic("InactiveRestore", rollback.LastRefusalReason, rollback.LeaseCoordinator));
+        AssertFilesUnchanged(originalGame, gameDir.RootPath);
+        AssertFilesUnchanged(backupBefore, Path.Combine(storageDir.RootPath, "backups"));
+        var restored = store.FindByInstallationPath(gameDir.RootPath)!;
+        Assert.Equal(RestorationState.Restored, restored.RestorationState);
+        Assert.Null(restored.ManagedDxvkVersion);
+        Assert.Equal(originalHash, restored.FindManagedFile("d3d11.dll")!.OriginalSha256);
+    }
+
     [Fact]
     public async Task DxvkInstaller_ReapplyAsync_DX9ToDX11Reclassification_BacksUpPreExistingNativeDllAndRestoresByteIdentical()
     {
@@ -38,8 +123,8 @@ public sealed class PhaseDReapplyOriginalBaselineTests
             Path.Combine(storageDir.RootPath, "backups"));
         var engine = new MultiFileTransactionEngine(Path.Combine(storageDir.RootPath, "backups"));
         using var http = new HttpClient();
-        var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
-        var rollback = new DxvkRollback(engine, store);
+        var installer = SyntheticSafetyFixture.CreateInstaller(http, engine, store, sourceDir.RootPath);
+        var rollback = SyntheticSafetyFixture.CreateRollback(engine, store);
 
         // 1. Initial deployment as DX9 (deploys only d3d9.dll)
         var profile = new GameProfile(exePath)
@@ -50,7 +135,7 @@ public sealed class PhaseDReapplyOriginalBaselineTests
         var release = new ReleaseInfo { Version = "2.5", DownloadUrl = "" };
 
         var installOk = await installer.ApplyToGameAsync(profile, release);
-        Assert.True(installOk);
+        Assert.True(installOk, FailureDiagnostic("Apply", installer.LastRefusalReason, installer.LeaseCoordinator));
 
         // Verify DX9 install: d3d9.dll deployed, pre-existing d3d11.dll untouched
         var targetD3D9 = Path.Combine(gameDir.RootPath, "d3d9.dll");
@@ -67,7 +152,7 @@ public sealed class PhaseDReapplyOriginalBaselineTests
         // 2. Game is reclassified to DX11 and ReapplyAsync is called
         profile.Api = GraphicsApi.DX11;
         var reapplyOk = await installer.ReapplyAsync(profile, updateBaseline: false);
-        Assert.True(reapplyOk);
+        Assert.True(reapplyOk, FailureDiagnostic("Reapply", installer.LastRefusalReason, installer.LeaseCoordinator));
 
         // Verify DXVK DX11 files are deployed to game directory
         var targetD3D11 = Path.Combine(gameDir.RootPath, "d3d11.dll");
@@ -101,7 +186,7 @@ public sealed class PhaseDReapplyOriginalBaselineTests
 
         // 4. Restore / Rollback must return byte-identical native d3d11.dll and delete dxgi.dll
         var rollbackOk = await rollback.RestoreOriginalDllsAsync(profile);
-        Assert.True(rollbackOk);
+        Assert.True(rollbackOk, FailureDiagnostic("Restore", rollback.LastRefusalReason, rollback.LeaseCoordinator));
 
         Assert.True(File.Exists(targetD3D11));
         Assert.Equal(nativeD3D11Content, File.ReadAllText(targetD3D11));
@@ -135,8 +220,8 @@ public sealed class PhaseDReapplyOriginalBaselineTests
             Path.Combine(storageDir.RootPath, "backups"));
         var engine = new MultiFileTransactionEngine(Path.Combine(storageDir.RootPath, "backups"));
         using var http = new HttpClient();
-        var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
-        var rollback = new DxvkRollback(engine, store);
+        var installer = SyntheticSafetyFixture.CreateInstaller(http, engine, store, sourceDir.RootPath);
+        var rollback = SyntheticSafetyFixture.CreateRollback(engine, store);
 
         // Existing managed installation without d3d11.dll or dxgi.dll in ManagedFiles
         var installation = store.GetOrCreateInstallation(gameDir.RootPath, "PlainGame");
@@ -153,7 +238,7 @@ public sealed class PhaseDReapplyOriginalBaselineTests
 
         // Execute ReapplyAsync
         var reapplyOk = await installer.ReapplyAsync(profile, updateBaseline: false);
-        Assert.True(reapplyOk);
+        Assert.True(reapplyOk, FailureDiagnostic("Reapply", installer.LastRefusalReason, installer.LeaseCoordinator));
 
         var targetD3D11 = Path.Combine(gameDir.RootPath, "d3d11.dll");
         var targetDxgi = Path.Combine(gameDir.RootPath, "dxgi.dll");
@@ -184,7 +269,7 @@ public sealed class PhaseDReapplyOriginalBaselineTests
 
         // Restore
         var rollbackOk = await rollback.RestoreOriginalDllsAsync(profile);
-        Assert.True(rollbackOk);
+        Assert.True(rollbackOk, FailureDiagnostic("Restore", rollback.LastRefusalReason, rollback.LeaseCoordinator));
 
         Assert.True(File.Exists(targetD3D11));
         Assert.Equal(nativeD3D11Content, File.ReadAllText(targetD3D11));
@@ -215,8 +300,8 @@ public sealed class PhaseDReapplyOriginalBaselineTests
             Path.Combine(storageDir.RootPath, "backups"));
         var engine = new MultiFileTransactionEngine(Path.Combine(storageDir.RootPath, "backups"));
         using var http = new HttpClient();
-        var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
-        var rollback = new DxvkRollback(engine, store);
+        var installer = SyntheticSafetyFixture.CreateInstaller(http, engine, store, sourceDir.RootPath);
+        var rollback = SyntheticSafetyFixture.CreateRollback(engine, store);
 
         // DX9 install
         var profile = new GameProfile(exePath)
@@ -230,7 +315,7 @@ public sealed class PhaseDReapplyOriginalBaselineTests
         // Reclassify and Reapply with updateBaseline = true
         profile.Api = GraphicsApi.DX11;
         var reapplyOk = await installer.ReapplyAsync(profile, updateBaseline: true);
-        Assert.True(reapplyOk);
+        Assert.True(reapplyOk, FailureDiagnostic("Reapply", installer.LastRefusalReason, installer.LeaseCoordinator));
 
         var updatedInstallation = store.FindByInstallationPath(gameDir.RootPath);
         Assert.NotNull(updatedInstallation);
@@ -247,7 +332,7 @@ public sealed class PhaseDReapplyOriginalBaselineTests
 
         // Rollback
         var rollbackOk = await rollback.RestoreOriginalDllsAsync(profile);
-        Assert.True(rollbackOk);
+        Assert.True(rollbackOk, FailureDiagnostic("Restore", rollback.LastRefusalReason, rollback.LeaseCoordinator));
 
         var targetD3D11 = Path.Combine(gameDir.RootPath, "d3d11.dll");
         Assert.True(File.Exists(targetD3D11));
@@ -277,8 +362,8 @@ public sealed class PhaseDReapplyOriginalBaselineTests
             Path.Combine(storageDir.RootPath, "backups"));
         var engine = new MultiFileTransactionEngine(Path.Combine(storageDir.RootPath, "backups"));
         using var http = new HttpClient();
-        var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
-        var rollback = new DxvkRollback(engine, store);
+        var installer = SyntheticSafetyFixture.CreateInstaller(http, engine, store, sourceDir.RootPath);
+        var rollback = SyntheticSafetyFixture.CreateRollback(engine, store);
 
         var installation = store.GetOrCreateInstallation(gameDir.RootPath, "ConfGame");
         installation.ManagedDxvkVersion = "2.5";
@@ -294,7 +379,7 @@ public sealed class PhaseDReapplyOriginalBaselineTests
         };
 
         var reapplyOk = await installer.ReapplyAsync(profile, updateBaseline: false);
-        Assert.True(reapplyOk);
+        Assert.True(reapplyOk, FailureDiagnostic("Reapply", installer.LastRefusalReason, installer.LeaseCoordinator));
 
         var updatedInstallation = store.FindByInstallationPath(gameDir.RootPath);
         Assert.NotNull(updatedInstallation);
@@ -311,7 +396,7 @@ public sealed class PhaseDReapplyOriginalBaselineTests
 
         // Restore must return the user's original dxvk.conf
         var rollbackOk = await rollback.RestoreOriginalDllsAsync(profile);
-        Assert.True(rollbackOk);
+        Assert.True(rollbackOk, FailureDiagnostic("Restore", rollback.LastRefusalReason, rollback.LeaseCoordinator));
 
         Assert.True(File.Exists(nativeConfPath));
         Assert.Equal(nativeConfContent, File.ReadAllText(nativeConfPath));
@@ -341,8 +426,8 @@ public sealed class PhaseDReapplyOriginalBaselineTests
             Path.Combine(storageDir.RootPath, "backups"));
         var engine = new MultiFileTransactionEngine(Path.Combine(storageDir.RootPath, "backups"));
         using var http = new HttpClient();
-        var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
-        var rollback = new DxvkRollback(engine, store);
+        var installer = SyntheticSafetyFixture.CreateInstaller(http, engine, store, sourceDir.RootPath);
+        var rollback = SyntheticSafetyFixture.CreateRollback(engine, store);
 
         var installation = store.GetOrCreateInstallation(gameDir.RootPath, "CollisionGame");
         installation.ManagedDxvkVersion = "2.5";
@@ -365,7 +450,7 @@ public sealed class PhaseDReapplyOriginalBaselineTests
 
         // Execute ReapplyAsync
         var reapplyOk = await installer.ReapplyAsync(profile, updateBaseline: false);
-        Assert.True(reapplyOk);
+        Assert.True(reapplyOk, FailureDiagnostic("Reapply", installer.LastRefusalReason, installer.LeaseCoordinator));
 
         // DXVK is deployed to target
         var targetD3D11 = Path.Combine(gameDir.RootPath, "d3d11.dll");
@@ -390,7 +475,7 @@ public sealed class PhaseDReapplyOriginalBaselineTests
 
         // Restore must return native content A, not unrelated bytes B!
         var rollbackOk = await rollback.RestoreOriginalDllsAsync(profile);
-        Assert.True(rollbackOk);
+        Assert.True(rollbackOk, FailureDiagnostic("Restore", rollback.LastRefusalReason, rollback.LeaseCoordinator));
         Assert.Equal(nativeD3D11Content, File.ReadAllText(targetD3D11));
         Assert.Equal(expectedNativeD3D11Identity, FileIdentity.Capture(targetD3D11));
 
@@ -420,8 +505,8 @@ public sealed class PhaseDReapplyOriginalBaselineTests
             Path.Combine(storageDir.RootPath, "backups"));
         var engine = new MultiFileTransactionEngine(Path.Combine(storageDir.RootPath, "backups"));
         using var http = new HttpClient();
-        var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
-        var rollback = new DxvkRollback(engine, store);
+        var installer = SyntheticSafetyFixture.CreateInstaller(http, engine, store, sourceDir.RootPath);
+        var rollback = SyntheticSafetyFixture.CreateRollback(engine, store);
 
         var installation = store.GetOrCreateInstallation(gameDir.RootPath, "ConfCollisionGame");
         installation.ManagedDxvkVersion = "2.5";
@@ -443,7 +528,7 @@ public sealed class PhaseDReapplyOriginalBaselineTests
         };
 
         var reapplyOk = await installer.ReapplyAsync(profile, updateBaseline: false);
-        Assert.True(reapplyOk);
+        Assert.True(reapplyOk, FailureDiagnostic("Reapply", installer.LastRefusalReason, installer.LeaseCoordinator));
 
         // Unrelated backup B is not overwritten
         Assert.Equal(unrelatedConfContent, File.ReadAllText(seededConfBackupPath));
@@ -461,7 +546,7 @@ public sealed class PhaseDReapplyOriginalBaselineTests
 
         // Restore must return native custom config A
         var rollbackOk = await rollback.RestoreOriginalDllsAsync(profile);
-        Assert.True(rollbackOk);
+        Assert.True(rollbackOk, FailureDiagnostic("Restore", rollback.LastRefusalReason, rollback.LeaseCoordinator));
         Assert.Equal(nativeConfContent, File.ReadAllText(nativeConfPath));
         Assert.Equal(expectedNativeConfIdentity, FileIdentity.Capture(nativeConfPath));
         Assert.Equal(unrelatedConfContent, File.ReadAllText(seededConfBackupPath));
@@ -489,8 +574,8 @@ public sealed class PhaseDReapplyOriginalBaselineTests
             Path.Combine(storageDir.RootPath, "backups"));
         var engine = new MultiFileTransactionEngine(Path.Combine(storageDir.RootPath, "backups"));
         using var http = new HttpClient();
-        var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
-        var rollback = new DxvkRollback(engine, store);
+        var installer = SyntheticSafetyFixture.CreateInstaller(http, engine, store, sourceDir.RootPath);
+        var rollback = SyntheticSafetyFixture.CreateRollback(engine, store);
 
         var installation = store.GetOrCreateInstallation(gameDir.RootPath, "UnknownRecordGame");
         installation.ManagedDxvkVersion = "2.5";
@@ -514,7 +599,7 @@ public sealed class PhaseDReapplyOriginalBaselineTests
         };
 
         var reapplyOk = await installer.ReapplyAsync(profile, updateBaseline: false);
-        Assert.True(reapplyOk);
+        Assert.True(reapplyOk, FailureDiagnostic("Reapply", installer.LastRefusalReason, installer.LeaseCoordinator));
 
         // Backup B is not overwritten
         Assert.Equal(unrelatedContent, File.ReadAllText(seededPath));
@@ -528,7 +613,7 @@ public sealed class PhaseDReapplyOriginalBaselineTests
 
         // Restore returns A
         var rollbackOk = await rollback.RestoreOriginalDllsAsync(profile);
-        Assert.True(rollbackOk);
+        Assert.True(rollbackOk, FailureDiagnostic("Restore", rollback.LastRefusalReason, rollback.LeaseCoordinator));
         Assert.Equal(nativeContent, File.ReadAllText(nativePath));
         Assert.Equal(unrelatedContent, File.ReadAllText(seededPath));
     }
@@ -555,8 +640,8 @@ public sealed class PhaseDReapplyOriginalBaselineTests
             Path.Combine(storageDir.RootPath, "backups"));
         var engine = new MultiFileTransactionEngine(Path.Combine(storageDir.RootPath, "backups"));
         using var http = new HttpClient();
-        var installer = new DxvkInstaller(http, engine, store, sourceDir.RootPath);
-        var rollback = new DxvkRollback(engine, store);
+        var installer = SyntheticSafetyFixture.CreateInstaller(http, engine, store, sourceDir.RootPath);
+        var rollback = SyntheticSafetyFixture.CreateRollback(engine, store);
 
         var profile = new GameProfile(exePath)
         {
@@ -567,7 +652,7 @@ public sealed class PhaseDReapplyOriginalBaselineTests
 
         // 1. Initial Apply
         var installOk = await installer.ApplyToGameAsync(profile, release);
-        Assert.True(installOk);
+        Assert.True(installOk, FailureDiagnostic("Apply", installer.LastRefusalReason, installer.LeaseCoordinator));
 
         var installation = store.FindByInstallationPath(gameDir.RootPath);
         Assert.NotNull(installation);
@@ -578,7 +663,7 @@ public sealed class PhaseDReapplyOriginalBaselineTests
 
         // 2. First Reapply (normal Reapply)
         var reapply1Ok = await installer.ReapplyAsync(profile, updateBaseline: false);
-        Assert.True(reapply1Ok);
+        Assert.True(reapply1Ok, FailureDiagnostic("ReapplyFirst", installer.LastRefusalReason, installer.LeaseCoordinator));
 
         var afterReapply1 = store.FindByInstallationPath(gameDir.RootPath);
         Assert.NotNull(afterReapply1);
@@ -589,7 +674,7 @@ public sealed class PhaseDReapplyOriginalBaselineTests
 
         // 3. Second Reapply (repeated normal Reapply)
         var reapply2Ok = await installer.ReapplyAsync(profile, updateBaseline: false);
-        Assert.True(reapply2Ok);
+        Assert.True(reapply2Ok, FailureDiagnostic("ReapplySecond", installer.LastRefusalReason, installer.LeaseCoordinator));
 
         var afterReapply2 = store.FindByInstallationPath(gameDir.RootPath);
         Assert.NotNull(afterReapply2);
@@ -600,7 +685,7 @@ public sealed class PhaseDReapplyOriginalBaselineTests
 
         // 4. Restore returns native content A
         var rollbackOk = await rollback.RestoreOriginalDllsAsync(profile);
-        Assert.True(rollbackOk);
+        Assert.True(rollbackOk, FailureDiagnostic("Restore", rollback.LastRefusalReason, rollback.LeaseCoordinator));
         Assert.Equal(nativeContent, File.ReadAllText(nativePath));
         Assert.Equal(expectedIdentity, FileIdentity.Capture(nativePath));
     }
