@@ -71,8 +71,8 @@ No retrospective acceptance of the original single-enable sequence is inferred.
 
 Both acquired releases matched 20 independent reference DLLs and origin/manifests.
 Final x32/v3.1 and x64/Latest-to-v3.1.1 DLL bytes/ownership matched; all six restored
-original files/file sets exactly matched raw baselines. Both 24-file release
-sources remained unchanged. Active managed versions/pending work cleared;
+original files/file sets exactly matched raw baselines. All 24 files across both
+releases remained unchanged. Active managed versions/pending work cleared;
 historical architecture/ownership/legacy last-version fields remain. Existing
 config was unchanged and original DLLs absent, so do not claim changed-config or
 overwritten-original recovery coverage. Raw baseline/applied/restored and separate
