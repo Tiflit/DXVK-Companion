@@ -234,7 +234,7 @@ public sealed class PortableManagedLifecycleAcceptanceTests
         settings1.Save();
 
         stack1.CacheStore.SaveCachedRelease(
-            new ReleaseInfo { Version = "v2.5", TagName = "v2.5" },
+            new ReleaseInfo { Version = "v2.5" },
             etag: "\"cached-etag-v2.5\"",
             cachedAt: DateTime.UtcNow,
             lastAttemptAt: DateTime.UtcNow);
