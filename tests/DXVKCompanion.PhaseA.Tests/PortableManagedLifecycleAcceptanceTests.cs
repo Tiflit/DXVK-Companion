@@ -311,9 +311,9 @@ public sealed class PortableManagedLifecycleAcceptanceTests
         string confContentAfterReapply = File.ReadAllText(confPath);
         Assert.DoesNotContain("dxvk.hud", confContentAfterReapply, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("dxvk.maxFrameRate", confContentAfterReapply, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("# Preexisting user config", confContentAfterReapply);
-        Assert.Contains("custom_user_setting = 42", confContentAfterReapply);
-        Assert.Contains("unrelated_tail = true", confContentAfterReapply);
+        Assert.Contains("# Custom preexisting dxvk.conf for Game", confContentAfterReapply);
+        Assert.Contains("user.customSetting = 1", confContentAfterReapply);
+        Assert.Contains("user.unrelatedSuffix = keep", confContentAfterReapply);
 
         Assert.Equal("v2.6:d3d11", File.ReadAllText(d3d11Path));
         Assert.Equal("v2.6:dxgi", File.ReadAllText(dxgiPath));
