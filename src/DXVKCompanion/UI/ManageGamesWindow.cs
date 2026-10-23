@@ -99,8 +99,11 @@ namespace DXVKCompanion.UI
             var buttonPanel = new FlowLayoutPanel
             {
                 Dock = DockStyle.Bottom,
-                Height = 48,
+                // Reserve space for every row when the window is too narrow for all actions.
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
                 FlowDirection = FlowDirection.LeftToRight,
+                WrapContents = true,
                 Padding = new Padding(6)
             };
 
