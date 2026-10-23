@@ -426,7 +426,7 @@ public sealed class PortableManagedLifecycleAcceptanceTests
 
         var confRecord2 = inst2Updated.FindManagedFile("dxvk.conf");
         Assert.NotNull(confRecord2);
-        Assert.Equal("v2.6", confRecord2!.ManagedDxvkVersion);
+        Assert.Null(confRecord2!.ManagedDxvkVersion);
 
         if (preexistingNativeBaseline)
         {

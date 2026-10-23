@@ -22,7 +22,8 @@ Responding to Codex's review on PR #285, completed repairs within the original a
   - Run 40038051824 attempt 1: 1,277/1,278 passed; `AutomaticDiscoveryStartupTests.DisabledDiscovery_DoesNotBypassRealActivityChecksForEnableOrRestore(restore:false, unknown:true)` threw an `IOException` (store lease acquisition timeout) during setup under concurrent test execution.
   - Run 40038051824 attempt 2: 1,278/1,278 passed at the same checkout.
   - Run 40040983312 attempt 1 (repair cycle): failed compilation on `ReleaseInfo.TagName` (nonexistent property on `ReleaseInfo`); corrected to `ReleaseInfo.Version` for subsequent attempt.
-  - Workflow tests, PR hygiene, and dashboard runs passed.
+  - Run 40041159941 attempt 1: 1,277/1,279 passed; `confRecord2.ManagedDxvkVersion` asserted `"v2.6"` instead of `null` (`dxvk.conf` is a configuration record whose version is null per `DxvkInstaller.cs:601`); corrected to `Assert.Null(confRecord2.ManagedDxvkVersion)`.
+  - Workflow tests, PR hygiene, scope checks, and dashboard runs passed.
 - **Diagnostics & Scope**:
   - Reported local script diagnostic deviation during session 1 did not involve host application suites. Hosted CI remains the sole test execution environment; zero local test/app/helper execution.
   - Successor contract #286 adds the `### Scope notes` heading to resolve machine-parsed allowed paths on live PR runs.
