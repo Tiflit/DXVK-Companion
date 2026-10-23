@@ -1,0 +1,7 @@
+# Retained transaction startup guard — Codex, 2026-10-23
+
+Task [#272](https://github.com/Tiflit/DXVK-Companion/issues/272), base/policy `7b2fb8eef4e7632d594af9a35fc77bdabf521126`. The owner explicitly approved the concrete whole-app refusal tradeoff; attributed decision [6372228912](https://github.com/Tiflit/DXVK-Companion/issues/272#issuecomment-6372228912).
+
+Added synthetic regression tests before implementing a read-only preflight for retained/unverifiable transaction evidence. Schema refusal stays first. The guard checks ordinary ancestors and only the first immediate namespace entry; no plan parsing or recovery mutation. Safe warning/title, configured paths, file/directory/byte preservation, error/reparse cases and argument ordering are covered. README/design explain benign residue/active-instance refusal, manual assessment and missing crash/power-loss recovery.
+
+Grouped implementing-agent self-review covers approved behavior, observation failures, startup ordering, privacy, integration and test effectiveness; not independent review. Source/link/whitespace inspection completed; hosted current-head compile/tests pending submission. No local helper/build/test/app/device run, game/personal/retained-fixture access, permission change, model dispatch or cleanup. Headless readiness remains inactive; the adopted minimal profile does not cover these tests. Out-of-scope findings: none. Next: Codex verifies hosted outcomes and actual checkout; human alone merges. No further decision interruption; timing/quota not measured.

@@ -47,6 +47,10 @@ Start `DXVK-Companion.exe --no-auto-discovery` to pause passive discovery for th
 
 The Settings startup option writes the value `DXVK Companion` under `HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run`, containing the quoted executable path. Turning the option off removes that value; deleting or moving the executable alone does not unregister it. Disable startup before moving/removing the application, and restore managed games before discarding restoration backups.
 
+### Recovery attention at startup
+
+Companion stops before loading stores or starting monitoring/queued management when its recovery transaction directory contains any entry or cannot be safely inspected. Preserve the application data, backups and recovery evidence. If another Companion instance is running, close it normally and retry; a warning that remains requires a reviewed recovery assessment. Harmless leftovers after failed cleanup can also block startup. This guard does not automatically diagnose, restore or remove evidence, and does not provide crash/power-loss recovery. See the [startup guard and its limits](docs/design/RETAINED-TRANSACTION-STARTUP-GUARD.md).
+
 ---
 
 ## 🎮 Operating Modes

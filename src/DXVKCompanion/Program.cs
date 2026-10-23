@@ -17,7 +17,7 @@ namespace DXVKCompanion
         [STAThread]
         static void Main(string[] args)
         {
-            var options = PrepareStartup(args, GameLibraryPaths.GameLibraryFile, out var preflight);
+            var options = PrepareStartup(args, GameLibraryPaths.GameLibraryFile, out var preflight, GameLibraryPaths.BackupsDir);
             if (options == null)
             {
                 ApplicationConfiguration.Initialize();
@@ -73,10 +73,11 @@ namespace DXVKCompanion
             Application.Run();
         }
 
-        // Both refusal paths precede directory creation, logging, stores and monitoring.
-        internal static StartupOptions? PrepareStartup(string[] args, string libraryPath, out StartupPreflightResult preflight)
+        // All refusal paths precede directory creation, logging, stores and monitoring.
+        internal static StartupOptions? PrepareStartup(string[] args, string libraryPath, out StartupPreflightResult preflight,
+            string? backupsDirectory = null)
         {
-            preflight = StartupCompatibility.Evaluate(libraryPath);
+            preflight = StartupCompatibility.Evaluate(libraryPath, backupsDirectory);
             if (preflight.ShouldRefuse) return null;
             return StartupOptions.TryParse(args, out var options) ? options : null;
         }
