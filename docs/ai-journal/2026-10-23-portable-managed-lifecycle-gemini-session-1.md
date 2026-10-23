@@ -1,16 +1,28 @@
 # Portable managed-state lifecycle acceptance — Gemini, 2026-10-23
 
-Task [#284](https://github.com/Tiflit/DXVK-Companion/issues/284), base main `46e6f22363cddcfa88d805b588b6ac30173bc9dc`, policy `c40eb13d0d89cb4860b4ed50fd81561acf2fb0d9`. Attributed coordinator transcription of owner instruction: "My Antigravity quotas have reset. We can task Gemini with implementation again. Continue." Owner prioritizes complete standalone DXVK functionality/tests and defers UI polish.
+Task [#284](https://github.com/Tiflit/DXVK-Companion/issues/284), formatting successor [#286](https://github.com/Tiflit/DXVK-Companion/issues/286), base main `46e6f22363cddcfa88d805b588b6ac30173bc9dc`, policy `c40eb13d0d89cb4860b4ed50fd81561acf2fb0d9`. Attributed coordinator transcription of owner instruction: "My Antigravity quotas have reset. We can task Gemini with implementation again. Continue." Owner prioritizes complete standalone DXVK functionality/tests and defers UI polish.
 
 Implemented service-level acceptance coverage in `tests/DXVKCompanion.PhaseA.Tests/PortableManagedLifecycleAcceptanceTests.cs` for the specification's portable-folder move requirement (§47 Phase F, item 59). Created documentation `docs/validation/PORTABLE-MANAGED-LIFECYCLE.md`.
 
-The suite tests persisted service/storage portability by reconstructing services against an app-data bundle relocated within an isolated `SyntheticTestDirectory` while synthetic games stay in place:
-1. Synthetic app-data bundle with `Profiles` (`game-library.json`, `games.json`, relative `Backups/`), `Cache`, and shared `Sources/`. Acquired distinguishable official releases (`v2.5` and `v2.6`) via the real acquirer with fake HTTP transport and verified archive digests.
-2. Initial deployment into a DX11/x64 game with HUD and frame limiting enabled, covering native DLL/config baselines and an originally absent file (`dxgi.dll`).
-3. Bundle relocation to a distinct path under the test directory with no operation in flight, verifying no old-path recreation/dependency, coherent persisted identity/selection/settings, and unchanged source/backup bytes.
-4. Transport marked unavailable, asserting zero additional HTTP calls across the moved lifecycle. Updated through the manager to `v2.6`. Restarted/reloaded, disabled the last HUD/frame feature, and reapplied, verifying exact-key removal in `dxvk.conf` while preserving unrelated user lines and prefix lookalikes. Restarted/reloaded and restored, verifying exact original bytes, absence of non-original wrappers, cleared active managed version, truthful historical fields, and byte-identical source and backup bytes throughout.
-5. Theory-driven relocated corrupted and missing original backup test asserting safe restore refusal without partial target mutation or false Restored/disabled success, recording truthful `AttentionRequired` health.
+## Implementation & Repair Cycle Details
 
-Tests first policy: no production code defects were demonstrated by the new acceptance tests; production files remain untouched. Hosted CI run on initial commit uncovered a single assertion literal mismatch against fixture comments in `PortableManagedLifecycleAcceptanceTests.cs` (1,277 of 1,278 tests passed, theory cases passed); corrected assertion literals to match the synthetic `dxvk.conf` test baseline.
+Responding to Codex's review on PR #285, completed repairs within the original allowed paths:
+1. **Parameterized Baseline Variants**: Converted `PortableManagedLifecycle_RelocatedBundle_PreservesBaselinesAndRestoresByteIdentical` to a theory testing both `preexistingNativeBaseline: true` and `false`. The absent baseline exercises a clean-slate game with only `Game.exe` and an empty subdirectory; verifies that `d3d11.dll`, `dxgi.dll`, and `dxvk.conf` are deployed with `Missing` original states and restored by deletion, returning the game directory to its exact original resource set.
+2. **Complete Resource Sets & Empty Directories**: Replaced flat file snapshots with `ResourceSnapshot` capturing all relative directories (including empty `Data/EmptySubDir`) and file byte dictionaries, ensuring exact structural and binary preservation across checkpoints. Asserted per-file expected managed identities, disabled config ownership hashes, and cleared active per-file versions (`record.ManagedDxvkVersion == null`) after restore.
+3. **Persisted Settings & Cache Records**: Saved nondefault `SettingsStore` (`GlobalPolicy = Automated`) and `CacheStore` records before relocation; verified persistence after destination reconstruction.
+4. **Persisted Selector Intent**: Tested update through `RequestUpdateByPathAsync(profile)` without `targetVersion` method overrides, relying on persisted `ManagementPolicy.PinVersion("v2.6")`.
+5. **Fresh Service Stack Reconstruction**: Implemented `ConstructServiceStack` to reconstruct all services (`CacheStore`, `DxvkGithubClient`, `ProfileStore`, `GameLibraryStore`, `MultiFileTransactionEngine`, `DxvkInstaller`, `DxvkRollback`, `DxvkManager`) from destination paths after each reload without reusing surviving service instances.
+6. **Exact Key-Assignment Parsing**: Implemented `ParseConfigAssignments` to verify exact removal of managed `dxvk.hud` and `dxvk.maxFrameRate` assignments while verifying that lookalike prefix keys (`dxvk.hudExtra = full`, `dxvk.maxFrameRateTarget = 120`) and user settings are preserved.
+7. **Theory Corrupt/Missing Backup**: Preserved and updated to use `ConstructServiceStack` and `SnapshotResources`.
 
-Grouped implementing-agent self-review covers approved scope, privacy, integration, and test effectiveness; not independent review. Source/link/whitespace inspection completed; hosted current-head compile/tests verified via GitHub Actions. No local host restore, build, test, app, helper, or device execution was authorized or run.
+## Verification & Execution Record
+
+- **Tests First Policy**: No production code defects were demonstrated within the actually exercised scenarios; production files remain untouched.
+- **Hosted CI Evidence**:
+  - Run 40038051824 attempt 1: 1,277/1,278 passed; `AutomaticDiscoveryStartupTests.DisabledDiscovery_DoesNotBypassRealActivityChecksForEnableOrRestore(restore:false, unknown:true)` threw an `IOException` (store lease acquisition timeout) during setup under concurrent test execution.
+  - Run 40038051824 attempt 2: 1,278/1,278 passed at the same checkout.
+  - Workflow tests, PR hygiene, and dashboard runs passed.
+- **Diagnostics & Scope**:
+  - Reported local script diagnostic deviation during session 1 did not involve host application suites. Hosted CI remains the sole test execution environment; zero local test/app/helper execution.
+  - Successor contract #286 adds the `### Scope notes` heading to resolve machine-parsed allowed paths on live PR runs.
+  - Fixture releases and digests represent synthetic official-shaped metadata and archive validation rather than independent upstream authenticity.

@@ -18,30 +18,66 @@ namespace DXVKCompanion.PhaseA.Tests;
 
 public sealed class PortableManagedLifecycleAcceptanceTests
 {
-    private static Dictionary<string, byte[]> SnapshotFiles(string root)
+    private sealed record ResourceSnapshot(
+        Dictionary<string, byte[]> Files,
+        HashSet<string> Directories);
+
+    private static ResourceSnapshot SnapshotResources(string root)
     {
         if (!Directory.Exists(root))
         {
-            return new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase);
+            return new ResourceSnapshot(
+                new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase),
+                new HashSet<string>(StringComparer.OrdinalIgnoreCase));
         }
 
-        return Directory.GetFiles(root, "*", SearchOption.AllDirectories)
+        var files = Directory.GetFiles(root, "*", SearchOption.AllDirectories)
             .ToDictionary(
                 path => Path.GetRelativePath(root, path),
                 File.ReadAllBytes,
                 StringComparer.OrdinalIgnoreCase);
+
+        var dirs = Directory.GetDirectories(root, "*", SearchOption.AllDirectories)
+            .Select(path => Path.GetRelativePath(root, path))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        return new ResourceSnapshot(files, dirs);
     }
 
-    private static void AssertFilesUnchanged(Dictionary<string, byte[]> expected, string root)
+    private static void AssertResourcesUnchanged(ResourceSnapshot expected, string root)
     {
-        var actual = SnapshotFiles(root);
+        var actual = SnapshotResources(root);
         Assert.Equal(
-            expected.Keys.OrderBy(path => path, StringComparer.OrdinalIgnoreCase),
-            actual.Keys.OrderBy(path => path, StringComparer.OrdinalIgnoreCase));
-        foreach (var (path, bytes) in expected)
+            expected.Directories.OrderBy(d => d, StringComparer.OrdinalIgnoreCase),
+            actual.Directories.OrderBy(d => d, StringComparer.OrdinalIgnoreCase));
+        Assert.Equal(
+            expected.Files.Keys.OrderBy(path => path, StringComparer.OrdinalIgnoreCase),
+            actual.Files.Keys.OrderBy(path => path, StringComparer.OrdinalIgnoreCase));
+        foreach (var (path, bytes) in expected.Files)
         {
-            Assert.Equal(bytes, actual[path]);
+            Assert.Equal(bytes, actual.Files[path]);
         }
+    }
+
+    private static Dictionary<string, string> ParseConfigAssignments(string content)
+    {
+        var dict = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        using var reader = new StringReader(content);
+        string? line;
+        while ((line = reader.ReadLine()) != null)
+        {
+            var trimmed = line.Trim();
+            if (trimmed.StartsWith("#") || trimmed.StartsWith(";"))
+                continue;
+            int idx = trimmed.IndexOf('=');
+            if (idx >= 0)
+            {
+                string key = trimmed[..idx].Trim();
+                string val = trimmed[(idx + 1)..].Trim();
+                dict[key] = val;
+            }
+        }
+        return dict;
     }
 
     private sealed class LifecycleHttpTransport : HttpMessageHandler
@@ -95,61 +131,124 @@ public sealed class PortableManagedLifecycleAcceptanceTests
         }
     }
 
-    [Fact]
-    public async Task PortableManagedLifecycle_RelocatedBundle_PreservesBaselinesAndRestoresByteIdentical()
+    private sealed record ServiceStack(
+        string AppDataDir,
+        CacheStore CacheStore,
+        DxvkGithubClient GithubClient,
+        ProfileStore ProfileStore,
+        GameLibraryStore LibraryStore,
+        MultiFileTransactionEngine TransactionEngine,
+        DxvkInstaller Installer,
+        DxvkRollback Rollback,
+        DxvkManager Manager);
+
+    private static ServiceStack ConstructServiceStack(string appDataDir, HttpClient httpClient)
+    {
+        string profilesDir = Path.Combine(appDataDir, "Profiles");
+        string libraryFile = Path.Combine(profilesDir, "game-library.json");
+        string profilesFile = Path.Combine(profilesDir, "games.json");
+        string backupsDir = Path.Combine(profilesDir, "Backups");
+        string cacheFile = Path.Combine(appDataDir, "Cache", "release-cache.json");
+        string sourcesDir = Path.Combine(appDataDir, "Sources");
+
+        var cacheStore = new CacheStore(cacheFile);
+        var github = new DxvkGithubClient(httpClient, cacheStore);
+        var profileStore = new ProfileStore(profilesFile);
+        var libraryStore = new GameLibraryStore(libraryFile, backupsDir, profilesFile);
+        var engine = new MultiFileTransactionEngine(backupsDir);
+        var installer = SyntheticSafetyFixture.CreateInstaller(httpClient, engine, libraryStore, sourcesDir);
+        var rollback = SyntheticSafetyFixture.CreateRollback(engine, libraryStore);
+        var manager = SyntheticSafetyFixture.CreateManager(installer, rollback, github, profileStore, libraryStore);
+        installer.GetReleaseAcquirer(github).ProcessLeaseCoordinator = libraryStore.LeaseCoordinator;
+
+        return new ServiceStack(appDataDir, cacheStore, github, profileStore, libraryStore, engine, installer, rollback, manager);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task PortableManagedLifecycle_RelocatedBundle_PreservesBaselinesAndRestoresByteIdentical(bool preexistingNativeBaseline)
     {
         using var testDir = new SyntheticTestDirectory();
         string gameDir = Path.Combine(testDir.RootPath, "SyntheticGame");
         Directory.CreateDirectory(gameDir);
 
+        // Meaningful empty subdirectory preserved across lifecycle
+        string emptySubDir = Path.Combine(gameDir, "Data", "EmptySubDir");
+        Directory.CreateDirectory(emptySubDir);
+
         string exePath = Path.Combine(gameDir, "Game.exe");
         File.WriteAllBytes(exePath, new byte[] { 0x4D, 0x5A, 0x90, 0x00, 0x03 });
         string d3d11Path = Path.Combine(gameDir, "d3d11.dll");
-        byte[] originalD3D11 = Encoding.UTF8.GetBytes("native-d3d11-original-v1.0-bytes");
-        File.WriteAllBytes(d3d11Path, originalD3D11);
         string confPath = Path.Combine(gameDir, "dxvk.conf");
-        byte[] originalConf = Encoding.UTF8.GetBytes("# Custom preexisting dxvk.conf for Game\n# Distinctive user comments\nuser.customSetting = 1\ndxvk.hud = compiler\ndxvk.maxFrameRate = 30\nuser.unrelatedSuffix = keep\n");
-        File.WriteAllBytes(confPath, originalConf);
         string dxgiPath = Path.Combine(gameDir, "dxgi.dll");
-        Assert.False(File.Exists(dxgiPath));
 
-        var originalGameSnapshot = SnapshotFiles(gameDir);
-        var originalD3D11Identity = FileIdentity.Capture(d3d11Path);
-        var originalConfIdentity = FileIdentity.Capture(confPath);
+        byte[]? originalD3D11 = null;
+        byte[]? originalConf = null;
+        SafetyFileIdentity? originalD3D11Identity = null;
+        SafetyFileIdentity? originalConfIdentity = null;
+
+        if (preexistingNativeBaseline)
+        {
+            originalD3D11 = Encoding.UTF8.GetBytes("native-d3d11-original-v1.0-bytes");
+            File.WriteAllBytes(d3d11Path, originalD3D11);
+            originalD3D11Identity = FileIdentity.Capture(d3d11Path);
+
+            originalConf = Encoding.UTF8.GetBytes(
+                "# Custom preexisting dxvk.conf for Game\n" +
+                "# Distinctive user comments\n" +
+                "user.customSetting = 1\n" +
+                "dxvk.hud = compiler\n" +
+                "dxvk.maxFrameRate = 30\n" +
+                "dxvk.hudExtra = full\n" +
+                "dxvk.maxFrameRateTarget = 120\n" +
+                "user.unrelatedSuffix = keep\n");
+            File.WriteAllBytes(confPath, originalConf);
+            originalConfIdentity = FileIdentity.Capture(confPath);
+        }
+
+        Assert.False(File.Exists(dxgiPath));
+        if (!preexistingNativeBaseline)
+        {
+            Assert.False(File.Exists(d3d11Path));
+            Assert.False(File.Exists(confPath));
+        }
+
+        var originalGameSnapshot = SnapshotResources(gameDir);
 
         string appDataDir = Path.Combine(testDir.RootPath, "AppDataBundle");
         string profilesDir = Path.Combine(appDataDir, "Profiles");
-        string libraryFile = Path.Combine(profilesDir, "game-library.json");
-        string profilesFile = Path.Combine(profilesDir, "games.json");
         string backupsDir = Path.Combine(profilesDir, "Backups");
-        string cacheDir = Path.Combine(appDataDir, "Cache");
-        string cacheFile = Path.Combine(cacheDir, "release-cache.json");
         string sourcesDir = Path.Combine(appDataDir, "Sources");
 
         var transport = new LifecycleHttpTransport("v2.5", "v2.6");
         using var httpClient = new HttpClient(transport);
 
         // 1. Acquire two distinguishable official releases into shared source library
-        var cacheStore1 = new CacheStore(cacheFile);
-        var github1 = new DxvkGithubClient(httpClient, cacheStore1);
-        var profileStore1 = new ProfileStore(profilesFile);
-        var libraryStore1 = new GameLibraryStore(libraryFile, backupsDir, profilesFile);
-        var engine1 = new MultiFileTransactionEngine(backupsDir);
-        var installer1 = SyntheticSafetyFixture.CreateInstaller(httpClient, engine1, libraryStore1, sourcesDir);
-        var rollback1 = SyntheticSafetyFixture.CreateRollback(engine1, libraryStore1);
-        var manager1 = SyntheticSafetyFixture.CreateManager(installer1, rollback1, github1, profileStore1, libraryStore1);
-        installer1.GetReleaseAcquirer(github1).ProcessLeaseCoordinator = libraryStore1.LeaseCoordinator;
+        var stack1 = ConstructServiceStack(appDataDir, httpClient);
 
-        var acq25 = await manager1.AcquireOfficialReleaseAsync("v2.5");
+        // Persist nondefault SettingsStore and CacheStore records before relocation
+        string settingsFile1 = Path.Combine(appDataDir, "settings.json");
+        var settings1 = SettingsStore.Load(settingsFile1);
+        settings1.GlobalPolicy = GlobalManagementPolicy.Automated;
+        settings1.Save();
+
+        stack1.CacheStore.SaveCachedRelease(
+            new ReleaseInfo { Version = "v2.5", TagName = "v2.5" },
+            etag: "\"cached-etag-v2.5\"",
+            cachedAt: DateTime.UtcNow,
+            lastAttemptAt: DateTime.UtcNow);
+
+        var acq25 = await stack1.Manager.AcquireOfficialReleaseAsync("v2.5");
         Assert.Equal("v2.5", acq25.Version);
         Assert.True(acq25.UpstreamDigestVerified);
 
-        var acq26 = await manager1.AcquireOfficialReleaseAsync("v2.6");
+        var acq26 = await stack1.Manager.AcquireOfficialReleaseAsync("v2.6");
         Assert.Equal("v2.6", acq26.Version);
         Assert.True(acq26.UpstreamDigestVerified);
 
-        var acquiredSourcesSnapshot = SnapshotFiles(sourcesDir);
-        Assert.NotEmpty(acquiredSourcesSnapshot);
+        var acquiredSourcesSnapshot = SnapshotResources(sourcesDir);
+        Assert.NotEmpty(acquiredSourcesSnapshot.Files);
         Assert.True(File.Exists(Path.Combine(sourcesDir, "v2.5", ".companion-acquired")));
         Assert.True(File.Exists(Path.Combine(sourcesDir, "v2.5", "companion-release.json")));
         Assert.True(File.Exists(Path.Combine(sourcesDir, "v2.5", "x64", "d3d11.dll")));
@@ -160,14 +259,15 @@ public sealed class PortableManagedLifecycleAcceptanceTests
         Assert.True(File.Exists(Path.Combine(sourcesDir, "v2.6", "x64", "dxgi.dll")));
 
         // 2. Install exact older release into DX11/x64 synthetic game with HUD and frame limit enabled
-        var profile1 = profileStore1.GetOrCreate(exePath);
+        var profile1 = stack1.ProfileStore.GetOrCreate(exePath);
         profile1.Api = GraphicsApi.DX11;
         profile1.Architecture = "x64";
         profile1.HudEnabled = true;
         profile1.FrameLimit = 60;
-        profileStore1.Save(profile1);
+        profile1.DxvkVersion = "v2.5";
+        stack1.ProfileStore.Save(profile1);
 
-        var installResult = await manager1.RequestEnableByPathAsync(profile1, "v2.5");
+        var installResult = await stack1.Manager.RequestEnableByPathAsync(profile1, "v2.5");
         Assert.Equal(DxvkActionResult.Applied, installResult);
 
         Assert.Equal("v2.5:d3d11", File.ReadAllText(d3d11Path));
@@ -175,41 +275,81 @@ public sealed class PortableManagedLifecycleAcceptanceTests
         Assert.Equal("v2.5:dxgi", File.ReadAllText(dxgiPath));
         Assert.True(File.Exists(confPath));
 
-        var inst1 = libraryStore1.FindByInstallationPath(gameDir);
+        var inst1 = stack1.LibraryStore.FindByInstallationPath(gameDir);
         Assert.NotNull(inst1);
         Assert.Equal("v2.5", inst1!.ManagedDxvkVersion);
         Assert.Equal(RestorationState.Managed, inst1.RestorationState);
         Assert.True(inst1.Configuration.HudEnabled);
-        Assert.True(inst1.Configuration.FrameLimitEnabled);
         Assert.Equal(60, inst1.Configuration.FrameLimit);
+        Assert.True(inst1.Configuration.FrameLimitEnabled);
 
         string installationId = inst1.Id;
-        var d3d11Record1 = inst1.FindManagedFile("d3d11.dll");
-        Assert.NotNull(d3d11Record1);
-        Assert.Equal(FileOriginalState.Existing, d3d11Record1!.OriginalState);
-        Assert.Equal(originalD3D11Identity.Sha256, d3d11Record1.OriginalSha256);
-        Assert.Equal(Path.Combine(installationId, "d3d11.dll"), d3d11Record1.BackupRelativePath);
-        string d3d11Backup1 = Path.Combine(backupsDir, d3d11Record1.BackupRelativePath!);
-        Assert.True(File.Exists(d3d11Backup1));
-        Assert.Equal(originalD3D11, File.ReadAllBytes(d3d11Backup1));
 
+        // Check enabled config settings and ownership hash
         var confRecord1 = inst1.FindManagedFile("dxvk.conf");
         Assert.NotNull(confRecord1);
-        Assert.Equal(FileOriginalState.Existing, confRecord1!.OriginalState);
-        Assert.Equal(originalConfIdentity.Sha256, confRecord1.OriginalSha256);
-        Assert.Equal(Path.Combine(installationId, "dxvk.conf"), confRecord1.BackupRelativePath);
-        string confBackup1 = Path.Combine(backupsDir, confRecord1.BackupRelativePath!);
-        Assert.True(File.Exists(confBackup1));
-        Assert.Equal(originalConf, File.ReadAllBytes(confBackup1));
+        var initialAssignments = ParseConfigAssignments(File.ReadAllText(confPath));
+        Assert.True(initialAssignments.ContainsKey("dxvk.hud"));
+        Assert.Equal("fps,devinfo", initialAssignments["dxvk.hud"]);
+        Assert.True(initialAssignments.ContainsKey("dxvk.maxFrameRate"));
+        Assert.Equal("60", initialAssignments["dxvk.maxFrameRate"]);
+        Assert.Equal(FileIdentity.Capture(confPath).Sha256, confRecord1!.ExpectedManagedSha256);
+
+        var d3d11Record1 = inst1.FindManagedFile("d3d11.dll");
+        Assert.NotNull(d3d11Record1);
+        Assert.Equal("v2.5", d3d11Record1!.ManagedDxvkVersion);
+        Assert.Equal(FileIdentity.Capture(d3d11Path).Sha256, d3d11Record1.ExpectedManagedSha256);
 
         var dxgiRecord1 = inst1.FindManagedFile("dxgi.dll");
         Assert.NotNull(dxgiRecord1);
-        Assert.Equal(FileOriginalState.Missing, dxgiRecord1!.OriginalState);
+        Assert.Equal("v2.5", dxgiRecord1!.ManagedDxvkVersion);
+        Assert.Equal(FileIdentity.Capture(dxgiPath).Sha256, dxgiRecord1.ExpectedManagedSha256);
+        Assert.Equal(FileOriginalState.Missing, dxgiRecord1.OriginalState);
         Assert.Null(dxgiRecord1.OriginalSha256);
         Assert.Null(dxgiRecord1.BackupRelativePath);
 
-        var originalBackupsSnapshot = SnapshotFiles(backupsDir);
-        Assert.NotEmpty(originalBackupsSnapshot);
+        if (preexistingNativeBaseline)
+        {
+            Assert.Equal("full", initialAssignments["dxvk.hudExtra"]);
+            Assert.Equal("120", initialAssignments["dxvk.maxFrameRateTarget"]);
+            Assert.Equal(FileOriginalState.Existing, confRecord1.OriginalState);
+            Assert.Equal(originalConfIdentity!.Sha256, confRecord1.OriginalSha256);
+            Assert.Equal(Path.Combine(installationId, "dxvk.conf"), confRecord1.BackupRelativePath);
+            string confBackup1 = Path.Combine(backupsDir, confRecord1.BackupRelativePath!);
+            Assert.True(File.Exists(confBackup1));
+            Assert.Equal(originalConf, File.ReadAllBytes(confBackup1));
+
+            Assert.Equal(FileOriginalState.Existing, d3d11Record1.OriginalState);
+            Assert.Equal(originalD3D11Identity!.Sha256, d3d11Record1.OriginalSha256);
+            Assert.Equal(Path.Combine(installationId, "d3d11.dll"), d3d11Record1.BackupRelativePath);
+            string d3d11Backup1 = Path.Combine(backupsDir, d3d11Record1.BackupRelativePath!);
+            Assert.True(File.Exists(d3d11Backup1));
+            Assert.Equal(originalD3D11, File.ReadAllBytes(d3d11Backup1));
+        }
+        else
+        {
+            Assert.Equal(FileOriginalState.Missing, confRecord1.OriginalState);
+            Assert.Null(confRecord1.OriginalSha256);
+            Assert.Null(confRecord1.BackupRelativePath);
+
+            Assert.Equal(FileOriginalState.Missing, d3d11Record1.OriginalState);
+            Assert.Null(d3d11Record1.OriginalSha256);
+            Assert.Null(d3d11Record1.BackupRelativePath);
+        }
+
+        // Persist explicit version selection intent for subsequent update
+        inst1.ManagementPolicy = ManagementPolicy.PinVersion("v2.6");
+        stack1.LibraryStore.Save(inst1);
+
+        var originalBackupsSnapshot = SnapshotResources(backupsDir);
+        if (preexistingNativeBaseline)
+        {
+            Assert.NotEmpty(originalBackupsSnapshot.Files);
+        }
+        else
+        {
+            Assert.Empty(originalBackupsSnapshot.Files);
+        }
 
         // 3. Relocate disposable app-data bundle to distinct path under test directory
         string relocatedAppDataDir = Path.Combine(testDir.RootPath, "RelocatedAppDataBundle");
@@ -218,32 +358,30 @@ public sealed class PortableManagedLifecycleAcceptanceTests
         Assert.True(Directory.Exists(gameDir));
 
         string newProfilesDir = Path.Combine(relocatedAppDataDir, "Profiles");
-        string newLibraryFile = Path.Combine(newProfilesDir, "game-library.json");
-        string newProfilesFile = Path.Combine(newProfilesDir, "games.json");
         string newBackupsDir = Path.Combine(newProfilesDir, "Backups");
-        string newCacheDir = Path.Combine(relocatedAppDataDir, "Cache");
-        string newCacheFile = Path.Combine(newCacheDir, "release-cache.json");
         string newSourcesDir = Path.Combine(relocatedAppDataDir, "Sources");
 
-        var cacheStore2 = new CacheStore(newCacheFile);
-        var github2 = new DxvkGithubClient(httpClient, cacheStore2);
-        var profileStore2 = new ProfileStore(newProfilesFile);
-        var libraryStore2 = new GameLibraryStore(newLibraryFile, newBackupsDir, newProfilesFile);
-        var engine2 = new MultiFileTransactionEngine(newBackupsDir);
-        var installer2 = SyntheticSafetyFixture.CreateInstaller(httpClient, engine2, libraryStore2, newSourcesDir);
-        var rollback2 = SyntheticSafetyFixture.CreateRollback(engine2, libraryStore2);
-        var manager2 = SyntheticSafetyFixture.CreateManager(installer2, rollback2, github2, profileStore2, libraryStore2);
-        installer2.GetReleaseAcquirer(github2).ProcessLeaseCoordinator = libraryStore2.LeaseCoordinator;
+        // Reconstruct all services against relocated bundle paths
+        var stack2 = ConstructServiceStack(relocatedAppDataDir, httpClient);
+
+        // Verify persisted nondefault SettingsStore and CacheStore records
+        var settings2 = SettingsStore.Load(Path.Combine(relocatedAppDataDir, "settings.json"));
+        Assert.Equal(GlobalManagementPolicy.Automated, settings2.GlobalPolicy);
+
+        var cached2 = stack2.CacheStore.LoadCachedRelease();
+        Assert.NotNull(cached2);
+        Assert.Equal("v2.5", cached2!.Release.Version);
+        Assert.Equal("\"cached-etag-v2.5\"", cached2.ETag);
 
         Assert.False(Directory.Exists(appDataDir));
 
-        var profile2 = profileStore2.GetOrCreate(exePath);
+        var profile2 = stack2.ProfileStore.GetOrCreate(exePath);
         Assert.True(profile2.DxvkEnabled);
         Assert.Equal("v2.5", profile2.DxvkVersion);
         Assert.True(profile2.HudEnabled);
         Assert.Equal(60, profile2.FrameLimit);
 
-        var inst2 = libraryStore2.FindByInstallationPath(gameDir);
+        var inst2 = stack2.LibraryStore.FindByInstallationPath(gameDir);
         Assert.NotNull(inst2);
         Assert.Equal(installationId, inst2!.Id);
         Assert.Equal("v2.5", inst2.ManagedDxvkVersion);
@@ -251,17 +389,19 @@ public sealed class PortableManagedLifecycleAcceptanceTests
         Assert.Equal(InstallationConflictFlags.None, inst2.ConflictFlags);
         Assert.Null(inst2.PendingAction);
         Assert.Null(inst2.LastRefusalReason);
+        Assert.Equal(ManagementMode.PinnedVersion, inst2.ManagementPolicy.Mode);
+        Assert.Equal("v2.6", inst2.ManagementPolicy.PinnedDxvkVersion);
 
-        AssertFilesUnchanged(acquiredSourcesSnapshot, newSourcesDir);
-        AssertFilesUnchanged(originalBackupsSnapshot, newBackupsDir);
+        AssertResourcesUnchanged(acquiredSourcesSnapshot, newSourcesDir);
+        AssertResourcesUnchanged(originalBackupsSnapshot, newBackupsDir);
         Assert.False(Directory.Exists(appDataDir));
 
         // 4. Set fake transport unavailable after initial acquisition (assert zero additional HTTP calls)
         transport.RejectAllRequests = true;
         int requestCountAfterAcquisition = transport.RequestCount;
 
-        // Update through manager to already acquired newer exact release
-        var updateResult = await manager2.RequestUpdateByPathAsync(profile2, "v2.6");
+        // Update through manager using persisted selector intent (no targetVersion method override)
+        var updateResult = await stack2.Manager.RequestUpdateByPathAsync(profile2);
         Assert.Equal(DxvkActionResult.Applied, updateResult);
         Assert.Equal(requestCountAfterAcquisition, transport.RequestCount);
 
@@ -269,90 +409,130 @@ public sealed class PortableManagedLifecycleAcceptanceTests
         Assert.Equal("v2.6:dxgi", File.ReadAllText(dxgiPath));
         Assert.Equal("v2.6", profile2.DxvkVersion);
 
-        var inst2Updated = libraryStore2.FindByInstallationPath(gameDir);
+        var inst2Updated = stack2.LibraryStore.FindByInstallationPath(gameDir);
         Assert.NotNull(inst2Updated);
         Assert.Equal("v2.6", inst2Updated!.ManagedDxvkVersion);
         Assert.Equal(RestorationState.Managed, inst2Updated.RestorationState);
 
         var d3d11Record2 = inst2Updated.FindManagedFile("d3d11.dll");
         Assert.NotNull(d3d11Record2);
-        Assert.Equal(FileOriginalState.Existing, d3d11Record2!.OriginalState);
-        Assert.Equal(originalD3D11Identity.Sha256, d3d11Record2.OriginalSha256);
-        Assert.Equal(originalD3D11, File.ReadAllBytes(Path.Combine(newBackupsDir, d3d11Record2.BackupRelativePath!)));
+        Assert.Equal("v2.6", d3d11Record2!.ManagedDxvkVersion);
+        Assert.Equal(FileIdentity.Capture(d3d11Path).Sha256, d3d11Record2.ExpectedManagedSha256);
+
+        var dxgiRecord2 = inst2Updated.FindManagedFile("dxgi.dll");
+        Assert.NotNull(dxgiRecord2);
+        Assert.Equal("v2.6", dxgiRecord2!.ManagedDxvkVersion);
+        Assert.Equal(FileIdentity.Capture(dxgiPath).Sha256, dxgiRecord2.ExpectedManagedSha256);
 
         var confRecord2 = inst2Updated.FindManagedFile("dxvk.conf");
         Assert.NotNull(confRecord2);
-        Assert.Equal(FileOriginalState.Existing, confRecord2!.OriginalState);
-        Assert.Equal(originalConfIdentity.Sha256, confRecord2.OriginalSha256);
-        Assert.Equal(originalConf, File.ReadAllBytes(Path.Combine(newBackupsDir, confRecord2.BackupRelativePath!)));
+        Assert.Equal("v2.6", confRecord2!.ManagedDxvkVersion);
 
-        AssertFilesUnchanged(acquiredSourcesSnapshot, newSourcesDir);
-        AssertFilesUnchanged(originalBackupsSnapshot, newBackupsDir);
+        if (preexistingNativeBaseline)
+        {
+            Assert.Equal(FileOriginalState.Existing, d3d11Record2.OriginalState);
+            Assert.Equal(originalD3D11Identity!.Sha256, d3d11Record2.OriginalSha256);
+            Assert.Equal(originalD3D11, File.ReadAllBytes(Path.Combine(newBackupsDir, d3d11Record2.BackupRelativePath!)));
+
+            Assert.Equal(FileOriginalState.Existing, confRecord2.OriginalState);
+            Assert.Equal(originalConfIdentity!.Sha256, confRecord2.OriginalSha256);
+            Assert.Equal(originalConf, File.ReadAllBytes(Path.Combine(newBackupsDir, confRecord2.BackupRelativePath!)));
+        }
+        else
+        {
+            Assert.Equal(FileOriginalState.Missing, d3d11Record2.OriginalState);
+            Assert.Null(d3d11Record2.OriginalSha256);
+            Assert.Null(d3d11Record2.BackupRelativePath);
+
+            Assert.Equal(FileOriginalState.Missing, confRecord2.OriginalState);
+            Assert.Null(confRecord2.OriginalSha256);
+            Assert.Null(confRecord2.BackupRelativePath);
+        }
+
+        AssertResourcesUnchanged(acquiredSourcesSnapshot, newSourcesDir);
+        AssertResourcesUnchanged(originalBackupsSnapshot, newBackupsDir);
         Assert.False(Directory.Exists(appDataDir));
 
-        // Restart/reload, disable the last HUD/frame feature and reapply
-        var profileStore3 = new ProfileStore(newProfilesFile);
-        var libraryStore3 = new GameLibraryStore(newLibraryFile, newBackupsDir, newProfilesFile);
-        var engine3 = new MultiFileTransactionEngine(newBackupsDir);
-        var installer3 = SyntheticSafetyFixture.CreateInstaller(httpClient, engine3, libraryStore3, newSourcesDir);
-        var rollback3 = SyntheticSafetyFixture.CreateRollback(engine3, libraryStore3);
-        var manager3 = SyntheticSafetyFixture.CreateManager(installer3, rollback3, github2, profileStore3, libraryStore3);
-        installer3.GetReleaseAcquirer(github2).ProcessLeaseCoordinator = libraryStore3.LeaseCoordinator;
+        // Restart/reload all services, disable the HUD/frame feature, and reapply
+        var stack3 = ConstructServiceStack(relocatedAppDataDir, httpClient);
 
-        var profile3 = profileStore3.GetOrCreate(exePath);
+        var profile3 = stack3.ProfileStore.GetOrCreate(exePath);
         profile3.HudEnabled = false;
         profile3.FrameLimit = 0;
-        profileStore3.Save(profile3);
+        stack3.ProfileStore.Save(profile3);
 
-        var reapplyResult = await manager3.RequestReapplyByPathAsync(profile3);
+        var reapplyResult = await stack3.Manager.RequestReapplyByPathAsync(profile3);
         Assert.Equal(DxvkActionResult.Applied, reapplyResult);
         Assert.Equal(requestCountAfterAcquisition, transport.RequestCount);
 
-        string confContentAfterReapply = File.ReadAllText(confPath);
-        Assert.DoesNotContain("dxvk.hud", confContentAfterReapply, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("dxvk.maxFrameRate", confContentAfterReapply, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("# Custom preexisting dxvk.conf for Game", confContentAfterReapply);
-        Assert.Contains("user.customSetting = 1", confContentAfterReapply);
-        Assert.Contains("user.unrelatedSuffix = keep", confContentAfterReapply);
+        if (File.Exists(confPath))
+        {
+            string confContentAfterReapply = File.ReadAllText(confPath);
+            var assignments = ParseConfigAssignments(confContentAfterReapply);
+            Assert.False(assignments.ContainsKey("dxvk.hud"));
+            Assert.False(assignments.ContainsKey("dxvk.maxFrameRate"));
+
+            if (preexistingNativeBaseline)
+            {
+                Assert.True(assignments.ContainsKey("dxvk.hudExtra"));
+                Assert.Equal("full", assignments["dxvk.hudExtra"]);
+                Assert.True(assignments.ContainsKey("dxvk.maxFrameRateTarget"));
+                Assert.Equal("120", assignments["dxvk.maxFrameRateTarget"]);
+                Assert.True(assignments.ContainsKey("user.customSetting"));
+                Assert.Equal("1", assignments["user.customSetting"]);
+                Assert.True(assignments.ContainsKey("user.unrelatedSuffix"));
+                Assert.Equal("keep", assignments["user.unrelatedSuffix"]);
+                Assert.Contains("# Custom preexisting dxvk.conf for Game", confContentAfterReapply);
+            }
+        }
 
         Assert.Equal("v2.6:d3d11", File.ReadAllText(d3d11Path));
         Assert.Equal("v2.6:dxgi", File.ReadAllText(dxgiPath));
 
-        var inst3Reapplied = libraryStore3.FindByInstallationPath(gameDir);
+        var inst3Reapplied = stack3.LibraryStore.FindByInstallationPath(gameDir);
         Assert.NotNull(inst3Reapplied);
         Assert.False(inst3Reapplied!.Configuration.HudEnabled);
         Assert.False(inst3Reapplied.Configuration.FrameLimitEnabled);
         Assert.Equal("v2.6", inst3Reapplied.ManagedDxvkVersion);
 
-        AssertFilesUnchanged(acquiredSourcesSnapshot, newSourcesDir);
-        AssertFilesUnchanged(originalBackupsSnapshot, newBackupsDir);
+        var confRecord3 = inst3Reapplied.FindManagedFile("dxvk.conf");
+        if (confRecord3 != null && File.Exists(confPath))
+        {
+            Assert.Equal(FileIdentity.Capture(confPath).Sha256, confRecord3.ExpectedManagedSha256);
+        }
+
+        AssertResourcesUnchanged(acquiredSourcesSnapshot, newSourcesDir);
+        AssertResourcesUnchanged(originalBackupsSnapshot, newBackupsDir);
         Assert.False(Directory.Exists(appDataDir));
 
-        // Reload and restore
-        var profileStore4 = new ProfileStore(newProfilesFile);
-        var libraryStore4 = new GameLibraryStore(newLibraryFile, newBackupsDir, newProfilesFile);
-        var engine4 = new MultiFileTransactionEngine(newBackupsDir);
-        var installer4 = SyntheticSafetyFixture.CreateInstaller(httpClient, engine4, libraryStore4, newSourcesDir);
-        var rollback4 = SyntheticSafetyFixture.CreateRollback(engine4, libraryStore4);
-        var manager4 = SyntheticSafetyFixture.CreateManager(installer4, rollback4, github2, profileStore4, libraryStore4);
-        installer4.GetReleaseAcquirer(github2).ProcessLeaseCoordinator = libraryStore4.LeaseCoordinator;
+        // Reload all services and restore
+        var stack4 = ConstructServiceStack(relocatedAppDataDir, httpClient);
 
-        var profile4 = profileStore4.GetOrCreate(exePath);
-        var restoreResult = await manager4.RequestDisableByPathAsync(profile4);
+        var profile4 = stack4.ProfileStore.GetOrCreate(exePath);
+        var restoreResult = await stack4.Manager.RequestDisableByPathAsync(profile4);
         Assert.Equal(DxvkActionResult.Applied, restoreResult);
         Assert.Equal(requestCountAfterAcquisition, transport.RequestCount);
 
-        // Final exact original raw bytes plus complete sets restored
-        AssertFilesUnchanged(originalGameSnapshot, gameDir);
-        Assert.True(File.Exists(d3d11Path));
-        Assert.Equal(originalD3D11, File.ReadAllBytes(d3d11Path));
-        Assert.Equal(originalD3D11Identity, FileIdentity.Capture(d3d11Path));
-        Assert.True(File.Exists(confPath));
-        Assert.Equal(originalConf, File.ReadAllBytes(confPath));
-        Assert.Equal(originalConfIdentity, FileIdentity.Capture(confPath));
-        Assert.False(File.Exists(dxgiPath));
+        // Final exact original raw resources, bytes, and empty directories restored
+        AssertResourcesUnchanged(originalGameSnapshot, gameDir);
+        if (preexistingNativeBaseline)
+        {
+            Assert.True(File.Exists(d3d11Path));
+            Assert.Equal(originalD3D11, File.ReadAllBytes(d3d11Path));
+            Assert.Equal(originalD3D11Identity, FileIdentity.Capture(d3d11Path));
+            Assert.True(File.Exists(confPath));
+            Assert.Equal(originalConf, File.ReadAllBytes(confPath));
+            Assert.Equal(originalConfIdentity, FileIdentity.Capture(confPath));
+            Assert.False(File.Exists(dxgiPath));
+        }
+        else
+        {
+            Assert.False(File.Exists(d3d11Path));
+            Assert.False(File.Exists(confPath));
+            Assert.False(File.Exists(dxgiPath));
+        }
 
-        var inst4Restored = libraryStore4.FindByInstallationPath(gameDir);
+        var inst4Restored = stack4.LibraryStore.FindByInstallationPath(gameDir);
         Assert.NotNull(inst4Restored);
         Assert.Null(inst4Restored!.ManagedDxvkVersion);
         Assert.Equal(RestorationState.Restored, inst4Restored.RestorationState);
@@ -362,8 +542,13 @@ public sealed class PortableManagedLifecycleAcceptanceTests
         Assert.False(profile4.DxvkEnabled);
         Assert.Equal("v2.6", profile4.DxvkVersion);
 
-        AssertFilesUnchanged(acquiredSourcesSnapshot, newSourcesDir);
-        AssertFilesUnchanged(originalBackupsSnapshot, newBackupsDir);
+        foreach (var mf in inst4Restored.ManagedFiles)
+        {
+            Assert.Null(mf.ManagedDxvkVersion);
+        }
+
+        AssertResourcesUnchanged(acquiredSourcesSnapshot, newSourcesDir);
+        AssertResourcesUnchanged(originalBackupsSnapshot, newBackupsDir);
         Assert.False(Directory.Exists(appDataDir));
     }
 
@@ -376,6 +561,9 @@ public sealed class PortableManagedLifecycleAcceptanceTests
         string gameDir = Path.Combine(testDir.RootPath, "SyntheticGame");
         Directory.CreateDirectory(gameDir);
 
+        string emptySubDir = Path.Combine(gameDir, "Data", "EmptySubDir");
+        Directory.CreateDirectory(emptySubDir);
+
         string exePath = Path.Combine(gameDir, "Game.exe");
         File.WriteAllBytes(exePath, new byte[] { 0x4D, 0x5A, 0x90, 0x00, 0x03 });
         string d3d11Path = Path.Combine(gameDir, "d3d11.dll");
@@ -384,40 +572,28 @@ public sealed class PortableManagedLifecycleAcceptanceTests
         string confPath = Path.Combine(gameDir, "dxvk.conf");
         byte[] originalConf = Encoding.UTF8.GetBytes("# user config\ncustom_key = 1\ndxvk.hud = compiler\n");
         File.WriteAllBytes(confPath, originalConf);
-        string dxgiPath = Path.Combine(gameDir, "dxgi.dll");
 
         string appDataDir = Path.Combine(testDir.RootPath, "AppDataBundle");
         string profilesDir = Path.Combine(appDataDir, "Profiles");
-        string libraryFile = Path.Combine(profilesDir, "game-library.json");
-        string profilesFile = Path.Combine(profilesDir, "games.json");
         string backupsDir = Path.Combine(profilesDir, "Backups");
-        string cacheFile = Path.Combine(appDataDir, "Cache", "release-cache.json");
         string sourcesDir = Path.Combine(appDataDir, "Sources");
 
         var transport = new LifecycleHttpTransport("v2.5");
         using var httpClient = new HttpClient(transport);
 
-        var cacheStore1 = new CacheStore(cacheFile);
-        var github1 = new DxvkGithubClient(httpClient, cacheStore1);
-        var profileStore1 = new ProfileStore(profilesFile);
-        var libraryStore1 = new GameLibraryStore(libraryFile, backupsDir, profilesFile);
-        var engine1 = new MultiFileTransactionEngine(backupsDir);
-        var installer1 = SyntheticSafetyFixture.CreateInstaller(httpClient, engine1, libraryStore1, sourcesDir);
-        var rollback1 = SyntheticSafetyFixture.CreateRollback(engine1, libraryStore1);
-        var manager1 = SyntheticSafetyFixture.CreateManager(installer1, rollback1, github1, profileStore1, libraryStore1);
-        installer1.GetReleaseAcquirer(github1).ProcessLeaseCoordinator = libraryStore1.LeaseCoordinator;
+        var stack1 = ConstructServiceStack(appDataDir, httpClient);
 
-        var acq = await manager1.AcquireOfficialReleaseAsync("v2.5");
+        var acq = await stack1.Manager.AcquireOfficialReleaseAsync("v2.5");
         Assert.Equal("v2.5", acq.Version);
 
-        var profile1 = profileStore1.GetOrCreate(exePath);
+        var profile1 = stack1.ProfileStore.GetOrCreate(exePath);
         profile1.Api = GraphicsApi.DX11;
         profile1.Architecture = "x64";
         profile1.HudEnabled = true;
         profile1.FrameLimit = 60;
-        profileStore1.Save(profile1);
+        stack1.ProfileStore.Save(profile1);
 
-        var installResult = await manager1.RequestEnableByPathAsync(profile1, "v2.5");
+        var installResult = await stack1.Manager.RequestEnableByPathAsync(profile1, "v2.5");
         Assert.Equal(DxvkActionResult.Applied, installResult);
 
         // Relocate bundle
@@ -426,23 +602,12 @@ public sealed class PortableManagedLifecycleAcceptanceTests
         Assert.False(Directory.Exists(appDataDir));
 
         string newProfilesDir = Path.Combine(relocatedAppDataDir, "Profiles");
-        string newLibraryFile = Path.Combine(newProfilesDir, "game-library.json");
-        string newProfilesFile = Path.Combine(newProfilesDir, "games.json");
         string newBackupsDir = Path.Combine(newProfilesDir, "Backups");
-        string newCacheFile = Path.Combine(relocatedAppDataDir, "Cache", "release-cache.json");
         string newSourcesDir = Path.Combine(relocatedAppDataDir, "Sources");
 
-        var cacheStore2 = new CacheStore(newCacheFile);
-        var github2 = new DxvkGithubClient(httpClient, cacheStore2);
-        var profileStore2 = new ProfileStore(newProfilesFile);
-        var libraryStore2 = new GameLibraryStore(newLibraryFile, newBackupsDir, newProfilesFile);
-        var engine2 = new MultiFileTransactionEngine(newBackupsDir);
-        var installer2 = SyntheticSafetyFixture.CreateInstaller(httpClient, engine2, libraryStore2, newSourcesDir);
-        var rollback2 = SyntheticSafetyFixture.CreateRollback(engine2, libraryStore2);
-        var manager2 = SyntheticSafetyFixture.CreateManager(installer2, rollback2, github2, profileStore2, libraryStore2);
-        installer2.GetReleaseAcquirer(github2).ProcessLeaseCoordinator = libraryStore2.LeaseCoordinator;
+        var stack2 = ConstructServiceStack(relocatedAppDataDir, httpClient);
 
-        var inst2 = libraryStore2.FindByInstallationPath(gameDir);
+        var inst2 = stack2.LibraryStore.FindByInstallationPath(gameDir);
         Assert.NotNull(inst2);
         var record = inst2!.FindManagedFile("d3d11.dll");
         Assert.NotNull(record);
@@ -459,22 +624,22 @@ public sealed class PortableManagedLifecycleAcceptanceTests
             File.WriteAllBytes(backupFile, Encoding.UTF8.GetBytes("corrupted-native-d3d11-backup-bytes"));
         }
 
-        var deployedGameSnapshot = SnapshotFiles(gameDir);
-        var sourcesSnapshot = SnapshotFiles(newSourcesDir);
-        var backupsSnapshot = SnapshotFiles(newBackupsDir);
+        var deployedGameSnapshot = SnapshotResources(gameDir);
+        var sourcesSnapshot = SnapshotResources(newSourcesDir);
+        var backupsSnapshot = SnapshotResources(newBackupsDir);
 
-        var profile2 = profileStore2.GetOrCreate(exePath);
-        var restoreResult = await manager2.RequestDisableByPathAsync(profile2);
+        var profile2 = stack2.ProfileStore.GetOrCreate(exePath);
+        var restoreResult = await stack2.Manager.RequestDisableByPathAsync(profile2);
         Assert.Equal(DxvkActionResult.Failed, restoreResult);
 
         // Assert target bytes were not partially mutated
-        AssertFilesUnchanged(deployedGameSnapshot, gameDir);
+        AssertResourcesUnchanged(deployedGameSnapshot, gameDir);
         // Assert source and backup bytes were retained
-        AssertFilesUnchanged(sourcesSnapshot, newSourcesDir);
-        AssertFilesUnchanged(backupsSnapshot, newBackupsDir);
+        AssertResourcesUnchanged(sourcesSnapshot, newSourcesDir);
+        AssertResourcesUnchanged(backupsSnapshot, newBackupsDir);
 
         // Truthful health/refusal/pending state
-        var reloadedInst = libraryStore2.FindByInstallationPath(gameDir);
+        var reloadedInst = stack2.LibraryStore.FindByInstallationPath(gameDir);
         Assert.NotNull(reloadedInst);
         Assert.Equal(RestorationState.AttentionRequired, reloadedInst!.RestorationState);
         Assert.NotNull(reloadedInst.LastRefusalReason);
