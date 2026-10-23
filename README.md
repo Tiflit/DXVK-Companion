@@ -2,7 +2,9 @@
 
 A Windows utility for detecting game launches, identifying graphics APIs, and managing official [DXVK](https://github.com/doitsujin/dxvk) deployment, versions, restoration, and per-game configuration.
 
-**Status: pre-release development.** A standalone Windows x64 application and automated checks exist; a stable public release and broad game/GPU compatibility are not established. Intel Arc, NVIDIA GeForce and AMD Radeon are development targets, not certified support. Companion targets Direct3D 9, 10 and 11 management; the D3D10 deployment DLL set still needs separate Windows loading verification ([current findings](docs/validation/MODULE-EVIDENCE-INTEGRITY.md#d3d10-deployment-investigation-remains-separate)).
+**Status: pre-release development.** A standalone Windows x64 application and automated checks exist; a stable public release and broad game/GPU compatibility are not established. Intel Arc, NVIDIA GeForce and AMD Radeon are development targets, not certified support. Companion targets Direct3D 9, 10 and 11 management.
+
+For D3D10, the [adopted managed payload policy](docs/spec/DXVK-COMPANION-SPEC.md#13-dxvk-deployment-model) selects `d3d10core.dll`, `d3d11.dll` and `dxgi.dll` for the qualified official **v3.1.1 x64** payload. Other release/architecture contexts retain the existing two-file selection and remain unqualified. This bounded Windows policy does not establish universal DLL-loader requirements or game compatibility; see the evidence below.
 
 > [!WARNING]
 > DXVK changes the graphics libraries loaded by a game. Avoid games with anti-cheat or anti-tamper protection, including offline or single-player modes that still use it. Detection heuristics cannot guarantee safety or prevent bans. Unknown compatibility is not permission to deploy.
@@ -35,7 +37,7 @@ A Windows utility for detecting game launches, identifying graphics APIs, and ma
 3. Run `DXVK-Companion.exe`.
 4. Companion docks directly into the Windows system tray notification area (near the clock).
 
-As of October 22, 2026, this repository has **no published GitHub Release**. The [Releases page](https://github.com/Tiflit/DXVK-Companion/releases) is the intended future stable-download route. The existing release workflow prepares a ZIP and SHA-256 sidecar; its existence does not establish a published, signed or attested release. A checksum identifies bytes rather than certifying compatibility.
+As of October 23, 2026, this repository has **no published GitHub Release**. The [Releases page](https://github.com/Tiflit/DXVK-Companion/releases) is the intended future stable-download route. The existing release workflow prepares a ZIP and SHA-256 sidecar; its existence does not establish a published, signed or attested release. A checksum identifies bytes rather than certifying compatibility.
 
 ### Optional discovery pause
 
@@ -185,7 +187,13 @@ Settings are also stored beside the executable. Coordination locks and runtime e
 
 ## 🧪 Testing & Validation
 
-Automated file operations and state transitions use disposable synthetic fixtures. Passing these checks supports only the exercised logic and failure paths; it does not certify live GUI behavior, game/driver compatibility or all external-process concurrency. The [packaged lifecycle record](docs/validation/RELEASE-LIBRARY-PACKAGED-V3.md#execution-disposition--october-21-2026) separately documents acquisition, selected payload bytes and exact synthetic restoration, qualified by a sequence deviation and an approved supplement. It is not general game acceptance. Intermittent service/lease CI failures retain unresolved causes in [the backlog](https://github.com/Tiflit/DXVK-Companion/issues/167); later green runs do not diagnose them.
+Automated file operations and state transitions use disposable synthetic fixtures. Passing these checks supports only the exercised logic and failure paths; it does not certify live GUI behavior, game/driver compatibility or all external-process concurrency.
+
+The completed [controlled Windows loading matrix](https://github.com/Tiflit/DXVK-Companion/issues/252#issuecomment-6353765990) observed successful device creation with both tested D3D10 layouts, including their loaded-module identities. It supports the bounded policy above without proving a universal three-file loader requirement or rendering/game acceptance.
+
+The separate [packaged D3D10 lifecycle](https://github.com/Tiflit/DXVK-Companion/issues/263#issuecomment-6370305725) verified official v3.1.1 x64 payload bytes, three-file ownership and exact restoration of absent/existing synthetic baselines. The human reported GUI actions and persisted version/policy choices across normal restarts; file and metadata inspections verified deployment/restoration outcomes. No game ran, and default discovery, rendering and broad hardware compatibility were not validated.
+
+The earlier [packaged lifecycle record](docs/validation/RELEASE-LIBRARY-PACKAGED-V3.md#execution-disposition--october-21-2026) remains qualified by its sequence deviation and approved supplement. Neither packaged record is general game acceptance. Intermittent service/lease CI failures retain unresolved causes in [the backlog](https://github.com/Tiflit/DXVK-Companion/issues/167); later green runs, including those with added diagnostics, do not diagnose or establish a causal repair.
 
 For source builds, use Windows with the **.NET 8 SDK** and access to restore the declared project/test packages. The self-contained download and source-build prerequisites are different. Contributor host execution follows [repository authorization rules](AGENTS.md#local-execution-profiles); the examples below are references, not a standing execution approval.
 
@@ -227,7 +235,7 @@ For complete specifications and architectural contracts, refer to the canonical 
 * [x] **Release CI**: Standalone self-contained `win-x64` GitHub release pipeline
 
 > [!NOTE]
-> Completed checkboxes describe historical implementation milestones and exercised synthetic coverage, not closure of every specification requirement or release readiness. In particular, restart/power-loss transaction recovery and D3D10 payload mapping remain unresolved. The following product safety repairs and policy choices have been integrated on `main`:
+> Completed checkboxes describe historical implementation milestones and exercised synthetic coverage, not closure of every specification requirement or release readiness. Restart/power-loss transaction recovery remains unresolved. D3D10 now has the bounded v3.1.1 x64 managed payload policy and evidence described above; broader payload qualification and game acceptance remain open. The following product safety repairs and policy choices have been integrated on `main`:
 > * **Reapply Baseline Preservation**: Baseline capture and backup preservation defects repaired ([Issue #13](https://github.com/Tiflit/DXVK-Companion/issues/13), [PR #23](https://github.com/Tiflit/DXVK-Companion/pull/23)).
 > * **Shared-Directory Compatibility Policy**: Approved installation-wide DXVK refusal across shared directories when any recorded executable is incompatible (DX12, Vulkan, or Unknown/unsupported), while preserving Restore and RestoreAll operations ([Issue #14](https://github.com/Tiflit/DXVK-Companion/issues/14), [PR #35](https://github.com/Tiflit/DXVK-Companion/pull/35); undiscovered sibling executables remain a known limitation).
 > * **Pre-Execution API Reassessment**: Reassesses queued actions against the latest available recorded API evidence prior to execution, preserving conservative unsupported and conflicting classifications; this reconciles stored profile and installation records but does not perform fresh runtime process scanning or ensure detection of late-loaded APIs ([Issue #15](https://github.com/Tiflit/DXVK-Companion/issues/15), [PR #36](https://github.com/Tiflit/DXVK-Companion/pull/36)).
