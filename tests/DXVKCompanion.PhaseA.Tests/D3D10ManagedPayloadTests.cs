@@ -434,6 +434,26 @@ public sealed class D3D10ManagedPayloadTests
         Assert.Equal(library, File.ReadAllBytes(f.Library));
     }
 
+    [Fact]
+    public async Task LegacyReapply_InvalidRecordedArchitectureDoesNotFallBackToX64()
+    {
+        using var f = new Fixture();
+        await f.SeedLegacy();
+        f.Installation.ManagedDxvkArchitecture = "unrecognized-architecture";
+        f.Store.Save(f.Installation);
+        // A replacement x64 source exists, so guessing x64 would visibly overwrite
+        // the managed wrapper instead of preserving the original refusal.
+        File.WriteAllText(Path.Combine(f.Official.Source, "2.5", "x64", "d3d11.dll"), "replacement-source");
+        var before = Snapshot(f.Game.RootPath);
+        var backups = Snapshot(f.Backups);
+        byte[] library = File.ReadAllBytes(f.Library);
+        f.Restart();
+        Assert.False(await f.Installer().ReapplyAsync(f.Profile));
+        Unchanged(before, f.Game.RootPath);
+        Unchanged(backups, f.Backups);
+        Assert.Equal(library, File.ReadAllBytes(f.Library));
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

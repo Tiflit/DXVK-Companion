@@ -841,7 +841,11 @@ namespace DXVKCompanion.DXVK
                     LastRefusalReason = "Cannot establish the architecture of this selected DX10 release.";
                     return false;
                 }
-                string arch = DxvkLocalReleaseLibrary.NormalizeArchitecture(selectedArch) ?? "x64";
+                // Preserve an explicitly recorded legacy value when it cannot be
+                // normalized: its missing source must refuse, never become x64.
+                string arch = DxvkLocalReleaseLibrary.NormalizeArchitecture(selectedArch)
+                    ?? installation.ManagedDxvkArchitecture
+                    ?? (string.Equals(profile.Architecture, "x32", StringComparison.OrdinalIgnoreCase) ? "x32" : "x64");
                 string versionDir = Path.Combine(_dxvkSourceDir, SanitizeVersion(version));
                 string dxvkArchDir = Path.Combine(versionDir, arch);
 
