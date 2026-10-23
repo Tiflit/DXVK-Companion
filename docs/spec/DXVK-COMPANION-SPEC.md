@@ -634,10 +634,15 @@ Initial deployment targets:
 | API | Initial DLL set |
 |---|---|
 | D3D9 | `d3d9.dll` |
-| D3D10 | to be verified against current official release contents before implementation is finalized |
+| D3D10, official `v3.1.1`, x64 | `d3d10core.dll`, `d3d11.dll`, `dxgi.dll` |
+| D3D10, other release/architecture contexts | Preserve the existing two-file selection (`d3d11.dll`, `dxgi.dll`); further qualification remains open |
 | D3D11 | `d3d11.dll`, `dxgi.dll` |
 
-The D3D10 deployment set is intentionally left as a verification item rather than assumed from memory.
+The bounded three-file **managed payload policy** was [adopted by the owner](https://github.com/Tiflit/DXVK-Companion/issues/259#issuecomment-6353958707) after the [Windows matrix](https://github.com/Tiflit/DXVK-Companion/issues/252#issuecomment-6353765990). Both tested layouts created devices; this policy does not assert universal Windows loader necessity, rendering/game compatibility, x32 support evidence or a rule for later releases. A directory named `v3.1.1` alone is insufficient: qualified selection requires an exact-tag acquisition record, matching payload hashes and valid x64 PE DLL headers. Availability/listing and explicit apply/reapply share this selection; invalid selected bytes refuse without silently omitting the core or choosing another release.
+
+Desired deployment, observed assessment and persisted restoration sets remain distinct. Legacy two-file ownership restores only its recorded files and leaves an unrecorded core untouched. Only a successful explicit apply/update/reapply may add core ownership, capturing its actual absent/existing baseline while preserving existing wrapper baselines. Transaction/persistence failure must recover the immediate pre-operation files and metadata. Restore always follows durable root-relative ownership, expected managed identities and verified backups, regardless of current source availability or defaults.
+
+Assessment includes core identity for D3D10; filename/PE metadata alone does not establish official identity. Explicit adoption may retain a positively identified legacy two-file layout, owning only files actually present. Three-file adoption requires coherent selected release/architecture evidence and revalidation before ownership commit. Adoption retains its existing baseline semantics: it cannot reconstruct files lost before external installation. DX9/DX11 assessment must not adopt an unrelated core. Refuse wrapper transitions that would leave an owned core outside a coherent supported payload, including shared directories; restore first when necessary. Unknown, conflicting or changed identity is not silently adopted.
 
 D3D8 is deferred.
 

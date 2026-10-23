@@ -42,12 +42,19 @@ namespace DXVKCompanion.DXVK
             return null;
         }
 
-        internal static bool IsRecognizedSourceEligible(string root, string tag, GraphicsApi api, string? architecture)
+        internal static bool IsRecognizedSourceEligible(string root, string tag, GraphicsApi api, string? architecture, string[]? observedDlls = null)
         {
             try
             {
                 if (!IsSafeReleaseDirectoryName(tag)) return false;
                 string directory = Path.Combine(root, tag);
+                if (DxvkDeploymentPayload.IncludesCore(api, tag, architecture))
+                {
+                    string[] observed = observedDlls ?? DxvkDeploymentPayload.Resolve(api, tag, architecture);
+                    string? safeDirectory = GetVersionDirectory(root, tag);
+                    return safeDirectory != null && ValidateReleasePayload(Path.GetFullPath(root), safeDirectory, "x64", observed) &&
+                        DxvkDeploymentPayload.TryCaptureQualifiedSource(safeDirectory, tag, observed, out _);
+                }
                 return !DxvkReleaseAcquirer.HasAcquisitionRecord(directory) || IsVersionAvailable(root, tag, api, architecture);
             }
             catch { return false; }
@@ -184,7 +191,7 @@ namespace DXVKCompanion.DXVK
             if (arch == null)
                 return false;
 
-            string[] requiredDlls = DxvkCompatibility.GetRequiredDlls(api);
+            string[] requiredDlls = DxvkDeploymentPayload.Resolve(api, versionTag, arch);
             if (requiredDlls == null || requiredDlls.Length == 0)
                 return false;
 
@@ -195,7 +202,9 @@ namespace DXVKCompanion.DXVK
             try
             {
                 string fullSource = Path.GetFullPath(sourceRoot).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
-                return ValidateReleasePayload(fullSource, versionDir, arch, requiredDlls);
+                return ValidateReleasePayload(fullSource, versionDir, arch, requiredDlls) &&
+                    (!DxvkDeploymentPayload.IncludesCore(api, versionTag, arch) ||
+                     DxvkDeploymentPayload.TryCaptureQualifiedSource(versionDir, versionTag!, requiredDlls, out _));
             }
             catch
             {
@@ -214,10 +223,6 @@ namespace DXVKCompanion.DXVK
             if (arch == null)
                 return results;
 
-            string[] requiredDlls = DxvkCompatibility.GetRequiredDlls(api);
-            if (requiredDlls == null || requiredDlls.Length == 0)
-                return results;
-
             if (string.IsNullOrWhiteSpace(sourceRoot) || !Directory.Exists(sourceRoot))
                 return results;
 
@@ -232,8 +237,7 @@ namespace DXVKCompanion.DXVK
                     if (!IsSafeReleaseDirectoryName(tag))
                         continue;
 
-                    string fullDir = Path.GetFullPath(dir);
-                    if (!ValidateReleasePayload(fullSource, fullDir, arch, requiredDlls))
+                    if (!IsVersionAvailable(fullSource, tag, api, arch))
                         continue;
 
                     results.Add(tag);
