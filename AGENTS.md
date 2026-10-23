@@ -11,8 +11,8 @@ The adopted [kernel v0.4](docs/AI-WORKFLOW-KERNEL.md) governs; the [enforcement 
 
 ## Roles and Authority
 
-- Gemini / Antigravity implements, tests within approved profiles, repairs and contributes ideas.
-- ChatGPT coordinates, reviews behavior/integration/test effectiveness and arbitrates.
+- ChatGPT / Codex coordinates and may implement, test within approved profiles, repair CI and prepare task contracts within owner-approved objectives. Routine choices within that delegation do not require another human approval.
+- Gemini / Antigravity contributes only when activated by the owner, on bounded assignments. Codex reviews its changed source, test effectiveness and revision-bound evidence before readiness; Gemini cannot approve its own work. Model availability alone does not activate work.
 - Gemini web may contribute selectively at feature-design forks; no extra model pass is mandatory for routine work.
 - Claude is reserved for consequential independent audits and difficult disagreements.
 - The human decides unsettled product/policy choices and performs final merges.
@@ -35,6 +35,8 @@ Human holds are global unless explicitly scoped; only an authorized human lifts 
 
 Task authors should use relevant module/directory prefixes or `/**` and matching test paths where appropriate; exact files remain useful for narrow/sensitive tasks. No blanket test access or automatic out-of-module expansion. Changes to existing assertions must be explained and reviewed for weakened coverage. Protected scope is declared in the task, not a new denylist feature in the evaluator.
 
+Codex may select and prepare the next bounded task within an owner-approved objective, recording its contract before edits. Prefer a coherent module plus relevant tests/documentation over repeated single-file approvals. This does not authorize changing an existing contract to excuse scope violations, protected policy/dependencies/project/CI changes, a new execution effect or an unsettled product choice. Such changes still require the applicable explicit approval.
+
 Kernel/stricter project rules > assigned contract > [canonical specification](docs/spec/DXVK-COMPANION-SPEC.md) > [safety supplement](docs/spec/DXVK-Companion-PhaseA5-Safety-and-Identity-Design-FINAL.md). Contracts cannot silently override safety guarantees. Scope CI detects PR violations; required merge enforcement is not established.
 
 ## Local Execution Profiles
@@ -43,7 +45,7 @@ Before host builds/tests, harnesses, application/device runs or background proce
 
 Approval may cover a reusable standing profile or a task-specific run. Tasks link the approved profile and its readiness condition; reuse its unchanged scope without another permission request. Respect the human's advance availability/notice requirement. Changed commands, hooks, effects, host or readiness invalidate reuse until resolved. Profiles do not authorize arbitrary shell commands, installs, desktop bridging, fault injection, force termination or destructive cleanup.
 
-No standing host profile is activated by this amendment. Existing scoped approvals remain valid only within their boundaries; CLI investigation #94 remains paused. Approved cloud CI and routine source/Git/metadata inspection continue without local-execution approval.
+The [reusable maintenance profiles](docs/ai/REUSABLE-MAINTENANCE-PROFILES.md) define guarded metadata maintenance and minimal headless verification, with explicit human adoption and separate readiness conditions. Candidate text is not execution authority. Once adopted, matching commands and repairs need no repeated permission; changed effects require renewed approval. Earlier ended profiles stay ended; CLI investigation #94 remains paused. Approved cloud CI and routine source/Git/metadata inspection continue without local-execution approval.
 
 If authorized behavior cannot be observed, report `NOT RUN (blocked: capability/desktop limitation)`; unapproved execution is `NOT RUN (pending human authorization)`. Preserve completed step outcomes; process existence alone is not GUI validation.
 
@@ -61,6 +63,8 @@ Do not weaken tests for green CI. Bind required evidence to reviewed head/base a
 ## Records and Handoffs
 
 Use [activity policy](docs/AI-ACTIVITY-JOURNAL.md). At milestones/yield, record completed work, changed/uncommitted files, revision/evidence, open findings/decisions and next owner/action. Link evidence rather than duplicating transcripts. For the next product trial, record actual interruptions with trigger, affected action and whether prior delegation allowed continuation; classify justified/unnecessary/uncertain. Do not invent timing, token savings or unseen stops.
+
+Normally use one task journal and one final revision-bound Conversation comment. Link existing records instead of duplicating them across Issues, PRs and handoffs. Additional records are needed for changed authority, material findings, corrections or a real handoff, not routine status narration. Check the PR template before initial submission; a covered metadata repair is part of the original task.
 
 Use `scripts/ai-workflow/update_pr_body.py` for existing PR-body updates and append-only Issue-body records: preserve history, expected baseline, privacy checks, recovery backups and readback. No manual whole-body Issue replacement or blind retry after uncertain writes. Connector-only agents use Conversation comments or hand off a prepared append to a capable environment. Client checks are not distributed locks.
 
