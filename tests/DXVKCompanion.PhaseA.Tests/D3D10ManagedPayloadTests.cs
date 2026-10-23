@@ -462,7 +462,11 @@ public sealed class D3D10ManagedPayloadTests
         using var f = new Fixture();
         await f.Acquire();
         f.Game.CreateFile("d3d10core.dll", "native-core");
-        Assert.True(await f.Apply());
+        var installer = f.Installer();
+        bool applied = await installer.ApplyToGameAsync(f.Profile, new ReleaseInfo { Version = "v3.1.1" });
+        Assert.True(applied, $"DX10 core restore setup; backup={backup}; " +
+            $"category={SyntheticSafetyFixture.RefusalCategory(installer.LastRefusalReason)}; " +
+            $"{(installer.LeaseCoordinator as OperationLeaseCoordinator)?.LastAcquisitionDiagnostic ?? "NoLeaseDiagnosticRecorded"}");
         var record = f.Installation.FindManagedFile("d3d10core.dll")!;
         string changed = backup ? Path.Combine(f.Backups, record.BackupRelativePath!) : f.Target("d3d10core.dll");
         File.WriteAllText(changed, "external-change");

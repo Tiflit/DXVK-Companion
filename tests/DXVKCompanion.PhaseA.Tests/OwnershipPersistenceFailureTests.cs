@@ -1151,6 +1151,7 @@ public sealed class OwnershipPersistenceFailureTests
         var store = new GameLibraryStore(libraryFile, backupsDir);
 
         var inst = store.GetOrCreateInstallation(gameDir.RootPath, "Game");
+        bool externalWriteCompleted = false;
 
         var engine = new MultiFileTransactionEngine(
             backupsDir,
@@ -1161,6 +1162,7 @@ public sealed class OwnershipPersistenceFailureTests
                     if (index == 1)
                     {
                         File.WriteAllText(libraryFile, externalJson);
+                        externalWriteCompleted = true;
                     }
                 }
             });
@@ -1171,7 +1173,11 @@ public sealed class OwnershipPersistenceFailureTests
 
         bool ok = await installer.ApplyToGameAsync(profile, new ReleaseInfo { Version = "2.4", DownloadUrl = "" });
 
-        Assert.False(ok);
+        string setupDiagnostic = $"Persistence pre-commit phase; externalWriteCompleted={externalWriteCompleted}; " +
+            $"category={SyntheticSafetyFixture.RefusalCategory(installer.LastRefusalReason)}; " +
+            $"{(installer.LeaseCoordinator as OperationLeaseCoordinator)?.LastAcquisitionDiagnostic ?? "NoLeaseDiagnosticRecorded"}";
+        Assert.False(ok, setupDiagnostic);
+        Assert.True(externalWriteCompleted, setupDiagnostic);
         Assert.Equal(externalJson, File.ReadAllText(libraryFile));
         Assert.True(store.HasUncertainPersistence);
         Assert.Equal(RestorationState.AttentionRequired, inst.RestorationState);
