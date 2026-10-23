@@ -73,7 +73,8 @@ namespace DXVKCompanion.UI
                 Dock = DockStyle.Fill,
                 View = View.Details,
                 FullRowSelect = true,
-                MultiSelect = true
+                MultiSelect = true,
+                ShowItemToolTips = true
             };
             _listView.Columns.Add("Game", 180);
             _listView.Columns.Add("Status", 130);
@@ -214,7 +215,13 @@ namespace DXVKCompanion.UI
                     statusText = "Enabled";
                 }
 
-                var item = new ListViewItem(profile.ExeName) { Tag = profile };
+                string? installationName = installation?.DisplayName?.Trim();
+                string gameText = string.IsNullOrWhiteSpace(installationName) ||
+                    string.Equals(installationName, profile.ExeName, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(installationName, Path.GetFileNameWithoutExtension(profile.ExeName), StringComparison.OrdinalIgnoreCase)
+                        ? profile.ExeName
+                        : $"{installationName} ({profile.ExeName})";
+                var item = new ListViewItem(gameText) { Tag = profile, ToolTipText = profile.ExePath };
                 item.SubItems.Add(statusText);
                 item.SubItems.Add(profile.Api.ToString());
                 item.SubItems.Add(profile.Architecture);
