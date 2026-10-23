@@ -105,7 +105,7 @@ Examples:
 
 A transaction may contain multiple target files.
 
-For D3D11, for example, current upstream DXVK documentation identifies `d3d11.dll` and `dxgi.dll` as the DLL requirements for that API. D3D10 requires `d3d10core.dll`, `d3d11.dll`, and `dxgi.dll`; D3D9 requires `d3d9.dll`; D3D8 requires `d3d8.dll` and `d3d9.dll`. The Companion V1 implementation scope initially remains D3D9/D3D10/D3D11. 
+Upstream's Wine-oriented dependency inventory lists `d3d11.dll` and `dxgi.dll` for D3D11; `d3d10core.dll`, `d3d11.dll`, and `dxgi.dll` for D3D10; `d3d9.dll` for D3D9; and `d3d8.dll` plus `d3d9.dll` for D3D8. That inventory alone is not a universal Windows loader contract. Companion's bounded Windows managed-payload policy is defined by canonical specification section 13 and the owner decision linked there. The V1 implementation scope remains D3D9/D3D10/D3D11.
 
 Source: DXVK README, current upstream documentation.
 
@@ -455,10 +455,13 @@ Initial scope:
 | API | Required DXVK DLLs |
 |---|---|
 | D3D9 | `d3d9.dll` |
-| D3D10 | `d3d10core.dll`, `d3d11.dll`, `dxgi.dll` |
+| D3D10, official `v3.1.1`, x64 | `d3d10core.dll`, `d3d11.dll`, `dxgi.dll` |
+| D3D10, other release/architecture contexts | Existing `d3d11.dll`, `dxgi.dll` selection retained; not newly qualified |
 | D3D11 | `d3d11.dll`, `dxgi.dll` |
 
 D3D8 remains outside the V1 active-management scope.
+
+Section 13 of the canonical specification governs qualified source integrity, explicit legacy two-to-three transitions, core-aware adoption and coherent shared-directory changes. The current mapping never expands historical restoration ownership. Restoration uses recorded paths/baselines and identity checks; adoption cannot reconstruct pre-installation originals. The Windows evidence covers controlled x64/v3.1.1 device creation only, not universal loader, game or rendering compatibility.
 
 ## 20. No System DLL Modification
 

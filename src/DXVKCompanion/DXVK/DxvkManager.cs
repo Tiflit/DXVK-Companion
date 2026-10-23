@@ -1401,10 +1401,10 @@ namespace DXVKCompanion.DXVK
         public ExistingDxvkAssessment AssessExistingDxvk(GameProfile profile)
         {
             string gameDir = Path.GetDirectoryName(profile.ExePath) ?? string.Empty;
-            var detector = new ExistingDxvkDetector(_installer.DxvkSourceDir);
+            var detector = new ExistingDxvkDetector(_installer.DxvkSourceDir, profile.Api);
             var assessment = detector.AssessDirectory(gameDir, profile.Architecture);
             if (assessment.CanBeAdopted && !DxvkLocalReleaseLibrary.IsRecognizedSourceEligible(
-                DxvkSourceDir, assessment.MatchedVersion!, profile.Api, profile.Architecture))
+                DxvkSourceDir, assessment.MatchedVersion!, profile.Api, profile.Architecture, assessment.DetectedDlls.ToArray()))
                 return new ExistingDxvkAssessment
                 {
                     Status = ExistingDxvkStatus.RecognizedUnknownVersion, DetectedDlls = assessment.DetectedDlls,

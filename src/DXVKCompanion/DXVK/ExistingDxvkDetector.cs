@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using DXVKCompanion.Models;
 using DXVKCompanion.Safety;
 using DXVKCompanion.Storage;
@@ -10,12 +11,14 @@ namespace DXVKCompanion.DXVK
 {
     public class ExistingDxvkDetector
     {
-        private static readonly string[] RelevantDlls = { "d3d9.dll", "d3d11.dll", "dxgi.dll" };
+        private static readonly string[] RelevantDlls = { "d3d9.dll", "d3d11.dll", "dxgi.dll", DxvkDeploymentPayload.Core };
         private readonly string _dxvkSourceDir;
+        private readonly GraphicsApi? _api;
 
-        public ExistingDxvkDetector(string? dxvkSourceDir = null)
+        public ExistingDxvkDetector(string? dxvkSourceDir = null, GraphicsApi? api = null)
         {
             _dxvkSourceDir = dxvkSourceDir ?? Paths.DxvkDir;
+            _api = api;
         }
 
         public virtual ExistingDxvkAssessment AssessDirectory(string gameDir, string? architecture = null)
@@ -27,17 +30,22 @@ namespace DXVKCompanion.DXVK
 
             var detectedDlls = new List<string>();
             var evidence = new List<string>();
+            var hashes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             bool anyDxvkSignature = false;
             string? matchedVersion = null;
             bool matchedAllToOfficial = true;
 
             foreach (var dll in RelevantDlls)
             {
+                // An unrelated core is observable in DX10/general assessment, not
+                // an adoption candidate for a DX9/DX11 profile sharing this directory.
+                if (dll == DxvkDeploymentPayload.Core && _api.HasValue && _api != GraphicsApi.DX10) continue;
                 var fullPath = Path.Combine(gameDir, dll);
                 if (!File.Exists(fullPath)) continue;
 
                 detectedDlls.Add(dll);
                 var identity = FileIdentity.Capture(fullPath);
+                hashes.Add(dll, identity.Sha256);
 
                 bool isDxvkMetadata = CheckDxvkMetadata(fullPath);
                 if (isDxvkMetadata)
@@ -82,12 +90,23 @@ namespace DXVKCompanion.DXVK
 
             if (matchedVersion != null && matchedAllToOfficial)
             {
+                bool hasCore = detectedDlls.Contains(DxvkDeploymentPayload.Core);
+                if (hasCore && (!DxvkDeploymentPayload.IncludesCore(_api ?? GraphicsApi.DX10, matchedVersion, architecture) ||
+                    !detectedDlls.Contains("d3d11.dll") || !detectedDlls.Contains("dxgi.dll") ||
+                    !DxvkLocalReleaseLibrary.IsRecognizedSourceEligible(_dxvkSourceDir, matchedVersion, GraphicsApi.DX10,
+                        architecture, detectedDlls.ToArray())))
+                    matchedAllToOfficial = false;
+            }
+
+            if (matchedVersion != null && matchedAllToOfficial)
+            {
                 return new ExistingDxvkAssessment
                 {
                     Status = ExistingDxvkStatus.OfficialRelease,
                     MatchedVersion = matchedVersion,
                     DetectedDlls = detectedDlls,
-                    Evidence = evidence
+                    Evidence = evidence,
+                    ObservedSha256 = hashes
                 };
             }
 
@@ -97,7 +116,8 @@ namespace DXVKCompanion.DXVK
                 {
                     Status = ExistingDxvkStatus.RecognizedUnknownVersion,
                     DetectedDlls = detectedDlls,
-                    Evidence = evidence
+                    Evidence = evidence,
+                    ObservedSha256 = hashes
                 };
             }
 
@@ -105,7 +125,8 @@ namespace DXVKCompanion.DXVK
             {
                 Status = ExistingDxvkStatus.NativeOrNonDxvk,
                 DetectedDlls = detectedDlls,
-                Evidence = evidence
+                Evidence = evidence,
+                ObservedSha256 = hashes
             };
         }
 
@@ -146,7 +167,7 @@ namespace DXVKCompanion.DXVK
                     string versionName = Path.GetFileName(versionDir);
 
                     var archsToCheck = !string.IsNullOrEmpty(architecture)
-                        ? new[] { architecture }
+                        ? new[] { DxvkLocalReleaseLibrary.NormalizeArchitecture(architecture) ?? architecture }
                         : new[] { "x64", "x32" };
 
                     foreach (var arch in archsToCheck)

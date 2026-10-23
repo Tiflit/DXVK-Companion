@@ -66,6 +66,71 @@ namespace DXVKCompanion.DXVK
         public string? LastRefusalReason { get; private set; }
         internal ProfileStore? ProfileStore { get; set; }
 
+        private bool TryPrepareCorePayload(GameInstallation? installation, string gameDir, GraphicsApi api,
+            string version, string arch, string versionDir, string[] files,
+            out Dictionary<string, SafetyFileIdentity>? qualifiedSources)
+        {
+            qualifiedSources = null;
+            bool includesCore = DxvkDeploymentPayload.IncludesCore(api, version, arch);
+            if (installation != null && installation.RestorationState != RestorationState.Restored)
+            {
+                string coreRelative = GameInstallation.NormalizeRelativePath(Path.GetRelativePath(
+                    installation.InstallationPath, Path.Combine(gameDir, DxvkDeploymentPayload.Core)));
+                foreach (var record in installation.ManagedFiles.Where(r =>
+                    string.Equals(Path.GetFileName(r.RelativePath), DxvkDeploymentPayload.Core, StringComparison.OrdinalIgnoreCase)))
+                {
+                    bool coreInPlan = includesCore && string.Equals(record.RelativePath, coreRelative, StringComparison.OrdinalIgnoreCase);
+                    if (!coreInPlan && (files.Contains("d3d11.dll") || record.ManagedDxvkVersion != version))
+                    {
+                        LastRefusalReason = "This operation would leave an owned D3D10 core outside the coherent payload. Use the qualified DX10 selection or restore the installation first.";
+                        return false;
+                    }
+                    if (coreInPlan && record.OriginalState == FileOriginalState.Unknown)
+                    {
+                        LastRefusalReason = "The owned D3D10 core has an unknown restoration baseline; resolve ownership before reapplying.";
+                        return false;
+                    }
+                }
+            }
+            if (includesCore)
+            {
+                if (!DxvkLocalReleaseLibrary.IsVersionAvailable(_dxvkSourceDir, version, api, arch) ||
+                    !DxvkDeploymentPayload.TryCaptureQualifiedSource(versionDir, version, files, out var identities))
+                {
+                    LastRefusalReason = "The qualified DX10 payload requires a verified exact-tag v3.1.1 acquisition with three valid x64 DLLs. Inspect Browse / Download official versions.";
+                    return false;
+                }
+                qualifiedSources = identities;
+            }
+            return true;
+        }
+
+        private bool RevalidateAdoption(GameProfile profile, ExistingDxvkAssessment assessment, string gameDir)
+        {
+            var allowed = new HashSet<string>(new[] { "d3d9.dll", "d3d11.dll", "dxgi.dll" }, StringComparer.OrdinalIgnoreCase);
+            if (profile.Api == GraphicsApi.DX10) allowed.Add(DxvkDeploymentPayload.Core);
+            if (assessment.DetectedDlls.Count == 0 || assessment.DetectedDlls.Any(d => !allowed.Contains(d)) ||
+                assessment.DetectedDlls.Distinct(StringComparer.OrdinalIgnoreCase).Count() != assessment.DetectedDlls.Count)
+            {
+                LastRefusalReason = "Assessment contains an unsupported adoption file set.";
+                return false;
+            }
+            bool needsEvidence = assessment.DetectedDlls.Contains(DxvkDeploymentPayload.Core) ||
+                DxvkDeploymentPayload.IncludesCore(profile.Api, assessment.MatchedVersion, profile.Architecture);
+            if (assessment.ObservedSha256.Count == 0 && !needsEvidence) return true; // Existing legacy assessment callers.
+            var current = new ExistingDxvkDetector(_dxvkSourceDir, profile.Api).AssessDirectory(gameDir, profile.Architecture);
+            if (!current.CanBeAdopted || current.MatchedVersion != assessment.MatchedVersion ||
+                current.DetectedDlls.Count != assessment.DetectedDlls.Count ||
+                current.ObservedSha256.Count != assessment.ObservedSha256.Count ||
+                current.ObservedSha256.Any(pair => !assessment.ObservedSha256.TryGetValue(pair.Key, out string? hash) ||
+                    !string.Equals(hash, pair.Value, StringComparison.OrdinalIgnoreCase)))
+            {
+                LastRefusalReason = "Existing DXVK files changed or lack positive identity evidence; assess the directory again.";
+                return false;
+            }
+            return true;
+        }
+
         private IOperationLease? GetProfileStoreLease(IOperationLease leaseToken)
         {
             if (ProfileStore == null || string.IsNullOrWhiteSpace(ProfileStore.ProfilesFile))
@@ -237,7 +302,8 @@ namespace DXVKCompanion.DXVK
                 string versionDir = Path.Combine(_dxvkSourceDir, SanitizeVersion(release.Version));
                 string dxvkArchDir = Path.Combine(versionDir, arch);
 
-                if (DxvkReleaseAcquirer.HasAcquisitionRecord(versionDir) &&
+                if ((DxvkReleaseAcquirer.HasAcquisitionRecord(versionDir) ||
+                     (Directory.Exists(versionDir) && DxvkDeploymentPayload.IncludesCore(profile.Api, release.Version, arch))) &&
                     !DxvkLocalReleaseLibrary.IsVersionAvailable(_dxvkSourceDir, release.Version, profile.Api, profile.Architecture))
                 {
                     LastRefusalReason = "Acquired DXVK release is invalid or unsupported for this game. Use Browse / Download official versions to inspect the source library.";
@@ -291,7 +357,9 @@ namespace DXVKCompanion.DXVK
                     }
                 }
 
-                string[] dllsToDeploy = DxvkCompatibility.GetRequiredDlls(profile.Api);
+                string[] dllsToDeploy = DxvkDeploymentPayload.Resolve(profile.Api, release.Version, arch);
+                if (!TryPrepareCorePayload(existingInstallation, gameDir, profile.Api, release.Version, arch,
+                    versionDir, dllsToDeploy, out var qualifiedSources)) return false;
                 if (dllsToDeploy.Length == 0)
                 {
                     LastRefusalReason = $"{profile.ExeName} has an unsupported API ({profile.Api}).";
@@ -365,7 +433,7 @@ namespace DXVKCompanion.DXVK
                     string relFilePath = ResolveInstallationRelativeFilePath(dllName);
                     string targetPath = Path.Combine(installation.InstallationPath, relFilePath);
                     string sourcePath = Path.Combine(dxvkArchDir, dllName);
-                    var sourceIdentity = FileIdentity.Capture(sourcePath);
+                    var sourceIdentity = qualifiedSources?.GetValueOrDefault(dllName) ?? FileIdentity.Capture(sourcePath);
 
                     var existingRecord = installation.FindManagedFile(relFilePath);
                     OriginalFileState originalState;
@@ -766,11 +834,18 @@ namespace DXVKCompanion.DXVK
                 }
 
                 string version = installation.ManagedDxvkVersion;
-                string arch = installation.ManagedDxvkArchitecture ?? (string.Equals(profile.Architecture, "x32", StringComparison.OrdinalIgnoreCase) ? "x32" : "x64");
+                string? selectedArch = installation.ManagedDxvkArchitecture ?? profile.Architecture;
+                if (profile.Api == GraphicsApi.DX10 && version == "v3.1.1" &&
+                    DxvkLocalReleaseLibrary.NormalizeArchitecture(selectedArch) == null)
+                {
+                    LastRefusalReason = "Cannot establish the architecture of this selected DX10 release.";
+                    return false;
+                }
+                string arch = DxvkLocalReleaseLibrary.NormalizeArchitecture(selectedArch) ?? "x64";
                 string versionDir = Path.Combine(_dxvkSourceDir, SanitizeVersion(version));
                 string dxvkArchDir = Path.Combine(versionDir, arch);
 
-                if (DxvkReleaseAcquirer.HasAcquisitionRecord(versionDir) &&
+                if ((DxvkReleaseAcquirer.HasAcquisitionRecord(versionDir) || DxvkDeploymentPayload.IncludesCore(profile.Api, version, arch)) &&
                     !DxvkLocalReleaseLibrary.IsVersionAvailable(_dxvkSourceDir, version, profile.Api, arch))
                 {
                     LastRefusalReason = "Acquired DXVK source verification failed. Inspect it through Browse / Download official versions.";
@@ -784,7 +859,9 @@ namespace DXVKCompanion.DXVK
                     return false;
                 }
 
-                string[] dllsToDeploy = DxvkCompatibility.GetRequiredDlls(profile.Api);
+                string[] dllsToDeploy = DxvkDeploymentPayload.Resolve(profile.Api, version, arch);
+                if (!TryPrepareCorePayload(installation, gameDir, profile.Api, version, arch,
+                    versionDir, dllsToDeploy, out var qualifiedSources)) return false;
                 if (dllsToDeploy.Length == 0)
                 {
                     LastRefusalReason = $"{profile.ExeName} has unsupported API ({profile.Api}).";
@@ -819,7 +896,7 @@ namespace DXVKCompanion.DXVK
                     string relFilePath = ResolveInstallationRelativeFilePath(dllName);
                     string targetPath = Path.Combine(installation.InstallationPath, relFilePath);
                     string sourcePath = Path.Combine(dxvkArchDir, dllName);
-                    var sourceIdentity = FileIdentity.Capture(sourcePath);
+                    var sourceIdentity = qualifiedSources?.GetValueOrDefault(dllName) ?? FileIdentity.Capture(sourcePath);
 
                     var existingRecord = installation.FindManagedFile(relFilePath);
                     OriginalFileState originalState;
@@ -1214,7 +1291,7 @@ namespace DXVKCompanion.DXVK
                     return false;
                 }
 
-                if (!DxvkLocalReleaseLibrary.IsRecognizedSourceEligible(_dxvkSourceDir, assessment.MatchedVersion, profile.Api, profile.Architecture))
+                if (!DxvkLocalReleaseLibrary.IsRecognizedSourceEligible(_dxvkSourceDir, assessment.MatchedVersion, profile.Api, profile.Architecture, assessment.DetectedDlls.ToArray()))
                 {
                     LastRefusalReason = "Existing DXVK source is unpublished, invalid or unsupported; adoption refused.";
                     return false;
@@ -1312,6 +1389,14 @@ namespace DXVKCompanion.DXVK
                     return false;
                 }
 
+                if (!RevalidateAdoption(profile, assessment, gameDir)) return false;
+                string? adoptionArch = DxvkLocalReleaseLibrary.NormalizeArchitecture(profile.Architecture);
+                if (existingInstallation?.ManagedFiles.Any(r => string.Equals(Path.GetFileName(r.RelativePath),
+                    DxvkDeploymentPayload.Core, StringComparison.OrdinalIgnoreCase)) == true &&
+                    !TryPrepareCorePayload(existingInstallation, gameDir, profile.Api, assessment.MatchedVersion,
+                        adoptionArch ?? "", Path.Combine(_dxvkSourceDir, assessment.MatchedVersion),
+                        assessment.DetectedDlls.ToArray(), out _)) return false;
+
                 installation = existingInstallation
                     ?? _gameLibraryStore.GetOrCreateInstallation(authoritativeRoot, Path.GetFileNameWithoutExtension(profile.ExePath), leaseToken.StoreLease);
 
@@ -1339,7 +1424,7 @@ namespace DXVKCompanion.DXVK
                         ? fileName
                         : GameInstallation.NormalizeRelativePath(Path.Combine(relGameDir, fileName));
 
-                string arch = string.Equals(profile.Architecture, "x32", StringComparison.OrdinalIgnoreCase) ? "x32" : "x64";
+                string arch = adoptionArch ?? "x64";
 
                 foreach (var dllName in assessment.DetectedDlls)
                 {
@@ -1354,6 +1439,21 @@ namespace DXVKCompanion.DXVK
                     }
 
                     var targetIdentity = FileIdentity.Capture(targetPath);
+                    if (installation.FindManagedFile(relFilePath) is { } owned &&
+                        installation.RestorationState != RestorationState.Restored && owned.OriginalState != FileOriginalState.Unknown)
+                    {
+                        _gameLibraryStore.RestoreSnapshot(installation, preOperationSnapshot);
+                        LastRefusalReason = "These files already have managed restoration records. Use reapply instead of adoption.";
+                        return false;
+                    }
+                    if (assessment.ObservedSha256.Count > 0 &&
+                        (!assessment.ObservedSha256.TryGetValue(dllName, out string? expectedHash) ||
+                         !string.Equals(expectedHash, targetIdentity.Sha256, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        _gameLibraryStore.RestoreSnapshot(installation, preOperationSnapshot);
+                        LastRefusalReason = "Detected DLL identity changed during adoption; assess the directory again.";
+                        return false;
+                    }
                     var record = installation.GetOrAddManagedFile(relFilePath);
                     record.OriginalState = FileOriginalState.Missing;
                     record.BackupRelativePath = null;
@@ -1375,6 +1475,11 @@ namespace DXVKCompanion.DXVK
                 executable.LastKnownApi = profile.Api;
                 executable.LastKnownArchitecture = arch;
 
+                if (!RevalidateAdoption(profile, assessment, gameDir))
+                {
+                    _gameLibraryStore.RestoreSnapshot(installation, preOperationSnapshot);
+                    return false;
+                }
                 var saveResult = _gameLibraryStore.TrySaveWithOutcome(installation, leaseToken.StoreLease);
                 if (saveResult.Outcome == OwnershipPersistenceOutcome.Committed)
                 {
