@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
 using System.Threading.Tasks;
@@ -115,8 +116,13 @@ public sealed class RestoreTargetOwnershipVerificationTests
         var release = new ReleaseInfo { Version = "2.5", DownloadUrl = "" };
 
         // 1. Install DXVK 2.5
+        long setupStarted = Stopwatch.GetTimestamp();
         var installOk = await installer.ApplyToGameAsync(profile, release);
-        Assert.True(installOk);
+        long setupElapsed = (long)Stopwatch.GetElapsedTime(setupStarted).TotalMilliseconds;
+        Assert.True(installOk,
+            $"Restore ownership initial apply; elapsedMs={setupElapsed}; category={SyntheticSafetyFixture.RefusalCategory(installer.LastRefusalReason)}; " +
+            $"installer: {(installer.LeaseCoordinator as OperationLeaseCoordinator)?.LastAcquisitionDiagnostic ?? "NoLeaseDiagnosticRecorded"}; " +
+            $"store: {(store.LeaseCoordinator as OperationLeaseCoordinator)?.LastAcquisitionDiagnostic ?? "NoLeaseDiagnosticRecorded"}");
 
         var installation = store.FindByInstallationPath(gameDir.RootPath);
         Assert.NotNull(installation);

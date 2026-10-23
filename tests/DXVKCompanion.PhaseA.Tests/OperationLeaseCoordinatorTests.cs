@@ -9,11 +9,16 @@ using DXVKCompanion.Models;
 using DXVKCompanion.Safety;
 using DXVKCompanion.Storage;
 using Xunit;
+using Xunit.Abstractions;
 
 namespace DXVKCompanion.PhaseATests;
 
 public sealed class OperationLeaseCoordinatorTests
 {
+    private readonly ITestOutputHelper _output;
+
+    public OperationLeaseCoordinatorTests(ITestOutputHelper output) => _output = output;
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -673,6 +678,9 @@ public sealed class OperationLeaseCoordinatorTests
         var asyncSw = Stopwatch.StartNew();
         await using var asyncLease = await coordinator.TryAcquireOperationScopeAsync(targetPath, timeout: TimeSpan.FromMilliseconds(100));
         asyncSw.Stop();
+        if (asyncLease != null || asyncSw.ElapsedMilliseconds < 70 || asyncSw.ElapsedMilliseconds > 2000)
+            _output.WriteLine($"Empty publication async phase; elapsedMs={asyncSw.ElapsedMilliseconds}; " +
+                (coordinator.LastAcquisitionDiagnostic ?? "NoLeaseDiagnosticRecorded"));
         Assert.Null(asyncLease);
         Assert.InRange(asyncSw.ElapsedMilliseconds, 70, 2000);
 
@@ -682,6 +690,9 @@ public sealed class OperationLeaseCoordinatorTests
         var cancelSw = Stopwatch.StartNew();
         await using var cancelLease = await coordinator.TryAcquireOperationScopeAsync(targetPath, timeout: TimeSpan.FromSeconds(2), ct: cts.Token);
         cancelSw.Stop();
+        if (cancelLease != null || cancelSw.ElapsedMilliseconds >= 1500)
+            _output.WriteLine($"Empty publication cancellation phase; elapsedMs={cancelSw.ElapsedMilliseconds}; " +
+                (coordinator.LastAcquisitionDiagnostic ?? "NoLeaseDiagnosticRecorded"));
         Assert.Null(cancelLease);
         Assert.True(cancelSw.ElapsedMilliseconds < 1500, $"Expected early exit on cancellation during wait, actual: {cancelSw.ElapsedMilliseconds} ms");
 
@@ -689,6 +700,9 @@ public sealed class OperationLeaseCoordinatorTests
         var syncSw = Stopwatch.StartNew();
         using var syncLease = coordinator.TryAcquireOperationScope(targetPath, timeout: TimeSpan.FromMilliseconds(100));
         syncSw.Stop();
+        if (syncLease != null || syncSw.ElapsedMilliseconds < 70 || syncSw.ElapsedMilliseconds > 2000)
+            _output.WriteLine($"Empty publication sync phase; elapsedMs={syncSw.ElapsedMilliseconds}; " +
+                (coordinator.LastAcquisitionDiagnostic ?? "NoLeaseDiagnosticRecorded"));
         Assert.Null(syncLease);
         Assert.InRange(syncSw.ElapsedMilliseconds, 70, 2000);
     }
