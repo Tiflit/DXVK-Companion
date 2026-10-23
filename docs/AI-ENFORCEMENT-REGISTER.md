@@ -13,15 +13,15 @@
 
 - **Roles & Authority:**
   - **Human Principal / Owner:** Retains sole and final merge authority, policy governance, and explicit local-test authorization.
-  - **Gemini / Antigravity:** Implementation layer (repository code, test suites, local verification, bounded repairs).
-  - **ChatGPT:** Coordination, verification, review packets, arbitration.
+  - **ChatGPT / Codex:** Coordination, implementation, profile-bounded verification, routine repairs and review. Self-review is labeled honestly.
+  - **Gemini / Antigravity:** Owner-activated bounded implementation assignments; Codex reviews changed source and test evidence before readiness.
   - **Claude:** Reserved for independent audits / high-risk policy questions (quota-conserving; not assigned for routine adoption).
 - **Authorized Control Channels:**
   - Direct human-authored GitHub Issue and PR comments.
   - Verbatim coordinator transcriptions in GitHub task Issues (clearly marked as attributable, but not independently authenticated GitHub human identity due to shared-credential operation).
 - **Stricter Project Invariants:**
   - **Human Final Merge Authority:** No unattended or agent-driven merges.
-  - **Local Execution Approval:** Host execution requires task-specific approval or a task-linked approved standing profile under [AGENTS.md](../AGENTS.md#local-execution-profiles). No standing profile is active by this amendment.
+  - **Local Execution Approval:** Host execution requires task-specific approval or an adopted task-linked profile under [AGENTS.md](../AGENTS.md#local-execution-profiles). The [maintenance profiles](ai/REUSABLE-MAINTENANCE-PROFILES.md) define adoption/readiness; a candidate or agent-authored status cannot activate them.
   - **No Unattended Automation:** Consequential actions remain human-reviewed and human-mediated.
   - **No Background Work Assigned:** No unbudgeted background research or active agent execution while idle.
   - **Precedence Rule:** Configuration and project rules remain subject to the adopted kernel (`v0.4`). Project rules add stricter restrictions. Incompatible requirements block dependent actions until an authorized-human resolution is recorded.
@@ -58,11 +58,11 @@ No unattended automation is enabled by this preset. These declarations reflect c
 - **Adversarial Probes:** **NOT RUN**. No synthetic penetration or permission-bypass probes were executed against the live project.
 - **Repository Protections & Scope Gate Limits:** Read-only branch inspection confirms required-status-check merge protection is off on `main`; failing scope CI reports PR failures but does not automatically block merges without human gatekeeping. Read-only API queries previously returned an empty repository ruleset inventory, but this does not establish the absence of inherited organization controls or legacy branch settings.
 - **Hosted Providers:** External hosted model providers (Google/Gemini, OpenAI/ChatGPT, Anthropic/Claude) process submitted context. Transmitting proprietary or sensitive data to hosted providers constitutes external transmission.
-- **Permitted Operation:** Under this cooperative/partially-enforced baseline, all consequential actions (merges, releases, host test executions) remain strictly human-mediated.
+- **Permitted Operation:** Under this cooperative/partially-enforced baseline, human-adopted profiles may cover matching routine commands during an active owner-requested task, subject to their readiness conditions. This is bounded delegation, not unattended automation or validated isolation. Merges remain human-only; releases and uncovered host actions still need explicit approval.
 
 ## Standing Host Profile Approval
 
-**Status: Not configured or activated.** This amendment permits preparing a reusable approval record; it does not authorize a build/test/app run, lift #94's hold, grant arbitrary shell access or change host isolation.
+**Configuration:** [Reusable maintenance profiles](ai/REUSABLE-MAINTENANCE-PROFILES.md) contains the candidate commands, bounds and human-adoption procedure for `dxvk-metadata-v1` and `dxvk-headless-v1`. Verify adoption against the human action and exact merged revision before use; preparation and green CI do not activate profiles. No profile lifts #94's hold, grants arbitrary shell access or establishes host isolation. Earlier ended profiles are not resumed.
 
 An authorized human may approve a profile with:
 - stable profile ID/revision and approval-source link;

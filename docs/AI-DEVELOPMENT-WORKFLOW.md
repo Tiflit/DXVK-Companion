@@ -68,9 +68,9 @@ AI conversations are working sessions and communication channels, not the author
 
 ### Gemini / Antigravity
 
-Primary implementation and heavy-lifting agent.
+Owner-activated implementation contributor on bounded assignments; availability alone does not activate work. Codex reviews changed source, test effectiveness and current-revision evidence before readiness.
 
-Gemini has the most generous practical capacity in the current setup, including a separate Antigravity usage path. Use that capacity deliberately rather than trying to keep implementation changes artificially small.
+Assignments follow current owner direction and available capacity, rather than assumed quota or model reliability. Give Gemini a concrete objective, relevant module/test/docs boundaries and acceptance criteria. No model has blanket authority to change product or safety policy.
 
 Use for:
 
@@ -91,7 +91,7 @@ Continue a reliable implementation session for focused revisions and bounded rep
 
 ### ChatGPT
 
-Verification, architecture, and arbitration layer.
+Coordination, implementation, verification, architecture and arbitration layer. Codex may complete implementation and routine repairs when assigned by the owner, including while Antigravity is unavailable. Codex reviews Gemini work before readiness; Codex implementation uses honestly labeled self-review unless a separate review is actually performed. Consequential audits remain selective.
 
 Use for:
 
@@ -148,7 +148,7 @@ Do not spend model quota asking an LLM to verify something the repository can ve
 
 ## Standard task lifecycle
 
-Approved Issue/profile -> Gemini implementation and routine verification/repairs -> one grouped ChatGPT review -> focused revision verification if needed -> human merge. Claude participates selectively at consequential checkpoints; an optional Gemini-web design perspective does not authorize new actions.
+Approved objective -> Codex prepares bounded Issue/profile -> assigned implementer completes routine verification/repairs -> one grouped review -> focused revision verification if needed -> human merge. Gemini implementation requires Codex review; Codex implementation labels self-review and uses separate review when required by the task. Claude participates selectively at consequential checkpoints; an optional Gemini-web design perspective does not authorize new actions.
 
 The concrete stop/finding rules are in [AGENTS.md](../AGENTS.md#delegated-engineering-and-stop-rules). Continue independent work while a dependent decision is queued. The normal target is one grouped repair, not repeated style rounds or acceptance of unresolved defects.
 
@@ -166,13 +166,13 @@ To minimize execution overhead and report churn:
 
 Under the active allocation (established during Issue #11), model roles are partitioned according to capabilities and quota availability:
 
-- **Gemini**: Implements repository code, test suites, and focused revisions or bounded repairs.
-- **ChatGPT**: Verifies repairs, conducts independent execution checks, and arbitrates findings.
+- **Gemini**: Implements bounded owner-activated assignments, test suites and focused repairs; Codex reviews before readiness.
+- **ChatGPT / Codex**: Coordinates, implements when assigned, verifies repairs and arbitrates findings; its own review/execution is not independent evidence.
 - **Claude**: Reserved for occasional independent audits and high-risk material decisions.
 - **Human**: Retains final merge authority and lifecycle governance.
 
 ```text
-Gemini implementation -> CI -> ChatGPT verification & arbitration -> Human merge authority
+Assigned implementation -> CI -> Codex review & arbitration -> Human merge authority
                                         ^
                                         | (occasional audits / material risk)
                                   Claude audit
@@ -196,6 +196,8 @@ The Issue should contain, at minimum:
 - documentation impact.
 
 The Issue is authoritative for requirements.
+
+Within an owner-approved objective, Codex may prepare the next bounded contract without another approval for routine engineering. Use coherent module, relevant test and documentation prefixes where practical. Existing task boundaries cannot be widened retroactively to excuse a violation; protected policy/dependency/project/CI changes, new host effects and unsettled product decisions still require explicit approval. Broad objectives do not authorize unrelated backlog work.
 
 A PR may summarize the contract, but should link back to the Issue rather than creating a second independent specification.
 
@@ -695,7 +697,7 @@ python scripts/ai-workflow/update_pr_body.py --issue 42 --append-file post_merge
 
 [AGENTS.md — Local Execution Profiles](../AGENTS.md#local-execution-profiles) is the single operating specification for this gate. Task-specific approval or a linked standing profile must cover commands, host, resources, disruption, readiness, stopping and retention. Approved scope can be reused without another permission request; new effects or an unavailable host block affected execution.
 
-The [register](AI-ENFORCEMENT-REGISTER.md#standing-host-profile-approval) records profile approval requirements. No standing profile is activated by this amendment. Kernel K1 and truthful NOT RUN reporting remain mandatory. Cloud CI and routine source/metadata acquisition are unaffected.
+The [register](AI-ENFORCEMENT-REGISTER.md#standing-host-profile-approval) and [maintenance profiles](ai/REUSABLE-MAINTENANCE-PROFILES.md) record approval/adoption requirements. After human adoption, metadata maintenance needs no laptop-availability acknowledgment; headless verification retains one acknowledgment per continuous development session. Candidate profiles do not authorize execution. Kernel K1 and truthful NOT RUN reporting remain mandatory. Cloud CI and routine source/metadata acquisition are unaffected.
 
 ## Bounded Observation Reporting and Triage
 
