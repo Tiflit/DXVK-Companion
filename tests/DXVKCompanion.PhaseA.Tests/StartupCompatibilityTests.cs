@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 using DXVKCompanion.Models;
 using DXVKCompanion.PhaseATests;
 using DXVKCompanion.Startup;
@@ -9,6 +10,193 @@ namespace DXVKCompanion.PhaseA.Tests
 {
     public class StartupCompatibilityTests
     {
+        [Theory]
+        [InlineData(0)]
+        [InlineData(1)]
+        [InlineData(2)]
+        public void RecoveryPreflight_MissingOrEmptyNamespace_PreservesNormalArgumentHandling(int layout)
+        {
+            using var root = new SyntheticTestDirectory();
+            string library = root.CreateFile("Profiles/game-library.json", "{\"SchemaVersion\":1,\"Installations\":[]}");
+            string backups = root.GetPath("Profiles/Backups");
+            if (layout == 1) Directory.CreateDirectory(backups);
+            if (layout == 2) Directory.CreateDirectory(Path.Combine(backups, ".transactions"));
+            var before = Snapshot(root.RootPath);
+
+            var options = Program.PrepareStartup(new[] { "--no-auto-discovery" }, library, out var preflight, backups);
+            Assert.NotNull(options);
+            Assert.False(options!.AutomaticDiscoveryEnabled);
+            Assert.False(preflight.ShouldRefuse);
+            Assert.Null(Program.PrepareStartup(new[] { "--unsupported" }, library, out preflight, backups));
+            Assert.False(preflight.ShouldRefuse);
+            AssertSnapshot(before, root.RootPath);
+        }
+
+        [Theory]
+        [InlineData("--no-auto-discovery", "operation/plan.json", "{malformed")]
+        [InlineData("--unsupported", "operation/undo/d3d11.dll", "retained-original")]
+        [InlineData("--no-auto-discovery", "unknown-entry", "unknown")]
+        [InlineData("--unsupported", "operation/plan.json", "{\"State\":\"Prepared\"}")]
+        public void ProgramPreflight_RetainedEvidence_RefusesBeforeInitializationAndPreservesEverything(
+            string argument, string entry, string contents)
+        {
+            using var root = new SyntheticTestDirectory();
+            string library = root.CreateFile("Profiles/game-library.json", "{\"SchemaVersion\":1,\"Installations\":[]}");
+            string backups = root.GetPath("Profiles/Backups");
+            root.CreateFile("Profiles/Backups/.transactions/" + entry, contents);
+            root.CreateFile("Profiles/Backups/original.dll", "native-backup");
+            var before = Snapshot(root.RootPath);
+
+            var options = Program.PrepareStartup(new[] { argument }, library, out var result, backups);
+
+            Assert.Null(options);
+            Assert.Equal(StartupAction.RefuseRecoveryEvidence, result.Action);
+            Assert.True(result.ShouldRefuse);
+            Assert.False(Directory.Exists(root.GetPath("Logs")));
+            Assert.False(Directory.Exists(root.GetPath("Cache")));
+            Assert.False(Directory.Exists(root.GetPath("DXVK")));
+            AssertSnapshot(before, root.RootPath);
+        }
+
+        [Fact]
+        public void RecoveryPreflight_PlanlessDirectoryAndNamespaceFile_BothRefuse()
+        {
+            using var root = new SyntheticTestDirectory();
+            string library = root.GetPath("game-library.json");
+            string first = root.GetPath("first");
+            Directory.CreateDirectory(Path.Combine(first, ".transactions", "planless"));
+            string second = root.GetPath("second");
+            root.CreateFile("second/.transactions", "not-a-directory");
+            var before = Snapshot(root.RootPath);
+
+            Assert.True(StartupCompatibility.Evaluate(library, first).ShouldRefuse);
+            Assert.True(StartupCompatibility.Evaluate(library, second).ShouldRefuse);
+            AssertSnapshot(before, root.RootPath);
+        }
+
+        [Fact]
+        public void RecoveryPreflight_NewerSchemaHasPriorityWithoutInspectingTransactions()
+        {
+            using var root = new SyntheticTestDirectory();
+            string library = root.CreateFile("game-library.json", "{\"SchemaVersion\":999,\"Installations\":[]}");
+            var probe = new RetainedTransactionProbe(_ => throw new InvalidOperationException("Must not inspect"));
+
+            var result = StartupCompatibility.Evaluate(library, root.GetPath("Backups"), probe);
+
+            Assert.Equal(StartupAction.RefuseIncompatibleSchema, result.Action);
+        }
+
+        [Fact]
+        public void RecoveryPreflight_CustomLibraryUsesItsSiblingBackupsWithoutExplicitOverride()
+        {
+            using var root = new SyntheticTestDirectory();
+            string library = root.GetPath("Profiles/game-library.json");
+            root.CreateFile("Profiles/Backups/.transactions/retained", "evidence");
+            Assert.Equal(StartupAction.RefuseRecoveryEvidence, StartupCompatibility.Evaluate(library).Action);
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public void RecoveryPreflight_UnreadableAttributesOrEnumeration_RefusesWithoutLeakingDetails(bool enumeration)
+        {
+            using var root = new SyntheticTestDirectory();
+            string library = root.GetPath("game-library.json");
+            string backups = root.GetPath("Backups");
+            Directory.CreateDirectory(Path.Combine(backups, ".transactions"));
+            var before = Snapshot(root.RootPath);
+            var probe = enumeration
+                ? new RetainedTransactionProbe(hasEntries: _ => throw new IOException("private-enumeration-detail"))
+                : new RetainedTransactionProbe(_ => throw new UnauthorizedAccessException("private-attribute-detail"));
+
+            var result = StartupCompatibility.Evaluate(library, backups, probe);
+
+            Assert.Equal(StartupAction.RefuseRecoveryEvidence, result.Action);
+            Assert.DoesNotContain("private-", result.Message!);
+            Assert.DoesNotContain(root.RootPath, result.Message!);
+            AssertSnapshot(before, root.RootPath);
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public void RecoveryPreflight_ReparseNamespaceOrAncestor_RefusesBeforeFollowingIt(bool ancestor)
+        {
+            using var root = new SyntheticTestDirectory();
+            string backups = root.GetPath("Backups");
+            string reparse = ancestor ? backups : Path.Combine(backups, ".transactions");
+            bool reached = false;
+            bool followed = false;
+            var probe = new RetainedTransactionProbe(path =>
+            {
+                if (reached) followed = true;
+                if (string.Equals(path, reparse, StringComparison.OrdinalIgnoreCase))
+                {
+                    reached = true;
+                    return FileAttributes.Directory | FileAttributes.ReparsePoint;
+                }
+                return FileAttributes.Directory;
+            }, _ => throw new InvalidOperationException("Must not enumerate through reparse point"));
+
+            var result = StartupCompatibility.Evaluate(root.GetPath("game-library.json"), backups, probe);
+
+            Assert.True(reached);
+            Assert.False(followed);
+            Assert.Equal(StartupAction.RefuseRecoveryEvidence, result.Action);
+        }
+
+        [Fact]
+        public void RecoveryPreflight_EntryCheckDoesNotReadArtifactContentsOrEnumerateChildren()
+        {
+            using var root = new SyntheticTestDirectory();
+            string backups = root.GetPath("Backups");
+            string expected = Path.Combine(backups, ".transactions");
+            int calls = 0;
+            var probe = new RetainedTransactionProbe(_ => FileAttributes.Directory, path =>
+            {
+                Assert.Equal(expected, path);
+                calls++;
+                return true;
+            });
+
+            Assert.True(StartupCompatibility.Evaluate(root.GetPath("game-library.json"), backups, probe).ShouldRefuse);
+            Assert.Equal(1, calls);
+            Assert.Empty(Directory.GetFileSystemEntries(root.RootPath));
+        }
+
+        [Fact]
+        public void RecoveryRefusal_UsesRecoveryTitleAndSafeActionableMessage()
+        {
+            using var root = new SyntheticTestDirectory();
+            root.CreateFile("Backups/.transactions/private-entry", "private-content");
+            var result = StartupCompatibility.Evaluate(root.GetPath("game-library.json"), root.GetPath("Backups"));
+            string? title = null;
+            string? message = null;
+            StartupCompatibility.MessagePresenter = (t, m) => { title = t; message = m; };
+            try { StartupCompatibility.PresentRefusal(result); }
+            finally { StartupCompatibility.MessagePresenter = null; }
+
+            Assert.Equal("DXVK Companion - Recovery Attention Required", title);
+            Assert.Equal(result.Message, message);
+            Assert.Contains("preserve", message!, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("No game management has started", message!);
+            Assert.DoesNotContain(root.RootPath, message!);
+            Assert.DoesNotContain("private-", message!);
+            Assert.DoesNotContain("delete", message!, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static System.Collections.Generic.Dictionary<string, string> Snapshot(string root) =>
+            System.IO.Directory.GetFileSystemEntries(root, "*", SearchOption.AllDirectories)
+                .ToDictionary(path => Path.GetRelativePath(root, path),
+                    path => Directory.Exists(path) ? "directory" : "file:" + Convert.ToBase64String(File.ReadAllBytes(path)));
+
+        private static void AssertSnapshot(System.Collections.Generic.Dictionary<string, string> before, string root)
+        {
+            var after = Snapshot(root);
+            Assert.Equal(before.Keys.OrderBy(p => p), after.Keys.OrderBy(p => p));
+            foreach (var pair in before) Assert.Equal(pair.Value, after[pair.Key]);
+        }
+
         [Theory]
         [InlineData("--no-auto-discovery")]
         [InlineData("--unsupported")]
