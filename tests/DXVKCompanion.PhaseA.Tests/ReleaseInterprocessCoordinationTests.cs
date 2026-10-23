@@ -212,18 +212,31 @@ public sealed class ReleaseInterprocessCoordinationTests
         string coordination = fixture.Directory.GetPath("coordination");
         var store = new CacheStore(fixture.Directory.GetPath("latest.json"));
         string resource = acquisition ? Path.Combine(fixture.Source, "v2.5") : store.CacheFile;
-        var client = acquisition ? null : Latest(fixture, store, new(coordination));
-        fixture.Acquirer.ProcessLeaseCoordinator = new OperationLeaseCoordinator(coordination);
+        int observedContentions = 0;
+        bool cancelledBeforeContention = false;
+        var subjectCoordinator = new OperationLeaseCoordinator(coordination)
+        {
+            StoreContentionObserved = () =>
+            {
+                observedContentions++;
+                cancelledBeforeContention = cancel.IsCancellationRequested;
+                cancel.Cancel();
+            }
+        };
+        var client = acquisition ? null : Latest(fixture, store, subjectCoordinator);
+        fixture.Acquirer.ProcessLeaseCoordinator = subjectCoordinator;
         using (var held = new OperationLeaseCoordinator(coordination).TryAcquireStoreLease(resource))
         {
             Assert.NotNull(held);
-            cancel.CancelAfter(TimeSpan.FromMilliseconds(50));
             if (acquisition) await Assert.ThrowsAnyAsync<OperationCanceledException>(() => fixture.Acquirer.AcquireAsync("v2.5", cancel.Token));
             else await Assert.ThrowsAnyAsync<OperationCanceledException>(() => client!.FetchLatestReleaseAsync(cancel.Token));
+            Assert.Equal(1, observedContentions);
+            Assert.False(cancelledBeforeContention, "Cancellation must be triggered by observed real store contention, not the watchdog.");
             Assert.Empty(fixture.Requests);
             Assert.False(File.Exists(store.CacheFile));
             Assert.False(File.Exists(store.AttemptFile));
         }
+        subjectCoordinator.StoreContentionObserved = null;
         if (acquisition) Assert.False((await fixture.Acquirer.AcquireAsync("v2.5", deadline.Token)).Reused);
         else Assert.Equal("v2.5", (await client!.FetchLatestReleaseAsync(deadline.Token))?.Version);
         Assert.Equal(acquisition ? 2 : 1, fixture.Requests.Count);

@@ -31,6 +31,7 @@ namespace DXVKCompanion.Safety
 
         internal Func<string, FileStream>? CustomOpenLockFileStream { get; set; }
         internal Func<string, IEnumerable<string>>? CustomEnumerateFiles { get; set; }
+        internal Action? StoreContentionObserved { get; set; }
 
         private FileStream OpenCandidateLockStream(string file)
         {
@@ -345,6 +346,8 @@ namespace DXVKCompanion.Safety
                 catch (IOException ex) when (IsContentionException(ex))
                 {
                     lastAcquisitionException = ex;
+                    if (!isTarget && phase == AcquisitionPhase.Open)
+                        StoreContentionObserved?.Invoke();
                     // Sharing violation or delete pending: retry within budget
                 }
                 catch (UnauthorizedAccessException ex)
