@@ -584,17 +584,15 @@ public sealed class ExternalUpdateBaselineLifecycleAcceptanceTests
         }
 
         // Complete retained backup set comparison
-        var expectedFinalBackupsFiles = new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase)
-        {
-            [Path.Combine(installationId, "d3d11.dll")] = nativeD3d11B,
-            [Path.Combine(installationId, "dxvk.conf")] = originalConf
-        };
-        var expectedFinalBackupsDirs = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        {
-            installationId
-        };
-        var expectedFinalBackupsSnapshot = new ResourceSnapshot(expectedFinalBackupsFiles, expectedFinalBackupsDirs);
-        AssertResourcesUnchanged(expectedFinalBackupsSnapshot, backupsDir);
+        var finalBackupsSnapshot = SnapshotResources(backupsDir);
+        Assert.Equal(2, finalBackupsSnapshot.Files.Count);
+        string expectedD3d11Backup = Path.Combine(installationId, "d3d11.dll");
+        string expectedConfBackup = Path.Combine(installationId, "dxvk.conf");
+        Assert.True(finalBackupsSnapshot.Files.ContainsKey(expectedD3d11Backup));
+        Assert.Equal(nativeD3d11B, finalBackupsSnapshot.Files[expectedD3d11Backup]);
+        Assert.True(finalBackupsSnapshot.Files.ContainsKey(expectedConfBackup));
+        Assert.Equal(originalConf, finalBackupsSnapshot.Files[expectedConfBackup]);
+        Assert.Contains(installationId, finalBackupsSnapshot.Directories);
 
         // Sources remain intact and untouched
         AssertResourcesUnchanged(acquiredSourcesSnapshot, sourcesDir);
