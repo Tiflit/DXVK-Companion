@@ -34,3 +34,29 @@ Implemented service-level acceptance coverage in `tests/DXVKCompanion.PhaseA.Tes
 
 - **Tests First Policy**: Production code was inspected and verified to already correctly satisfy all adoption, update, and disable invariants; production code remains untouched.
 - **Execution Mode**: Cloud-only hosted CI. No local builds, tests, or diagnostic scripts.
+- **Attempt 1 (Commit `f5b9a28882004ee0db5d00eabf8945cce61f19cb`)**:
+  - Run 40130543307 (`build-and-test`): Passed, 1,300/1,300 tests passed (0 failed, 0 skipped).
+  - Workflow 40130543264 (`Run Python workflow tests`): Passed, 386 passed.
+  - Workflow 40130543272 (`PR hygiene`): Passed.
+  - Workflow 40130543278 (`AI task scope`): Passed.
+  - PR #290 submitted for Codex review.
+
+## Codex Grouped Review & Repair Cycle
+
+Codex review on PR #290 requested three specific assertion tightenings:
+1. **Acquired-source eligibility boundary after genuine reload**:
+   - Explicitly verify valid manifests, markers, and expected acquired payloads for releases `v2.5` and `v2.6` across `x32` and `x64` before fault induction.
+   - Assert positive control (`CanBeAdopted == true`, `OfficialRelease`) before mutating source metadata.
+   - Refusal matrix expanded to 6 cases: 2 mixed-version DX11 pairs + 4 invalid manifest cases (`(DX9, x32)`, `(DX9, x64)`, `(DX11, x32)`, `(DX11, x64)`).
+   - Invalidate manifest (`companion-release.json` corrupted with `{}`) while keeping DLL payload bytes intact. Prove raw hash recognizer (`ExistingDxvkDetector`) still succeeds on raw hashes, while real manager assessment on a fresh disk reload (`stack2 = ConstructServiceStack(...)`) refuses adoption with `RecognizedUnknownVersion` and evidence `"Local acquired source verification failed; no verified official identity is available."`.
+   - Perform a third reload (`stack3 = ConstructServiceStack(...)`) to inspect durable refusal state and confirm zero side effects on game, source, or backup files.
+2. **Feature transition and re-adoption no-write guarantee**:
+   - Assert exact enabled configuration properties on `GameInstallation.Configuration` (`HudEnabled == true`, `FrameLimit == 60`, `FrameLimitEnabled == true`).
+   - Parse `dxvk.conf` on disk and assert exact keys and values (`dxvk.hud == "fps,devinfo"`, `dxvk.maxFrameRate == "60"`), verifying lookalikes (`dxvk.hudExtra`, `dxvk.maxFrameRateTarget`) and user lines are retained.
+   - After Reapply, assert newer version wrapper bytes, owned DLL record hashes/baselines, and original config backup retention.
+   - Around the refused second Adopt, snapshot complete raw game, source, and backup directories as well as durable installation and profile records before and after across a reload, asserting zero byte or metadata mutation.
+3. **Complete and nonvacuous final resource and history assertions**:
+   - Construct `expectedFinalSnapshot` as `initialGameSnapshot` minus adopted wrapper DLLs, and assert exact disk match via `AssertResourcesUnchanged(expectedFinalSnapshot, gameDir)`.
+   - Assert exact retained managed files set (`new[] { "d3d9.dll", "dxvk.conf" }` for DX9; `new[] { "d3d11.dll", "dxgi.dll", "dxvk.conf" }` for DX11).
+   - Nonvacuously verify each record: `ActiveVersion` cleared (null or empty), `OriginalState` verified, `RelativeBackupPath` verified, and `OriginalHash` non-empty.
+   - Compare complete retained backup snapshot against disk (`AssertResourcesUnchanged(expectedFinalBackupsSnapshot, backupsDir)`).

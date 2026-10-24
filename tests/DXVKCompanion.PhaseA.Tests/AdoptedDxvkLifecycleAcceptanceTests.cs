@@ -279,6 +279,29 @@ public sealed class AdoptedDxvkLifecycleAcceptanceTests
         Assert.Equal("v2.6", acq26.Version);
         Assert.True(acq26.UpstreamDigestVerified);
 
+        // Explicitly verify valid manifests, markers, and expected acquired payloads
+        Assert.True(File.Exists(Path.Combine(sourcesDir, "v2.5", ".companion-acquired")));
+        Assert.True(File.Exists(Path.Combine(sourcesDir, "v2.5", "companion-release.json")));
+        Assert.True(DxvkReleaseAcquirer.ValidateManifest(Path.Combine(sourcesDir, "v2.5"), "v2.5", out bool v25ManifestVerified));
+        Assert.True(v25ManifestVerified);
+        Assert.Equal(Encoding.UTF8.GetBytes("v2.5:x32:d3d9"), File.ReadAllBytes(Path.Combine(sourcesDir, "v2.5", "x32", "d3d9.dll")));
+        Assert.Equal(Encoding.UTF8.GetBytes("v2.5:x32:d3d11"), File.ReadAllBytes(Path.Combine(sourcesDir, "v2.5", "x32", "d3d11.dll")));
+        Assert.Equal(Encoding.UTF8.GetBytes("v2.5:x32:dxgi"), File.ReadAllBytes(Path.Combine(sourcesDir, "v2.5", "x32", "dxgi.dll")));
+        Assert.Equal(Encoding.UTF8.GetBytes("v2.5:x64:d3d9"), File.ReadAllBytes(Path.Combine(sourcesDir, "v2.5", "x64", "d3d9.dll")));
+        Assert.Equal(Encoding.UTF8.GetBytes("v2.5:x64:d3d11"), File.ReadAllBytes(Path.Combine(sourcesDir, "v2.5", "x64", "d3d11.dll")));
+        Assert.Equal(Encoding.UTF8.GetBytes("v2.5:x64:dxgi"), File.ReadAllBytes(Path.Combine(sourcesDir, "v2.5", "x64", "dxgi.dll")));
+
+        Assert.True(File.Exists(Path.Combine(sourcesDir, "v2.6", ".companion-acquired")));
+        Assert.True(File.Exists(Path.Combine(sourcesDir, "v2.6", "companion-release.json")));
+        Assert.True(DxvkReleaseAcquirer.ValidateManifest(Path.Combine(sourcesDir, "v2.6"), "v2.6", out bool v26ManifestVerified));
+        Assert.True(v26ManifestVerified);
+        Assert.Equal(Encoding.UTF8.GetBytes("v2.6:x32:d3d9"), File.ReadAllBytes(Path.Combine(sourcesDir, "v2.6", "x32", "d3d9.dll")));
+        Assert.Equal(Encoding.UTF8.GetBytes("v2.6:x32:d3d11"), File.ReadAllBytes(Path.Combine(sourcesDir, "v2.6", "x32", "d3d11.dll")));
+        Assert.Equal(Encoding.UTF8.GetBytes("v2.6:x32:dxgi"), File.ReadAllBytes(Path.Combine(sourcesDir, "v2.6", "x32", "dxgi.dll")));
+        Assert.Equal(Encoding.UTF8.GetBytes("v2.6:x64:d3d9"), File.ReadAllBytes(Path.Combine(sourcesDir, "v2.6", "x64", "d3d9.dll")));
+        Assert.Equal(Encoding.UTF8.GetBytes("v2.6:x64:d3d11"), File.ReadAllBytes(Path.Combine(sourcesDir, "v2.6", "x64", "d3d11.dll")));
+        Assert.Equal(Encoding.UTF8.GetBytes("v2.6:x64:dxgi"), File.ReadAllBytes(Path.Combine(sourcesDir, "v2.6", "x64", "dxgi.dll")));
+
         var acquiredSourcesSnapshot = SnapshotResources(sourcesDir);
         Assert.NotEmpty(acquiredSourcesSnapshot.Files);
 
@@ -409,6 +432,28 @@ public sealed class AdoptedDxvkLifecycleAcceptanceTests
         Assert.Equal("v2.6", inst2Updated.ManagementPolicy.PinnedDxvkVersion);
         Assert.Equal("v2.6", profile2.DxvkVersion);
 
+        // Verify exact enabled config assignments and durable configuration values after Update
+        Assert.True(inst2Updated.Configuration.HudEnabled);
+        Assert.Equal(60, inst2Updated.Configuration.FrameLimit);
+        Assert.True(inst2Updated.Configuration.FrameLimitEnabled);
+
+        Assert.True(File.Exists(confPath));
+        string confContentAfterUpdate = File.ReadAllText(confPath);
+        var assignmentsAfterUpdate = ParseConfigAssignments(confContentAfterUpdate);
+        Assert.True(assignmentsAfterUpdate.ContainsKey("dxvk.hud"));
+        Assert.Equal("fps,devinfo", assignmentsAfterUpdate["dxvk.hud"]);
+        Assert.True(assignmentsAfterUpdate.ContainsKey("dxvk.maxFrameRate"));
+        Assert.Equal("60", assignmentsAfterUpdate["dxvk.maxFrameRate"]);
+
+        if (preexistingConfig)
+        {
+            Assert.Equal("full", assignmentsAfterUpdate["dxvk.hudExtra"]);
+            Assert.Equal("120", assignmentsAfterUpdate["dxvk.maxFrameRateTarget"]);
+            Assert.Equal("1", assignmentsAfterUpdate["user.customSetting"]);
+            Assert.Equal("keep", assignmentsAfterUpdate["user.unrelatedSuffix"]);
+            Assert.Contains("# Preexisting user dxvk.conf for Adopted Game", confContentAfterUpdate);
+        }
+
         // Missing baselines for adopted DLLs remain intact across update
         if (api == GraphicsApi.DX9)
         {
@@ -417,6 +462,7 @@ public sealed class AdoptedDxvkLifecycleAcceptanceTests
             Assert.Equal(FileOriginalState.Missing, d3d9Rec2!.OriginalState);
             Assert.Null(d3d9Rec2.BackupRelativePath);
             Assert.Equal("v2.6", d3d9Rec2.ManagedDxvkVersion);
+            Assert.Equal(FileIdentity.Capture(d3d9Path!).Sha256, d3d9Rec2.ExpectedManagedSha256);
         }
         else
         {
@@ -427,9 +473,12 @@ public sealed class AdoptedDxvkLifecycleAcceptanceTests
             Assert.Equal(FileOriginalState.Missing, d3d11Rec2!.OriginalState);
             Assert.Null(d3d11Rec2.BackupRelativePath);
             Assert.Equal("v2.6", d3d11Rec2.ManagedDxvkVersion);
+            Assert.Equal(FileIdentity.Capture(d3d11Path!).Sha256, d3d11Rec2.ExpectedManagedSha256);
+
             Assert.Equal(FileOriginalState.Missing, dxgiRec2!.OriginalState);
             Assert.Null(dxgiRec2.BackupRelativePath);
             Assert.Equal("v2.6", dxgiRec2.ManagedDxvkVersion);
+            Assert.Equal(FileIdentity.Capture(dxgiPath!).Sha256, dxgiRec2.ExpectedManagedSha256);
         }
 
         // Config ownership and backup truthfully reflect pre-update state
@@ -495,20 +544,99 @@ public sealed class AdoptedDxvkLifecycleAcceptanceTests
         Assert.NotNull(confRecord3);
         Assert.Equal(FileIdentity.Capture(confPath).Sha256, confRecord3!.ExpectedManagedSha256);
 
+        // Wrapper bytes and owned DLL records still match expected newer release after reapply
+        if (api == GraphicsApi.DX9)
+        {
+            Assert.Equal(Encoding.UTF8.GetBytes($"v2.6:{architecture}:d3d9"), File.ReadAllBytes(d3d9Path!));
+            var d3d9Rec3 = inst3Reapplied.FindManagedFile("d3d9.dll");
+            Assert.NotNull(d3d9Rec3);
+            Assert.Equal("v2.6", d3d9Rec3!.ManagedDxvkVersion);
+            Assert.Equal(FileOriginalState.Missing, d3d9Rec3.OriginalState);
+            Assert.Null(d3d9Rec3.BackupRelativePath);
+            Assert.Equal(FileIdentity.Capture(d3d9Path!).Sha256, d3d9Rec3.ExpectedManagedSha256);
+        }
+        else
+        {
+            Assert.Equal(Encoding.UTF8.GetBytes($"v2.6:{architecture}:d3d11"), File.ReadAllBytes(d3d11Path!));
+            Assert.Equal(Encoding.UTF8.GetBytes($"v2.6:{architecture}:dxgi"), File.ReadAllBytes(dxgiPath!));
+            var d3d11Rec3 = inst3Reapplied.FindManagedFile("d3d11.dll");
+            var dxgiRec3 = inst3Reapplied.FindManagedFile("dxgi.dll");
+            Assert.NotNull(d3d11Rec3);
+            Assert.NotNull(dxgiRec3);
+            Assert.Equal("v2.6", d3d11Rec3!.ManagedDxvkVersion);
+            Assert.Equal(FileOriginalState.Missing, d3d11Rec3.OriginalState);
+            Assert.Null(d3d11Rec3.BackupRelativePath);
+            Assert.Equal(FileIdentity.Capture(d3d11Path!).Sha256, d3d11Rec3.ExpectedManagedSha256);
+
+            Assert.Equal("v2.6", dxgiRec3!.ManagedDxvkVersion);
+            Assert.Equal(FileOriginalState.Missing, dxgiRec3.OriginalState);
+            Assert.Null(dxgiRec3.BackupRelativePath);
+            Assert.Equal(FileIdentity.Capture(dxgiPath!).Sha256, dxgiRec3.ExpectedManagedSha256);
+        }
+
+        // Original config backup retention verified after reapply
+        if (preexistingConfig)
+        {
+            string confBackup = Path.Combine(backupsDir, confRecord3.BackupRelativePath!);
+            Assert.True(File.Exists(confBackup));
+            Assert.Equal(originalConf, File.ReadAllBytes(confBackup));
+        }
+        else
+        {
+            Assert.Empty(SnapshotResources(backupsDir).Files);
+        }
+
         AssertResourcesUnchanged(acquiredSourcesSnapshot, sourcesDir);
 
-        // Demonstrate that an attempt to AdoptExisting again after owned update is refused
+        // Demonstrate that an attempt to AdoptExisting again after owned update is refused and causes no mutation
+        var gameBeforeSecondAdopt = SnapshotResources(gameDir);
+        var sourcesBeforeSecondAdopt = SnapshotResources(sourcesDir);
+        var backupsBeforeSecondAdopt = SnapshotResources(backupsDir);
+
+        string savedManagedVersion = inst3Reapplied.ManagedDxvkVersion!;
+        RestorationState savedRestorationState = inst3Reapplied.RestorationState;
+        InstallationConflictFlags savedConflictFlags = inst3Reapplied.ConflictFlags;
+        var savedManagedFiles = inst3Reapplied.ManagedFiles
+            .Select(mf => (mf.RelativePath, mf.OriginalState, mf.BackupRelativePath, mf.OriginalSha256, mf.ExpectedManagedSha256, mf.ManagedDxvkVersion, mf.CurrentState))
+            .ToList();
+
         bool secondAdoptResult = await stack3.Manager.AdoptExistingAsync(profile3);
         Assert.False(secondAdoptResult);
         Assert.Equal(requestCountAfterAcquisition, transport.RequestCount);
         Assert.NotNull(stack3.Manager.LastRefusalReason);
         Assert.Contains("Use reapply instead of adoption", stack3.Manager.LastRefusalReason, StringComparison.OrdinalIgnoreCase);
 
-        // Refused adoption attempt did not reset baseline/ownership or mutate game files
-        var instAfterSecondAdopt = stack3.LibraryStore.FindByInstallationPath(gameDir);
+        // Reconstruct from disk and verify complete resource and ownership integrity after refused second adopt
+        var stack3AfterSecondAdopt = ConstructServiceStack(appDataDir, httpClient);
+        AssertResourcesUnchanged(gameBeforeSecondAdopt, gameDir);
+        AssertResourcesUnchanged(sourcesBeforeSecondAdopt, sourcesDir);
+        AssertResourcesUnchanged(backupsBeforeSecondAdopt, backupsDir);
+
+        var instAfterSecondAdopt = stack3AfterSecondAdopt.LibraryStore.FindByInstallationPath(gameDir);
         Assert.NotNull(instAfterSecondAdopt);
-        Assert.Equal(RestorationState.Managed, instAfterSecondAdopt!.RestorationState);
-        Assert.Equal("v2.6", instAfterSecondAdopt.ManagedDxvkVersion);
+        Assert.Equal(savedManagedVersion, instAfterSecondAdopt!.ManagedDxvkVersion);
+        Assert.Equal(savedRestorationState, instAfterSecondAdopt.RestorationState);
+        Assert.Equal(savedConflictFlags, instAfterSecondAdopt.ConflictFlags);
+        Assert.Null(instAfterSecondAdopt.PendingAction);
+        Assert.Equal(savedManagedFiles.Count, instAfterSecondAdopt.ManagedFiles.Count);
+
+        foreach (var savedMf in savedManagedFiles)
+        {
+            var mf = instAfterSecondAdopt.FindManagedFile(savedMf.RelativePath);
+            Assert.NotNull(mf);
+            Assert.Equal(savedMf.OriginalState, mf!.OriginalState);
+            Assert.Equal(savedMf.BackupRelativePath, mf.BackupRelativePath);
+            Assert.Equal(savedMf.OriginalSha256, mf.OriginalSha256);
+            Assert.Equal(savedMf.ExpectedManagedSha256, mf.ExpectedManagedSha256);
+            Assert.Equal(savedMf.ManagedDxvkVersion, mf.ManagedDxvkVersion);
+            Assert.Equal(savedMf.CurrentState, mf.CurrentState);
+        }
+
+        var profileAfterSecondAdopt = stack3AfterSecondAdopt.ProfileStore.GetOrCreate(exePath);
+        Assert.True(profileAfterSecondAdopt.DxvkEnabled);
+        Assert.Equal("v2.6", profileAfterSecondAdopt.DxvkVersion);
+        Assert.False(profileAfterSecondAdopt.HudEnabled);
+        Assert.Equal(0, profileAfterSecondAdopt.FrameLimit);
 
         // 5. Reconstruct from disk and Disable normally
         var stack4 = ConstructServiceStack(appDataDir, httpClient);
@@ -518,7 +646,20 @@ public sealed class AdoptedDxvkLifecycleAcceptanceTests
         Assert.Equal(DxvkActionResult.Applied, disableResult);
         Assert.Equal(requestCountAfterAcquisition, transport.RequestCount);
 
-        // Expected final game set is initial set MINUS adopted wrapper DLLs
+        // Expected final game set is initialGameSnapshot MINUS adopted wrapper DLLs
+        var expectedFiles = new Dictionary<string, byte[]>(initialGameSnapshot.Files, StringComparer.OrdinalIgnoreCase);
+        if (api == GraphicsApi.DX9)
+        {
+            expectedFiles.Remove("d3d9.dll");
+        }
+        else
+        {
+            expectedFiles.Remove("d3d11.dll");
+            expectedFiles.Remove("dxgi.dll");
+        }
+        var expectedFinalSnapshot = new ResourceSnapshot(expectedFiles, initialGameSnapshot.Directories);
+        AssertResourcesUnchanged(expectedFinalSnapshot, gameDir);
+
         if (api == GraphicsApi.DX9)
         {
             Assert.False(File.Exists(d3d9Path!));
@@ -564,27 +705,65 @@ public sealed class AdoptedDxvkLifecycleAcceptanceTests
         Assert.Equal(api, recExe!.LastKnownApi);
         Assert.Equal(architecture, recExe.LastKnownArchitecture);
 
+        // Require exact retained managed-file set (adopted DLLs plus config) and verify cleared active versions & retained history
+        var expectedManagedFilePaths = api == GraphicsApi.DX9
+            ? new[] { "d3d9.dll", "dxvk.conf" }
+            : new[] { "d3d11.dll", "dxgi.dll", "dxvk.conf" };
+        Assert.Equal(
+            expectedManagedFilePaths.OrderBy(p => p, StringComparer.OrdinalIgnoreCase),
+            inst4Restored.ManagedFiles.Select(mf => mf.RelativePath).OrderBy(p => p, StringComparer.OrdinalIgnoreCase));
+
         foreach (var mf in inst4Restored.ManagedFiles)
         {
             Assert.Null(mf.ManagedDxvkVersion);
+            if (string.Equals(mf.RelativePath, "dxvk.conf", StringComparison.OrdinalIgnoreCase))
+            {
+                if (preexistingConfig)
+                {
+                    Assert.Equal(FileOriginalState.Existing, mf.OriginalState);
+                    Assert.Equal(originalConfIdentity!.Sha256, mf.OriginalSha256);
+                    Assert.Equal(Path.Combine(installationId, "dxvk.conf"), mf.BackupRelativePath);
+                }
+                else
+                {
+                    Assert.Equal(FileOriginalState.Missing, mf.OriginalState);
+                    Assert.Null(mf.OriginalSha256);
+                    Assert.Null(mf.BackupRelativePath);
+                }
+            }
+            else
+            {
+                // Adopted DLL records truthfully retain Missing baseline and null backup path
+                Assert.Equal(FileOriginalState.Missing, mf.OriginalState);
+                Assert.Null(mf.BackupRelativePath);
+                Assert.Null(mf.OriginalSha256);
+            }
+        }
+
+        // Compare complete retained backup set
+        var finalBackupsSnapshot = SnapshotResources(backupsDir);
+        if (preexistingConfig)
+        {
+            Assert.Single(finalBackupsSnapshot.Files);
+            string expectedBackupRelPath = Path.Combine(installationId, "dxvk.conf");
+            Assert.True(finalBackupsSnapshot.Files.ContainsKey(expectedBackupRelPath));
+            Assert.Equal(originalConf, finalBackupsSnapshot.Files[expectedBackupRelPath]);
+        }
+        else
+        {
+            Assert.Empty(finalBackupsSnapshot.Files);
         }
 
         AssertResourcesUnchanged(acquiredSourcesSnapshot, sourcesDir);
-
-        if (preexistingConfig)
-        {
-            string confBackup = Path.Combine(backupsDir, confRecord2.BackupRelativePath!);
-            Assert.True(File.Exists(confBackup));
-            Assert.Equal(originalConf, File.ReadAllBytes(confBackup));
-        }
     }
 
     [Theory]
     [InlineData(GraphicsApi.DX11, "x64", "MixedVersions")]
     [InlineData(GraphicsApi.DX11, "x32", "MixedVersions")]
-    [InlineData(GraphicsApi.DX11, "x64", "CorruptSource")]
-    [InlineData(GraphicsApi.DX9, "x64", "CorruptSource")]
-    [InlineData(GraphicsApi.DX9, "x32", "CorruptSource")]
+    [InlineData(GraphicsApi.DX11, "x64", "InvalidManifest")]
+    [InlineData(GraphicsApi.DX11, "x32", "InvalidManifest")]
+    [InlineData(GraphicsApi.DX9,  "x64", "InvalidManifest")]
+    [InlineData(GraphicsApi.DX9,  "x32", "InvalidManifest")]
     public async Task AdoptedDxvkLifecycle_RefusesInvalidWrappersOrSourcesBeforeAdoption(
         GraphicsApi api,
         string architecture,
@@ -608,28 +787,16 @@ public sealed class AdoptedDxvkLifecycleAcceptanceTests
         string confPath = Path.Combine(gameDir, "dxvk.conf");
         File.WriteAllBytes(confPath, Encoding.UTF8.GetBytes("# user config\nuser.setting = 1\n"));
 
-        // Setup wrapper files in game directory according to refusalType
-        if (refusalType == "MixedVersions")
+        // Setup matching v2.5 wrappers in game directory initially (coherent hash-matching wrappers)
+        if (api == GraphicsApi.DX9)
         {
-            // DX11 pair with mismatched versions: d3d11 is v2.5, dxgi is v2.6
+            File.WriteAllBytes(Path.Combine(gameDir, "d3d9.dll"), Encoding.UTF8.GetBytes($"v2.5:{architecture}:d3d9"));
+        }
+        else
+        {
             File.WriteAllBytes(Path.Combine(gameDir, "d3d11.dll"), Encoding.UTF8.GetBytes($"v2.5:{architecture}:d3d11"));
-            File.WriteAllBytes(Path.Combine(gameDir, "dxgi.dll"), Encoding.UTF8.GetBytes($"v2.6:{architecture}:dxgi"));
+            File.WriteAllBytes(Path.Combine(gameDir, "dxgi.dll"), Encoding.UTF8.GetBytes($"v2.5:{architecture}:dxgi"));
         }
-        else if (refusalType == "CorruptSource")
-        {
-            // Matching wrappers in game directory for v2.5
-            if (api == GraphicsApi.DX9)
-            {
-                File.WriteAllBytes(Path.Combine(gameDir, "d3d9.dll"), Encoding.UTF8.GetBytes($"v2.5:{architecture}:d3d9"));
-            }
-            else
-            {
-                File.WriteAllBytes(Path.Combine(gameDir, "d3d11.dll"), Encoding.UTF8.GetBytes($"v2.5:{architecture}:d3d11"));
-                File.WriteAllBytes(Path.Combine(gameDir, "dxgi.dll"), Encoding.UTF8.GetBytes($"v2.5:{architecture}:dxgi"));
-            }
-        }
-
-        var originalGameSnapshot = SnapshotResources(gameDir);
 
         string appDataDir = Path.Combine(testDir.RootPath, $"AppData_Refusal_{api}_{architecture}_{refusalType}");
         string profilesDir = Path.Combine(appDataDir, "Profiles");
@@ -639,57 +806,99 @@ public sealed class AdoptedDxvkLifecycleAcceptanceTests
         var transport = new LifecycleHttpTransport("v2.5", "v2.6");
         using var httpClient = new HttpClient(transport);
 
-        var stack = ConstructServiceStack(appDataDir, httpClient);
+        var stack1 = ConstructServiceStack(appDataDir, httpClient);
 
-        // Acquire official releases
-        var acq25 = await stack.Manager.AcquireOfficialReleaseAsync("v2.5");
+        // 1. Acquire official releases and explicitly verify manifests, markers, and expected payloads
+        var acq25 = await stack1.Manager.AcquireOfficialReleaseAsync("v2.5");
         Assert.Equal("v2.5", acq25.Version);
 
-        var acq26 = await stack.Manager.AcquireOfficialReleaseAsync("v2.6");
+        var acq26 = await stack1.Manager.AcquireOfficialReleaseAsync("v2.6");
         Assert.Equal("v2.6", acq26.Version);
 
-        // If CorruptSource, invalidate the acquired source manifest verification
-        if (refusalType == "CorruptSource")
+        Assert.True(File.Exists(Path.Combine(sourcesDir, "v2.5", ".companion-acquired")));
+        Assert.True(File.Exists(Path.Combine(sourcesDir, "v2.5", "companion-release.json")));
+        Assert.True(DxvkReleaseAcquirer.ValidateManifest(Path.Combine(sourcesDir, "v2.5"), "v2.5", out bool v25ManifestVerified));
+        Assert.True(v25ManifestVerified);
+
+        Assert.True(File.Exists(Path.Combine(sourcesDir, "v2.6", ".companion-acquired")));
+        Assert.True(File.Exists(Path.Combine(sourcesDir, "v2.6", "companion-release.json")));
+        Assert.True(DxvkReleaseAcquirer.ValidateManifest(Path.Combine(sourcesDir, "v2.6"), "v2.6", out bool v26ManifestVerified));
+        Assert.True(v26ManifestVerified);
+
+        var profile = stack1.ProfileStore.GetOrCreate(exePath);
+        profile.Api = api;
+        profile.Architecture = architecture;
+        profile.DxvkVersion = "v2.5";
+        stack1.ProfileStore.Save(profile);
+
+        // Positive control check: assert valid official matching wrappers are eligible before fault induction
+        var controlAssessment = stack1.Manager.AssessExistingDxvk(profile);
+        Assert.True(controlAssessment.CanBeAdopted);
+        Assert.Equal(ExistingDxvkStatus.OfficialRelease, controlAssessment.Status);
+        Assert.Equal("v2.5", controlAssessment.MatchedVersion);
+
+        // 2. Induce the specific fault
+        if (refusalType == "InvalidManifest")
         {
-            string targetDll = api == GraphicsApi.DX9 ? "d3d9.dll" : "d3d11.dll";
-            string sourcePayloadPath = Path.Combine(sourcesDir, "v2.5", architecture, targetDll);
-            File.WriteAllBytes(sourcePayloadPath, Encoding.UTF8.GetBytes("corrupted-source-payload-bytes"));
+            // Invalidate manifest metadata while keeping payload DLLs intact
+            File.WriteAllText(Path.Combine(sourcesDir, "v2.5", DxvkReleaseAcquirer.ManifestName), "{}");
+
+            // Raw hash-only recognizer still sees matching official hashes
+            var rawAssessment = new ExistingDxvkDetector(sourcesDir, profile.Api).AssessDirectory(gameDir, architecture);
+            Assert.True(rawAssessment.CanBeAdopted);
+            Assert.Equal(ExistingDxvkStatus.OfficialRelease, rawAssessment.Status);
+        }
+        else if (refusalType == "MixedVersions")
+        {
+            // DX11 pair with mismatched versions: d3d11 is v2.5, dxgi is v2.6
+            File.WriteAllBytes(Path.Combine(gameDir, "dxgi.dll"), Encoding.UTF8.GetBytes($"v2.6:{architecture}:dxgi"));
         }
 
+        var originalGameSnapshot = SnapshotResources(gameDir);
         var sourcesSnapshot = SnapshotResources(sourcesDir);
         var backupsSnapshot = SnapshotResources(backupsDir);
 
         transport.RejectAllRequests = true;
         int requestCountBefore = transport.RequestCount;
 
-        var profile = stack.ProfileStore.GetOrCreate(exePath);
-        profile.Api = api;
-        profile.Architecture = architecture;
-        profile.DxvkVersion = "v2.5";
-        stack.ProfileStore.Save(profile);
+        // 3. Reconstruct fresh service stack from disk to exercise real reload boundary
+        var stack2 = ConstructServiceStack(appDataDir, httpClient);
 
-        // Assessment should recognize invalid/unsupported state
-        var assessment = stack.Manager.AssessExistingDxvk(profile);
+        // Assessment should refuse adoption with meaningful evidence
+        var assessment = stack2.Manager.AssessExistingDxvk(profile);
         Assert.False(assessment.CanBeAdopted);
+        Assert.Equal(ExistingDxvkStatus.RecognizedUnknownVersion, assessment.Status);
 
-        // Attempt adoption through real manager after fresh stack setup
-        bool adoptResult = await stack.Manager.AdoptExistingAsync(profile);
+        if (refusalType == "InvalidManifest")
+        {
+            Assert.Contains(assessment.Evidence, e => e.Contains("Local acquired source verification failed", StringComparison.OrdinalIgnoreCase));
+        }
+        else if (refusalType == "MixedVersions")
+        {
+            Assert.Contains(assessment.Evidence, e => e.Contains("matches official release v2.5", StringComparison.OrdinalIgnoreCase));
+            Assert.Contains(assessment.Evidence, e => e.Contains("matches official release v2.6", StringComparison.OrdinalIgnoreCase));
+        }
+
+        // Attempt adoption through real manager
+        bool adoptResult = await stack2.Manager.AdoptExistingAsync(profile);
         Assert.False(adoptResult);
         Assert.Equal(requestCountBefore, transport.RequestCount);
 
-        Assert.NotNull(stack.Manager.LastRefusalReason);
-        Assert.Contains("cannot be adopted", stack.Manager.LastRefusalReason, StringComparison.OrdinalIgnoreCase);
+        Assert.NotNull(stack2.Manager.LastRefusalReason);
+        Assert.Contains("cannot be adopted", stack2.Manager.LastRefusalReason, StringComparison.OrdinalIgnoreCase);
 
-        // Game files, available sources, and backups remain unchanged
+        // 4. Reload again from disk to inspect durable refusal state and confirm zero mutation
+        var stack3 = ConstructServiceStack(appDataDir, httpClient);
+
         AssertResourcesUnchanged(originalGameSnapshot, gameDir);
         AssertResourcesUnchanged(sourcesSnapshot, sourcesDir);
         AssertResourcesUnchanged(backupsSnapshot, backupsDir);
 
         // Profile remains unmanaged
-        var profileAfter = stack.ProfileStore.GetOrCreate(exePath);
+        var profileAfter = stack3.ProfileStore.GetOrCreate(exePath);
         Assert.False(profileAfter.DxvkEnabled);
 
-        var instAfter = stack.LibraryStore.FindByInstallationPath(gameDir);
+        var instAfter = stack3.LibraryStore.FindByInstallationPath(gameDir);
         Assert.True(instAfter == null || instAfter.RestorationState != RestorationState.Managed);
         Assert.True(instAfter == null || instAfter.ManagedFiles.Count == 0);
     }
