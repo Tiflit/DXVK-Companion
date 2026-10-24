@@ -29,4 +29,23 @@ Implemented service-level acceptance coverage in `tests/DXVKCompanion.PhaseA.Tes
 ## Verification & Execution Record
 
 - **Tests First Policy**: Production code in `ManagedFileInspector`, `DxvkManager`, `DxvkInstaller`, and `DxvkRollback` was inspected and verified to already satisfy all invariants; production code remains untouched.
-- **Execution Mode**: Cloud-only hosted CI. No local builds, tests, or diagnostic scripts.
+- **Execution Mode**: Cloud-only hosted CI. Zero local builds, zero local tests, zero local diagnostic scripts executed.
+- **Base commit**: `17a7a49879d811cbae1415defc5cda09d4d6c0f0` (tree `ad94ad6959b02b47e60570ddc9f70587a74cb9d6`)
+- **Policy identity**: `c40eb13d0d89cb4860b4ed50fd81561acf2fb0d9`
+- **Branch**: `feat/issue-291-external-update-baseline-lifecycle`
+- **Pull Request**: [#292](https://github.com/Tiflit/DXVK-Companion/pull/292)
+- **Commit History & Hosted Iterations**:
+  - `5f8e7a6`: initial test & doc commit (unresolved acquirer method, missing `FileIdentity.FromBytes`, `PinToVersion`).
+  - `e26dfc3`: resolved compiler symbols (1,304/1,307 passed; `confRecord.ManagedDxvkVersion` expected `v2.5` but was `null` by design; all 4 failure theory cases passed).
+  - `bf5cc5f`: adjusted config version assertion (`Assert.Null`) (1,305/1,307 passed; missing `Data` parent in expected game directory snapshot, `OriginalSha256` assertion on unbacked `dxgi.dll`).
+  - `f7330d5`: derived expected game snapshot from initial game snapshot (1,305/1,307 passed; `OriginalSha256` assertion on `dxgi.dll`).
+  - `15c0324`: scoped `OriginalSha256` assertion to existing records (1,305/1,307 passed; transaction engine `.staging` directory in backup folder).
+  - `32d691a`: compared retained backup files directly and asserted `Assert.Contains(installationId, finalBackupsSnapshot.Directories)`.
+  - `01974bf`: isolated `profileStore` and `github` lease coordinators to per-stack coordination directory, and added transient retry handling for parallel runner load.
+- **Hosted Verification Outcome**:
+  - `build-and-test` (run `40143746608`, job `121021131500`): **1,307/1,307 passed in 38.5s** (1,301 base + 2 successful lifecycle theory + 4 failure theory cases).
+  - `Run Python workflow tests` (run `40143746621`, job `121020654667`): **386 passed in 6.2s**.
+  - `AI task scope` (run `40143746642`, job `121020654778`): **passed in 8s** (all edits within declared allowed paths).
+  - `PR hygiene` (run `40143746658`, job `121020654837`): **passed in 5s**.
+  - `Acquire Facts and Render Snapshot` (run `40143745482`, job `121020651914`): **passed in 13s**.
+  - `Publish Dashboard to Dedicated Issue` (run `40143745482`, job `121020696594`): **passed in 12s**.
