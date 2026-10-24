@@ -62,6 +62,9 @@ public sealed class ExternalUpdateBaselineLifecycleAcceptanceTests
         }
     }
 
+    private static string ComputeSha256(byte[] data) =>
+        Convert.ToHexString(SHA256.HashData(data)).ToLowerInvariant();
+
     private static Dictionary<string, string> ParseConfigAssignments(string content)
     {
         var dict = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -239,12 +242,12 @@ public sealed class ExternalUpdateBaselineLifecycleAcceptanceTests
         // 1. Initial Service Stack & Acquisition of official releases
         var stack1 = ConstructServiceStack(appDataDir, httpClient);
 
-        var acq25 = await stack1.Installer.GetReleaseAcquirer(stack1.GithubClient).AcquireReleaseAsync("v2.5");
+        var acq25 = await stack1.Manager.AcquireOfficialReleaseAsync("v2.5");
         Assert.NotNull(acq25);
         Assert.Equal("v2.5", acq25.Version);
         Assert.True(acq25.UpstreamDigestVerified);
 
-        var acq26 = await stack1.Installer.GetReleaseAcquirer(stack1.GithubClient).AcquireReleaseAsync("v2.6");
+        var acq26 = await stack1.Manager.AcquireOfficialReleaseAsync("v2.6");
         Assert.NotNull(acq26);
         Assert.Equal("v2.6", acq26.Version);
         Assert.True(acq26.UpstreamDigestVerified);
@@ -331,7 +334,7 @@ public sealed class ExternalUpdateBaselineLifecycleAcceptanceTests
         string d3d11Backup1Path = Path.Combine(backupsDir, d3d11Record1.BackupRelativePath);
         Assert.True(File.Exists(d3d11Backup1Path));
         Assert.Equal(nativeD3d11A, File.ReadAllBytes(d3d11Backup1Path));
-        Assert.Equal(FileIdentity.FromBytes(nativeD3d11A).Sha256, d3d11Record1.OriginalSha256);
+        Assert.Equal(ComputeSha256(nativeD3d11A), d3d11Record1.OriginalSha256);
         Assert.Equal(FileIdentity.Capture(d3d11Backup1Path).Sha256, d3d11Record1.OriginalSha256);
 
         // dxgi was absent in original game: synthetic Missing baseline, null backup path
@@ -350,7 +353,7 @@ public sealed class ExternalUpdateBaselineLifecycleAcceptanceTests
         string confBackup1Path = Path.Combine(backupsDir, confRecord1.BackupRelativePath);
         Assert.True(File.Exists(confBackup1Path));
         Assert.Equal(originalConf, File.ReadAllBytes(confBackup1Path));
-        Assert.Equal(FileIdentity.FromBytes(originalConf).Sha256, confRecord1.OriginalSha256);
+        Assert.Equal(ComputeSha256(originalConf), confRecord1.OriginalSha256);
 
         // 3. Reconstruct stack from disk & persist an older pending Update intent
         var stack2 = ConstructServiceStack(appDataDir, httpClient);
@@ -388,7 +391,7 @@ public sealed class ExternalUpdateBaselineLifecycleAcceptanceTests
 
         // Original A / config baselines/backups, source bytes, and game set remain untouched
         Assert.Equal(nativeD3d11A, File.ReadAllBytes(Path.Combine(backupsDir, d3d11Record3.BackupRelativePath!)));
-        Assert.Equal(FileIdentity.FromBytes(nativeD3d11A).Sha256, d3d11Record3.OriginalSha256);
+        Assert.Equal(ComputeSha256(nativeD3d11A), d3d11Record3.OriginalSha256);
         Assert.Equal(originalConf, File.ReadAllBytes(Path.Combine(backupsDir, inst3.FindManagedFile("dxvk.conf")!.BackupRelativePath!)));
         Assert.Equal(FileOriginalState.Missing, inst3.FindManagedFile("dxgi.dll")!.OriginalState);
         Assert.Null(inst3.FindManagedFile("dxgi.dll")!.BackupRelativePath);
@@ -424,7 +427,7 @@ public sealed class ExternalUpdateBaselineLifecycleAcceptanceTests
         Assert.Equal(nativeD3d11B, File.ReadAllBytes(d3d11Path));
         Assert.Equal(Encoding.UTF8.GetBytes($"v2.5:{architecture}:dxgi"), File.ReadAllBytes(dxgiPath));
         Assert.Equal(nativeD3d11A, File.ReadAllBytes(Path.Combine(backupsDir, inst4AfterDispatch.FindManagedFile("d3d11.dll")!.BackupRelativePath!)));
-        Assert.Equal(FileIdentity.FromBytes(nativeD3d11A).Sha256, inst4AfterDispatch.FindManagedFile("d3d11.dll")!.OriginalSha256);
+        Assert.Equal(ComputeSha256(nativeD3d11A), inst4AfterDispatch.FindManagedFile("d3d11.dll")!.OriginalSha256);
 
         // 4. Authorized Reapply with updateBaseline = true
         var profile4 = stack4.ProfileStore.GetOrCreate(exePath);
@@ -459,18 +462,18 @@ public sealed class ExternalUpdateBaselineLifecycleAcceptanceTests
         string d3d11UpdatedBackupPath = Path.Combine(backupsDir, d3d11RecordReapplied.BackupRelativePath);
         Assert.True(File.Exists(d3d11UpdatedBackupPath));
         Assert.Equal(nativeD3d11B, File.ReadAllBytes(d3d11UpdatedBackupPath));
-        Assert.Equal(FileIdentity.FromBytes(nativeD3d11B).Sha256, d3d11RecordReapplied.OriginalSha256);
+        Assert.Equal(ComputeSha256(nativeD3d11B), d3d11RecordReapplied.OriginalSha256);
         Assert.Equal(FileIdentity.Capture(d3d11UpdatedBackupPath).Sha256, d3d11RecordReapplied.OriginalSha256);
 
         // Original A is NO LONGER the active restore baseline
-        Assert.NotEqual(FileIdentity.FromBytes(nativeD3d11A).Sha256, d3d11RecordReapplied.OriginalSha256);
+        Assert.NotEqual(ComputeSha256(nativeD3d11A), d3d11RecordReapplied.OriginalSha256);
 
         // Original config baseline unchanged
         var confRecordReapplied = inst4Reapplied.FindManagedFile("dxvk.conf");
         Assert.NotNull(confRecordReapplied);
         Assert.Equal(FileOriginalState.Existing, confRecordReapplied!.OriginalState);
         Assert.Equal(originalConf, File.ReadAllBytes(Path.Combine(backupsDir, confRecordReapplied.BackupRelativePath!)));
-        Assert.Equal(FileIdentity.FromBytes(originalConf).Sha256, confRecordReapplied.OriginalSha256);
+        Assert.Equal(ComputeSha256(originalConf), confRecordReapplied.OriginalSha256);
 
         // dxgi Missing baseline unchanged
         var dxgiRecordReapplied = inst4Reapplied.FindManagedFile("dxgi.dll");
@@ -486,7 +489,7 @@ public sealed class ExternalUpdateBaselineLifecycleAcceptanceTests
 
         profile5.DxvkVersion = "v2.6";
         stack5.ProfileStore.Save(profile5);
-        inst5!.ManagementPolicy = ManagementPolicy.PinToVersion("v2.6");
+        inst5!.ManagementPolicy.PinnedDxvkVersion = "v2.6";
         stack5.LibraryStore.Save(inst5);
 
         var updateResult = await stack5.Manager.RequestUpdateByPathAsync(profile5);
@@ -507,13 +510,13 @@ public sealed class ExternalUpdateBaselineLifecycleAcceptanceTests
         Assert.NotNull(d3d11RecordUpdated);
         Assert.Equal(FileOriginalState.Existing, d3d11RecordUpdated!.OriginalState);
         Assert.Equal(nativeD3d11B, File.ReadAllBytes(Path.Combine(backupsDir, d3d11RecordUpdated.BackupRelativePath!)));
-        Assert.Equal(FileIdentity.FromBytes(nativeD3d11B).Sha256, d3d11RecordUpdated.OriginalSha256);
+        Assert.Equal(ComputeSha256(nativeD3d11B), d3d11RecordUpdated.OriginalSha256);
 
         var confRecordUpdated = inst5Updated.FindManagedFile("dxvk.conf");
         Assert.NotNull(confRecordUpdated);
         Assert.Equal(FileOriginalState.Existing, confRecordUpdated!.OriginalState);
         Assert.Equal(originalConf, File.ReadAllBytes(Path.Combine(backupsDir, confRecordUpdated.BackupRelativePath!)));
-        Assert.Equal(FileIdentity.FromBytes(originalConf).Sha256, confRecordUpdated.OriginalSha256);
+        Assert.Equal(ComputeSha256(originalConf), confRecordUpdated.OriginalSha256);
 
         var dxgiRecordUpdated = inst5Updated.FindManagedFile("dxgi.dll");
         Assert.NotNull(dxgiRecordUpdated);
@@ -568,7 +571,7 @@ public sealed class ExternalUpdateBaselineLifecycleAcceptanceTests
             {
                 Assert.Equal(FileOriginalState.Existing, record.OriginalState);
                 Assert.NotNull(record.BackupRelativePath);
-                Assert.Equal(FileIdentity.FromBytes(nativeD3d11B).Sha256, record.OriginalSha256);
+                Assert.Equal(ComputeSha256(nativeD3d11B), record.OriginalSha256);
                 Assert.Equal(nativeD3d11B, File.ReadAllBytes(Path.Combine(backupsDir, record.BackupRelativePath)));
             }
             else if (relativePath == "dxgi.dll")
@@ -580,7 +583,7 @@ public sealed class ExternalUpdateBaselineLifecycleAcceptanceTests
             {
                 Assert.Equal(FileOriginalState.Existing, record.OriginalState);
                 Assert.NotNull(record.BackupRelativePath);
-                Assert.Equal(FileIdentity.FromBytes(originalConf).Sha256, record.OriginalSha256);
+                Assert.Equal(ComputeSha256(originalConf), record.OriginalSha256);
                 Assert.Equal(originalConf, File.ReadAllBytes(Path.Combine(backupsDir, record.BackupRelativePath)));
             }
         }
@@ -653,11 +656,11 @@ public sealed class ExternalUpdateBaselineLifecycleAcceptanceTests
         // 1. Acquire official releases
         var stack1 = ConstructServiceStack(appDataDir, httpClient);
 
-        var acq25 = await stack1.Installer.GetReleaseAcquirer(stack1.GithubClient).AcquireReleaseAsync("v2.5");
+        var acq25 = await stack1.Manager.AcquireOfficialReleaseAsync("v2.5");
         Assert.NotNull(acq25);
         Assert.Equal("v2.5", acq25.Version);
 
-        var acq26 = await stack1.Installer.GetReleaseAcquirer(stack1.GithubClient).AcquireReleaseAsync("v2.6");
+        var acq26 = await stack1.Manager.AcquireOfficialReleaseAsync("v2.6");
         Assert.NotNull(acq26);
         Assert.Equal("v2.6", acq26.Version);
 
@@ -755,7 +758,7 @@ public sealed class ExternalUpdateBaselineLifecycleAcceptanceTests
         Assert.Equal(FileOriginalState.Existing, reloadD3d11Record!.OriginalState);
         Assert.NotNull(reloadD3d11Record.BackupRelativePath);
         Assert.Equal(nativeD3d11A, File.ReadAllBytes(Path.Combine(backupsDir, reloadD3d11Record.BackupRelativePath)));
-        Assert.Equal(FileIdentity.FromBytes(nativeD3d11A).Sha256, reloadD3d11Record.OriginalSha256);
+        Assert.Equal(ComputeSha256(nativeD3d11A), reloadD3d11Record.OriginalSha256);
 
         // Zero additional HTTP calls
         Assert.Equal(requestCountAfterAcquisition, transport.RequestCount);
