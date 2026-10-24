@@ -558,12 +558,12 @@ public sealed class ExternalUpdateBaselineLifecycleAcceptanceTests
             var record = inst6.FindManagedFile(relativePath);
             Assert.NotNull(record);
             Assert.True(string.IsNullOrEmpty(record!.ManagedDxvkVersion));
-            Assert.NotEmpty(record.OriginalSha256!);
 
             if (relativePath == "d3d11.dll")
             {
                 Assert.Equal(FileOriginalState.Existing, record.OriginalState);
                 Assert.NotNull(record.BackupRelativePath);
+                Assert.NotEmpty(record.OriginalSha256!);
                 Assert.Equal(ComputeSha256(nativeD3d11B), record.OriginalSha256);
                 Assert.Equal(nativeD3d11B, File.ReadAllBytes(Path.Combine(backupsDir, record.BackupRelativePath)));
             }
@@ -571,11 +571,13 @@ public sealed class ExternalUpdateBaselineLifecycleAcceptanceTests
             {
                 Assert.Equal(FileOriginalState.Missing, record.OriginalState);
                 Assert.Null(record.BackupRelativePath);
+                Assert.Null(record.OriginalSha256);
             }
             else if (relativePath == "dxvk.conf")
             {
                 Assert.Equal(FileOriginalState.Existing, record.OriginalState);
                 Assert.NotNull(record.BackupRelativePath);
+                Assert.NotEmpty(record.OriginalSha256!);
                 Assert.Equal(ComputeSha256(originalConf), record.OriginalSha256);
                 Assert.Equal(originalConf, File.ReadAllBytes(Path.Combine(backupsDir, record.BackupRelativePath)));
             }
