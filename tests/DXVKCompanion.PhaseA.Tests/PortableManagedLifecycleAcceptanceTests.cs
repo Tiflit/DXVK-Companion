@@ -195,14 +195,14 @@ public sealed class PortableManagedLifecycleAcceptanceTests
             originalD3D11Identity = FileIdentity.Capture(d3d11Path);
 
             originalConf = Encoding.UTF8.GetBytes(
-                "# Custom preexisting dxvk.conf for Game\n" +
+                "# Custom preexisting dxvk.conf for Game\r\n" +
                 "# Distinctive user comments\n" +
                 "user.customSetting = 1\n" +
                 "dxvk.hud = compiler\n" +
                 "dxvk.maxFrameRate = 30\n" +
                 "dxvk.hudExtra = full\n" +
                 "dxvk.maxFrameRateTarget = 120\n" +
-                "user.unrelatedSuffix = keep\n");
+                "user.unrelatedSuffix = keep");
             File.WriteAllBytes(confPath, originalConf);
             originalConfIdentity = FileIdentity.Capture(confPath);
         }
@@ -338,8 +338,12 @@ public sealed class PortableManagedLifecycleAcceptanceTests
         }
 
         // Persist explicit version selection intent for subsequent update
-        inst1.ManagementPolicy = ManagementPolicy.PinVersion("v2.6");
+        inst1.ManagementPolicy = ManagementPolicy.UseGlobal();
+        inst1.ManagementPolicy.PinnedDxvkVersion = "v2.6";
         stack1.LibraryStore.Save(inst1);
+
+        var settingsBytes = File.ReadAllBytes(settingsFile1);
+        var cacheBytes = File.ReadAllBytes(Path.Combine(appDataDir, "Cache", "release-cache.json"));
 
         var originalBackupsSnapshot = SnapshotResources(backupsDir);
         if (preexistingNativeBaseline)
@@ -389,7 +393,7 @@ public sealed class PortableManagedLifecycleAcceptanceTests
         Assert.Equal(InstallationConflictFlags.None, inst2.ConflictFlags);
         Assert.Null(inst2.PendingAction);
         Assert.Null(inst2.LastRefusalReason);
-        Assert.Equal(ManagementMode.PinnedVersion, inst2.ManagementPolicy.Mode);
+        Assert.Equal(ManagementMode.UseGlobal, inst2.ManagementPolicy.Mode);
         Assert.Equal("v2.6", inst2.ManagementPolicy.PinnedDxvkVersion);
 
         AssertResourcesUnchanged(acquiredSourcesSnapshot, newSourcesDir);
@@ -465,7 +469,7 @@ public sealed class PortableManagedLifecycleAcceptanceTests
         Assert.Equal(DxvkActionResult.Applied, reapplyResult);
         Assert.Equal(requestCountAfterAcquisition, transport.RequestCount);
 
-        if (File.Exists(confPath))
+        Assert.True(File.Exists(confPath));
         {
             string confContentAfterReapply = File.ReadAllText(confPath);
             var assignments = ParseConfigAssignments(confContentAfterReapply);
@@ -496,10 +500,8 @@ public sealed class PortableManagedLifecycleAcceptanceTests
         Assert.Equal("v2.6", inst3Reapplied.ManagedDxvkVersion);
 
         var confRecord3 = inst3Reapplied.FindManagedFile("dxvk.conf");
-        if (confRecord3 != null && File.Exists(confPath))
-        {
-            Assert.Equal(FileIdentity.Capture(confPath).Sha256, confRecord3.ExpectedManagedSha256);
-        }
+        Assert.NotNull(confRecord3);
+        Assert.Equal(FileIdentity.Capture(confPath).Sha256, confRecord3!.ExpectedManagedSha256);
 
         AssertResourcesUnchanged(acquiredSourcesSnapshot, newSourcesDir);
         AssertResourcesUnchanged(originalBackupsSnapshot, newBackupsDir);
@@ -541,6 +543,11 @@ public sealed class PortableManagedLifecycleAcceptanceTests
         Assert.Null(inst4Restored.LastRefusalReason);
         Assert.False(profile4.DxvkEnabled);
         Assert.Equal("v2.6", profile4.DxvkVersion);
+        Assert.Equal(ManagementMode.UseGlobal, inst4Restored.ManagementPolicy.Mode);
+        Assert.Equal("v2.6", inst4Restored.ManagementPolicy.PinnedDxvkVersion);
+        Assert.Equal(3, inst4Restored.ManagedFiles.Count);
+        Assert.Equal(new[] { "d3d11.dll", "dxgi.dll", "dxvk.conf" },
+            inst4Restored.ManagedFiles.Select(record => record.RelativePath).OrderBy(path => path, StringComparer.OrdinalIgnoreCase));
 
         foreach (var mf in inst4Restored.ManagedFiles)
         {
@@ -549,6 +556,8 @@ public sealed class PortableManagedLifecycleAcceptanceTests
 
         AssertResourcesUnchanged(acquiredSourcesSnapshot, newSourcesDir);
         AssertResourcesUnchanged(originalBackupsSnapshot, newBackupsDir);
+        Assert.Equal(settingsBytes, File.ReadAllBytes(Path.Combine(relocatedAppDataDir, "settings.json")));
+        Assert.Equal(cacheBytes, File.ReadAllBytes(Path.Combine(relocatedAppDataDir, "Cache", "release-cache.json")));
         Assert.False(Directory.Exists(appDataDir));
     }
 

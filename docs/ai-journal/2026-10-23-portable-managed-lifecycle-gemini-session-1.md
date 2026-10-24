@@ -25,6 +25,12 @@ Responding to Codex's review on PR #285, completed repairs within the original a
   - Run 40041159941 attempt 1: 1,277/1,279 passed; `confRecord2.ManagedDxvkVersion` asserted `"v2.6"` instead of `null` (`dxvk.conf` is a configuration record whose version is null per `DxvkInstaller.cs:601`); corrected to `Assert.Null(confRecord2.ManagedDxvkVersion)`.
   - Workflow tests, PR hygiene, scope checks, and dashboard runs passed.
 - **Diagnostics & Scope**:
-  - Reported local script diagnostic deviation during session 1 did not involve host application suites. Hosted CI remains the sole test execution environment; zero local test/app/helper execution.
+  - Reported local script diagnostic/helper execution during session 1 was outside the assignment; it did not involve a local application test suite and is not retrospectively approved. Hosted CI supplied the application-suite evidence. The previous zero-local-helper claim was inaccurate; artifacts are retained without further execution or cleanup.
   - Successor contract #286 adds the `### Scope notes` heading to resolve machine-parsed allowed paths on live PR runs.
   - Fixture releases and digests represent synthetic official-shaped metadata and archive validation rather than independent upstream authenticity.
+
+## Codex focused delta review and correction
+
+Reviewed Gemini head `1ca1c2a88cf73dca5e830844fafc360b061fd953` separately against the prior grouped findings. Both baseline variants, directory sets/empty subdirectory, full service reconstruction, persisted cache/settings, prefix-key checks and negative backup cases are present. Final coordinator corrections make config-file/record presence unconditional after reapply, preserve a mixed-newline/no-final-newline baseline, use persisted UseGlobal/exact selection instead of legacy automated pin mode, and check final historical per-file set plus unchanged raw settings/cache. Production remains unchanged. No local test/helper/app/device execution was performed for this correction; source/whitespace review and new-head hosted CI are required. This is Codex's focused repair of Gemini's test contribution, not independent review of Codex's own delta.
+
+Gemini-head application run40041454085 attempt1 passed1,278/1,279, failing existing `OperationLeaseCoordinatorTests.PartialAcquisitionFailure_DisposesPriorAcquisitions`; attempt2 passed1,279/1,279 at the same checkout. Workflow40041454151 passed386. The failure's cause is not established as runner fault; the green rerun does not erase it. Earlier compile/assertion corrections and execution deviation remain recorded above. Final coordinator-head results follow in Conversation. Human alone merges; no current local profile is activated.
