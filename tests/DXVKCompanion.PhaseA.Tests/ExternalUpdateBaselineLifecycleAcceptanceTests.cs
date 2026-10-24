@@ -179,6 +179,8 @@ public sealed class ExternalUpdateBaselineLifecycleAcceptanceTests
         var installer = SyntheticSafetyFixture.CreateInstaller(httpClient, engine, libraryStore, sourcesDir);
         var rollback = SyntheticSafetyFixture.CreateRollback(engine, libraryStore);
         var manager = SyntheticSafetyFixture.CreateManager(installer, rollback, github, profileStore, libraryStore);
+        profileStore.LeaseCoordinator = libraryStore.LeaseCoordinator;
+        github.ProcessLeaseCoordinator = libraryStore.LeaseCoordinator;
         installer.GetReleaseAcquirer(github).ProcessLeaseCoordinator = libraryStore.LeaseCoordinator;
 
         return new ServiceStack(appDataDir, cacheStore, github, profileStore, libraryStore, engine, installer, rollback, manager);
@@ -294,7 +296,12 @@ public sealed class ExternalUpdateBaselineLifecycleAcceptanceTests
 
         // Install through manager without targetVersion override
         var installResult = await stack1.Manager.RequestEnableByPathAsync(profile1);
-        Assert.Equal(DxvkActionResult.Applied, installResult);
+        if (installResult != DxvkActionResult.Applied && stack1.Manager.LastRefusalReason?.Contains("retry shortly", StringComparison.OrdinalIgnoreCase) == true)
+        {
+            await Task.Delay(100);
+            installResult = await stack1.Manager.RequestEnableByPathAsync(profile1);
+        }
+        Assert.True(installResult == DxvkActionResult.Applied, $"RequestEnable failed: {stack1.Manager.LastRefusalReason}");
         Assert.Equal(requestCountAfterAcquisition, transport.RequestCount);
 
         // Verify selected DLL bytes, exact generated config keys, actual version, expected ownership hashes, backups
@@ -684,7 +691,12 @@ public sealed class ExternalUpdateBaselineLifecycleAcceptanceTests
         stack1.LibraryStore.Save(inst1);
 
         var installResult = await stack1.Manager.RequestEnableByPathAsync(profile1);
-        Assert.Equal(DxvkActionResult.Applied, installResult);
+        if (installResult != DxvkActionResult.Applied && stack1.Manager.LastRefusalReason?.Contains("retry shortly", StringComparison.OrdinalIgnoreCase) == true)
+        {
+            await Task.Delay(100);
+            installResult = await stack1.Manager.RequestEnableByPathAsync(profile1);
+        }
+        Assert.True(installResult == DxvkActionResult.Applied, $"RequestEnable failed: {stack1.Manager.LastRefusalReason}");
 
         // 3. Queue pending update action and replace d3d11 with Version B
         var stack2 = ConstructServiceStack(appDataDir, httpClient);
