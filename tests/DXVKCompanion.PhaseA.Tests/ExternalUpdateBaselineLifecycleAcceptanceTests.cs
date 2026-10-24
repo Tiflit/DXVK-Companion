@@ -347,7 +347,7 @@ public sealed class ExternalUpdateBaselineLifecycleAcceptanceTests
         // dxvk.conf was present: backed up with FileOriginalState.Existing
         var confRecord1 = inst1AfterInstall.FindManagedFile("dxvk.conf");
         Assert.NotNull(confRecord1);
-        Assert.Equal("v2.5", confRecord1!.ManagedDxvkVersion);
+        Assert.Null(confRecord1!.ManagedDxvkVersion);
         Assert.Equal(FileOriginalState.Existing, confRecord1.OriginalState);
         Assert.NotNull(confRecord1.BackupRelativePath);
         string confBackup1Path = Path.Combine(backupsDir, confRecord1.BackupRelativePath);
