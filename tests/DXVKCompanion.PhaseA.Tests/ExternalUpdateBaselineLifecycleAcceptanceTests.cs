@@ -533,18 +533,11 @@ public sealed class ExternalUpdateBaselineLifecycleAcceptanceTests
 
         // Compare complete expected game file/directory/raw-byte set:
         // Initial game with d3d11 replaced by B, original config exact, dxgi absent, sentinel/empty dirs retained
-        var expectedFinalGameFiles = new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase)
+        var expectedFinalGameFiles = new Dictionary<string, byte[]>(initialGameSnapshot.Files, StringComparer.OrdinalIgnoreCase)
         {
-            ["Game.exe"] = exeBytes,
-            ["d3d11.dll"] = nativeD3d11B,
-            ["dxvk.conf"] = originalConf,
-            ["sentinel.bin"] = sentinelBytes
+            ["d3d11.dll"] = nativeD3d11B
         };
-        var expectedFinalGameDirs = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        {
-            Path.Combine("Data", "EmptySubDir")
-        };
-        var expectedFinalGameSnapshot = new ResourceSnapshot(expectedFinalGameFiles, expectedFinalGameDirs);
+        var expectedFinalGameSnapshot = new ResourceSnapshot(expectedFinalGameFiles, initialGameSnapshot.Directories);
         AssertResourcesUnchanged(expectedFinalGameSnapshot, gameDir);
 
         // Historical ownership set assertions and cleared active versions
