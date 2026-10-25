@@ -1,0 +1,333 @@
+name: Process lifecycle helper CPU checks
+
+on:
+  pull_request:
+    paths:
+      - tools/validation/QueueFixture.cpp
+      - .github/workflows/process-lifecycle-helper-cpu.yml
+      - docs/validation/PACKAGED-PROCESS-LIFECYCLE-V1.md
+      - docs/ai-journal/2026-10-25-process-lifecycle-helper-gemini-session-1.md
+
+permissions:
+  contents: read
+
+jobs:
+  helper-cpu:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Identify source and preinstalled compiler
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git rev-parse HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'Source identity unavailable' }
+          Get-FileHash tools/validation/QueueFixture.cpp -Algorithm SHA256
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+          if (!(Test-Path -LiteralPath $vswhere)) { throw 'Preinstalled vswhere unavailable; no installation permitted' }
+          $installation = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if ($LASTEXITCODE -ne 0 -or @($installation).Count -ne 1 -or [string]::IsNullOrWhiteSpace($installation)) {
+            throw 'Preinstalled MSVC unavailable; no installation permitted'
+          }
+          $devcmd = Join-Path $installation 'Common7/Tools/VsDevCmd.bat'
+          if (!(Test-Path -LiteralPath $devcmd)) { throw 'Preinstalled compiler environment unavailable' }
+          "HELPER_VS=$installation" >> $env:GITHUB_ENV
+
+      - name: Compile x64 helper and inspect headers and imports
+        shell: cmd
+        run: |
+          call "%HELPER_VS%\Common7\Tools\VsDevCmd.bat" -no_logo -arch=x64 -host_arch=x64
+          if errorlevel 1 exit /b 1
+          mkdir "%RUNNER_TEMP%\helper-build"
+          if errorlevel 1 exit /b 1
+          cl /nologo /std:c++17 /EHsc /W4 /WX /O1 /MT tools\validation\QueueFixture.cpp /Fe:"%RUNNER_TEMP%\helper-build\QueueFixture.exe" /Fo:"%RUNNER_TEMP%\helper-build\QueueFixture.obj"
+          if errorlevel 1 exit /b 1
+          dumpbin /headers "%RUNNER_TEMP%\helper-build\QueueFixture.exe" > "%RUNNER_TEMP%\helper-build\headers.txt"
+          if errorlevel 1 exit /b 1
+          dumpbin /dependents "%RUNNER_TEMP%\helper-build\QueueFixture.exe" > "%RUNNER_TEMP%\helper-build\dependents.txt"
+          if errorlevel 1 exit /b 1
+          dumpbin /imports "%RUNNER_TEMP%\helper-build\QueueFixture.exe" > "%RUNNER_TEMP%\helper-build\imports.txt"
+          if errorlevel 1 exit /b 1
+
+      - name: Verify static imports, architecture, and toolchain protections
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $buildDir = Join-Path $env:RUNNER_TEMP 'helper-build'
+
+          # 1. Architecture check
+          $headers = Get-Content -LiteralPath (Join-Path $buildDir 'headers.txt') -Raw
+          if ($headers -notmatch '(?i)machine\s*\(\s*x64\s*\)') {
+            throw 'QueueFixture.exe architecture is not x64; refusing execution'
+          }
+          Write-Output 'Verified: target architecture is x64'
+
+          # 2. Graphics dependencies check
+          $dependents = Get-Content -LiteralPath (Join-Path $buildDir 'dependents.txt') -Raw
+          Write-Output '=== Dumpbin Dependents ==='
+          Write-Output $dependents
+          if ($dependents -match '(?im)^\s*(?:d3d(?:8|9|10(?:_1|core)?|11|12)|dxgi|vulkan-1)\.dll\s*$') {
+            throw 'Unexpected graphics dependency detected in QueueFixture.exe; refusing execution'
+          }
+
+          # 3. Forbidden imports check (networking, process spawning, library loading)
+          $imports = Get-Content -LiteralPath (Join-Path $buildDir 'imports.txt') -Raw
+          if ($imports -match '(?im)^\s*(?:CreateProcess[AW]?|ShellExecute[AW]?|WinExec)\b') {
+            throw 'Forbidden process-spawning API imported; refusing execution'
+          }
+          if ($imports -match '(?im)^\s*(?:LoadLibrary[AW]?|LoadLibraryEx[AW]?)\b') {
+            throw 'Forbidden dynamic library loading API imported; refusing execution'
+          }
+          if ($imports -match '(?im)\b(?:ws2_32|wsock32|wininet|winhttp)\.dll\b') {
+            throw 'Forbidden networking library imported; refusing execution'
+          }
+          Write-Output 'Verified: zero graphics dependencies, zero networking, zero process spawning, zero dynamic loading'
+
+      - name: Run bounded smoke tests on fresh cloud fixtures
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $buildDir = Join-Path $env:RUNNER_TEMP 'helper-build'
+          $helperExe = Join-Path $buildDir 'QueueFixture.exe'
+          $testResults = [System.Collections.Generic.List[PSCustomObject]]::new()
+
+          function Run-SmokeCase {
+            param(
+              [string]$Name,
+              [string]$ExeToRun,
+              [string[]]$ArgsList,
+              [int]$ExpectedExitCode,
+              [string]$ExpectedStdoutPattern,
+              [string]$FixtureRoot = $null,
+              [int]$Slot = 1,
+              [scriptblock]$OnReady = $null
+            )
+
+            $startUtc = (Get-Date).ToUniversalTime().ToString('o')
+            $sw = [System.Diagnostics.Stopwatch]::StartNew()
+
+            $psi = [System.Diagnostics.ProcessStartInfo]::new()
+            $psi.FileName = $ExeToRun
+            $psi.Arguments = ($ArgsList -join ' ')
+            $psi.UseShellExecute = $false
+            $psi.RedirectStandardOutput = $true
+            $psi.RedirectStandardError = $true
+            $psi.CreateNoWindow = $true
+
+            $stdoutBuilder = [System.Text.StringBuilder]::new()
+            $proc = [System.Diagnostics.Process]::new()
+            $proc.StartInfo = $psi
+
+            $proc.add_OutputDataReceived({
+              param($s, $e)
+              if ($null -ne $e.Data) {
+                [void]$stdoutBuilder.AppendLine($e.Data)
+              }
+            })
+
+            [void]$proc.Start()
+            $proc.BeginOutputReadLine()
+
+            if ($null -ne $OnReady) {
+              $readyWaitSw = [System.Diagnostics.Stopwatch]::StartNew()
+              $ready = $false
+              while ($readyWaitSw.ElapsedMilliseconds -lt 5000) {
+                if ($stdoutBuilder.ToString() -match 'READY') {
+                  $ready = $true
+                  break
+                }
+                Start-Sleep -Milliseconds 50
+              }
+
+              if (!$ready) {
+                if (![string]::IsNullOrEmpty($FixtureRoot)) {
+                  $stopFile = Join-Path $FixtureRoot "control/stop-$Slot.request"
+                  if (!(Test-Path -LiteralPath $stopFile)) {
+                    [System.IO.File]::WriteAllText($stopFile, 'stop')
+                  }
+                }
+                [void]$proc.WaitForExit(3000)
+                throw "Smoke case '$Name' timed out waiting for READY"
+              }
+
+              & $OnReady $proc $stdoutBuilder
+            }
+
+            $exited = $proc.WaitForExit(5000)
+            if (!$exited) {
+              if (![string]::IsNullOrEmpty($FixtureRoot)) {
+                $stopFile = Join-Path $FixtureRoot "control/stop-$Slot.request"
+                if (!(Test-Path -LiteralPath $stopFile)) {
+                  [System.IO.File]::WriteAllText($stopFile, 'stop')
+                }
+                $exited = $proc.WaitForExit(3000)
+              }
+              if (!$exited) {
+                throw "Smoke case '$Name' failed to exit within bounded wait; refusing forced termination per policy"
+              }
+            }
+
+            $sw.Stop()
+            $endUtc = (Get-Date).ToUniversalTime().ToString('o')
+            $actualExitCode = $proc.ExitCode
+            $actualStdout = $stdoutBuilder.ToString().Trim()
+
+            if ($actualExitCode -ne $ExpectedExitCode) {
+              throw "Smoke case '$Name' failed: expected exit code $ExpectedExitCode, got $actualExitCode. Stdout: '$actualStdout'"
+            }
+
+            if (![string]::IsNullOrEmpty($ExpectedStdoutPattern)) {
+              if ($actualStdout -notmatch $ExpectedStdoutPattern) {
+                throw "Smoke case '$Name' failed: stdout '$actualStdout' did not match pattern '$ExpectedStdoutPattern'"
+              }
+            } elseif (![string]::IsNullOrWhiteSpace($actualStdout)) {
+              throw "Smoke case '$Name' failed: expected empty stdout, got '$actualStdout'"
+            }
+
+            $testResults.Add([PSCustomObject]@{
+              Name = $Name
+              StartUtc = $startUtc
+              EndUtc = $endUtc
+              DurationMs = $sw.ElapsedMilliseconds
+              ExitCode = $actualExitCode
+              Stdout = $actualStdout
+              Passed = $true
+            })
+
+            Write-Output "Smoke check PASS: $Name (exit $actualExitCode in $($sw.ElapsedMilliseconds)ms)"
+          }
+
+          # 1. Invalid argument cases (must exit 2 without entering wait loop)
+          Run-SmokeCase -Name 'InvalidArgs_NoArgs' -ExeToRun $helperExe -ArgsList @() -ExpectedExitCode 2 -ExpectedStdoutPattern ''
+          Run-SmokeCase -Name 'InvalidArgs_WrongFlag' -ExeToRun $helperExe -ArgsList @('--wrong', '1') -ExpectedExitCode 2 -ExpectedStdoutPattern ''
+          Run-SmokeCase -Name 'InvalidArgs_MissingSlot' -ExeToRun $helperExe -ArgsList @('--slot') -ExpectedExitCode 2 -ExpectedStdoutPattern ''
+          Run-SmokeCase -Name 'InvalidArgs_SlotZero' -ExeToRun $helperExe -ArgsList @('--slot', '0') -ExpectedExitCode 2 -ExpectedStdoutPattern ''
+          Run-SmokeCase -Name 'InvalidArgs_SlotFive' -ExeToRun $helperExe -ArgsList @('--slot', '5') -ExpectedExitCode 2 -ExpectedStdoutPattern ''
+          Run-SmokeCase -Name 'InvalidArgs_Slot99' -ExeToRun $helperExe -ArgsList @('--slot', '99') -ExpectedExitCode 2 -ExpectedStdoutPattern ''
+          Run-SmokeCase -Name 'InvalidArgs_ExtraArgs' -ExeToRun $helperExe -ArgsList @('--slot', '1', 'extra') -ExpectedExitCode 2 -ExpectedStdoutPattern ''
+
+          # 2. Invalid layout cases
+          # 2a. Parent directory is helper-build, not target
+          Run-SmokeCase -Name 'InvalidLayout_WrongParentDir' -ExeToRun $helperExe -ArgsList @('--slot', '1') -ExpectedExitCode 3 -ExpectedStdoutPattern ''
+
+          # 2b. Renamed executable in valid layout
+          $badNameRoot = Join-Path $env:RUNNER_TEMP 'fixture-badname'
+          New-Item -ItemType Directory -Path (Join-Path $badNameRoot 'target') -Force | Out-Null
+          New-Item -ItemType Directory -Path (Join-Path $badNameRoot 'control') -Force | Out-Null
+          $badExe = Join-Path $badNameRoot 'target/RenamedFixture.exe'
+          Copy-Item -LiteralPath $helperExe -Destination $badExe
+          Run-SmokeCase -Name 'InvalidLayout_WrongExeName' -ExeToRun $badExe -ArgsList @('--slot', '1') -ExpectedExitCode 3 -ExpectedStdoutPattern ''
+
+          # 2c. Control directory missing
+          $noCtrlRoot = Join-Path $env:RUNNER_TEMP 'fixture-noctrl'
+          New-Item -ItemType Directory -Path (Join-Path $noCtrlRoot 'target') -Force | Out-Null
+          $noCtrlExe = Join-Path $noCtrlRoot 'target/QueueFixture.exe'
+          Copy-Item -LiteralPath $helperExe -Destination $noCtrlExe
+          Run-SmokeCase -Name 'InvalidLayout_MissingControlDir' -ExeToRun $noCtrlExe -ArgsList @('--slot', '1') -ExpectedExitCode 4 -ExpectedStdoutPattern ''
+
+          # 3. Valid lifecycle: slot 1 ready, stays alive, stops normally on marker
+          $fixtureRoot = Join-Path $env:RUNNER_TEMP 'fixture-valid'
+          New-Item -ItemType Directory -Path (Join-Path $fixtureRoot 'target') -Force | Out-Null
+          New-Item -ItemType Directory -Path (Join-Path $fixtureRoot 'control') -Force | Out-Null
+          $validExe = Join-Path $fixtureRoot 'target/QueueFixture.exe'
+          Copy-Item -LiteralPath $helperExe -Destination $validExe
+
+          Run-SmokeCase -Name 'ValidLifecycle_Slot1' -ExeToRun $validExe -ArgsList @('--slot', '1') -ExpectedExitCode 0 -ExpectedStdoutPattern '^READY\s+STOPPED$' -FixtureRoot $fixtureRoot -Slot 1 -OnReady {
+            param($p, $out)
+            if ($p.HasExited) { throw 'Process exited before observation interval' }
+            Start-Sleep -Milliseconds 500
+            if ($p.HasExited) { throw 'Process failed to stay alive across observation interval' }
+            $stopFile = Join-Path $fixtureRoot 'control/stop-1.request'
+            [System.IO.File]::WriteAllText($stopFile, 'stop')
+          }
+
+          # 4. Same slot relaunch refuses when stop marker is already present
+          Run-SmokeCase -Name 'RefuseRelaunch_Slot1_MarkerPresent' -ExeToRun $validExe -ArgsList @('--slot', '1') -ExpectedExitCode 5 -ExpectedStdoutPattern ''
+
+          # 5. Another slot demonstrates independence in the same fixture
+          Run-SmokeCase -Name 'SlotIndependence_Slot2' -ExeToRun $validExe -ArgsList @('--slot', '2') -ExpectedExitCode 0 -ExpectedStdoutPattern '^READY\s+STOPPED$' -FixtureRoot $fixtureRoot -Slot 2 -OnReady {
+            param($p, $out)
+            if ($p.HasExited) { throw 'Slot 2 exited prematurely' }
+            Start-Sleep -Milliseconds 500
+            if ($p.HasExited) { throw 'Slot 2 failed to stay alive' }
+            $stopFile = Join-Path $fixtureRoot 'control/stop-2.request'
+            [System.IO.File]::WriteAllText($stopFile, 'stop')
+          }
+
+          # 6. Directory marker error yields nonzero
+          $dirFixtureRoot = Join-Path $env:RUNNER_TEMP 'fixture-dirmarker'
+          New-Item -ItemType Directory -Path (Join-Path $dirFixtureRoot 'target') -Force | Out-Null
+          New-Item -ItemType Directory -Path (Join-Path $dirFixtureRoot 'control') -Force | Out-Null
+          $dirExe = Join-Path $dirFixtureRoot 'target/QueueFixture.exe'
+          Copy-Item -LiteralPath $helperExe -Destination $dirExe
+
+          Run-SmokeCase -Name 'DirectoryMarker_Slot3' -ExeToRun $dirExe -ArgsList @('--slot', '3') -ExpectedExitCode 6 -ExpectedStdoutPattern '^READY$' -FixtureRoot $dirFixtureRoot -Slot 3 -OnReady {
+            param($p, $out)
+            if ($p.HasExited) { throw 'Slot 3 exited prematurely' }
+            $dirMarker = Join-Path $dirFixtureRoot 'control/stop-3.request'
+            New-Item -ItemType Directory -Path $dirMarker -Force | Out-Null
+          }
+
+          # Save smoke results JSON
+          $smokeResultsPath = Join-Path $buildDir 'smoke-results.json'
+          $testResults | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $smokeResultsPath -Encoding utf8
+          Write-Output "All 14 smoke tests passed successfully. Results saved to $smokeResultsPath"
+
+      - name: Generate provenance and inventory report
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $buildDir = Join-Path $env:RUNNER_TEMP 'helper-build'
+          $artifactDir = Join-Path $env:RUNNER_TEMP 'artifact'
+          New-Item -ItemType Directory -Path $artifactDir -Force | Out-Null
+
+          Copy-Item -LiteralPath (Join-Path $buildDir 'QueueFixture.exe') -Destination (Join-Path $artifactDir 'QueueFixture.exe')
+          Copy-Item -LiteralPath 'tools/validation/QueueFixture.cpp' -Destination (Join-Path $artifactDir 'QueueFixture.cpp')
+          Copy-Item -LiteralPath (Join-Path $buildDir 'headers.txt') -Destination (Join-Path $artifactDir 'headers.txt')
+          Copy-Item -LiteralPath (Join-Path $buildDir 'dependents.txt') -Destination (Join-Path $artifactDir 'dependents.txt')
+          Copy-Item -LiteralPath (Join-Path $buildDir 'imports.txt') -Destination (Join-Path $artifactDir 'imports.txt')
+          Copy-Item -LiteralPath (Join-Path $buildDir 'smoke-results.json') -Destination (Join-Path $artifactDir 'smoke-results.json')
+
+          $sourceHash = (Get-FileHash -LiteralPath 'tools/validation/QueueFixture.cpp' -Algorithm SHA256).Hash.ToLowerInvariant()
+          $headSha = & git rev-parse HEAD
+          $treeSha = (& git log -1 --format=%T HEAD).Trim()
+
+          $filesInventory = @()
+          Get-ChildItem -LiteralPath $artifactDir -File | ForEach-Object {
+            $h = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            $filesInventory += [PSCustomObject]@{
+              Name = $_.Name
+              Sha256 = $h
+              SizeBytes = $_.Length
+            }
+          }
+
+          $provenance = [PSCustomObject]@{
+            SourcePath = 'tools/validation/QueueFixture.cpp'
+            SourceSha256 = $sourceHash
+            TargetArchitecture = 'x64'
+            CompilerFlags = '/std:c++17 /EHsc /W4 /WX /O1 /MT'
+            PrHeadSha = if ($env:GITHUB_SHA) { $env:GITHUB_SHA } else { $headSha }
+            PrBaseSha = '1cc3339e9eadaa443f6776928cce57953644e3d9'
+            CheckoutCommit = $headSha
+            CheckoutTree = $treeSha
+            GithubRunId = $env:GITHUB_RUN_ID
+            GithubRunAttempt = $env:GITHUB_RUN_ATTEMPT
+            GeneratedUtc = (Get-Date).ToUniversalTime().ToString('o')
+            Files = $filesInventory
+          }
+
+          $provenancePath = Join-Path $artifactDir 'provenance.json'
+          $provenance | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $provenancePath -Encoding utf8
+          Write-Output "Provenance manifest written to $provenancePath:"
+          Get-Content -LiteralPath $provenancePath
+
+      - name: Upload process lifecycle helper artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: process-lifecycle-helper-x64
+          path: ${{ runner.temp }}/artifact
+          if-no-files-found: error
