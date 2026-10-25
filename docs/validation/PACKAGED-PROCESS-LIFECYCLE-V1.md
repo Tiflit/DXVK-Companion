@@ -95,3 +95,307 @@ The following requirements and disclosures govern any subsequent host trial prof
    - A queued Enable action on an already enabled target may currently be represented in state models as pending `Install`; verification must evaluate requested version and final behavior rather than inventing an artificial enum requirement.
 4. **Execution Authority**:
    - No host execution or desktop bridging is authorized by Stage A.
+
+## Stage B Candidate Execution Profile (Preparation Only — #301)
+
+> [!IMPORTANT]
+> **CANDIDATE ONLY — PENDING SEPARATE HUMAN ADOPTION AND CURRENT READINESS**
+> This candidate profile is prepared under Issue [#301](https://github.com/Tiflit/DXVK-Companion/issues/301). It is **NOT adopted** by this task.
+> Execution on the owner's workstation or laptop remains **NOT RUN (pending human authorization)**.
+> Only a subsequent separately adopted FINAL execution profile plus current laptop readiness can activate the actual trial. Human alone merges.
+
+### 1. Cryptographic and Artifact Bindings
+
+All binaries, archives, and tools must match the following frozen identities exactly before execution:
+
+| Asset / Component | Source Revision / Identity | Artifact / Release ID | Size (Bytes) | SHA-256 Digest |
+|---|---|---|---:|---|
+| Trial Script (`ProcessLifecycleTrial.ps1`) | Current PR (`tools/validation/ProcessLifecycleTrial.ps1`) | N/A (in-repo) | - | `d3299d5b69cb8cb256f1389711cf4a499655df6fcec200387da4f8086af3f018` |
+| Helper Archive (`process-lifecycle-helper-x64`) | Checkout `a62356d0acb918aec957463a0b670747763ae544`, Tree `4ebbd76b0f30ca7768d737361ea8b540da5a8a2e` | Run `40220299641`, Artifact `12609386490` | 81,717 | `f75ec55738e6ca3c1a0cd0a342aefeaa0fb3addd03538f03f2ac7a43295750de` |
+| Helper Executable (`QueueFixture.exe`) | Source SHA256 `19229f59a4ab2504634cf9cd1bfff131a89a68e539808ab68c5459451e6ce0cc` | Extracted from `12609386490` | 138,240 | `f720cecae0f13eeef6d9b5e2d259b51df97b37bc3347b241071e25e8c1548d70` |
+| Companion Application Archive | Commit `46e6f22363cddcfa88d805b588b6ac30173bc9dc` | Run `40025768457`, Artifact `12532606945` | 66,410,238 | `32660fd3e3ed87385e47940d490db2e6ab93daad7e993fe4225dd157232b3b14` |
+| Companion Executable (`DXVK-Companion.exe`) | Built from `46e6f22363cddcfa88d805b588b6ac30173bc9dc` | Extracted from `12532606945` | 71,772,524 | `25012c67ade281e0d4585282bf485e4783a1f7c486018f8d1a038c5f2dc18ca4` |
+| Companion Provenance Manifest | Run `40025768457` provenance JSON | Artifact `12531339870` | 323 | `c9b46817bc60e89b3848ecf2705cb929b718cf950689a15071c65933d2a0537d` |
+| Official DXVK v3.1.1 Archive | Upstream `doitsujin/dxvk` tag `v3.1.1` | Release `381956359`, Asset `566164743` | 18,041,512 | `40565b4a724aadc4433fa4e010b4b23916d9b1f1baeee64e17186db94f54e608` |
+| Official DXVK v3.1 Archive | Upstream `doitsujin/dxvk` tag `v3.1` | Release `357524779`, Asset `534051057` | 18,056,721 | `30f9cc326874be344285582275446968cfa4c069db31ce56df312d6644179154` |
+
+### 2. Host, Resources, and Isolation Constraints
+- **Host Alias**: `DEVELOPMENT_LAPTOP` (normal, standard non-admin Windows desktop session).
+- **Dedicated Root**: Fresh directory `<FIXTURE_ROOT>` beneath the local development storage (e.g. `D:\dev\validation\process-lifecycle-v1-20261025`). Must not exist prior to setup. All writes strictly confined within `<FIXTURE_ROOT>`.
+- **Directory Layout**:
+  - `<FIXTURE_ROOT>/target/`: Contains `QueueFixture.exe`, inert baseline `d3d11.dll`, noncanonical `dxvk.conf`, `sentinel.txt`, and later dispatched DXVK DLLs.
+  - `<FIXTURE_ROOT>/control/`: Supervisor stop-marker directory (`stop-N.request`).
+  - `<FIXTURE_ROOT>/baseline/`: Immutable copies of original baseline files and `baseline_manifest.json`.
+  - `<FIXTURE_ROOT>/companion/`: Extracted DXVK Companion application, settings, and profile store.
+  - `<FIXTURE_ROOT>/companion/Profiles/`: Contains `game-library.json` and `Backups/`.
+  - `<FIXTURE_ROOT>/runtime/`: Child single-file extraction target (`DOTNET_BUNDLE_EXTRACT_BASE_DIR`).
+  - `<FIXTURE_ROOT>/snapshots/`: Immutable checkpoint snapshots with cryptographic manifests.
+  - `<FIXTURE_ROOT>/logs/`: Supervised process execution and verification logs.
+  - `<FIXTURE_ROOT>/state.json`: Batch lifecycle state and execution accounting.
+- **Resource Limits and Caps**:
+  - Maximum Total Trial Duration: `120 minutes` (from first setup action, including operator pauses).
+  - Maximum Helper Starts: `4 starts`.
+  - Maximum Companion Starts: `8 starts`.
+  - Maximum Root Storage Footprint: `2 GiB`.
+  - Helper Execution Watchdog: `25 minutes` finite cap per helper instance.
+- **Process Supervision**:
+  - Permits at most one Companion and one QueueFixture process running simultaneously.
+  - `UseShellExecute = false`, non-admin session, fixed working directories, redirected standard I/O drains.
+  - Zero force-kill: process exits must occur normally via stop-markers or user GUI exit.
+
+### 3. Sequential Manual Operator Instructions
+
+All commands must be executed sequentially from PowerShell in the repository root:
+
+```powershell
+$FixtureRoot = "D:\dev\validation\process-lifecycle-v1-20261025"
+$Script = "tools\validation\ProcessLifecycleTrial.ps1"
+$AdoptionToken = "ADOPTED-PROCESS-LIFECYCLE-V1"
+```
+
+#### Step 1: Verification of Prerequisites and Readiness
+1. Confirm the human owner has adopted this profile and verified that no games or other Companion instances are running.
+2. Confirm downloaded helper archive `process-lifecycle-helper-x64.zip` and companion archive `DXVK-Companion-win-x64.zip` match frozen pins.
+
+#### Step 2: Bounded Fixture Setup
+Execute setup to initialize directory structure, extract binaries, and seed baseline:
+```powershell
+& powershell -NoProfile -ExecutionPolicy Bypass -File $Script -Action Setup `
+    -FixtureRoot $FixtureRoot `
+    -HelperZipPath "path\to\process-lifecycle-helper-x64.zip" `
+    -CompanionZipPath "path\to\DXVK-Companion-win-x64.zip"
+```
+Verify exit code is 0 and output confirms successful initialization.
+
+#### Step 3: Checkpoint 0 — Initial Baseline Snapshot
+Capture immutable baseline snapshot:
+```powershell
+& powershell -NoProfile -ExecutionPolicy Bypass -File $Script -Action Take-Snapshot `
+    -FixtureRoot $FixtureRoot `
+    -CheckpointName "Checkpoint0-Baseline"
+```
+
+#### Step 4: Companion Acquisition Run (v3.1 and v3.1.1)
+Launch Companion with discovery disabled to acquire release assets:
+```powershell
+& powershell -NoProfile -ExecutionPolicy Bypass -File $Script -Action Start-Companion `
+    -FixtureRoot $FixtureRoot `
+    -NoAutoDiscovery `
+    -AdoptionAttestation $AdoptionToken
+```
+1. In GUI, download official DXVK v3.1 and v3.1.1 into the local release library.
+2. Verify target `QueueFixture Trial Target` remains disabled with no pending actions.
+3. Close Companion normally from GUI.
+
+#### Step 5: Start Helper Slot 1
+Launch helper instance 1:
+```powershell
+& powershell -NoProfile -ExecutionPolicy Bypass -File $Script -Action Start-Helper `
+    -FixtureRoot $FixtureRoot `
+    -Slot 1 `
+    -AdoptionAttestation $AdoptionToken
+```
+Verify helper outputs `READY` and stays active.
+
+#### Step 6: Queue Enable v3.1 in Companion
+Launch Companion:
+```powershell
+& powershell -NoProfile -ExecutionPolicy Bypass -File $Script -Action Start-Companion `
+    -FixtureRoot $FixtureRoot `
+    -AdoptionAttestation $AdoptionToken
+```
+1. In GUI, navigate to `QueueFixture Trial Target` and queue **Enable** with DXVK v3.1.
+2. Observe queue status: action is deferred due to active `QueueFixture.exe` process.
+
+#### Step 7: Checkpoint 1 — Verify Durable Deferral
+Capture snapshot and verify target files remain strictly unmutated:
+```powershell
+& powershell -NoProfile -ExecutionPolicy Bypass -File $Script -Action Take-Snapshot `
+    -FixtureRoot $FixtureRoot `
+    -CheckpointName "Checkpoint1-Pending-Slot1"
+& powershell -NoProfile -ExecutionPolicy Bypass -File $Script -Action Verify-Checkpoint `
+    -FixtureRoot $FixtureRoot `
+    -CheckpointName "Checkpoint1-Pending-Slot1" `
+    -ExpectedType "Pending" `
+    -ExpectedVersion "v3.1"
+```
+
+#### Step 8: Companion Restart Check
+1. Close Companion normally via GUI (helper slot 1 remains running).
+2. Restart Companion:
+```powershell
+& powershell -NoProfile -ExecutionPolicy Bypass -File $Script -Action Start-Companion `
+    -FixtureRoot $FixtureRoot `
+    -AdoptionAttestation $AdoptionToken
+```
+3. Observe that pending intent is durably preserved across restart.
+
+#### Step 9: Checkpoint 2 — Pending Across Restart Snapshot
+```powershell
+& powershell -NoProfile -ExecutionPolicy Bypass -File $Script -Action Take-Snapshot `
+    -FixtureRoot $FixtureRoot `
+    -CheckpointName "Checkpoint2-Pending-Restart"
+```
+
+#### Step 10: Stop Helper Slot 1 and Observe Exit Dispatch
+Normally stop helper slot 1:
+```powershell
+& powershell -NoProfile -ExecutionPolicy Bypass -File $Script -Action Stop-Helper `
+    -FixtureRoot $FixtureRoot `
+    -Slot 1
+```
+1. Confirm helper exits normally with exit code 0 (`STOPPED`).
+2. Observe Companion ProcessMonitor exit watcher triggering automatic dispatch.
+3. Observe GUI reporting successful installation of DXVK v3.1.
+4. Close Companion normally via GUI.
+
+#### Step 11: Checkpoint 3 — Verify Applied v3.1
+Capture snapshot and verify deployed files and backups:
+```powershell
+& powershell -NoProfile -ExecutionPolicy Bypass -File $Script -Action Take-Snapshot `
+    -FixtureRoot $FixtureRoot `
+    -CheckpointName "Checkpoint3-Applied-Slot1"
+& powershell -NoProfile -ExecutionPolicy Bypass -File $Script -Action Verify-Checkpoint `
+    -FixtureRoot $FixtureRoot `
+    -CheckpointName "Checkpoint3-Applied-Slot1" `
+    -ExpectedType "Applied" `
+    -ExpectedVersion "v3.1"
+```
+
+#### Step 12: Helper Slot 2 and Version Change to v3.1.1
+1. Start helper slot 2:
+```powershell
+& powershell -NoProfile -ExecutionPolicy Bypass -File $Script -Action Start-Helper `
+    -FixtureRoot $FixtureRoot `
+    -Slot 2 `
+    -AdoptionAttestation $AdoptionToken
+```
+2. Start Companion:
+```powershell
+& powershell -NoProfile -ExecutionPolicy Bypass -File $Script -Action Start-Companion `
+    -FixtureRoot $FixtureRoot `
+    -AdoptionAttestation $AdoptionToken
+```
+3. In GUI, select DXVK version `v3.1.1` and queue version change. Observe deferral.
+4. Capture snapshot `Checkpoint4-Pending-Slot2`:
+```powershell
+& powershell -NoProfile -ExecutionPolicy Bypass -File $Script -Action Take-Snapshot `
+    -FixtureRoot $FixtureRoot `
+    -CheckpointName "Checkpoint4-Pending-Slot2"
+```
+5. Normally stop helper slot 2:
+```powershell
+& powershell -NoProfile -ExecutionPolicy Bypass -File $Script -Action Stop-Helper `
+    -FixtureRoot $FixtureRoot `
+    -Slot 2
+```
+6. Observe exit-dispatched version change to v3.1.1 in Companion. Close Companion.
+7. Capture and verify `Checkpoint5-Applied-Slot2`:
+```powershell
+& powershell -NoProfile -ExecutionPolicy Bypass -File $Script -Action Take-Snapshot `
+    -FixtureRoot $FixtureRoot `
+    -CheckpointName "Checkpoint5-Applied-Slot2"
+& powershell -NoProfile -ExecutionPolicy Bypass -File $Script -Action Verify-Checkpoint `
+    -FixtureRoot $FixtureRoot `
+    -CheckpointName "Checkpoint5-Applied-Slot2" `
+    -ExpectedType "Applied" `
+    -ExpectedVersion "v3.1.1"
+```
+
+#### Step 13: Helper Slot 3 and Reapply Action
+1. Start helper slot 3:
+```powershell
+& powershell -NoProfile -ExecutionPolicy Bypass -File $Script -Action Start-Helper `
+    -FixtureRoot $FixtureRoot `
+    -Slot 3 `
+    -AdoptionAttestation $AdoptionToken
+```
+2. Start Companion:
+```powershell
+& powershell -NoProfile -ExecutionPolicy Bypass -File $Script -Action Start-Companion `
+    -FixtureRoot $FixtureRoot `
+    -AdoptionAttestation $AdoptionToken
+```
+3. In GUI, queue **Reapply**. Observe deferral while helper slot 3 is running.
+4. Normally stop helper slot 3:
+```powershell
+& powershell -NoProfile -ExecutionPolicy Bypass -File $Script -Action Stop-Helper `
+    -FixtureRoot $FixtureRoot `
+    -Slot 3
+```
+5. Observe exit-dispatched reapplication. Close Companion.
+6. Capture and verify `Checkpoint6-Applied-Slot3`:
+```powershell
+& powershell -NoProfile -ExecutionPolicy Bypass -File $Script -Action Take-Snapshot `
+    -FixtureRoot $FixtureRoot `
+    -CheckpointName "Checkpoint6-Applied-Slot3"
+& powershell -NoProfile -ExecutionPolicy Bypass -File $Script -Action Verify-Checkpoint `
+    -FixtureRoot $FixtureRoot `
+    -CheckpointName "Checkpoint6-Applied-Slot3" `
+    -ExpectedType "Applied" `
+    -ExpectedVersion "v3.1.1"
+```
+
+#### Step 14: Helper Slot 4 and Disable / Restore Action
+1. Start helper slot 4:
+```powershell
+& powershell -NoProfile -ExecutionPolicy Bypass -File $Script -Action Start-Helper `
+    -FixtureRoot $FixtureRoot `
+    -Slot 4 `
+    -AdoptionAttestation $AdoptionToken
+```
+2. Start Companion:
+```powershell
+& powershell -NoProfile -ExecutionPolicy Bypass -File $Script -Action Start-Companion `
+    -FixtureRoot $FixtureRoot `
+    -AdoptionAttestation $AdoptionToken
+```
+3. In GUI, select **Disable / Restore**. Observe deferral while helper slot 4 is running.
+4. Normally stop helper slot 4:
+```powershell
+& powershell -NoProfile -ExecutionPolicy Bypass -File $Script -Action Stop-Helper `
+    -FixtureRoot $FixtureRoot `
+    -Slot 4
+```
+5. Observe exit-dispatched restoration. Close Companion.
+6. Capture and verify `Checkpoint7-Restored-Slot4`:
+```powershell
+& powershell -NoProfile -ExecutionPolicy Bypass -File $Script -Action Take-Snapshot `
+    -FixtureRoot $FixtureRoot `
+    -CheckpointName "Checkpoint7-Restored-Slot4"
+& powershell -NoProfile -ExecutionPolicy Bypass -File $Script -Action Verify-Checkpoint `
+    -FixtureRoot $FixtureRoot `
+    -CheckpointName "Checkpoint7-Restored-Slot4" `
+    -ExpectedType "Restored"
+```
+Verify that target files bit-for-bit match the initial baseline (`d3d11.dll`, `dxvk.conf`, `sentinel.txt`), `dxgi.dll` is strictly absent, and backup history is preserved.
+
+#### Step 15: Final Restart and Replay Verification
+1. Start Companion with no new intent:
+```powershell
+& powershell -NoProfile -ExecutionPolicy Bypass -File $Script -Action Start-Companion `
+    -FixtureRoot $FixtureRoot `
+    -AdoptionAttestation $AdoptionToken
+```
+2. Confirm target remains clean and restored with no unintended replay of prior actions.
+3. Close Companion.
+
+#### Step 16: End Batch and Finalize Evidence
+End the batch to seal all state:
+```powershell
+& powershell -NoProfile -ExecutionPolicy Bypass -File $Script -Action End-Batch `
+    -FixtureRoot $FixtureRoot
+```
+Confirm status reports batch ended, start counts within budgets, and all checkpoints passed.
+
+### 4. Stop and Hold Rules
+1. **Helper Watchdog or Abnormal Exit**:
+   - If helper exits with code `8` (`WATCHDOG`) or code `2..7`, the trial must pause immediately.
+   - The operator must close Companion normally before taking any recovery action.
+2. **Nonfixture Detection or Unexpected Game Discovery**:
+   - If Companion detects an unrelated running application or game on the host, close Companion immediately.
+   - Do not continue or whitelist the detected application.
+3. **Budget Exhaustion**:
+   - If total duration reaches `120 minutes`, helper starts reach `4`, or companion starts reach `8`, the script refuses further starts.
+   - Retain all evidence, snapshots, and logs in `<FIXTURE_ROOT>` for audit. No automatic deletion or cleanup.
+
