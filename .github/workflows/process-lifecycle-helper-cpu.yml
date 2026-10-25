@@ -141,14 +141,15 @@ jobs:
           Write-Output 'Running parser negative controls...'
 
           # Control 1: Unexpected DLL rejection
-          $badDeps = Parse-DumpbinDependents -Text @"
-  Image has the following dependencies:
-
-    KERNEL32.dll
-    USER32.dll
-
-  Summary
-"@
+          $badDepsText = @(
+            '  Image has the following dependencies:',
+            '',
+            '    KERNEL32.dll',
+            '    USER32.dll',
+            '',
+            '  Summary'
+          ) -join "`r`n"
+          $badDeps = Parse-DumpbinDependents -Text $badDepsText
           $caught1 = $false
           try {
             Assert-ImportPolicy -Dependents $badDeps -Symbols ([System.Collections.Generic.List[string]]@('Sleep'))
@@ -159,20 +160,21 @@ jobs:
           Write-Output 'Negative control PASS: Unexpected DLL rejected'
 
           # Control 2: Hint-prefixed LoadLibraryW rejection
-          $badImps1 = Parse-DumpbinImports -Text @"
-Section contains the following imports:
-
-  KERNEL32.dll
-             14001F000 Import Address Table
-             140026A60 Import Name Table
-                     0 time date stamp
-                     0 Index of first forwarder reference
-
-                         123 LoadLibraryW
-                         456 Sleep
-
-  Summary
-"@
+          $badImpsText1 = @(
+            'Section contains the following imports:',
+            '',
+            '  KERNEL32.dll',
+            '             14001F000 Import Address Table',
+            '             140026A60 Import Name Table',
+            '                     0 time date stamp',
+            '                     0 Index of first forwarder reference',
+            '',
+            '                         123 LoadLibraryW',
+            '                         456 Sleep',
+            '',
+            '  Summary'
+          ) -join "`r`n"
+          $badImps1 = Parse-DumpbinImports -Text $badImpsText1
           $caught2 = $false
           try {
             Assert-ImportPolicy -Dependents ([System.Collections.Generic.List[string]]@('KERNEL32.dll')) -Symbols $badImps1
@@ -183,19 +185,20 @@ Section contains the following imports:
           Write-Output 'Negative control PASS: Hint-prefixed LoadLibraryW rejected'
 
           # Control 3: Hint-prefixed CreateProcessW rejection
-          $badImps2 = Parse-DumpbinImports -Text @"
-Section contains the following imports:
-
-  KERNEL32.dll
-             14001F000 Import Address Table
-             140026A60 Import Name Table
-                     0 time date stamp
-                     0 Index of first forwarder reference
-
-                          4A CreateProcessW
-
-  Summary
-"@
+          $badImpsText2 = @(
+            'Section contains the following imports:',
+            '',
+            '  KERNEL32.dll',
+            '             14001F000 Import Address Table',
+            '             140026A60 Import Name Table',
+            '                     0 time date stamp',
+            '                     0 Index of first forwarder reference',
+            '',
+            '                          4A CreateProcessW',
+            '',
+            '  Summary'
+          ) -join "`r`n"
+          $badImps2 = Parse-DumpbinImports -Text $badImpsText2
           $caught3 = $false
           try {
             Assert-ImportPolicy -Dependents ([System.Collections.Generic.List[string]]@('KERNEL32.dll')) -Symbols $badImps2
@@ -569,14 +572,13 @@ Section contains the following imports:
             if ($null -eq $simResult -or $simResult.ResidualAlive -ne $false -or $simResult.ExitCode -ne 0) {
               throw "Harness negative control failed: normal stop was not achieved on failure. Residual: $($simResult.ResidualAlive), Exit: $($simResult.ExitCode)"
             }
-            Write-Output "Harness negative control PASS: Simulated failure triggered normal marker-driven child exit (exit 0, ResidualAlive=false)"
+            Write-Output 'Harness negative control PASS: Simulated failure triggered normal marker-driven child exit (exit 0, ResidualAlive=false)'
 
             # 9. Harness Negative Control: Stream drain timeout detection (R1)
             $negTimeoutCaught = $false
             try {
               Invoke-FixtureCase -Name 'SimulatedTimeout_Detection' -ExeToRun $validExe -ArgsList @('--slot', '1') -FixtureRoot $fixtureRoot -Slot 1 -TimeoutMs 500 -Action {
                 param($p, $out, $err, $root, $s, $timeout)
-                # Wait for something with an impossibly short timeout
                 Start-Sleep -Milliseconds 1200
                 throw 'Should not reach here'
               }
@@ -590,7 +592,7 @@ Section contains the following imports:
             if ($null -eq $timeoutResult -or $timeoutResult.ResidualAlive -ne $false) {
               throw "Harness negative control failed: timeout handling did not clean up child. Residual: $($timeoutResult.ResidualAlive)"
             }
-            Write-Output "Harness negative control PASS: Bounded timeout detected and child stopped cleanly"
+            Write-Output 'Harness negative control PASS: Bounded timeout detected and child stopped cleanly'
 
           } catch {
             $suiteFailed = $true
@@ -611,13 +613,8 @@ Section contains the following imports:
         uses: actions/upload-artifact@v6
         with:
           name: helper-smoke-failure-diagnostics
-          path: |
-            ${{ runner.temp }}/helper-build/smoke-results.json
-            ${{ runner.temp }}/helper-build/headers.txt
-            ${{ runner.temp }}/helper-build/dependents.txt
-            ${{ runner.temp }}/helper-build/imports.txt
-            ${{ runner.temp }}/helper-build/cl-version.txt
-          if-no-files-found: warn
+          path: ${{ runner.temp }}/helper-build/
+          if-no-files-found: ignore
 
       - name: Generate provenance and inventory report
         shell: pwsh
