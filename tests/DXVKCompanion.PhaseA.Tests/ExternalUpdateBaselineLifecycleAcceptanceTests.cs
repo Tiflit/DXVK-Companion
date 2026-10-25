@@ -151,6 +151,120 @@ public sealed class ExternalUpdateBaselineLifecycleAcceptanceTests
         }
     }
 
+    private sealed record OwnershipSnapshot(
+        GraphicsApi ProfileApi,
+        string? ProfileArchitecture,
+        string? ProfileDxvkVersion,
+        bool ProfileDxvkEnabled,
+        bool ProfileHudEnabled,
+        int ProfileFrameLimit,
+        RestorationState RestorationState,
+        string? ManagedDxvkVersion,
+        string? ManagedDxvkArchitecture,
+        ManagementMode PolicyMode,
+        string? PolicyPinnedVersion,
+        bool ConfigHudEnabled,
+        int ConfigFrameLimit,
+        bool ConfigFrameLimitEnabled,
+        Dictionary<string, ManagedFileRecordSnapshot> ManagedFiles,
+        Dictionary<string, ExecutableRecordSnapshot> Executables);
+
+    private sealed record ManagedFileRecordSnapshot(
+        string RelativePath,
+        ManagedFileState CurrentState,
+        FileOriginalState OriginalState,
+        string? OriginalSha256,
+        string? ExpectedManagedSha256,
+        string? BackupRelativePath,
+        string? ManagedDxvkVersion);
+
+    private sealed record ExecutableRecordSnapshot(
+        string RelativePath,
+        GraphicsApi LastKnownApi,
+        string? LastKnownArchitecture);
+
+    private static OwnershipSnapshot CaptureOwnership(GameProfile profile, GameInstallation installation)
+    {
+        var managedFiles = installation.ManagedFiles.ToDictionary(
+            f => f.RelativePath,
+            f => new ManagedFileRecordSnapshot(
+                f.RelativePath,
+                f.CurrentState,
+                f.OriginalState,
+                f.OriginalSha256,
+                f.ExpectedManagedSha256,
+                f.BackupRelativePath,
+                f.ManagedDxvkVersion),
+            StringComparer.OrdinalIgnoreCase);
+
+        var executables = installation.Executables.ToDictionary(
+            e => e.RelativePath,
+            e => new ExecutableRecordSnapshot(
+                e.RelativePath,
+                e.LastKnownApi,
+                e.LastKnownArchitecture),
+            StringComparer.OrdinalIgnoreCase);
+
+        return new OwnershipSnapshot(
+            profile.Api,
+            profile.Architecture,
+            profile.DxvkVersion,
+            profile.DxvkEnabled,
+            profile.HudEnabled,
+            profile.FrameLimit,
+            installation.RestorationState,
+            installation.ManagedDxvkVersion,
+            installation.ManagedDxvkArchitecture,
+            installation.ManagementPolicy.Mode,
+            installation.ManagementPolicy.PinnedDxvkVersion,
+            installation.Configuration.HudEnabled,
+            installation.Configuration.FrameLimit,
+            installation.Configuration.FrameLimitEnabled,
+            managedFiles,
+            executables);
+    }
+
+    private static void AssertOwnershipUnchanged(OwnershipSnapshot expected, GameProfile profile, GameInstallation installation)
+    {
+        Assert.Equal(expected.ProfileApi, profile.Api);
+        Assert.Equal(expected.ProfileArchitecture, profile.Architecture);
+        Assert.Equal(expected.ProfileDxvkVersion, profile.DxvkVersion);
+        Assert.Equal(expected.ProfileDxvkEnabled, profile.DxvkEnabled);
+        Assert.Equal(expected.ProfileHudEnabled, profile.HudEnabled);
+        Assert.Equal(expected.ProfileFrameLimit, profile.FrameLimit);
+
+        Assert.Equal(expected.RestorationState, installation.RestorationState);
+        Assert.Equal(expected.ManagedDxvkVersion, installation.ManagedDxvkVersion);
+        Assert.Equal(expected.ManagedDxvkArchitecture, installation.ManagedDxvkArchitecture);
+        Assert.Equal(expected.PolicyMode, installation.ManagementPolicy.Mode);
+        Assert.Equal(expected.PolicyPinnedVersion, installation.ManagementPolicy.PinnedDxvkVersion);
+        Assert.Equal(expected.ConfigHudEnabled, installation.Configuration.HudEnabled);
+        Assert.Equal(expected.ConfigFrameLimit, installation.Configuration.FrameLimit);
+        Assert.Equal(expected.ConfigFrameLimitEnabled, installation.Configuration.FrameLimitEnabled);
+
+        Assert.Equal(expected.Executables.Count, installation.Executables.Count);
+        foreach (var (relPath, expExe) in expected.Executables)
+        {
+            var actualExe = installation.FindExecutable(relPath);
+            Assert.NotNull(actualExe);
+            Assert.Equal(expExe.LastKnownApi, actualExe!.LastKnownApi);
+            Assert.Equal(expExe.LastKnownArchitecture, actualExe.LastKnownArchitecture);
+        }
+
+        Assert.Equal(expected.ManagedFiles.Count, installation.ManagedFiles.Count);
+        foreach (var (relPath, expFile) in expected.ManagedFiles)
+        {
+            var actualFile = installation.FindManagedFile(relPath);
+            Assert.NotNull(actualFile);
+            Assert.Equal(expFile.CurrentState, actualFile!.CurrentState);
+            Assert.Equal(expFile.OriginalState, actualFile.OriginalState);
+            Assert.Equal(expFile.OriginalSha256, actualFile.OriginalSha256);
+            Assert.Equal(expFile.ExpectedManagedSha256, actualFile.ExpectedManagedSha256);
+            Assert.Equal(expFile.BackupRelativePath, actualFile.BackupRelativePath);
+            Assert.Equal(expFile.ManagedDxvkVersion, actualFile.ManagedDxvkVersion);
+        }
+    }
+
     private sealed record ServiceStack(
         string AppDataDir,
         CacheStore CacheStore,
@@ -160,7 +274,8 @@ public sealed class ExternalUpdateBaselineLifecycleAcceptanceTests
         MultiFileTransactionEngine TransactionEngine,
         DxvkInstaller Installer,
         DxvkRollback Rollback,
-        DxvkManager Manager);
+        DxvkManager Manager,
+        SettingsStore SettingsStore);
 
     private static ServiceStack ConstructServiceStack(string appDataDir, HttpClient httpClient)
     {
@@ -170,6 +285,7 @@ public sealed class ExternalUpdateBaselineLifecycleAcceptanceTests
         string backupsDir = Path.Combine(profilesDir, "Backups");
         string cacheFile = Path.Combine(appDataDir, "Cache", "release-cache.json");
         string sourcesDir = Path.Combine(appDataDir, "Sources");
+        string settingsFile = Path.Combine(appDataDir, "settings.json");
 
         var cacheStore = new CacheStore(cacheFile);
         var github = new DxvkGithubClient(httpClient, cacheStore);
@@ -179,11 +295,13 @@ public sealed class ExternalUpdateBaselineLifecycleAcceptanceTests
         var installer = SyntheticSafetyFixture.CreateInstaller(httpClient, engine, libraryStore, sourcesDir);
         var rollback = SyntheticSafetyFixture.CreateRollback(engine, libraryStore);
         var manager = SyntheticSafetyFixture.CreateManager(installer, rollback, github, profileStore, libraryStore);
+        var settingsStore = SettingsStore.Load(settingsFile);
+
         profileStore.LeaseCoordinator = libraryStore.LeaseCoordinator;
         github.ProcessLeaseCoordinator = libraryStore.LeaseCoordinator;
         installer.GetReleaseAcquirer(github).ProcessLeaseCoordinator = libraryStore.LeaseCoordinator;
 
-        return new ServiceStack(appDataDir, cacheStore, github, profileStore, libraryStore, engine, installer, rollback, manager);
+        return new ServiceStack(appDataDir, cacheStore, github, profileStore, libraryStore, engine, installer, rollback, manager, settingsStore);
     }
 
     [Theory]
@@ -276,7 +394,10 @@ public sealed class ExternalUpdateBaselineLifecycleAcceptanceTests
         transport.RejectAllRequests = true;
         int requestCountAfterAcquisition = transport.RequestCount;
 
-        // 2. Setup profile and installation records with UseGlobal exact older selector (v2.5)
+        // 2. Setup profile and installation records with UseGlobal exact older selector (v2.5) under isolated Manual settings
+        stack1.SettingsStore.GlobalPolicy = GlobalManagementPolicy.Manual;
+        Assert.True(stack1.SettingsStore.Save(out _));
+
         var profile1 = stack1.ProfileStore.GetOrCreate(exePath);
         profile1.Api = GraphicsApi.DX11;
         profile1.Architecture = architecture;
@@ -294,14 +415,9 @@ public sealed class ExternalUpdateBaselineLifecycleAcceptanceTests
         stack1.LibraryStore.Save(inst1);
         string installationId = inst1.Id;
 
-        // Install through manager without targetVersion override
+        // Install through manager without targetVersion override (single attempt)
         var installResult = await stack1.Manager.RequestEnableByPathAsync(profile1);
-        if (installResult != DxvkActionResult.Applied && stack1.Manager.LastRefusalReason?.Contains("retry shortly", StringComparison.OrdinalIgnoreCase) == true)
-        {
-            await Task.Delay(100);
-            installResult = await stack1.Manager.RequestEnableByPathAsync(profile1);
-        }
-        Assert.True(installResult == DxvkActionResult.Applied, $"RequestEnable failed: {stack1.Manager.LastRefusalReason}");
+        Assert.Equal(DxvkActionResult.Applied, installResult);
         Assert.Equal(requestCountAfterAcquisition, transport.RequestCount);
 
         // Verify selected DLL bytes, exact generated config keys, actual version, expected ownership hashes, backups
@@ -343,6 +459,7 @@ public sealed class ExternalUpdateBaselineLifecycleAcceptanceTests
         Assert.Equal(nativeD3d11A, File.ReadAllBytes(d3d11Backup1Path));
         Assert.Equal(ComputeSha256(nativeD3d11A), d3d11Record1.OriginalSha256);
         Assert.Equal(FileIdentity.Capture(d3d11Backup1Path).Sha256, d3d11Record1.OriginalSha256);
+        Assert.Equal(ComputeSha256(File.ReadAllBytes(d3d11Path)), d3d11Record1.ExpectedManagedSha256);
 
         // dxgi was absent in original game: synthetic Missing baseline, null backup path
         var dxgiRecord1 = inst1AfterInstall.FindManagedFile("dxgi.dll");
@@ -350,6 +467,8 @@ public sealed class ExternalUpdateBaselineLifecycleAcceptanceTests
         Assert.Equal("v2.5", dxgiRecord1!.ManagedDxvkVersion);
         Assert.Equal(FileOriginalState.Missing, dxgiRecord1.OriginalState);
         Assert.Null(dxgiRecord1.BackupRelativePath);
+        Assert.Null(dxgiRecord1.OriginalSha256);
+        Assert.Equal(ComputeSha256(File.ReadAllBytes(dxgiPath)), dxgiRecord1.ExpectedManagedSha256);
 
         // dxvk.conf was present: backed up with FileOriginalState.Existing
         var confRecord1 = inst1AfterInstall.FindManagedFile("dxvk.conf");
@@ -361,13 +480,28 @@ public sealed class ExternalUpdateBaselineLifecycleAcceptanceTests
         Assert.True(File.Exists(confBackup1Path));
         Assert.Equal(originalConf, File.ReadAllBytes(confBackup1Path));
         Assert.Equal(ComputeSha256(originalConf), confRecord1.OriginalSha256);
+        Assert.Equal(ComputeSha256(File.ReadAllBytes(confPath)), confRecord1.ExpectedManagedSha256);
 
         // 3. Reconstruct stack from disk & persist an older pending Update intent
         var stack2 = ConstructServiceStack(appDataDir, httpClient);
+        Assert.Equal(GlobalManagementPolicy.Manual, stack2.SettingsStore.GlobalPolicy);
+        var profile2 = stack2.ProfileStore.GetOrCreate(exePath);
+        Assert.Equal(GraphicsApi.DX11, profile2.Api);
+        Assert.Equal(architecture, profile2.Architecture);
+        Assert.Equal("v2.5", profile2.DxvkVersion);
+        Assert.True(profile2.HudEnabled);
+        Assert.Equal(60, profile2.FrameLimit);
+
         var inst2 = stack2.LibraryStore.FindByInstallationPath(gameDir);
         Assert.NotNull(inst2);
         Assert.Equal(RestorationState.Managed, inst2!.RestorationState);
         Assert.Equal("v2.5", inst2.ManagedDxvkVersion);
+        Assert.Equal(ManagementMode.UseGlobal, inst2.ManagementPolicy.Mode);
+        Assert.Equal("v2.5", inst2.ManagementPolicy.PinnedDxvkVersion);
+        var exeRecord2 = inst2.FindExecutable("Game.exe");
+        Assert.NotNull(exeRecord2);
+        Assert.Equal(GraphicsApi.DX11, exeRecord2!.LastKnownApi);
+        Assert.Equal(architecture, exeRecord2.LastKnownArchitecture);
 
         inst2.PendingAction = PendingAction.Update("v2.5", "Synthetic queued update while game running");
         stack2.LibraryStore.Save(inst2);
@@ -376,12 +510,25 @@ public sealed class ExternalUpdateBaselineLifecycleAcceptanceTests
         byte[] nativeD3d11B = Encoding.UTF8.GetBytes($"native-d3d11-version-B:{architecture}");
         File.WriteAllBytes(d3d11Path, nativeD3d11B);
 
+        // Snapshot complete raw game, backup, and source resources after B replacement before inspection
+        var gameSnapshotWithB = SnapshotResources(gameDir);
+        var backupsSnapshotBeforeInspection = SnapshotResources(backupsDir);
+        var sourcesSnapshotBeforeInspection = SnapshotResources(sourcesDir);
+
         // Reconstruct stack from disk & inspect through real ManagedFileInspector
         var stack3 = ConstructServiceStack(appDataDir, httpClient);
+        Assert.Equal(GlobalManagementPolicy.Manual, stack3.SettingsStore.GlobalPolicy);
+        var profile3 = stack3.ProfileStore.GetOrCreate(exePath);
+        Assert.Equal(GraphicsApi.DX11, profile3.Api);
+        Assert.Equal(architecture, profile3.Architecture);
+        Assert.Equal("v2.5", profile3.DxvkVersion);
+
         var inst3 = stack3.LibraryStore.FindByInstallationPath(gameDir);
         Assert.NotNull(inst3);
         Assert.NotNull(inst3!.PendingAction);
         Assert.True(inst3.PendingAction.IsPending);
+        Assert.Equal(ManagementMode.UseGlobal, inst3.ManagementPolicy.Mode);
+        Assert.Equal("v2.5", inst3.ManagementPolicy.PinnedDxvkVersion);
 
         var inspector3 = new ManagedFileInspector(stack3.LibraryStore);
         bool changed3 = inspector3.InspectInstallation(inst3);
@@ -396,25 +543,32 @@ public sealed class ExternalUpdateBaselineLifecycleAcceptanceTests
         Assert.Equal(ManagedFileState.ExternallyChanged, d3d11Record3!.CurrentState);
         Assert.Equal(FileOriginalState.Existing, d3d11Record3.OriginalState);
 
-        // Original A / config baselines/backups, source bytes, and game set remain untouched
+        // Complete raw resource sets and bytes remain untouched by inspection
+        AssertResourcesUnchanged(gameSnapshotWithB, gameDir);
+        AssertResourcesUnchanged(backupsSnapshotBeforeInspection, backupsDir);
+        AssertResourcesUnchanged(sourcesSnapshotBeforeInspection, sourcesDir);
+
+        // Original A / config baselines/backups remain untouched
         Assert.Equal(nativeD3d11A, File.ReadAllBytes(Path.Combine(backupsDir, d3d11Record3.BackupRelativePath!)));
         Assert.Equal(ComputeSha256(nativeD3d11A), d3d11Record3.OriginalSha256);
         Assert.Equal(originalConf, File.ReadAllBytes(Path.Combine(backupsDir, inst3.FindManagedFile("dxvk.conf")!.BackupRelativePath!)));
         Assert.Equal(FileOriginalState.Missing, inst3.FindManagedFile("dxgi.dll")!.OriginalState);
         Assert.Null(inst3.FindManagedFile("dxgi.dll")!.BackupRelativePath);
-        AssertResourcesUnchanged(acquiredSourcesSnapshot, sourcesDir);
-
-        Assert.Equal(nativeD3d11B, File.ReadAllBytes(d3d11Path));
-        Assert.Equal(Encoding.UTF8.GetBytes($"v2.5:{architecture}:dxgi"), File.ReadAllBytes(dxgiPath));
-        Assert.Equal(sentinelBytes, File.ReadAllBytes(sentinelPath));
-        Assert.True(Directory.Exists(emptySubDir));
 
         // Reload, repeat inspection, and run pending dispatch
         var stack4 = ConstructServiceStack(appDataDir, httpClient);
+        Assert.Equal(GlobalManagementPolicy.Manual, stack4.SettingsStore.GlobalPolicy);
+        var profile4 = stack4.ProfileStore.GetOrCreate(exePath);
+        Assert.Equal(GraphicsApi.DX11, profile4.Api);
+        Assert.Equal(architecture, profile4.Architecture);
+        Assert.Equal("v2.5", profile4.DxvkVersion);
+
         var inst4 = stack4.LibraryStore.FindByInstallationPath(gameDir);
         Assert.NotNull(inst4);
         Assert.Equal(RestorationState.AttentionRequired, inst4!.RestorationState);
         Assert.Null(inst4.PendingAction);
+        Assert.Equal(ManagementMode.UseGlobal, inst4.ManagementPolicy.Mode);
+        Assert.Equal("v2.5", inst4.ManagementPolicy.PinnedDxvkVersion);
 
         var inspector4 = new ManagedFileInspector(stack4.LibraryStore);
         bool changed4 = inspector4.InspectInstallation(inst4);
@@ -430,14 +584,15 @@ public sealed class ExternalUpdateBaselineLifecycleAcceptanceTests
         Assert.Equal(RestorationState.AttentionRequired, inst4AfterDispatch!.RestorationState);
         Assert.Null(inst4AfterDispatch.PendingAction);
 
-        // Game files and baselines not overwritten by stale dispatch
-        Assert.Equal(nativeD3d11B, File.ReadAllBytes(d3d11Path));
-        Assert.Equal(Encoding.UTF8.GetBytes($"v2.5:{architecture}:dxgi"), File.ReadAllBytes(dxgiPath));
+        // Complete raw resource sets and bytes remain untouched by repeat inspection and pending dispatch
+        AssertResourcesUnchanged(gameSnapshotWithB, gameDir);
+        AssertResourcesUnchanged(backupsSnapshotBeforeInspection, backupsDir);
+        AssertResourcesUnchanged(sourcesSnapshotBeforeInspection, sourcesDir);
+
         Assert.Equal(nativeD3d11A, File.ReadAllBytes(Path.Combine(backupsDir, inst4AfterDispatch.FindManagedFile("d3d11.dll")!.BackupRelativePath!)));
         Assert.Equal(ComputeSha256(nativeD3d11A), inst4AfterDispatch.FindManagedFile("d3d11.dll")!.OriginalSha256);
 
         // 4. Authorized Reapply with updateBaseline = true
-        var profile4 = stack4.ProfileStore.GetOrCreate(exePath);
         var reapplyResult = await stack4.Manager.RequestReapplyByPathAsync(profile4, updateBaseline: true);
         Assert.Equal(DxvkActionResult.Applied, reapplyResult);
         Assert.Equal(requestCountAfterAcquisition, transport.RequestCount);
@@ -471,6 +626,7 @@ public sealed class ExternalUpdateBaselineLifecycleAcceptanceTests
         Assert.Equal(nativeD3d11B, File.ReadAllBytes(d3d11UpdatedBackupPath));
         Assert.Equal(ComputeSha256(nativeD3d11B), d3d11RecordReapplied.OriginalSha256);
         Assert.Equal(FileIdentity.Capture(d3d11UpdatedBackupPath).Sha256, d3d11RecordReapplied.OriginalSha256);
+        Assert.Equal(ComputeSha256(File.ReadAllBytes(d3d11Path)), d3d11RecordReapplied.ExpectedManagedSha256);
 
         // Original A is NO LONGER the active restore baseline
         Assert.NotEqual(ComputeSha256(nativeD3d11A), d3d11RecordReapplied.OriginalSha256);
@@ -481,27 +637,45 @@ public sealed class ExternalUpdateBaselineLifecycleAcceptanceTests
         Assert.Equal(FileOriginalState.Existing, confRecordReapplied!.OriginalState);
         Assert.Equal(originalConf, File.ReadAllBytes(Path.Combine(backupsDir, confRecordReapplied.BackupRelativePath!)));
         Assert.Equal(ComputeSha256(originalConf), confRecordReapplied.OriginalSha256);
+        Assert.Equal(ComputeSha256(File.ReadAllBytes(confPath)), confRecordReapplied.ExpectedManagedSha256);
 
         // dxgi Missing baseline unchanged
         var dxgiRecordReapplied = inst4Reapplied.FindManagedFile("dxgi.dll");
         Assert.NotNull(dxgiRecordReapplied);
         Assert.Equal(FileOriginalState.Missing, dxgiRecordReapplied!.OriginalState);
         Assert.Null(dxgiRecordReapplied.BackupRelativePath);
+        Assert.Null(dxgiRecordReapplied.OriginalSha256);
+        Assert.Equal(ComputeSha256(File.ReadAllBytes(dxgiPath)), dxgiRecordReapplied.ExpectedManagedSha256);
 
         // 5. Reload, persist newer exact selector (v2.6) and Update through normal manager
         var stack5 = ConstructServiceStack(appDataDir, httpClient);
+        Assert.Equal(GlobalManagementPolicy.Manual, stack5.SettingsStore.GlobalPolicy);
         var profile5 = stack5.ProfileStore.GetOrCreate(exePath);
         var inst5 = stack5.LibraryStore.FindByInstallationPath(gameDir);
         Assert.NotNull(inst5);
 
-        profile5.DxvkVersion = "v2.6";
-        stack5.ProfileStore.Save(profile5);
-        inst5!.ManagementPolicy.PinnedDxvkVersion = "v2.6";
+        // Verify reloaded UseGlobal/exact selector/API/architecture intent before modifying
+        Assert.Equal(GraphicsApi.DX11, profile5.Api);
+        Assert.Equal(architecture, profile5.Architecture);
+        Assert.Equal("v2.5", profile5.DxvkVersion);
+        Assert.Equal(ManagementMode.UseGlobal, inst5!.ManagementPolicy.Mode);
+        Assert.Equal("v2.5", inst5.ManagementPolicy.PinnedDxvkVersion);
+        var exeRecord5 = inst5.FindExecutable("Game.exe");
+        Assert.NotNull(exeRecord5);
+        Assert.Equal(GraphicsApi.DX11, exeRecord5!.LastKnownApi);
+        Assert.Equal(architecture, exeRecord5.LastKnownArchitecture);
+
+        // Change ONLY persisted ManagementPolicy selector (do not preassign profile5.DxvkVersion)
+        inst5.ManagementPolicy.PinnedDxvkVersion = "v2.6";
         stack5.LibraryStore.Save(inst5);
 
         var updateResult = await stack5.Manager.RequestUpdateByPathAsync(profile5);
         Assert.Equal(DxvkActionResult.Applied, updateResult);
         Assert.Equal(requestCountAfterAcquisition, transport.RequestCount);
+
+        // Require manager to update actual version
+        var reloadedProfile5 = stack5.ProfileStore.GetOrCreate(exePath);
+        Assert.Equal("v2.6", reloadedProfile5.DxvkVersion);
 
         // Verify newer architecture bytes and owned hashes
         Assert.Equal(Encoding.UTF8.GetBytes($"v2.6:{architecture}:d3d11"), File.ReadAllBytes(d3d11Path));
@@ -510,7 +684,6 @@ public sealed class ExternalUpdateBaselineLifecycleAcceptanceTests
         var inst5Updated = stack5.LibraryStore.FindByInstallationPath(gameDir);
         Assert.NotNull(inst5Updated);
         Assert.Equal("v2.6", inst5Updated!.ManagedDxvkVersion);
-        Assert.Equal("v2.6", profile5.DxvkVersion);
 
         // Version B and config restoration baselines unchanged across update
         var d3d11RecordUpdated = inst5Updated.FindManagedFile("d3d11.dll");
@@ -518,21 +691,34 @@ public sealed class ExternalUpdateBaselineLifecycleAcceptanceTests
         Assert.Equal(FileOriginalState.Existing, d3d11RecordUpdated!.OriginalState);
         Assert.Equal(nativeD3d11B, File.ReadAllBytes(Path.Combine(backupsDir, d3d11RecordUpdated.BackupRelativePath!)));
         Assert.Equal(ComputeSha256(nativeD3d11B), d3d11RecordUpdated.OriginalSha256);
+        Assert.Equal(ComputeSha256(File.ReadAllBytes(d3d11Path)), d3d11RecordUpdated.ExpectedManagedSha256);
 
         var confRecordUpdated = inst5Updated.FindManagedFile("dxvk.conf");
         Assert.NotNull(confRecordUpdated);
         Assert.Equal(FileOriginalState.Existing, confRecordUpdated!.OriginalState);
         Assert.Equal(originalConf, File.ReadAllBytes(Path.Combine(backupsDir, confRecordUpdated.BackupRelativePath!)));
         Assert.Equal(ComputeSha256(originalConf), confRecordUpdated.OriginalSha256);
+        Assert.Equal(ComputeSha256(File.ReadAllBytes(confPath)), confRecordUpdated.ExpectedManagedSha256);
 
         var dxgiRecordUpdated = inst5Updated.FindManagedFile("dxgi.dll");
         Assert.NotNull(dxgiRecordUpdated);
         Assert.Equal(FileOriginalState.Missing, dxgiRecordUpdated!.OriginalState);
         Assert.Null(dxgiRecordUpdated.BackupRelativePath);
+        Assert.Null(dxgiRecordUpdated.OriginalSha256);
+        Assert.Equal(ComputeSha256(File.ReadAllBytes(dxgiPath)), dxgiRecordUpdated.ExpectedManagedSha256);
 
         // 6. Reload and Disable normally
         var stack6 = ConstructServiceStack(appDataDir, httpClient);
+        Assert.Equal(GlobalManagementPolicy.Manual, stack6.SettingsStore.GlobalPolicy);
         var profile6 = stack6.ProfileStore.GetOrCreate(exePath);
+        var inst6BeforeDisable = stack6.LibraryStore.FindByInstallationPath(gameDir);
+        Assert.NotNull(inst6BeforeDisable);
+
+        Assert.Equal(GraphicsApi.DX11, profile6.Api);
+        Assert.Equal(architecture, profile6.Architecture);
+        Assert.Equal("v2.6", profile6.DxvkVersion);
+        Assert.Equal(ManagementMode.UseGlobal, inst6BeforeDisable!.ManagementPolicy.Mode);
+        Assert.Equal("v2.6", inst6BeforeDisable.ManagementPolicy.PinnedDxvkVersion);
 
         var disableResult = await stack6.Manager.RequestDisableByPathAsync(profile6);
         Assert.Equal(DxvkActionResult.Applied, disableResult);
@@ -673,7 +859,10 @@ public sealed class ExternalUpdateBaselineLifecycleAcceptanceTests
         transport.RejectAllRequests = true;
         int requestCountAfterAcquisition = transport.RequestCount;
 
-        // 2. Initial deployment of v2.5
+        // 2. Initial deployment of v2.5 under isolated Manual settings
+        stack1.SettingsStore.GlobalPolicy = GlobalManagementPolicy.Manual;
+        Assert.True(stack1.SettingsStore.Save(out _));
+
         var profile1 = stack1.ProfileStore.GetOrCreate(exePath);
         profile1.Api = GraphicsApi.DX11;
         profile1.Architecture = architecture;
@@ -691,15 +880,11 @@ public sealed class ExternalUpdateBaselineLifecycleAcceptanceTests
         stack1.LibraryStore.Save(inst1);
 
         var installResult = await stack1.Manager.RequestEnableByPathAsync(profile1);
-        if (installResult != DxvkActionResult.Applied && stack1.Manager.LastRefusalReason?.Contains("retry shortly", StringComparison.OrdinalIgnoreCase) == true)
-        {
-            await Task.Delay(100);
-            installResult = await stack1.Manager.RequestEnableByPathAsync(profile1);
-        }
-        Assert.True(installResult == DxvkActionResult.Applied, $"RequestEnable failed: {stack1.Manager.LastRefusalReason}");
+        Assert.Equal(DxvkActionResult.Applied, installResult);
 
         // 3. Queue pending update action and replace d3d11 with Version B
         var stack2 = ConstructServiceStack(appDataDir, httpClient);
+        Assert.Equal(GlobalManagementPolicy.Manual, stack2.SettingsStore.GlobalPolicy);
         var inst2 = stack2.LibraryStore.FindByInstallationPath(gameDir);
         Assert.NotNull(inst2);
         inst2!.PendingAction = PendingAction.Update("v2.5", "Synthetic queued update while game running");
@@ -710,6 +895,7 @@ public sealed class ExternalUpdateBaselineLifecycleAcceptanceTests
 
         // Inspect through real ManagedFileInspector: cancels pending action, marks AttentionRequired
         var stack3 = ConstructServiceStack(appDataDir, httpClient);
+        Assert.Equal(GlobalManagementPolicy.Manual, stack3.SettingsStore.GlobalPolicy);
         var inst3 = stack3.LibraryStore.FindByInstallationPath(gameDir);
         Assert.NotNull(inst3);
         var inspector3 = new ManagedFileInspector(stack3.LibraryStore);
@@ -735,7 +921,13 @@ public sealed class ExternalUpdateBaselineLifecycleAcceptanceTests
 
         // 5. Reload fresh service stack from disk and request authorized reapply
         var faultStack = ConstructServiceStack(appDataDir, httpClient);
+        Assert.Equal(GlobalManagementPolicy.Manual, faultStack.SettingsStore.GlobalPolicy);
         var faultProfile = faultStack.ProfileStore.GetOrCreate(exePath);
+        var faultInst = faultStack.LibraryStore.FindByInstallationPath(gameDir);
+        Assert.NotNull(faultInst);
+
+        // Capture meaningful complete ownership and profile state before failed authorized reapply request
+        var expectedOwnershipBeforeFailedReapply = CaptureOwnership(faultProfile, faultInst!);
 
         var reapplyResult = await faultStack.Manager.RequestReapplyByPathAsync(faultProfile, updateBaseline: true);
         Assert.Equal(DxvkActionResult.Failed, reapplyResult);
@@ -744,21 +936,23 @@ public sealed class ExternalUpdateBaselineLifecycleAcceptanceTests
 
         // 6. Reload fresh service stack from disk again to inspect durable state and confirm zero mutation
         var reloadStack = ConstructServiceStack(appDataDir, httpClient);
+        Assert.Equal(GlobalManagementPolicy.Manual, reloadStack.SettingsStore.GlobalPolicy);
 
         // Complete raw resource comparisons
         AssertResourcesUnchanged(faultGameSnapshot, gameDir);
         AssertResourcesUnchanged(faultSourcesSnapshot, sourcesDir);
         AssertResourcesUnchanged(faultBackupsSnapshot, backupsDir);
 
-        // Durable ownership semantics: Version B remains in game, Version A remains active restore baseline
-        Assert.Equal(nativeD3d11B, File.ReadAllBytes(d3d11Path));
-
+        var reloadProfile = reloadStack.ProfileStore.GetOrCreate(exePath);
         var reloadInst = reloadStack.LibraryStore.FindByInstallationPath(gameDir);
         Assert.NotNull(reloadInst);
-        Assert.Equal(RestorationState.AttentionRequired, reloadInst!.RestorationState);
-        Assert.Null(reloadInst.PendingAction);
 
-        var reloadD3d11Record = reloadInst.FindManagedFile("d3d11.dll");
+        // Complete ownership and profile state unchanged (exact record set, original/expected hashes, backup paths, versions, architecture, configuration intent)
+        AssertOwnershipUnchanged(expectedOwnershipBeforeFailedReapply, reloadProfile, reloadInst!);
+
+        // Durable ownership semantics: Version B remains in game, Version A remains active restore baseline
+        Assert.Equal(nativeD3d11B, File.ReadAllBytes(d3d11Path));
+        var reloadD3d11Record = reloadInst!.FindManagedFile("d3d11.dll");
         Assert.NotNull(reloadD3d11Record);
         Assert.Equal(FileOriginalState.Existing, reloadD3d11Record!.OriginalState);
         Assert.NotNull(reloadD3d11Record.BackupRelativePath);

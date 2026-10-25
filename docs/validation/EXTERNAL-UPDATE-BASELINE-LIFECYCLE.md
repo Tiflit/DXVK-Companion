@@ -23,22 +23,24 @@ When DXVK manages a game directory and the game platform (e.g. Steam) applies an
 
 Evaluated on DX11 across `x64` and `x32` architectures:
 - **Pre-deployment setup & acquisition**: Acquires official releases `v2.5` and `v2.6` into the shared source library, validating markers, manifests, and architecture payload bytes. Initializes game directory with inert `Game.exe`, native Version A `d3d11.dll`, absent `dxgi.dll`, mixed-newline/no-final-newline original `dxvk.conf` with lookalike keys (`dxvk.hudExtra`, `dxvk.maxFrameRateTarget`) and user lines, sentinel file, and meaningful empty directory (`Data/EmptySubDir`).
-- **Initial installation**: Deploys `v2.5` with explicit HUD and frame limiting choices under `UseGlobal` manual policy. Verifies deployed DLL bytes, exact generated config keys, `v2.5` version, Version A backup, config backup, and `dxgi.dll` synthetic `Missing` baseline. Reconstructs stack from disk.
-- **Queued pending intent & external update to Version B**: Persists an older pending Update intent (`PendingAction.Update("v2.5", ...)`). Replaces `d3d11.dll` in the game with native Version B bytes. Reconstructs stack from disk and inspects through `ManagedFileInspector`:
+- **Initial installation**: Configures isolated `SettingsStore` Manual global policy (`GlobalManagementPolicy.Manual`). Deploys `v2.5` with explicit HUD and frame limiting choices under `UseGlobal` manual policy without `targetVersion` override. Verifies deployed DLL bytes, exact generated config keys, `v2.5` version, Version A backup, config backup, synthetic `Missing` baseline for `dxgi.dll`, and unconditional `ExpectedManagedSha256` matches against selected game bytes for all three records (`d3d11.dll`, `dxgi.dll`, `dxvk.conf`). Reconstructs stack from disk.
+- **Queued pending intent & external update to Version B**: Reconstructs stack from disk and verifies reloaded Manual settings, UseGlobal policy, exact selector, and API/architecture intent before modification. Persists an older pending Update intent (`PendingAction.Update("v2.5", ...)`). Replaces `d3d11.dll` in the game with native Version B bytes. Captures complete raw snapshots of game, backup, and source directories. Reconstructs stack from disk, re-verifies intent and pending status, and inspects through `ManagedFileInspector`:
   - Verifies `d3d11.dll` transitions to `ExternallyChanged`.
   - Verifies installation transitions to `AttentionRequired`.
   - Verifies stale `PendingAction` is cleared durably.
-  - Verifies Version A and config backups, source files, and game directory remain untouched.
-- **Repeat inspection & pending dispatch no-op**: Reconstructs stack from disk. Repeats inspection (returns `false`, attention retained). Runs `ProcessAllPendingActionsAsync()` (0 dispatched, no stale deployment or overwrite, attention retained).
+  - Compares complete raw file/directory sets and bytes: game, backups, and sources remain completely untouched by inspection.
+  - Verifies Version A and config baselines remain intact on ownership records.
+- **Repeat inspection & pending dispatch no-op**: Reconstructs stack from disk and re-verifies Manual settings and reloaded intent. Repeats inspection (returns `false`, attention retained). Runs `ProcessAllPendingActionsAsync()` (0 dispatched, no stale deployment or overwrite, attention retained). Compares complete raw file/directory sets and bytes: game, backups, and sources remain completely untouched.
 - **Authorized Reapply (`updateBaseline: true`)**: Calls `RequestReapplyByPathAsync(profile, updateBaseline: true)`. Verifies:
   - Returns `Applied`.
   - Deploys `v2.5` DLL bytes and preserves exact config assignments.
   - `d3d11.dll` backup file and `OriginalSha256` now match Version B byte-for-byte and hash-for-hash.
   - Version A is no longer the active restore baseline.
-  - Config backup and `dxgi.dll` `Missing` baseline remain unchanged.
+  - Config backup and `dxgi.dll` `Missing` baseline (`OriginalSha256 == null`) remain unchanged.
+  - Unconditional `ExpectedManagedSha256` comparisons against selected game bytes for DLL and config records.
   - Installation transitions to `RestorationState.Managed` with `ManagedFileState.Consistent`.
-- **Version upgrade (`v2.6`)**: Reconstructs stack from disk. Updates policy to `v2.6` and executes `RequestUpdateByPathAsync(profile)`. Verifies newer release bytes, updated owned hashes, actual-vs-selected versions, and unchanged Version B restoration baseline.
-- **Disable normally & complete restoration**: Reconstructs stack from disk. Executes `RequestDisableByPathAsync(profile)`. Verifies:
+- **Version upgrade (`v2.6`)**: Reconstructs stack from disk and verifies reloaded Manual settings and UseGlobal/exact selector/API/architecture intent before modifying. Modifies only the persisted `ManagementPolicy.PinnedDxvkVersion = "v2.6"` (without preassigning profile `DxvkVersion`), then executes `RequestUpdateByPathAsync(profile)`. Verifies manager updates actual profile and installation versions to `v2.6`, newer release bytes, unconditional `ExpectedManagedSha256` matches against selected game bytes, and unchanged Version B / config restoration baselines.
+- **Disable normally & complete restoration**: Reconstructs stack from disk and verifies reloaded Manual settings and intent before disable. Executes `RequestDisableByPathAsync(profile)`. Verifies:
   - Game directory matches the exact expected final snapshot: initial game with `d3d11.dll` replaced by Version B, original config exact, `dxgi.dll` absent, sentinel and empty directories retained.
   - Exact historical ownership set (`d3d11.dll`, `dxgi.dll`, `dxvk.conf`) with `ManagedDxvkVersion` cleared and historical baselines intact.
   - Complete retained backup and source sets match expected snapshots.
@@ -47,14 +49,16 @@ Evaluated on DX11 across `x64` and `x32` architectures:
 ### 2. Focused failure theory (`ExternalUpdateBaselineLifecycle_CorruptedOrMissingSource_RefusesReapplyBeforeMutation`)
 
 Evaluated on `x64` and `x32` across two fault types (`CorruptedManifest` and `MissingPayloadDll`):
-- Setup game with native Version A `d3d11.dll`, deploy `v2.5`, queue pending update, replace `d3d11.dll` with Version B, and inspect to clear pending action and mark `AttentionRequired`.
+- Setup game with native Version A `d3d11.dll`, configure isolated Manual settings, deploy `v2.5`, queue pending update, replace `d3d11.dll` with Version B, and inspect to clear pending action and mark `AttentionRequired`.
 - Induce source fault in `Sources/v2.5`: corrupt `companion-release.json` with `{}` or delete required payload DLL. Snapshot raw game, source, and backup resources.
-- Reconstruct stack from disk and request authorized reapply (`RequestReapplyByPathAsync(profile, updateBaseline: true)`).
+- Reconstruct stack from disk and capture meaningful complete ownership and profile state before the failed authorized-Reapply request: exact record set, original and expected hashes, backup paths, current states, versions, architecture, and configuration/profile intent.
+- Request authorized reapply (`RequestReapplyByPathAsync(profile, updateBaseline: true)`).
 - Verify refusal: returns `Failed`, `LastRefusalReason` provides descriptive source diagnostic.
 - Reconstruct stack from disk again and verify zero side effects:
   - Raw game resources unchanged: Version B remains in game.
   - Raw source resources unchanged: fault is not repaired or deleted.
   - Raw backup resources unchanged: Version A remains the active restore baseline.
+  - Meaningful complete ownership and profile state completely unchanged: exact record set, original/expected hashes, backup paths, versions, architecture, and configuration intent match pre-request state (excluding incidental diagnostics/timestamps).
   - Installation remains in `AttentionRequired` with `PendingAction == null`.
   - Zero additional HTTP calls.
 
