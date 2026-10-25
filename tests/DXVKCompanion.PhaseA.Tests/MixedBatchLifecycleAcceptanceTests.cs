@@ -792,7 +792,7 @@ public sealed class MixedBatchLifecycleAcceptanceTests
         Assert.Equal("x64", profileA2.Architecture);
         Assert.Equal("v2.5", profileA2.DxvkVersion);
         Assert.True(profileA2.DxvkEnabled);
-        Assert.Equal(ManagementMode.Global, instA2.ManagementPolicy.Mode);
+        Assert.Equal(ManagementMode.UseGlobal, instA2.ManagementPolicy.Mode);
         Assert.Equal("v2.5", instA2.ManagementPolicy.PinnedDxvkVersion);
         Assert.Equal("x64", instA2.ManagedDxvkArchitecture);
         Assert.Equal(GraphicsApi.DX11, instA2.FindExecutable("GameA.exe")!.LastKnownApi);
@@ -803,7 +803,7 @@ public sealed class MixedBatchLifecycleAcceptanceTests
         Assert.Equal("x64", profileB2.Architecture);
         Assert.Equal("v2.5", profileB2.DxvkVersion);
         Assert.True(profileB2.DxvkEnabled);
-        Assert.Equal(ManagementMode.Global, instB2.ManagementPolicy.Mode);
+        Assert.Equal(ManagementMode.UseGlobal, instB2.ManagementPolicy.Mode);
         Assert.Equal("v2.5", instB2.ManagementPolicy.PinnedDxvkVersion);
         Assert.Equal("x64", instB2.ManagedDxvkArchitecture);
         Assert.Equal(GraphicsApi.DX11, instB2.FindExecutable("GameB.exe")!.LastKnownApi);
@@ -814,7 +814,7 @@ public sealed class MixedBatchLifecycleAcceptanceTests
         Assert.Equal("x64", profileC2.Architecture);
         Assert.Equal("v2.5", profileC2.DxvkVersion);
         Assert.True(profileC2.DxvkEnabled);
-        Assert.Equal(ManagementMode.Global, instC2.ManagementPolicy.Mode);
+        Assert.Equal(ManagementMode.UseGlobal, instC2.ManagementPolicy.Mode);
         Assert.Equal("v2.5", instC2.ManagementPolicy.PinnedDxvkVersion);
         Assert.Equal("x64", instC2.ManagedDxvkArchitecture);
         Assert.Equal(GraphicsApi.DX11, instC2.FindExecutable("GameC.exe")!.LastKnownApi);
@@ -824,7 +824,7 @@ public sealed class MixedBatchLifecycleAcceptanceTests
         Assert.Equal(GraphicsApi.DX11, profileD2.Api);
         Assert.Equal("x64", profileD2.Architecture);
         Assert.False(profileD2.DxvkEnabled);
-        Assert.Equal(ManagementMode.Global, instD2.ManagementPolicy.Mode);
+        Assert.Equal(ManagementMode.UseGlobal, instD2.ManagementPolicy.Mode);
         Assert.Equal("v2.5", instD2.ManagementPolicy.PinnedDxvkVersion);
         Assert.Equal(GraphicsApi.DX11, instD2.FindExecutable("GameD.exe")!.LastKnownApi);
         Assert.Equal("x64", instD2.FindExecutable("GameD.exe")!.LastKnownArchitecture);

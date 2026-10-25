@@ -84,3 +84,10 @@ Implemented service-level acceptance coverage in `tests/DXVKCompanion.PhaseA.Tes
      - For Game D in Stage 2: performed deployed DLL bytes, hash, and exact configuration checks before disable (`dxvk.hud == "fps,devinfo"`, `dxvk.maxFrameRate == "60"`, `user.settingD == "4"`, `ExpectedManagedSha256` matching deployed bytes).
      - For Games A, B, C in Stage 2: checked exact config assignments (A: `dxvk.hud`, `dxvk.maxFrameRate`, lookalikes `dxvk.hudExtra`, `dxvk.maxFrameRateTarget`, user key `user.settingA`; B: `dxvk.hud`, `dxvk.maxFrameRate`, lookalikes `dxvk.hudExtra`, `dxvk.maxFrameRateTarget`, user key `user.settingB`; C: only generated keys, no lookalike or user keys).
      - After A/C update in Stage 3: verified exact config assignments for updated Game A and Game C.
+- **Repair Commits & CI**:
+  - Commit `41b8902e73b7e8f5ebcefa46a03c0f7e4add2cc0` (tree `77b64cc05254d23d37bb23e74fdd964effbd7c6b`):
+    - Scope Check Run `40151354536`: Passed (9s).
+    - PR Hygiene Run `40151354529`: Passed (10s).
+    - Workflow Tests Run `40151354534`: Passed (19s).
+    - Build and Test Run `40151354563`: Failed with CS0117 (`ManagementMode.Global` instead of `ManagementMode.UseGlobal` in lines 795, 806, 817, 827).
+  - Repaired enum identifier to `ManagementMode.UseGlobal`.
