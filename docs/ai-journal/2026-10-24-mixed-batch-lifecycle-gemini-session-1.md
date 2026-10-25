@@ -90,4 +90,9 @@ Implemented service-level acceptance coverage in `tests/DXVKCompanion.PhaseA.Tes
     - PR Hygiene Run `40151354529`: Passed (10s).
     - Workflow Tests Run `40151354534`: Passed (19s).
     - Build and Test Run `40151354563`: Failed with CS0117 (`ManagementMode.Global` instead of `ManagementMode.UseGlobal` in lines 795, 806, 817, 827).
-  - Repaired enum identifier to `ManagementMode.UseGlobal`.
+  - Commit `b7f710250b20c05562309995cd13a244288761f0` (tree `085b36ce04878155a96674855b4bb546cd5c53ed`):
+    - Repaired enum identifier to `ManagementMode.UseGlobal`.
+    - Scope Check Run `40151508154`: Passed in 10s.
+    - PR Hygiene Run `40151508197`: Passed in 11s.
+    - Workflow Tests Run `40151508188`: Passed (386 tests in 8.171s).
+    - Build and Test Run `40151508164`: Passed in 1m40s (1,309/1,309 tests passed in 35.49s).
