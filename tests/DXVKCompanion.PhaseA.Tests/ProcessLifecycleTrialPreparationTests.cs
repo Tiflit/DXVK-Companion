@@ -122,7 +122,7 @@ public sealed class ProcessLifecycleTrialPreparationTests
     }
 
     [Fact]
-    public void Script_Exists_And_ParsesWithoutSyntaxErrors()
+    public async Task Script_Exists_And_ParsesWithoutSyntaxErrors()
     {
         AssertHostedCiEnvironment();
 
@@ -149,11 +149,12 @@ public sealed class ProcessLifecycleTrialPreparationTests
 
         bool exited = proc.WaitForExit(10000);
         Assert.True(exited, "AST parser process timed out after 10000ms.");
-        Task.WaitAll(new Task[] { stdoutTask, stderrTask }, 5000);
+        var stdout = await stdoutTask;
+        var stderr = await stderrTask;
 
         Assert.Equal(0, proc.ExitCode);
-        Assert.Contains("PARSED_OK", stdoutTask.Result);
-        Assert.Empty(stderrTask.Result);
+        Assert.Contains("PARSED_OK", stdout);
+        Assert.Empty(stderr);
     }
 
     [Fact]
@@ -392,7 +393,7 @@ public sealed class ProcessLifecycleTrialPreparationTests
         Assert.Single(target.Executables);
         var exe = target.Executables[0];
         Assert.Equal("QueueFixture.exe", exe.RelativePath);
-        Assert.Equal(GraphicsApi.D3D11, exe.LastKnownApi);
+        Assert.Equal(GraphicsApi.DX11, exe.LastKnownApi);
         Assert.Equal("x64", exe.LastKnownArchitecture);
         Assert.Empty(target.ManagedFiles);
         Assert.Null(target.PendingAction);
