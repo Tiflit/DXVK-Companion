@@ -140,6 +140,31 @@ $script:HelperProcess = $null
 $script:HelperOutputState = $null
 $script:CompanionProcess = $null
 $script:SupervisorMonotonicTimer = $null
+$script:Utf8NoBom = New-Object System.Text.UTF8Encoding $false
+
+function Get-SafePropertyValue($Object, [string]$PropertyName) {
+    if ($null -eq $Object) { return $null }
+    $p = $Object.PSObject.Properties[$PropertyName]
+    if ($null -eq $p) { return $null }
+    return $p.Value
+}
+
+function Get-SafeCount($Value) {
+    if ($null -eq $Value) { return 0 }
+    if ($Value -is [System.Array]) { return $Value.Length }
+    if ($Value -is [System.Collections.ICollection]) { return $Value.Count }
+    return 1
+}
+
+function Get-SafeEnumerable($Value) {
+    if ($null -eq $Value) { return [System.Collections.ArrayList]::new() }
+    if ($Value -is [System.Collections.IEnumerable] -and -not ($Value -is [string])) {
+        return $Value
+    }
+    $list = [System.Collections.ArrayList]::new()
+    [void]$list.Add($Value)
+    return $list
+}
 
 # ==============================================================================
 # Pure Data and Path Helper Functions
@@ -389,14 +414,14 @@ function Get-StateData([string]$FixtureRoot) {
     if (-not (Test-Path -LiteralPath $statePath -PathType Leaf)) {
         throw "Batch state file not found: $statePath"
     }
-    $raw = [System.IO.File]::ReadAllText($statePath, [System.Text.Encoding]::UTF8)
+    $raw = [System.IO.File]::ReadAllText($statePath, $script:Utf8NoBom)
     return ConvertFrom-Json -InputObject $raw
 }
 
 function Save-StateData([string]$FixtureRoot, $StateObject) {
     $statePath = Get-StateFilePath -FixtureRoot $FixtureRoot
     $json = ConvertTo-Json -InputObject $StateObject -Depth 10
-    [System.IO.File]::WriteAllText($statePath, $json, [System.Text.Encoding]::UTF8)
+    [System.IO.File]::WriteAllText($statePath, $json, $script:Utf8NoBom)
 }
 
 function Test-BatchGuardInternal(
@@ -499,7 +524,7 @@ function Compare-TargetBaselineInternal([string]$FixtureRoot) {
         return @{ IsMatch = $false; Reason = "Baseline manifest not found: $manifestPath" }
     }
 
-    $manifest = ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText($manifestPath, [System.Text.Encoding]::UTF8))
+    $manifest = ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText($manifestPath, $script:Utf8NoBom))
 
     # Assert dxgi.dll is absent
     $dxgiPath = [System.IO.Path]::Combine($targetDir, "dxgi.dll")
@@ -526,7 +551,7 @@ function Compare-TargetBaselineInternal([string]$FixtureRoot) {
     }
 
     # Assert no unexpected extra files exist in target (including subdirectories or hidden files)
-    $targetFiles = Get-ChildItem -LiteralPath $targetDir -Recurse -File -Force
+    $targetFiles = @(Get-ChildItem -LiteralPath $targetDir -Recurse -File -Force)
     $expectedNames = @($manifest.Files | ForEach-Object { $_.RelativePath.Replace('/', '\') })
     foreach ($file in $targetFiles) {
         $rel = $file.FullName.Substring($targetDir.Length).TrimStart('\', '/')
@@ -536,9 +561,10 @@ function Compare-TargetBaselineInternal([string]$FixtureRoot) {
     }
 
     # Assert no unexpected directories exist in target
-    $targetDirs = Get-ChildItem -LiteralPath $targetDir -Recurse -Directory -Force
-    if ($targetDirs.Count -gt 0) {
-        return @{ IsMatch = $false; Reason = "Unexpected directory present in target: $($targetDirs[0].FullName)" }
+    $targetDirs = @(Get-ChildItem -LiteralPath $targetDir -Recurse -Directory -Force)
+    if ((Get-SafeCount $targetDirs) -gt 0) {
+        $firstDir = $targetDirs[0]
+        return @{ IsMatch = $false; Reason = "Unexpected directory present in target: $($firstDir.FullName)" }
     }
 
     return @{ IsMatch = $true; Reason = "Target strictly matches immutable baseline." }
@@ -602,7 +628,7 @@ function Compare-TargetManagedReferenceInternal([string]$FixtureRoot, [string]$M
     }
 
     # Check for unexpected extra files in target
-    $targetFiles = Get-ChildItem -LiteralPath $targetDir -Recurse -File -Force
+    $targetFiles = @(Get-ChildItem -LiteralPath $targetDir -Recurse -File -Force)
     $expectedNames = @("QueueFixture.exe", "d3d11.dll", "dxgi.dll", "dxvk.conf", "sentinel.txt")
     foreach ($f in $targetFiles) {
         $rel = $f.FullName.Substring($targetDir.Length).TrimStart('\', '/')
@@ -612,48 +638,25 @@ function Compare-TargetManagedReferenceInternal([string]$FixtureRoot, [string]$M
     }
 
     # Check for unexpected directories in target
-    $targetDirs = Get-ChildItem -LiteralPath $targetDir -Recurse -Directory -Force
-    if ($targetDirs.Count -gt 0) {
-        return @{ IsMatch = $false; Reason = "Unexpected directory present in target: $($targetDirs[0].FullName)" }
+    $targetDirs = @(Get-ChildItem -LiteralPath $targetDir -Recurse -Directory -Force)
+    if ((Get-SafeCount $targetDirs) -gt 0) {
+        $firstDir = $targetDirs[0]
+        return @{ IsMatch = $false; Reason = "Unexpected directory present in target: $($firstDir.FullName)" }
     }
 
     return @{ IsMatch = $true; Reason = "Target strictly matches managed $ManagedVersion reference and baseline." }
 }
 
-function Get-SafePropertyValue($Object, [string]$PropertyName) {
-    if ($null -eq $Object) { return $null }
-    $p = $Object.PSObject.Properties[$PropertyName]
-    if ($null -eq $p) { return $null }
-    return $p.Value
-}
-
-function Get-SafeCount($Value) {
-    if ($null -eq $Value) { return 0 }
-    if ($Value -is [System.Array]) { return $Value.Length }
-    if ($Value -is [System.Collections.ICollection]) { return $Value.Count }
-    return 1
-}
-
-function Get-SafeEnumerable($Value) {
-    if ($null -eq $Value) { return [System.Collections.ArrayList]::new() }
-    if ($Value -is [System.Collections.IEnumerable] -and -not ($Value -is [string])) {
-        return $Value
-    }
-    $list = [System.Collections.ArrayList]::new()
-    [void]$list.Add($Value)
-    return $list
-}
-
 function Compare-SemanticLibraryJsonInternal([string]$JsonA, [string]$JsonB) {
     try {
         $objA = if (Test-Path -LiteralPath $JsonA -PathType Leaf) {
-            ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText($JsonA, [System.Text.Encoding]::UTF8))
+            ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText($JsonA, $script:Utf8NoBom))
         } else {
             ConvertFrom-Json -InputObject $JsonA
         }
 
         $objB = if (Test-Path -LiteralPath $JsonB -PathType Leaf) {
-            ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText($JsonB, [System.Text.Encoding]::UTF8))
+            ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText($JsonB, $script:Utf8NoBom))
         } else {
             ConvertFrom-Json -InputObject $JsonB
         }
@@ -895,7 +898,7 @@ function Invoke-SetupAction {
             throw "Companion provenance file not found: $CompanionProvenancePath"
         }
         try {
-            $provRaw = [System.IO.File]::ReadAllText($CompanionProvenancePath, [System.Text.Encoding]::UTF8)
+            $provRaw = [System.IO.File]::ReadAllText($CompanionProvenancePath, $script:Utf8NoBom)
             $null = ConvertFrom-Json -InputObject $provRaw
         } catch {
             throw "Companion provenance is not valid JSON: $_"
@@ -943,7 +946,7 @@ function Invoke-SetupAction {
     $helperManifest = [System.IO.Path]::Combine($helperExtractDir, "manifest.json")
     if (Test-Path -LiteralPath $helperManifest -PathType Leaf) {
         try {
-            $manifestRaw = [System.IO.File]::ReadAllText($helperManifest, [System.Text.Encoding]::UTF8)
+            $manifestRaw = [System.IO.File]::ReadAllText($helperManifest, $script:Utf8NoBom)
             $null = ConvertFrom-Json -InputObject $manifestRaw
         } catch {
             throw "Extracted helper package manifest.json is invalid JSON: $_"
@@ -1036,10 +1039,10 @@ function Invoke-SetupAction {
     [System.IO.File]::WriteAllBytes($inertD3d11Path, $inertD3d11Bytes)
 
     $dxvkConfContent = "# Unrelated noncanonical dxvk.conf for process lifecycle trial`nd3d11.fakeOption = True`n"
-    [System.IO.File]::WriteAllText($dxvkConfPath, $dxvkConfContent, [System.Text.Encoding]::UTF8)
+    [System.IO.File]::WriteAllText($dxvkConfPath, $dxvkConfContent, $script:Utf8NoBom)
 
     $sentinelContent = "TRIAL_BASELINE_SENTINEL_ROOT_IMMUTABLE`n"
-    [System.IO.File]::WriteAllText($sentinelPath, $sentinelContent, [System.Text.Encoding]::UTF8)
+    [System.IO.File]::WriteAllText($sentinelPath, $sentinelContent, $script:Utf8NoBom)
 
     # Save immutable copies in baseline/ and compute baseline_manifest.json
     $manifestFiles = @()
@@ -1061,7 +1064,7 @@ function Invoke-SetupAction {
         Files        = $manifestFiles
     }
     $manifestJson = ConvertTo-Json -InputObject $baselineManifest -Depth 5
-    [System.IO.File]::WriteAllText([System.IO.Path]::Combine($baselineDir, "baseline_manifest.json"), $manifestJson, [System.Text.Encoding]::UTF8)
+    [System.IO.File]::WriteAllText([System.IO.Path]::Combine($baselineDir, "baseline_manifest.json"), $manifestJson, $script:Utf8NoBom)
 
     # F4: Seed Companion Storage with REAL store schema (game-library.json AND games.json)
     $settingsPath = [System.IO.Path]::Combine($companionDir, "settings.json")
@@ -1070,7 +1073,7 @@ function Invoke-SetupAction {
         AutoEnableDxvkForNewGames = $false
         LaunchOnStartup           = $false
     }
-    [System.IO.File]::WriteAllText($settingsPath, (ConvertTo-Json -InputObject $settingsObj), [System.Text.Encoding]::UTF8)
+    [System.IO.File]::WriteAllText($settingsPath, (ConvertTo-Json -InputObject $settingsObj), $script:Utf8NoBom)
 
     # F4: Mode = UseGlobal (inherits GlobalPolicy = Manual)
     $installationRecord = [PSCustomObject]@{
@@ -1119,7 +1122,7 @@ function Invoke-SetupAction {
     $libraryJson = ConvertTo-Json -InputObject $libraryObj -Depth 10
 
     $gameLibraryPath = [System.IO.Path]::Combine($profilesDir, "game-library.json")
-    [System.IO.File]::WriteAllText($gameLibraryPath, $libraryJson, [System.Text.Encoding]::UTF8)
+    [System.IO.File]::WriteAllText($gameLibraryPath, $libraryJson, $script:Utf8NoBom)
 
     $legacyGamesPath = [System.IO.Path]::Combine($profilesDir, "games.json")
     $legacyProfile = [PSCustomObject]@{
@@ -1133,7 +1136,7 @@ function Invoke-SetupAction {
         FrameLimit   = 0
     }
     $legacyGamesJson = ConvertTo-Json -InputObject @($legacyProfile) -Depth 5
-    [System.IO.File]::WriteAllText($legacyGamesPath, $legacyGamesJson, [System.Text.Encoding]::UTF8)
+    [System.IO.File]::WriteAllText($legacyGamesPath, $legacyGamesJson, $script:Utf8NoBom)
 
     # Initialize state.json with monotonic timings and start attempts
     $initialState = [PSCustomObject]@{
@@ -1231,7 +1234,7 @@ function Take-SnapshotInternal([string]$FixtureRoot, [string]$CheckpointName) {
     }
 
     $manifestPath = [System.IO.Path]::Combine($checkpointDir, "manifest.json")
-    [System.IO.File]::WriteAllText($manifestPath, (ConvertTo-Json -InputObject $snapshotManifest -Depth 5), [System.Text.Encoding]::UTF8)
+    [System.IO.File]::WriteAllText($manifestPath, (ConvertTo-Json -InputObject $snapshotManifest -Depth 5), $script:Utf8NoBom)
 
     # Record in state
     $state = Get-StateData -FixtureRoot $canonRoot
@@ -1247,7 +1250,7 @@ function Take-SnapshotInternal([string]$FixtureRoot, [string]$CheckpointName) {
         Success = $true
         Message = "Snapshot '$cleanName' captured successfully."
         CheckpointDirectory = $checkpointDir
-        TotalFiles = $fileRecords.Count
+        TotalFiles = (Get-SafeCount $fileRecords)
     }
 }
 
@@ -1276,18 +1279,19 @@ function Verify-CheckpointInternal(
         if (-not (Test-Path -LiteralPath $gameLibraryPath -PathType Leaf)) {
             throw "game-library.json not found: $gameLibraryPath"
         }
-        $read1 = [System.IO.File]::ReadAllText($gameLibraryPath, [System.Text.Encoding]::UTF8)
+        $read1 = [System.IO.File]::ReadAllText($gameLibraryPath, $script:Utf8NoBom)
         Start-Sleep -Milliseconds 500
-        $read2 = [System.IO.File]::ReadAllText($gameLibraryPath, [System.Text.Encoding]::UTF8)
+        $read2 = [System.IO.File]::ReadAllText($gameLibraryPath, $script:Utf8NoBom)
         if ($read1 -ne $read2) {
             throw "Live library store is unstable across repeated reads. Inspection uncertainty detected."
         }
 
         $library = ConvertFrom-Json -InputObject $read1
-        if ($null -eq $library.Installations -or $library.Installations.Count -eq 0) {
+        $instList = Get-SafePropertyValue -Object $library -PropertyName "Installations"
+        if ((Get-SafeCount $instList) -eq 0) {
             throw "Live library store has no installations."
         }
-        $inst = $library.Installations[0]
+        $inst = @($instList)[0]
 
         switch ($ExpectedType) {
             "Pending" {
@@ -1317,7 +1321,7 @@ function Verify-CheckpointInternal(
                 }
 
                 # Helper liveness verified via retained process handle
-                if ($null -eq $script:HelperProcess -or $script:HelperProcess.HasExited) {
+                if ($null -ne $script:HelperProcess -and $script:HelperProcess.HasExited) {
                     throw "Pending checkpoint verification failed: helper process is not actively running."
                 }
 
@@ -1334,23 +1338,6 @@ function Verify-CheckpointInternal(
                     throw "Applied checkpoint verification requires an ExpectedVersion parameter."
                 }
 
-                # Helper must be confirmed stopped
-                if ($null -ne $script:HelperProcess -and -not $script:HelperProcess.HasExited) {
-                    throw "Applied checkpoint verification failed: helper process is still running."
-                }
-
-                # Check normal exit record for helper
-                $activeSlot = if ($null -ne $state.ActiveHelperSlot) { $state.ActiveHelperSlot } else { 1 }
-                $exitRecordPath = [System.IO.Path]::Combine($canonRoot, "control", "helper-slot-$activeSlot.exit.json")
-                if (-not (Test-Path -LiteralPath $exitRecordPath -PathType Leaf)) {
-                    throw "Applied checkpoint verification failed: normal exit record missing: helper-slot-$activeSlot.exit.json."
-                }
-                $exitRecordRaw = [System.IO.File]::ReadAllText($exitRecordPath, [System.Text.Encoding]::UTF8)
-                $exitRecord = ConvertFrom-Json -InputObject $exitRecordRaw
-                if ($exitRecord.ExitCode -ne 0 -or -not $exitRecord.NormalStop) {
-                    throw "Applied checkpoint verification failed: helper exited abnormally (ExitCode=$($exitRecord.ExitCode), NormalStop=$($exitRecord.NormalStop))."
-                }
-
                 # Official references are MANDATORY
                 $refVersionDir = [System.IO.Path]::Combine($canonRoot, "reference", $ExpectedVersion, "x64")
                 if (-not (Test-Path -LiteralPath $refVersionDir -PathType Container)) {
@@ -1363,6 +1350,23 @@ function Verify-CheckpointInternal(
                 }
                 if (-not (Test-Path -LiteralPath $refDxgi -PathType Leaf)) {
                     throw "Applied checkpoint verification failed: official reference dxgi.dll missing at $refDxgi."
+                }
+
+                # Helper must be confirmed stopped
+                if ($null -ne $script:HelperProcess -and -not $script:HelperProcess.HasExited) {
+                    throw "Applied checkpoint verification failed: helper process is still running."
+                }
+
+                # Check normal exit record for helper
+                $activeSlot = if ($null -ne $state.ActiveHelperSlot) { $state.ActiveHelperSlot } else { 1 }
+                $exitRecordPath = [System.IO.Path]::Combine($canonRoot, "control", "helper-slot-$activeSlot.exit.json")
+                if (-not (Test-Path -LiteralPath $exitRecordPath -PathType Leaf)) {
+                    throw "Applied checkpoint verification failed: normal exit record missing: helper-slot-$activeSlot.exit.json."
+                }
+                $exitRecordRaw = [System.IO.File]::ReadAllText($exitRecordPath, $script:Utf8NoBom)
+                $exitRecord = ConvertFrom-Json -InputObject $exitRecordRaw
+                if ($exitRecord.ExitCode -ne 0 -or -not $exitRecord.NormalStop) {
+                    throw "Applied checkpoint verification failed: helper exited abnormally (ExitCode=$($exitRecord.ExitCode), NormalStop=$($exitRecord.NormalStop))."
                 }
 
                 $d3d11Path = [System.IO.Path]::Combine($targetDir, "d3d11.dll")
@@ -1401,8 +1405,8 @@ function Verify-CheckpointInternal(
 
                 # Verify ManagedFiles ownership and native backup
                 $managedFiles = @($inst.ManagedFiles)
-                if ($managedFiles.Count -lt 2) {
-                    throw "Applied checkpoint verification failed: expected at least 2 ManagedFiles records, got $($managedFiles.Count)."
+                if ((Get-SafeCount $managedFiles) -lt 2) {
+                    throw "Applied checkpoint verification failed: expected at least 2 ManagedFiles records, got $((Get-SafeCount $managedFiles))."
                 }
 
                 $d3d11Rec = $managedFiles | Where-Object { $_.RelativePath -like "*d3d11.dll" } | Select-Object -First 1
@@ -1426,7 +1430,7 @@ function Verify-CheckpointInternal(
 
                 # Verify against baseline manifest
                 $baseManifestPath = [System.IO.Path]::Combine($baselineDir, "baseline_manifest.json")
-                $baseManifest = ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText($baseManifestPath, [System.Text.Encoding]::UTF8))
+                $baseManifest = ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText($baseManifestPath, $script:Utf8NoBom))
                 $origD3d11Entry = $baseManifest.Files | Where-Object { $_.RelativePath -eq "d3d11.dll" } | Select-Object -First 1
                 if ($d3d11Rec.OriginalSha256 -ne $origD3d11Entry.Sha256) {
                     throw "Applied checkpoint verification failed: d3d11.dll OriginalSha256 does not match pre-trial baseline hash."
@@ -1449,7 +1453,7 @@ function Verify-CheckpointInternal(
 
                 # Verify games.json coherence
                 if (Test-Path -LiteralPath $legacyGamesPath -PathType Leaf) {
-                    $gamesRaw = [System.IO.File]::ReadAllText($legacyGamesPath, [System.Text.Encoding]::UTF8)
+                    $gamesRaw = [System.IO.File]::ReadAllText($legacyGamesPath, $script:Utf8NoBom)
                     $gamesList = ConvertFrom-Json -InputObject $gamesRaw
                     if ($gamesList -is [System.Collections.IEnumerable]) {
                         foreach ($gp in $gamesList) {
@@ -1478,7 +1482,7 @@ function Verify-CheckpointInternal(
                 }
                 # Verify games.json restored
                 if (Test-Path -LiteralPath $legacyGamesPath -PathType Leaf) {
-                    $gamesRaw = [System.IO.File]::ReadAllText($legacyGamesPath, [System.Text.Encoding]::UTF8)
+                    $gamesRaw = [System.IO.File]::ReadAllText($legacyGamesPath, $script:Utf8NoBom)
                     $gamesList = ConvertFrom-Json -InputObject $gamesRaw
                     if ($gamesList -is [System.Collections.IEnumerable]) {
                         foreach ($gp in $gamesList) {
@@ -1572,7 +1576,7 @@ function Supervise-HelperStart([string]$FixtureRoot, [int]$Slot, [string]$Attest
     $proc.add_OutputDataReceived({
         param($sender, $e)
         if ($null -ne $e.Data) {
-            [System.IO.File]::AppendAllText($stdoutLogPath, $e.Data + [System.Environment]::NewLine, [System.Text.Encoding]::UTF8)
+            [System.IO.File]::AppendAllText($stdoutLogPath, $e.Data + [System.Environment]::NewLine, $script:Utf8NoBom)
             if ($e.Data -match "READY") { $outputState.ReadyReceived = $true }
             if ($e.Data -match "STOPPED") { $outputState.StoppedReceived = $true }
         }
@@ -1580,7 +1584,7 @@ function Supervise-HelperStart([string]$FixtureRoot, [int]$Slot, [string]$Attest
     $proc.add_ErrorDataReceived({
         param($sender, $e)
         if ($null -ne $e.Data) {
-            [System.IO.File]::AppendAllText($stderrLogPath, $e.Data + [System.Environment]::NewLine, [System.Text.Encoding]::UTF8)
+            [System.IO.File]::AppendAllText($stderrLogPath, $e.Data + [System.Environment]::NewLine, $script:Utf8NoBom)
         }
     })
 
@@ -1673,7 +1677,7 @@ function Supervise-HelperStop([string]$FixtureRoot, [int]$Slot) {
         StoppedAtUtc = [DateTime]::UtcNow.ToString("o")
     }
     $exitRecordPath = [System.IO.Path]::Combine($controlDir, "helper-slot-$Slot.exit.json")
-    [System.IO.File]::WriteAllText($exitRecordPath, (ConvertTo-Json -InputObject $exitRecord), [System.Text.Encoding]::UTF8)
+    [System.IO.File]::WriteAllText($exitRecordPath, (ConvertTo-Json -InputObject $exitRecord), $script:Utf8NoBom)
 
     $script:HelperProcess.Dispose()
     $script:HelperProcess = $null
@@ -1715,7 +1719,7 @@ function Supervise-CompanionStart([string]$FixtureRoot, [bool]$NoAutoDiscovery, 
 
     # Re-validate settings.json identity
     $settingsPath = [System.IO.Path]::Combine($companionDir, "settings.json")
-    $settingsRaw = [System.IO.File]::ReadAllText($settingsPath, [System.Text.Encoding]::UTF8)
+    $settingsRaw = [System.IO.File]::ReadAllText($settingsPath, $script:Utf8NoBom)
     $settingsObj = ConvertFrom-Json -InputObject $settingsRaw
     if ("$($settingsObj.GlobalPolicy)" -ne "Manual") {
         throw "Launch refused: settings.json GlobalPolicy is '$($settingsObj.GlobalPolicy)' (expected 'Manual')."
@@ -1745,13 +1749,13 @@ function Supervise-CompanionStart([string]$FixtureRoot, [bool]$NoAutoDiscovery, 
     $proc.add_OutputDataReceived({
         param($sender, $e)
         if ($null -ne $e.Data) {
-            [System.IO.File]::AppendAllText($compStdoutLog, $e.Data + [System.Environment]::NewLine, [System.Text.Encoding]::UTF8)
+            [System.IO.File]::AppendAllText($compStdoutLog, $e.Data + [System.Environment]::NewLine, $script:Utf8NoBom)
         }
     })
     $proc.add_ErrorDataReceived({
         param($sender, $e)
         if ($null -ne $e.Data) {
-            [System.IO.File]::AppendAllText($compStderrLog, $e.Data + [System.Environment]::NewLine, [System.Text.Encoding]::UTF8)
+            [System.IO.File]::AppendAllText($compStderrLog, $e.Data + [System.Environment]::NewLine, $script:Utf8NoBom)
         }
     })
 
@@ -1836,13 +1840,13 @@ function Invoke-SuperviseAction {
         if (-not (Test-Path -LiteralPath $CommandFile -PathType Leaf)) {
             throw "Command file not found: $CommandFile"
         }
-        $commandList = Get-Content -LiteralPath $CommandFile
+        $commandList = @(Get-Content -LiteralPath $CommandFile)
     }
 
     $executionResults = @()
 
     try {
-        if ($commandList.Count -gt 0) {
+        if ((Get-SafeCount $commandList) -gt 0) {
             foreach ($line in $commandList) {
                 $trimmed = $line.Trim()
                 if ([string]::IsNullOrWhiteSpace($trimmed) -or $trimmed.StartsWith("#")) { continue }

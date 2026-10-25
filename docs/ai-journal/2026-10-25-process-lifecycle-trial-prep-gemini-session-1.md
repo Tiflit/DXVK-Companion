@@ -51,7 +51,7 @@ Following Codex's grouped review on PR #302, the following coherent repairs were
 
 ## Cryptographic and Script Identifiers
 
-- **Repaired Script (`tools/validation/ProcessLifecycleTrial.ps1`) SHA-256:** `83f2e6a5264b0c096f6a32ca612240a21a4e22abb6cabda57bd73bfa5129b3da`
+- **Repaired Script (`tools/validation/ProcessLifecycleTrial.ps1`) SHA-256:** `f596c21fa9571de67c797bdf6a7943e96502fc19a9f906571ef1485f54f10bb9`
 - **Helper Artifact:** ID `12609386490`, ZIP SHA256 `f75ec55738e6ca3c1a0cd0a342aefeaa0fb3addd03538f03f2ac7a43295750de`, EXE SHA256 `f720cecae0f13eeef6d9b5e2d259b51df97b37bc3347b241071e25e8c1548d70`
 - **Companion Candidate:** ID `12532606945`, ZIP SHA256 `32660fd3e3ed87385e47940d490db2e6ab93daad7e993fe4225dd157232b3b14`, EXE SHA256 `25012c67ade281e0d4585282bf485e4783a1f7c486018f8d1a038c5f2dc18ca4`
 
@@ -96,5 +96,12 @@ Following Codex's delta review on PR #302 (comment 6404194697), the following in
 
 ## Hosted CI Status
 
-In PR #302 hosted run `40239300282` (job `121307463123`), all 1,336 tests passed under .NET SDK 8.0 without any CI modifications. No CI downgrade or edit is warranted. All verification for this repair cycle is submitted directly to cloud CI.
+In PR #302 hosted run `40239300282` (job `121307463123`), all 1,336 tests passed under .NET SDK 8.0 without any CI modifications. Following F1-F5 additions in run `40241960837`, 4 tests failed due to PowerShell StrictMode and encoding specifics, resolved in this delta pass:
+1. `PositiveSetup_RealStores_LoadSeededInstallationAndSettings`: In .NET, `Encoding.UTF8` emits a 3-byte UTF-8 BOM (`0xEF, 0xBB, 0xBF`), which caused `System.Text.Json` deserialization in `ProfileStore.Load()` to throw `JsonException: '0xEF' is an invalid start of a value`. Fixed by standardizing on `New-Object System.Text.UTF8Encoding $false` (`$script:Utf8NoBom`) across all file writes and reads.
+2. `CompareTargetBaseline_DetectsUnexpectedEmptyDirectory`: In PowerShell `Set-StrictMode -Version 3.0`, accessing `.Count` on a single `DirectoryInfo` object returned by `Get-ChildItem -Directory` threw `The property 'Count' cannot be found on this object.`. Fixed by wrapping results in `@(...)` and utilizing `Get-SafeCount`.
+3. `CompareTargetBaseline_DetectsMutationDuringPendingCheckpoint`: On a freshly initialized baseline with 0 subdirectories, `Get-ChildItem -Directory` returned `$null`, causing `.Count` to throw under StrictMode. Fixed by wrapping in `@(...)` and using `Get-SafeCount`.
+4. `VerifyCheckpoint_Applied_RefusesWhenOfficialReferenceIsMissing`: The `Applied` verification order checked the helper exit record before validating the official reference directory and DLLs. Refactored `Applied` verification to validate official reference directory and DLL existence first.
+
+All verification continues strictly and exclusively on hosted GitHub Actions CI.
+
 
