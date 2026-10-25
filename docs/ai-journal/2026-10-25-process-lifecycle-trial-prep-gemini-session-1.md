@@ -51,7 +51,7 @@ Following Codex's grouped review on PR #302, the following coherent repairs were
 
 ## Cryptographic and Script Identifiers
 
-- **Repaired Script (`tools/validation/ProcessLifecycleTrial.ps1`) SHA-256:** `f596c21fa9571de67c797bdf6a7943e96502fc19a9f906571ef1485f54f10bb9`
+- **Repaired Script (`tools/validation/ProcessLifecycleTrial.ps1`) SHA-256:** `791fb1f77ef7a592aede693d187d9ab37904ea070ce7abdecf6bef15e57e13ae`
 - **Helper Artifact:** ID `12609386490`, ZIP SHA256 `f75ec55738e6ca3c1a0cd0a342aefeaa0fb3addd03538f03f2ac7a43295750de`, EXE SHA256 `f720cecae0f13eeef6d9b5e2d259b51df97b37bc3347b241071e25e8c1548d70`
 - **Companion Candidate:** ID `12532606945`, ZIP SHA256 `32660fd3e3ed87385e47940d490db2e6ab93daad7e993fe4225dd157232b3b14`, EXE SHA256 `25012c67ade281e0d4585282bf485e4783a1f7c486018f8d1a038c5f2dc18ca4`
 
@@ -103,5 +103,41 @@ In PR #302 hosted run `40239300282` (job `121307463123`), all 1,336 tests passed
 4. `VerifyCheckpoint_Applied_RefusesWhenOfficialReferenceIsMissing`: The `Applied` verification order checked the helper exit record before validating the official reference directory and DLLs. Refactored `Applied` verification to validate official reference directory and DLL existence first.
 
 All verification continues strictly and exclusively on hosted GitHub Actions CI.
+
+## Delta Repair Cycle 2 — Addressing Codex Review 6404748227 & Advisory Findings
+
+Following Codex review comment 6404748227 at head `31c43f4`, the following repairs were implemented across the four allowed paths:
+
+1. **Compiled C# Safe Process Stream Drainer (`SafeProcessStreamDrainer`)**:
+   - Replaced worker-thread PowerShell scriptblock callbacks on `OutputDataReceived`/`ErrorDataReceived` with compiled C# `SafeProcessStreamDrainer` (invoked via `Add-Type` in PowerShell and tested in unit tests).
+   - Reads asynchronously using background Tasks without Runspace bindings; flushes safely to log files; tracks lines read and volatile detection flags (`ReadyReceived`, `StoppedReceived`).
+   - `Supervise-HelperStop` asserts both `ExitCode == 0` AND `$drainer.StoppedReceived` before marking normal exit.
+
+2. **Supervision Lifecycle & Process Ownership Retention**:
+   - Supervisor never abandons process handles or clears `$state.ActiveSupervisorPid` on command exhaustion, exceptions, or interactive EOF while child processes are active.
+   - On interactive EOF: if children are active, supervisor remains in observation cycle until children naturally exit.
+   - In `finally`: `$state.ActiveSupervisorPid` is only cleared if NO child processes remain active.
+
+3. **Active Resource Sampling, Monotonic Budget & Readiness**:
+   - Implemented `Invoke-SuperviseObservationCycle`: computes monotonic elapsed duration via `Stopwatch` + setup time into `$state.ElapsedMilliseconds`.
+   - Samples active child process metrics (`TotalProcessorTime`, `WorkingSet64`, `PeakWorkingSet64`) into `$state.ActiveProcesses`.
+   - Evaluates `$state.CurrentReadiness` ("Ready" / "NotReady") and fails closed if `settings.json` is tampered.
+
+4. **Manager Semantics, Slot Binding, and Path Alignment**:
+   - **Pending Install on Managed Target**: If `$inst.ManagedDxvkVersion` is populated, Pending `Install` compares target against `$inst.ManagedDxvkVersion` reference DLLs (`Compare-TargetManagedReferenceInternal`), not native unmanaged baseline.
+   - **Authoritative Live Helper**: Pending checkpoint asserts live owned helper process handle (`-not $script:HelperProcess.HasExited`), unless `-PureDataCheck` is passed.
+   - **Slot-Bound Exit Evidence**: `Supervise-HelperStop` sets `$state.LastStoppedHelperSlot = $Slot`. `Verify-Checkpoint` uses `$Slot` or `$state.LastStoppedHelperSlot` (preventing blind default to slot 1).
+   - **Backup Root Resolution**: Resolves `BackupRelativePath` relative to `$backupsDir` (`companion/Profiles/Backups/`) and validates strict containment before reading.
+   - **Single-Profile Identity**: Enforces exactly 1 profile in `games.json` and 1 installation in `game-library.json` using `@(Get-SafeEnumerable ...)`.
+   - **Restored Backup Retention**: `Restored` checkpoint verifies that native backup in `$backupsDir` still exists and matches pre-trial baseline hash.
+   - **Bounded DXVK Extraction & Provenance**: Added `Extract-BoundedDxvkTarGz` with size/hash pre-checks, entry cap (500), 100 MiB limit, path traversal rejection; added `Extract-CompanionProvenance` and `baseline/setup_provenance.json`.
+
+5. **Expanded Hosted Unit Tests (5 New Tests, 39 Total in Suite)**:
+   - `SafeProcessStreamDrainer_StreamsDataAndDetectsTokens`: Validates async stream draining, line counting, token detection (`READY`/`STOPPED`), and log file generation.
+   - `VerifyCheckpoint_PendingInstall_WithManagedTarget_AcceptsQueuedVersionUpdate`: Tests pending install on target already managed with v3.1.
+   - `VerifyCheckpoint_Applied_ResolvesBackupRelativeToBackupsRoot`: Tests native backup resolution relative to `Profiles/Backups/`.
+   - `VerifyCheckpoint_GamesJson_RequiresSingleProfile`: Tests rejection of multi-profile `games.json`.
+   - `VerifyCheckpoint_Pending_RequiresLiveHelper_WhenNotPureDataCheck`: Tests live helper requirement when `-PureDataCheck` is omitted.
+
 
 

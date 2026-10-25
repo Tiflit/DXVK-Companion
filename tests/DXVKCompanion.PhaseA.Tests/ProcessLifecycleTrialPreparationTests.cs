@@ -907,6 +907,301 @@ public sealed class ProcessLifecycleTrialPreparationTests
         Assert.Contains("terminal failure state", result.StandardOutput + result.StandardError);
     }
 
+    [Fact]
+    public async Task SafeProcessStreamDrainer_StreamsDataAndDetectsTokens()
+    {
+        AssertHostedCiEnvironment();
+
+        using var temp = new SyntheticTestDirectory();
+        var logFile = temp.GetPath("test_output.log");
+
+        var text = "Initializing QueueFixture\nREADY slot 1\nProcessing payload\nSTOPPED slot 1\n";
+        var memStream = new MemoryStream(Encoding.UTF8.GetBytes(text));
+
+        using (var drainer = new SafeProcessStreamDrainer(memStream, logFile))
+        {
+            drainer.Start();
+            var drained = drainer.WaitForDrain(5000);
+            Assert.True(drained);
+            Assert.True(drainer.ReadyReceived);
+            Assert.True(drainer.StoppedReceived);
+            Assert.Equal(4, drainer.LinesRead);
+        }
+
+        Assert.True(File.Exists(logFile));
+        var written = await File.ReadAllTextAsync(logFile);
+        Assert.Contains("READY slot 1", written);
+        Assert.Contains("STOPPED slot 1", written);
+    }
+
+    [Fact]
+    public void VerifyCheckpoint_PendingInstall_WithManagedTarget_AcceptsQueuedVersionUpdate()
+    {
+        using var temp = new SyntheticTestDirectory();
+        var root = SetUpTestFixture(temp);
+
+        // Target currently has v3.1 DLLs
+        var refDir = Path.Combine(root, "reference", "v3.1", "x64");
+        Directory.CreateDirectory(refDir);
+        var refD3d11 = Path.Combine(refDir, "d3d11.dll");
+        var refDxgi = Path.Combine(refDir, "dxgi.dll");
+        File.WriteAllText(refD3d11, "DXVK_31_D3D11_BYTES");
+        File.WriteAllText(refDxgi, "DXVK_31_DXGI_BYTES");
+
+        var targetDir = Path.Combine(root, "target");
+        File.WriteAllText(Path.Combine(targetDir, "d3d11.dll"), "DXVK_31_D3D11_BYTES");
+        File.WriteAllText(Path.Combine(targetDir, "dxgi.dll"), "DXVK_31_DXGI_BYTES");
+
+        // Library store has ManagedDxvkVersion = "v3.1", and PendingAction Type="Install" targeting v3.1.1
+        var libPath = Path.Combine(root, "companion", "Profiles", "game-library.json");
+        var rootObj = JsonSerializer.Deserialize<Dictionary<string, object>>(File.ReadAllText(libPath))!;
+        var installations = JsonSerializer.Deserialize<List<Dictionary<string, object>>>(rootObj["Installations"].ToString()!)!;
+        var inst = installations[0];
+        inst["ManagedDxvkVersion"] = "v3.1";
+        inst["PendingAction"] = new Dictionary<string, object>
+        {
+            { "Type", "Install" },
+            { "TargetDxvkVersion", "v3.1.1" },
+            { "ScheduledUtc", DateTime.UtcNow.ToString("o") }
+        };
+        rootObj["Installations"] = installations;
+        File.WriteAllText(libPath, JsonSerializer.Serialize(rootObj, new JsonSerializerOptions { WriteIndented = true }));
+
+        // Run Verify-Checkpoint with PureDataCheck
+        var result = RunScript($"-Action Verify-Checkpoint -FixtureRoot \"{root}\" -CheckpointName \"PendingUpdate\" -ExpectedType \"Pending\" -ExpectedVersion \"v3.1.1\" -PureDataCheck -JsonOutput");
+        Assert.Equal(0, result.ExitCode);
+        AssertScriptSuccess(result, true);
+    }
+
+    [Fact]
+    public void VerifyCheckpoint_Applied_ResolvesBackupRelativeToBackupsRoot()
+    {
+        using var temp = new SyntheticTestDirectory();
+        var root = SetUpTestFixture(temp);
+
+        // Prepare official reference v3.1
+        var refDir = Path.Combine(root, "reference", "v3.1", "x64");
+        Directory.CreateDirectory(refDir);
+        File.WriteAllText(Path.Combine(refDir, "d3d11.dll"), "DXVK_31_D3D11_BYTES");
+        File.WriteAllText(Path.Combine(refDir, "dxgi.dll"), "DXVK_31_DXGI_BYTES");
+
+        // Target matching v3.1
+        var targetDir = Path.Combine(root, "target");
+        File.WriteAllText(Path.Combine(targetDir, "d3d11.dll"), "DXVK_31_D3D11_BYTES");
+        File.WriteAllText(Path.Combine(targetDir, "dxgi.dll"), "DXVK_31_DXGI_BYTES");
+
+        // Helper normal exit record
+        var controlDir = Path.Combine(root, "control");
+        var exitRecord = new
+        {
+            Slot = 1,
+            Pid = 1234,
+            ExitCode = 0,
+            NormalStop = true,
+            StoppedAtUtc = DateTime.UtcNow.ToString("o")
+        };
+        File.WriteAllText(Path.Combine(controlDir, "helper-slot-1.exit.json"), JsonSerializer.Serialize(exitRecord));
+
+        // Native baseline hash from baseline/d3d11.dll
+        var baselineD3d11Path = Path.Combine(root, "baseline", "d3d11.dll");
+        var baselineHash = ComputeSha256Hex(File.ReadAllBytes(baselineD3d11Path));
+
+        // Create native backup relative to companion/Profiles/Backups/
+        var backupRel = Path.Combine("queue-fixture-trial-target", "d3d11.dll.bak");
+        var backupFull = Path.Combine(root, "companion", "Profiles", "Backups", backupRel);
+        Directory.CreateDirectory(Path.GetDirectoryName(backupFull)!);
+        File.Copy(baselineD3d11Path, backupFull, true);
+
+        // Update library store
+        var libPath = Path.Combine(root, "companion", "Profiles", "game-library.json");
+        var rootObj = JsonSerializer.Deserialize<Dictionary<string, object>>(File.ReadAllText(libPath))!;
+        var installations = JsonSerializer.Deserialize<List<Dictionary<string, object>>>(rootObj["Installations"].ToString()!)!;
+        var inst = installations[0];
+        inst["ManagedDxvkVersion"] = "v3.1";
+        inst["PendingAction"] = null!;
+        inst["ManagedFiles"] = new List<object>
+        {
+            new
+            {
+                RelativePath = "d3d11.dll",
+                OriginalState = "Existing",
+                OriginalSha256 = baselineHash,
+                BackupRelativePath = backupRel,
+                ExpectedManagedSha256 = ComputeSha256Hex(Encoding.UTF8.GetBytes("DXVK_31_D3D11_BYTES")),
+                ManagedDxvkVersion = "v3.1",
+                OriginalDxvkVersion = (string?)null,
+                CurrentState = "Managed"
+            },
+            new
+            {
+                RelativePath = "dxgi.dll",
+                OriginalState = "Missing",
+                OriginalSha256 = (string?)null,
+                BackupRelativePath = (string?)null,
+                ExpectedManagedSha256 = ComputeSha256Hex(Encoding.UTF8.GetBytes("DXVK_31_DXGI_BYTES")),
+                ManagedDxvkVersion = "v3.1",
+                OriginalDxvkVersion = (string?)null,
+                CurrentState = "Managed"
+            }
+        };
+        rootObj["Installations"] = installations;
+        File.WriteAllText(libPath, JsonSerializer.Serialize(rootObj, new JsonSerializerOptions { WriteIndented = true }));
+
+        // Update games.json
+        var gamesPath = Path.Combine(root, "companion", "Profiles", "games.json");
+        var gamesProfile = new[]
+        {
+            new
+            {
+                ExePath = Path.Combine(targetDir, "QueueFixture.exe"),
+                ExeName = "QueueFixture.exe",
+                Api = 3,
+                Architecture = "x64",
+                DxvkEnabled = true,
+                DxvkVersion = "v3.1",
+                HudEnabled = false,
+                FrameLimit = 0
+            }
+        };
+        File.WriteAllText(gamesPath, JsonSerializer.Serialize(gamesProfile));
+
+        // Run Verify-Checkpoint
+        var result = RunScript($"-Action Verify-Checkpoint -FixtureRoot \"{root}\" -CheckpointName \"Applied1\" -ExpectedType \"Applied\" -ExpectedVersion \"v3.1\" -Slot 1 -PureDataCheck -JsonOutput");
+        Assert.Equal(0, result.ExitCode);
+        AssertScriptSuccess(result, true);
+    }
+
+    [Fact]
+    public void VerifyCheckpoint_GamesJson_RequiresSingleProfile()
+    {
+        using var temp = new SyntheticTestDirectory();
+        var root = SetUpTestFixture(temp);
+
+        // games.json containing multiple profiles
+        var gamesPath = Path.Combine(root, "companion", "Profiles", "games.json");
+        var multiProfiles = new[]
+        {
+            new { ExeName = "QueueFixture.exe", DxvkEnabled = true, DxvkVersion = "v3.1" },
+            new { ExeName = "OtherGame.exe", DxvkEnabled = false, DxvkVersion = (string?)null }
+        };
+        File.WriteAllText(gamesPath, JsonSerializer.Serialize(multiProfiles));
+
+        var result = RunScript($"-Action Verify-Checkpoint -FixtureRoot \"{root}\" -CheckpointName \"AppliedTest\" -ExpectedType \"Applied\" -ExpectedVersion \"v3.1\" -Slot 1 -PureDataCheck -JsonOutput");
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains("expected exactly 1 profile in games.json", result.StandardOutput + result.StandardError);
+    }
+
+    [Fact]
+    public void VerifyCheckpoint_Pending_RequiresLiveHelper_WhenNotPureDataCheck()
+    {
+        using var temp = new SyntheticTestDirectory();
+        var root = SetUpTestFixture(temp);
+
+        // Library store with pending action
+        var libPath = Path.Combine(root, "companion", "Profiles", "game-library.json");
+        var rootObj = JsonSerializer.Deserialize<Dictionary<string, object>>(File.ReadAllText(libPath))!;
+        var installations = JsonSerializer.Deserialize<List<Dictionary<string, object>>>(rootObj["Installations"].ToString()!)!;
+        var inst = installations[0];
+        inst["PendingAction"] = new Dictionary<string, object>
+        {
+            { "Type", "Install" },
+            { "TargetDxvkVersion", "v3.1" },
+            { "ScheduledUtc", DateTime.UtcNow.ToString("o") }
+        };
+        rootObj["Installations"] = installations;
+        File.WriteAllText(libPath, JsonSerializer.Serialize(rootObj, new JsonSerializerOptions { WriteIndented = true }));
+
+        // Calling Verify-Checkpoint WITHOUT -PureDataCheck when no helper process is running
+        var result = RunScript($"-Action Verify-Checkpoint -FixtureRoot \"{root}\" -CheckpointName \"PendingOffline\" -ExpectedType \"Pending\" -ExpectedVersion \"v3.1\" -JsonOutput");
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains("live owned helper process handle is required", result.StandardOutput + result.StandardError);
+    }
+
+    internal sealed class SafeProcessStreamDrainer : IDisposable
+    {
+        private readonly StreamReader _reader;
+        private readonly StreamWriter _writer;
+        private readonly System.Threading.CancellationTokenSource _cts;
+        private Task? _drainTask;
+
+        public volatile bool ReadyReceived;
+        public volatile bool StoppedReceived;
+        public int LinesRead;
+
+        public SafeProcessStreamDrainer(StreamReader reader, string logFilePath, Encoding? encoding = null)
+        {
+            if (reader == null) throw new ArgumentNullException(nameof(reader));
+            if (string.IsNullOrEmpty(logFilePath)) throw new ArgumentNullException(nameof(logFilePath));
+
+            _reader = reader;
+            var dir = Path.GetDirectoryName(logFilePath);
+            if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+            {
+                Directory.CreateDirectory(dir);
+            }
+
+            var fs = new FileStream(logFilePath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite);
+            _writer = new StreamWriter(fs, encoding ?? new UTF8Encoding(false)) { AutoFlush = true };
+            _cts = new System.Threading.CancellationTokenSource();
+        }
+
+        public SafeProcessStreamDrainer(Stream inputStream, string logFilePath, Encoding? encoding = null)
+            : this(new StreamReader(inputStream ?? throw new ArgumentNullException(nameof(inputStream)), encoding ?? Encoding.UTF8), logFilePath, encoding)
+        {
+        }
+
+        public void Start()
+        {
+            _drainTask = Task.Run(async () =>
+            {
+                try
+                {
+                    while (!_cts.Token.IsCancellationRequested)
+                    {
+                        var line = await _reader.ReadLineAsync().ConfigureAwait(false);
+                        if (line == null) break;
+                        System.Threading.Interlocked.Increment(ref LinesRead);
+                        if (line.IndexOf("READY", StringComparison.OrdinalIgnoreCase) >= 0)
+                        {
+                            ReadyReceived = true;
+                        }
+                        if (line.IndexOf("STOPPED", StringComparison.OrdinalIgnoreCase) >= 0)
+                        {
+                            StoppedReceived = true;
+                        }
+                        await _writer.WriteLineAsync(line).ConfigureAwait(false);
+                    }
+                }
+                catch
+                {
+                    // Stream closed, process exited, or drain canceled
+                }
+            });
+        }
+
+        public bool WaitForDrain(int timeoutMs)
+        {
+            if (_drainTask == null) return true;
+            try
+            {
+                return _drainTask.Wait(timeoutMs);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        public void Dispose()
+        {
+            try { _cts.Cancel(); } catch {}
+            try { _drainTask?.Wait(1000); } catch {}
+            try { _writer?.Dispose(); } catch {}
+            try { _reader?.Dispose(); } catch {}
+            try { _cts?.Dispose(); } catch {}
+        }
+    }
+
     private static string SetUpTestFixture(SyntheticTestDirectory temp)
     {
         var root = temp.GetPath("trial_root");

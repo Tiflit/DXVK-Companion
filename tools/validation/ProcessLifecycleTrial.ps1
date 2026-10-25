@@ -78,6 +78,9 @@ param(
     [string]$CommandFile,
 
     [Parameter(Mandatory = $false)]
+    [switch]$PureDataCheck,
+
+    [Parameter(Mandatory = $false)]
     [switch]$JsonOutput
 )
 
@@ -86,6 +89,104 @@ $ErrorActionPreference = "Stop"
 
 Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
 Add-Type -AssemblyName System.IO.Compression -ErrorAction SilentlyContinue
+
+if (-not ([System.Management.Automation.PSTypeName]"DXVKCompanion.Validation.SafeProcessStreamDrainer").Type) {
+    Add-Type -TypeDefinition @"
+using System;
+using System.IO;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
+
+namespace DXVKCompanion.Validation
+{
+    public sealed class SafeProcessStreamDrainer : IDisposable
+    {
+        private readonly StreamReader _reader;
+        private readonly StreamWriter _writer;
+        private readonly CancellationTokenSource _cts;
+        private Task _drainTask;
+
+        public volatile bool ReadyReceived;
+        public volatile bool StoppedReceived;
+        public int LinesRead;
+
+        public SafeProcessStreamDrainer(StreamReader reader, string logFilePath, Encoding encoding)
+        {
+            if (reader == null) throw new ArgumentNullException(nameof(reader));
+            if (string.IsNullOrEmpty(logFilePath)) throw new ArgumentNullException(nameof(logFilePath));
+
+            _reader = reader;
+            var dir = Path.GetDirectoryName(logFilePath);
+            if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+            {
+                Directory.CreateDirectory(dir);
+            }
+
+            var fs = new FileStream(logFilePath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite);
+            _writer = new StreamWriter(fs, encoding ?? new UTF8Encoding(false)) { AutoFlush = true };
+            _cts = new CancellationTokenSource();
+        }
+
+        public SafeProcessStreamDrainer(Stream inputStream, string logFilePath, Encoding encoding)
+            : this(new StreamReader(inputStream ?? throw new ArgumentNullException(nameof(inputStream)), encoding ?? Encoding.UTF8), logFilePath, encoding)
+        {
+        }
+
+        public void Start()
+        {
+            _drainTask = Task.Run(async () =>
+            {
+                try
+                {
+                    while (!_cts.Token.IsCancellationRequested)
+                    {
+                        var line = await _reader.ReadLineAsync().ConfigureAwait(false);
+                        if (line == null) break;
+                        Interlocked.Increment(ref LinesRead);
+                        if (line.IndexOf("READY", StringComparison.OrdinalIgnoreCase) >= 0)
+                        {
+                            ReadyReceived = true;
+                        }
+                        if (line.IndexOf("STOPPED", StringComparison.OrdinalIgnoreCase) >= 0)
+                        {
+                            StoppedReceived = true;
+                        }
+                        await _writer.WriteLineAsync(line).ConfigureAwait(false);
+                    }
+                }
+                catch
+                {
+                    // Stream closed, process exited, or drain canceled
+                }
+            });
+        }
+
+        public bool WaitForDrain(int timeoutMs)
+        {
+            if (_drainTask == null) return true;
+            try
+            {
+                return _drainTask.Wait(timeoutMs);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        public void Dispose()
+        {
+            try { _cts.Cancel(); } catch {}
+            try { _drainTask?.Wait(1000); } catch {}
+            try { _writer?.Dispose(); } catch {}
+            try { _reader?.Dispose(); } catch {}
+            try { _cts?.Dispose(); } catch {}
+        }
+    }
+}
+"@ -Language CSharp
+}
 
 # ==============================================================================
 # Frozen Pins and Resource Limits (Issue #301)
@@ -135,10 +236,13 @@ $script:HELPER_WATCHDOG_SECONDS       = 1500        # 25 minutes
 # Required Adoption Attestation Token
 $script:REQUIRED_ADOPTION_TOKEN       = "ADOPTED-PROCESS-LIFECYCLE-V1"
 
-# Retained Process Handles and Supervisor State
+# Retained Process Handles, Stream Drainers, and Supervisor State
 $script:HelperProcess = $null
-$script:HelperOutputState = $null
 $script:CompanionProcess = $null
+$script:HelperStdoutDrainer = $null
+$script:HelperStderrDrainer = $null
+$script:CompanionStdoutDrainer = $null
+$script:CompanionStderrDrainer = $null
 $script:SupervisorMonotonicTimer = $null
 $script:Utf8NoBom = New-Object System.Text.UTF8Encoding $false
 
@@ -422,6 +526,87 @@ function Save-StateData([string]$FixtureRoot, $StateObject) {
     $statePath = Get-StateFilePath -FixtureRoot $FixtureRoot
     $json = ConvertTo-Json -InputObject $StateObject -Depth 10
     [System.IO.File]::WriteAllText($statePath, $json, $script:Utf8NoBom)
+}
+
+function Invoke-SuperviseObservationCycle([string]$FixtureRoot) {
+    $canon = Validate-RootBoundPath -RootPath $FixtureRoot -CandidatePath $FixtureRoot
+    $state = Get-StateData -FixtureRoot $canon
+
+    # 1. Monotonic elapsed accounting
+    if ($null -eq $script:SupervisorMonotonicTimer) {
+        $script:SupervisorMonotonicTimer = [System.Diagnostics.Stopwatch]::StartNew()
+    }
+    $state.ElapsedMilliseconds = [long]($state.SetupElapsedMilliseconds + $script:SupervisorMonotonicTimer.ElapsedMilliseconds)
+    $elapsedSeconds = [long]($state.ElapsedMilliseconds / 1000)
+
+    if ($elapsedSeconds -gt $script:MAX_TRIAL_DURATION_SECONDS) {
+        $state.LastCheckpointOutcome = "Failed"
+        $state.LastFailedCheckpoint = "TrialDurationExhausted"
+        $state.LastFailedReason = "Maximum trial duration ($($script:MAX_TRIAL_DURATION_SECONDS)s) exceeded."
+        Save-StateData -FixtureRoot $canon -StateObject $state
+        throw "Trial duration budget exceeded: $($elapsedSeconds)s > $($script:MAX_TRIAL_DURATION_SECONDS)s."
+    }
+
+    # 2. Sample active child processes (CPU time & working set)
+    $activeProcesses = @()
+    if ($null -ne $script:HelperProcess -and -not $script:HelperProcess.HasExited) {
+        try {
+            $script:HelperProcess.Refresh()
+            $cpuMs = $script:HelperProcess.TotalProcessorTime.TotalMilliseconds
+            $wsBytes = $script:HelperProcess.WorkingSet64
+            $peakWs = $script:HelperProcess.PeakWorkingSet64
+            $activeProcesses += [PSCustomObject]@{
+                Role = "Helper"
+                Slot = $state.ActiveHelperSlot
+                Pid = $script:HelperProcess.Id
+                TotalCpuMilliseconds = $cpuMs
+                WorkingSetBytes = $wsBytes
+                PeakWorkingSetBytes = $peakWs
+                SampledAtUtc = [DateTime]::UtcNow.ToString("o")
+            }
+        } catch {}
+    }
+
+    if ($null -ne $script:CompanionProcess -and -not $script:CompanionProcess.HasExited) {
+        try {
+            $script:CompanionProcess.Refresh()
+            $cpuMs = $script:CompanionProcess.TotalProcessorTime.TotalMilliseconds
+            $wsBytes = $script:CompanionProcess.WorkingSet64
+            $peakWs = $script:CompanionProcess.PeakWorkingSet64
+            $activeProcesses += [PSCustomObject]@{
+                Role = "Companion"
+                Pid = $script:CompanionProcess.Id
+                TotalCpuMilliseconds = $cpuMs
+                WorkingSetBytes = $wsBytes
+                PeakWorkingSetBytes = $peakWs
+                SampledAtUtc = [DateTime]::UtcNow.ToString("o")
+            }
+        } catch {}
+    }
+    $state.ActiveProcesses = $activeProcesses
+
+    # 3. Fail-closed target & settings validation
+    $companionSettingsPath = [System.IO.Path]::Combine($canon, "companion", "settings.json")
+    if (Test-Path -LiteralPath $companionSettingsPath -PathType Leaf) {
+        $settingsRaw = [System.IO.File]::ReadAllText($companionSettingsPath, $script:Utf8NoBom)
+        $settingsObj = ConvertFrom-Json -InputObject $settingsRaw
+        if ("$($settingsObj.GlobalPolicy)" -ne "Manual") {
+            $state.LastCheckpointOutcome = "Failed"
+            $state.LastFailedCheckpoint = "SettingsTampered"
+            $state.LastFailedReason = "Settings GlobalPolicy altered from Manual to $($settingsObj.GlobalPolicy)."
+            Save-StateData -FixtureRoot $canon -StateObject $state
+            throw "Settings tampered: GlobalPolicy is '$($settingsObj.GlobalPolicy)' (expected 'Manual')."
+        }
+    }
+
+    # 4. Current readiness evaluation
+    $isReady = $true
+    if ($state.LastCheckpointOutcome -eq "Failed") {
+        $isReady = $false
+    }
+    $state.CurrentReadiness = if ($isReady) { "Ready" } else { "NotReady" }
+
+    Save-StateData -FixtureRoot $canon -StateObject $state
 }
 
 function Test-BatchGuardInternal(
@@ -826,6 +1011,177 @@ function Compare-SemanticLibraryJsonInternal([string]$JsonA, [string]$JsonB) {
     }
 }
 
+function Extract-CompanionProvenance(
+    [string]$ProvenancePath,
+    [string]$DestinationDir,
+    [bool]$TestPinsUsed,
+    $TestPins
+) {
+    if (-not (Test-Path -LiteralPath $ProvenancePath -PathType Leaf)) {
+        throw "Companion provenance file not found: $ProvenancePath"
+    }
+
+    $expectedProvSize = if ($TestPinsUsed -and $TestPins.CompanionProvenanceSize) { [long]$TestPins.CompanionProvenanceSize } else { $script:FROZEN_COMPANION_PROVENANCE_SIZE }
+    $expectedProvHash = if ($TestPinsUsed -and $TestPins.CompanionProvenanceSha256) { $TestPins.CompanionProvenanceSha256 } else { $script:FROZEN_COMPANION_PROVENANCE_SHA256 }
+
+    $provItem = Get-Item -LiteralPath $ProvenancePath -Force
+    if ($provItem.Length -ne $expectedProvSize) {
+        throw "Companion provenance archive size mismatch: expected $expectedProvSize bytes, got $($provItem.Length)"
+    }
+    $actualHash = Compute-FileSha256 -FilePath $ProvenancePath
+    if ($actualHash -ne $expectedProvHash) {
+        throw "Companion provenance archive SHA256 mismatch: expected $expectedProvHash, got $actualHash"
+    }
+
+    $isZip = $false
+    try {
+        $fs = [System.IO.File]::OpenRead($ProvenancePath)
+        try {
+            $magic = New-Object byte[] 4
+            $readCount = $fs.Read($magic, 0, 4)
+            if ($readCount -ge 4 -and $magic[0] -eq 0x50 -and $magic[1] -eq 0x4B -and $magic[2] -eq 0x03 -and $magic[3] -eq 0x04) {
+                $isZip = $true
+            }
+        } finally {
+            $fs.Dispose()
+        }
+    } catch {}
+
+    $provObj = $null
+    if ($isZip) {
+        [void][System.IO.Directory]::CreateDirectory($DestinationDir)
+        Extract-SafeZipArchive -ZipPath $ProvenancePath -DestinationDir $DestinationDir -MaxEntryCount 5 -MaxTotalBytes 65536
+        $provJsonPath = [System.IO.Path]::Combine($DestinationDir, "build-provenance.json")
+        if (-not (Test-Path -LiteralPath $provJsonPath -PathType Leaf)) {
+            throw "Companion provenance archive does not contain build-provenance.json"
+        }
+        $provObj = ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText($provJsonPath, $script:Utf8NoBom))
+    } else {
+        try {
+            $provObj = ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText($ProvenancePath, $script:Utf8NoBom))
+            [void][System.IO.Directory]::CreateDirectory($DestinationDir)
+            $provJsonPath = [System.IO.Path]::Combine($DestinationDir, "build-provenance.json")
+            [System.IO.File]::Copy($ProvenancePath, $provJsonPath, $true)
+        } catch {
+            throw "Companion provenance file is neither valid zip nor valid JSON: $_"
+        }
+    }
+
+    if (-not $TestPinsUsed) {
+        if ($provObj.commit -ne $script:FROZEN_COMPANION_SRC_COMMIT) {
+            throw "Companion provenance commit mismatch: expected $($script:FROZEN_COMPANION_SRC_COMMIT), got $($provObj.commit)"
+        }
+        if ("$($provObj.run_id)" -ne $script:FROZEN_COMPANION_RUN_ID) {
+            throw "Companion provenance run_id mismatch: expected $($script:FROZEN_COMPANION_RUN_ID), got $($provObj.run_id)"
+        }
+    }
+}
+
+function Extract-BoundedDxvkTarGz(
+    [string]$TarGzPath,
+    [string]$Version,
+    [string]$DestinationDir
+) {
+    if (-not (Test-Path -LiteralPath $TarGzPath -PathType Leaf)) {
+        throw "DXVK archive not found: $TarGzPath"
+    }
+
+    $expectedSize = if ($Version -eq "v3.1.1") { $script:FROZEN_DXVK_311_SIZE } else { $script:FROZEN_DXVK_31_SIZE }
+    $expectedHash = if ($Version -eq "v3.1.1") { $script:FROZEN_DXVK_311_SHA256 } else { $script:FROZEN_DXVK_31_SHA256 }
+
+    $tarItem = Get-Item -LiteralPath $TarGzPath -Force
+    if ($tarItem.Length -ne $expectedSize) {
+        throw "DXVK $Version archive size mismatch: expected $expectedSize, got $($tarItem.Length)"
+    }
+    $actualHash = Compute-FileSha256 -FilePath $TarGzPath
+    if ($actualHash -ne $expectedHash) {
+        throw "DXVK $Version archive SHA256 mismatch: expected $expectedHash, got $actualHash"
+    }
+
+    $tarExe = "tar.exe"
+    $tempListPath = [System.IO.Path]::GetTempFileName()
+    $tempErrPath = [System.IO.Path]::GetTempFileName()
+    try {
+        $p = Start-Process -FilePath $tarExe -ArgumentList "-ztvf `"$TarGzPath`"" -NoNewWindow -Wait -PassThru -RedirectStandardOutput $tempListPath -RedirectStandardError $tempErrPath
+        if ($p.ExitCode -ne 0) {
+            $err = [System.IO.File]::ReadAllText($tempErrPath)
+            throw "Failed to inspect tar archive '$TarGzPath' (exit code $($p.ExitCode)): $err"
+        }
+
+        $lines = [System.IO.File]::ReadAllLines($tempListPath)
+        if ($lines.Length -gt 500) {
+            throw "DXVK tar archive exceeds maximum allowed entry count (500): $($lines.Length)"
+        }
+
+        [long]$totalBytes = 0
+        $hasD3d11 = $false
+        $hasDxgi = $false
+
+        foreach ($line in $lines) {
+            if ([string]::IsNullOrWhiteSpace($line)) { continue }
+            $typeChar = $line[0]
+            if ($typeChar -ne '-' -and $typeChar -ne 'd') {
+                throw "DXVK tar archive contains forbidden entry type '$typeChar': $line"
+            }
+
+            $tokens = $line -split '\s+'
+            if ($tokens.Length -ge 6) {
+                $sizeToken = $tokens[2]
+                $pathToken = $tokens[-1]
+
+                if ($pathToken.Contains("..") -or $pathToken.StartsWith("/") -or $pathToken.StartsWith("\")) {
+                    throw "DXVK tar archive contains illegal traversal path: $pathToken"
+                }
+
+                if ($typeChar -eq '-') {
+                    $entryBytes = 0L
+                    if ([long]::TryParse($sizeToken, [ref]$entryBytes)) {
+                        $totalBytes += $entryBytes
+                    }
+                }
+
+                if ($pathToken -like "*/x64/d3d11.dll") { $hasD3d11 = $true }
+                if ($pathToken -like "*/x64/dxgi.dll") { $hasDxgi = $true }
+            }
+        }
+
+        if ($totalBytes -gt 104857600L) {
+            throw "DXVK tar archive expanded size ($totalBytes bytes) exceeds 100 MiB limit."
+        }
+        if (-not $hasD3d11 -or -not $hasDxgi) {
+            throw "DXVK tar archive does not contain required x64/d3d11.dll and x64/dxgi.dll."
+        }
+
+        [void][System.IO.Directory]::CreateDirectory($DestinationDir)
+        $cleanVer = $Version.TrimStart('v')
+        $prefix = "dxvk-$cleanVer"
+        & $tarExe -xzf $TarGzPath -C $DestinationDir --strip-components 2 "$prefix/x64/d3d11.dll" "$prefix/x64/dxgi.dll"
+        if ($LASTEXITCODE -ne 0) {
+            throw "tar.exe extraction failed with exit code $LASTEXITCODE."
+        }
+
+        $extD3d11 = [System.IO.Path]::Combine($DestinationDir, "d3d11.dll")
+        $extDxgi = [System.IO.Path]::Combine($DestinationDir, "dxgi.dll")
+        if (-not (Test-Path -LiteralPath $extD3d11 -PathType Leaf) -or -not (Test-Path -LiteralPath $extDxgi -PathType Leaf)) {
+            throw "Extracted DXVK reference DLLs not found in $DestinationDir."
+        }
+
+        $refManifest = [PSCustomObject]@{
+            Version = $Version
+            ExtractedAtUtc = [DateTime]::UtcNow.ToString("o")
+            Files = @(
+                [PSCustomObject]@{ RelativePath = "d3d11.dll"; SizeBytes = (Get-Item -LiteralPath $extD3d11).Length; Sha256 = Compute-FileSha256 -FilePath $extD3d11 },
+                [PSCustomObject]@{ RelativePath = "dxgi.dll"; SizeBytes = (Get-Item -LiteralPath $extDxgi).Length; Sha256 = Compute-FileSha256 -FilePath $extDxgi }
+            )
+        }
+        $refManifestJson = ConvertTo-Json -InputObject $refManifest -Depth 5
+        [System.IO.File]::WriteAllText([System.IO.Path]::Combine($DestinationDir, "manifest.json"), $refManifestJson, $script:Utf8NoBom)
+    } finally {
+        if (Test-Path -LiteralPath $tempListPath) { Remove-Item -LiteralPath $tempListPath -Force -ErrorAction SilentlyContinue }
+        if (Test-Path -LiteralPath $tempErrPath) { Remove-Item -LiteralPath $tempErrPath -Force -ErrorAction SilentlyContinue }
+    }
+}
+
 # ==============================================================================
 # Setup Action
 # ==============================================================================
@@ -892,27 +1248,9 @@ function Invoke-SetupAction {
         throw "Companion archive SHA256 mismatch: expected $expectedCompanionZipHash, got $actualCompanionZipHash"
     }
 
-    # Validate Companion Provenance if provided
-    if (-not [string]::IsNullOrWhiteSpace($CompanionProvenancePath)) {
-        if (-not (Test-Path -LiteralPath $CompanionProvenancePath -PathType Leaf)) {
-            throw "Companion provenance file not found: $CompanionProvenancePath"
-        }
-        try {
-            $provRaw = [System.IO.File]::ReadAllText($CompanionProvenancePath, $script:Utf8NoBom)
-            $null = ConvertFrom-Json -InputObject $provRaw
-        } catch {
-            throw "Companion provenance is not valid JSON: $_"
-        }
-        $provItem = Get-Item -LiteralPath $CompanionProvenancePath -Force
-        $expectedProvSize = if ($testPinsUsed -and $testPins.CompanionProvenanceSize) { [long]$testPins.CompanionProvenanceSize } else { $script:FROZEN_COMPANION_PROVENANCE_SIZE }
-        if ($provItem.Length -ne $expectedProvSize) {
-            throw "Companion provenance size mismatch: expected $expectedProvSize bytes, got $($provItem.Length)"
-        }
-        $expectedProvHash = if ($testPinsUsed -and $testPins.CompanionProvenanceSha256) { $testPins.CompanionProvenanceSha256 } else { $script:FROZEN_COMPANION_PROVENANCE_SHA256 }
-        $actualProvHash = Compute-FileSha256 -FilePath $CompanionProvenancePath
-        if ($actualProvHash -ne $expectedProvHash) {
-            throw "Companion provenance SHA256 mismatch: expected $expectedProvHash, got $actualProvHash"
-        }
+    # Companion provenance: required in candidate run (unless TestPins used)
+    if (-not $testPinsUsed -and [string]::IsNullOrWhiteSpace($CompanionProvenancePath)) {
+        throw "CompanionProvenancePath parameter is required for production candidate setup."
     }
 
     # Create root and subdirectories
@@ -931,6 +1269,11 @@ function Invoke-SetupAction {
 
     foreach ($dir in @($targetDir, $controlDir, $baselineDir, $companionDir, $runtimeDir, $snapshotsDir, $logsDir, $referenceDir, $profilesDir, $backupsDir)) {
         [void][System.IO.Directory]::CreateDirectory($dir)
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($CompanionProvenancePath)) {
+        $provDest = [System.IO.Path]::Combine($companionDir, "provenance")
+        Extract-CompanionProvenance -ProvenancePath $CompanionProvenancePath -DestinationDir $provDest -TestPinsUsed $testPinsUsed -TestPins $testPins
     }
 
     # F2: Extract helper directly to a dedicated directory and copy executable; no deletion in finally
@@ -990,44 +1333,12 @@ function Invoke-SetupAction {
 
     # Official reference tar extraction (if provided)
     if (-not [string]::IsNullOrWhiteSpace($Dxvk311TarGzPath)) {
-        $tarItem = Get-Item -LiteralPath $Dxvk311TarGzPath -Force
-        if ($tarItem.Length -ne $script:FROZEN_DXVK_311_SIZE) {
-            throw "DXVK v3.1.1 archive size mismatch: expected $($script:FROZEN_DXVK_311_SIZE), got $($tarItem.Length)"
-        }
-        $tarHash = Compute-FileSha256 -FilePath $Dxvk311TarGzPath
-        if ($tarHash -ne $script:FROZEN_DXVK_311_SHA256) {
-            throw "DXVK v3.1.1 archive SHA256 mismatch: expected $($script:FROZEN_DXVK_311_SHA256), got $tarHash"
-        }
         $ref311Dir = [System.IO.Path]::Combine($referenceDir, "v3.1.1", "x64")
-        [void][System.IO.Directory]::CreateDirectory($ref311Dir)
-        & tar.exe -xzf $Dxvk311TarGzPath -C $ref311Dir --strip-components 2 "dxvk-3.1.1/x64/d3d11.dll" "dxvk-3.1.1/x64/dxgi.dll"
-        if ($LASTEXITCODE -ne 0) {
-            throw "Failed to extract DXVK v3.1.1 reference files via tar.exe (exit code $LASTEXITCODE)."
-        }
-        if (-not (Test-Path -LiteralPath ([System.IO.Path]::Combine($ref311Dir, "d3d11.dll")) -PathType Leaf) -or
-            -not (Test-Path -LiteralPath ([System.IO.Path]::Combine($ref311Dir, "dxgi.dll")) -PathType Leaf)) {
-            throw "DXVK v3.1.1 reference payload is missing extracted DLL files."
-        }
+        Extract-BoundedDxvkTarGz -TarGzPath $Dxvk311TarGzPath -Version "v3.1.1" -DestinationDir $ref311Dir
     }
     if (-not [string]::IsNullOrWhiteSpace($Dxvk31TarGzPath)) {
-        $tarItem = Get-Item -LiteralPath $Dxvk31TarGzPath -Force
-        if ($tarItem.Length -ne $script:FROZEN_DXVK_31_SIZE) {
-            throw "DXVK v3.1 archive size mismatch: expected $($script:FROZEN_DXVK_31_SIZE), got $($tarItem.Length)"
-        }
-        $tarHash = Compute-FileSha256 -FilePath $Dxvk31TarGzPath
-        if ($tarHash -ne $script:FROZEN_DXVK_31_SHA256) {
-            throw "DXVK v3.1 archive SHA256 mismatch: expected $($script:FROZEN_DXVK_31_SHA256), got $tarHash"
-        }
         $ref31Dir = [System.IO.Path]::Combine($referenceDir, "v3.1", "x64")
-        [void][System.IO.Directory]::CreateDirectory($ref31Dir)
-        & tar.exe -xzf $Dxvk31TarGzPath -C $ref31Dir --strip-components 2 "dxvk-3.1/x64/d3d11.dll" "dxvk-3.1/x64/dxgi.dll"
-        if ($LASTEXITCODE -ne 0) {
-            throw "Failed to extract DXVK v3.1 reference files via tar.exe (exit code $LASTEXITCODE)."
-        }
-        if (-not (Test-Path -LiteralPath ([System.IO.Path]::Combine($ref31Dir, "d3d11.dll")) -PathType Leaf) -or
-            -not (Test-Path -LiteralPath ([System.IO.Path]::Combine($ref31Dir, "dxgi.dll")) -PathType Leaf)) {
-            throw "DXVK v3.1 reference payload is missing extracted DLL files."
-        }
+        Extract-BoundedDxvkTarGz -TarGzPath $Dxvk31TarGzPath -Version "v3.1" -DestinationDir $ref31Dir
     }
 
     # Seed baseline files in target
@@ -1065,6 +1376,17 @@ function Invoke-SetupAction {
     }
     $manifestJson = ConvertTo-Json -InputObject $baselineManifest -Depth 5
     [System.IO.File]::WriteAllText([System.IO.Path]::Combine($baselineDir, "baseline_manifest.json"), $manifestJson, $script:Utf8NoBom)
+
+    $setupProv = [PSCustomObject]@{
+        CreatedAtUtc        = $setupStartUtc
+        SetupElapsedMs      = $stopwatch.ElapsedMilliseconds
+        HelperZipSha256     = $actualHelperZipHash
+        CompanionZipSha256  = $actualCompanionZipHash
+        TestPinsUsed        = $testPinsUsed
+        AdoptionAttestation = $AdoptionAttestation
+    }
+    $setupProvJson = ConvertTo-Json -InputObject $setupProv -Depth 5
+    [System.IO.File]::WriteAllText([System.IO.Path]::Combine($baselineDir, "setup_provenance.json"), $setupProvJson, $script:Utf8NoBom)
 
     # F4: Seed Companion Storage with REAL store schema (game-library.json AND games.json)
     $settingsPath = [System.IO.Path]::Combine($companionDir, "settings.json")
@@ -1258,7 +1580,9 @@ function Verify-CheckpointInternal(
     [string]$FixtureRoot,
     [string]$CheckpointName,
     [string]$ExpectedType,
-    [string]$ExpectedVersion = ""
+    [string]$ExpectedVersion = "",
+    [int]$Slot = 0,
+    [switch]$PureDataCheck
 ) {
     $canonRoot = Validate-RootBoundPath -RootPath $FixtureRoot -CandidatePath $FixtureRoot
     $cleanName = Validate-CheckpointName -Name $CheckpointName
@@ -1287,11 +1611,11 @@ function Verify-CheckpointInternal(
         }
 
         $library = ConvertFrom-Json -InputObject $read1
-        $instList = Get-SafePropertyValue -Object $library -PropertyName "Installations"
-        if ((Get-SafeCount $instList) -eq 0) {
-            throw "Live library store has no installations."
+        $instList = @(Get-SafeEnumerable (Get-SafePropertyValue -Object $library -PropertyName "Installations"))
+        if ($instList.Length -ne 1) {
+            throw "Live library store verification failed: expected exactly 1 installation, got $($instList.Length)."
         }
-        $inst = @($instList)[0]
+        $inst = $instList[0]
 
         switch ($ExpectedType) {
             "Pending" {
@@ -1305,9 +1629,17 @@ function Verify-CheckpointInternal(
                 }
 
                 if ($pendingType -eq "Install") {
-                    $baseCheck = Compare-TargetBaselineInternal -FixtureRoot $canonRoot
-                    if (-not $baseCheck.IsMatch) {
-                        throw "Pending Install checkpoint verification failed: target was mutated ($($baseCheck.Reason))"
+                    if ([string]::IsNullOrWhiteSpace($inst.ManagedDxvkVersion)) {
+                        $baseCheck = Compare-TargetBaselineInternal -FixtureRoot $canonRoot
+                        if (-not $baseCheck.IsMatch) {
+                            throw "Pending Install checkpoint verification failed: target was mutated ($($baseCheck.Reason))"
+                        }
+                    } else {
+                        $currentManagedVer = $inst.ManagedDxvkVersion
+                        $managedCheck = Compare-TargetManagedReferenceInternal -FixtureRoot $canonRoot -ManagedVersion $currentManagedVer
+                        if (-not $managedCheck.IsMatch) {
+                            throw "Pending Install checkpoint verification failed: target does not match currently managed $currentManagedVer state ($($managedCheck.Reason))"
+                        }
                     }
                 } else {
                     $currentManagedVer = $inst.ManagedDxvkVersion
@@ -1320,9 +1652,11 @@ function Verify-CheckpointInternal(
                     }
                 }
 
-                # Helper liveness verified via retained process handle
-                if ($null -ne $script:HelperProcess -and $script:HelperProcess.HasExited) {
-                    throw "Pending checkpoint verification failed: helper process is not actively running."
+                # Helper liveness verified via retained process handle unless PureDataCheck
+                if (-not $PureDataCheck) {
+                    if ($null -eq $script:HelperProcess -or $script:HelperProcess.HasExited) {
+                        throw "Pending checkpoint verification failed: live owned helper process handle is required."
+                    }
                 }
 
                 if (-not [string]::IsNullOrEmpty($ExpectedVersion)) {
@@ -1357,11 +1691,19 @@ function Verify-CheckpointInternal(
                     throw "Applied checkpoint verification failed: helper process is still running."
                 }
 
-                # Check normal exit record for helper
-                $activeSlot = if ($null -ne $state.ActiveHelperSlot) { $state.ActiveHelperSlot } else { 1 }
-                $exitRecordPath = [System.IO.Path]::Combine($canonRoot, "control", "helper-slot-$activeSlot.exit.json")
+                # Check normal exit record for helper using slot binding
+                $targetSlot = if ($Slot -gt 0) {
+                    $Slot
+                } elseif ($null -ne $state.LastStoppedHelperSlot) {
+                    [int]$state.LastStoppedHelperSlot
+                } elseif ($null -ne $state.ActiveHelperSlot) {
+                    [int]$state.ActiveHelperSlot
+                } else {
+                    1
+                }
+                $exitRecordPath = [System.IO.Path]::Combine($canonRoot, "control", "helper-slot-$targetSlot.exit.json")
                 if (-not (Test-Path -LiteralPath $exitRecordPath -PathType Leaf)) {
-                    throw "Applied checkpoint verification failed: normal exit record missing: helper-slot-$activeSlot.exit.json."
+                    throw "Applied checkpoint verification failed: normal exit record missing: helper-slot-$targetSlot.exit.json."
                 }
                 $exitRecordRaw = [System.IO.File]::ReadAllText($exitRecordPath, $script:Utf8NoBom)
                 $exitRecord = ConvertFrom-Json -InputObject $exitRecordRaw
@@ -1419,7 +1761,8 @@ function Verify-CheckpointInternal(
                 if ([string]::IsNullOrWhiteSpace($d3d11Rec.BackupRelativePath)) {
                     throw "Applied checkpoint verification failed: d3d11.dll BackupRelativePath is empty."
                 }
-                $backupFullPath = [System.IO.Path]::Combine($profilesDir, $d3d11Rec.BackupRelativePath)
+                $backupsDir = Validate-RootBoundPath -RootPath $canonRoot -CandidatePath ([System.IO.Path]::Combine($profilesDir, "Backups"))
+                $backupFullPath = Validate-RootBoundPath -RootPath $backupsDir -CandidatePath ([System.IO.Path]::Combine($backupsDir, $d3d11Rec.BackupRelativePath))
                 if (-not (Test-Path -LiteralPath $backupFullPath -PathType Leaf)) {
                     throw "Applied checkpoint verification failed: native backup file missing at $backupFullPath."
                 }
@@ -1452,21 +1795,23 @@ function Verify-CheckpointInternal(
                 }
 
                 # Verify games.json coherence
-                if (Test-Path -LiteralPath $legacyGamesPath -PathType Leaf) {
-                    $gamesRaw = [System.IO.File]::ReadAllText($legacyGamesPath, $script:Utf8NoBom)
-                    $gamesList = ConvertFrom-Json -InputObject $gamesRaw
-                    if ($gamesList -is [System.Collections.IEnumerable]) {
-                        foreach ($gp in $gamesList) {
-                            if ($gp.ExeName -eq "QueueFixture.exe") {
-                                if (-not $gp.DxvkEnabled) {
-                                    throw "Applied checkpoint verification failed: games.json DxvkEnabled is false."
-                                }
-                                if ($gp.DxvkVersion -ne $ExpectedVersion) {
-                                    throw "Applied checkpoint verification failed: games.json DxvkVersion is '$($gp.DxvkVersion)' (expected '$ExpectedVersion')."
-                                }
-                            }
-                        }
-                    }
+                if (-not (Test-Path -LiteralPath $legacyGamesPath -PathType Leaf)) {
+                    throw "Applied checkpoint verification failed: games.json does not exist."
+                }
+                $gamesRaw = [System.IO.File]::ReadAllText($legacyGamesPath, $script:Utf8NoBom)
+                $gamesList = @(Get-SafeEnumerable (ConvertFrom-Json -InputObject $gamesRaw))
+                if ($gamesList.Length -ne 1) {
+                    throw "Applied checkpoint verification failed: expected exactly 1 profile in games.json, got $($gamesList.Length)."
+                }
+                $gp = $gamesList[0]
+                if ($gp.ExeName -ne "QueueFixture.exe") {
+                    throw "Applied checkpoint verification failed: games.json ExeName is '$($gp.ExeName)' (expected 'QueueFixture.exe')."
+                }
+                if (-not $gp.DxvkEnabled) {
+                    throw "Applied checkpoint verification failed: games.json DxvkEnabled is false."
+                }
+                if ($gp.DxvkVersion -ne $ExpectedVersion) {
+                    throw "Applied checkpoint verification failed: games.json DxvkVersion is '$($gp.DxvkVersion)' (expected '$ExpectedVersion')."
                 }
             }
             "Restored" {
@@ -1480,22 +1825,43 @@ function Verify-CheckpointInternal(
                 if ($null -ne $inst.PendingAction) {
                     throw "Restored verification failed: lingering PendingAction found."
                 }
-                # Verify games.json restored
-                if (Test-Path -LiteralPath $legacyGamesPath -PathType Leaf) {
-                    $gamesRaw = [System.IO.File]::ReadAllText($legacyGamesPath, $script:Utf8NoBom)
-                    $gamesList = ConvertFrom-Json -InputObject $gamesRaw
-                    if ($gamesList -is [System.Collections.IEnumerable]) {
-                        foreach ($gp in $gamesList) {
-                            if ($gp.ExeName -eq "QueueFixture.exe") {
-                                if ($gp.DxvkEnabled) {
-                                    throw "Restored checkpoint verification failed: games.json DxvkEnabled is true."
-                                }
-                                if ($null -ne $gp.DxvkVersion) {
-                                    throw "Restored checkpoint verification failed: games.json DxvkVersion is '$($gp.DxvkVersion)' (expected null)."
-                                }
-                            }
-                        }
+
+                # Native backup retention: verify native backup still exists and matches baseline hash
+                $managedFiles = @(Get-SafeEnumerable $inst.ManagedFiles)
+                $d3d11Rec = $managedFiles | Where-Object { $_.RelativePath -like "*d3d11.dll" } | Select-Object -First 1
+                if ($null -ne $d3d11Rec -and -not [string]::IsNullOrWhiteSpace($d3d11Rec.BackupRelativePath)) {
+                    $backupsDir = Validate-RootBoundPath -RootPath $canonRoot -CandidatePath ([System.IO.Path]::Combine($profilesDir, "Backups"))
+                    $backupFullPath = Validate-RootBoundPath -RootPath $backupsDir -CandidatePath ([System.IO.Path]::Combine($backupsDir, $d3d11Rec.BackupRelativePath))
+                    if (-not (Test-Path -LiteralPath $backupFullPath -PathType Leaf)) {
+                        throw "Restored checkpoint verification failed: retained native backup missing at $backupFullPath."
                     }
+                    $backupHash = Compute-FileSha256 -FilePath $backupFullPath
+                    $baseManifestPath = [System.IO.Path]::Combine($canonRoot, "baseline", "baseline_manifest.json")
+                    $baseManifest = ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText($baseManifestPath, $script:Utf8NoBom))
+                    $origD3d11Entry = $baseManifest.Files | Where-Object { $_.RelativePath -eq "d3d11.dll" } | Select-Object -First 1
+                    if ($backupHash -ne $origD3d11Entry.Sha256) {
+                        throw "Restored checkpoint verification failed: retained native backup hash mismatch: $backupHash vs $($origD3d11Entry.Sha256)."
+                    }
+                }
+
+                # Verify games.json restored
+                if (-not (Test-Path -LiteralPath $legacyGamesPath -PathType Leaf)) {
+                    throw "Restored checkpoint verification failed: games.json does not exist."
+                }
+                $gamesRaw = [System.IO.File]::ReadAllText($legacyGamesPath, $script:Utf8NoBom)
+                $gamesList = @(Get-SafeEnumerable (ConvertFrom-Json -InputObject $gamesRaw))
+                if ($gamesList.Length -ne 1) {
+                    throw "Restored checkpoint verification failed: expected exactly 1 profile in games.json, got $($gamesList.Length)."
+                }
+                $gp = $gamesList[0]
+                if ($gp.ExeName -ne "QueueFixture.exe") {
+                    throw "Restored checkpoint verification failed: games.json ExeName is '$($gp.ExeName)' (expected 'QueueFixture.exe')."
+                }
+                if ($gp.DxvkEnabled) {
+                    throw "Restored checkpoint verification failed: games.json DxvkEnabled is true."
+                }
+                if ($null -ne $gp.DxvkVersion) {
+                    throw "Restored checkpoint verification failed: games.json DxvkVersion is '$($gp.DxvkVersion)' (expected null)."
                 }
             }
             Default {
@@ -1568,51 +1934,31 @@ function Supervise-HelperStart([string]$FixtureRoot, [int]$Slot, [string]$Attest
     $proc = New-Object System.Diagnostics.Process
     $proc.StartInfo = $psi
 
-    $outputState = [hashtable]::Synchronized(@{
-        ReadyReceived   = $false
-        StoppedReceived = $false
-    })
-
-    $proc.add_OutputDataReceived({
-        param($sender, $e)
-        if ($null -ne $e.Data) {
-            [System.IO.File]::AppendAllText($stdoutLogPath, $e.Data + [System.Environment]::NewLine, $script:Utf8NoBom)
-            if ($e.Data -match "READY") { $outputState.ReadyReceived = $true }
-            if ($e.Data -match "STOPPED") { $outputState.StoppedReceived = $true }
-        }
-    })
-    $proc.add_ErrorDataReceived({
-        param($sender, $e)
-        if ($null -ne $e.Data) {
-            [System.IO.File]::AppendAllText($stderrLogPath, $e.Data + [System.Environment]::NewLine, $script:Utf8NoBom)
-        }
-    })
-
     if (-not $proc.Start()) {
         throw "Failed to start helper process."
     }
 
-    $proc.BeginOutputReadLine()
-    $proc.BeginErrorReadLine()
+    $script:HelperStdoutDrainer = New-Object DXVKCompanion.Validation.SafeProcessStreamDrainer($proc.StandardOutput, $stdoutLogPath, $script:Utf8NoBom)
+    $script:HelperStderrDrainer = New-Object DXVKCompanion.Validation.SafeProcessStreamDrainer($proc.StandardError, $stderrLogPath, $script:Utf8NoBom)
+    $script:HelperStdoutDrainer.Start()
+    $script:HelperStderrDrainer.Start()
 
-    # Retain the real process handle in supervisor state
     $script:HelperProcess = $proc
-    $script:HelperOutputState = $outputState
 
     # Bounded wait for READY signal on standard output (no kill on timeout)
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    while (-not $outputState.ReadyReceived -and $sw.ElapsedMilliseconds -lt 5000) {
+    while (-not $script:HelperStdoutDrainer.ReadyReceived -and $sw.ElapsedMilliseconds -lt 5000) {
         if ($proc.HasExited) { break }
         Start-Sleep -Milliseconds 50
     }
 
-    if (-not $outputState.ReadyReceived) {
+    if (-not $script:HelperStdoutDrainer.ReadyReceived) {
         throw "Helper process failed to emit READY within 5000ms. Residual process retained."
     }
 
     # Update state
     $state = Get-StateData -FixtureRoot $canonRoot
-    $usedSlots = @($state.UsedSlots)
+    $usedSlots = @(Get-SafeEnumerable $state.UsedSlots)
     if ($usedSlots -notcontains $Slot) {
         $usedSlots += $Slot
     }
@@ -1661,11 +2007,18 @@ function Supervise-HelperStop([string]$FixtureRoot, [int]$Slot) {
         throw "Helper process failed to exit within 10000ms after stop marker created. Process retained."
     }
 
-    Start-Sleep -Milliseconds 200
+    if ($null -ne $script:HelperStdoutDrainer) { [void]$script:HelperStdoutDrainer.WaitForDrain(5000) }
+    if ($null -ne $script:HelperStderrDrainer) { [void]$script:HelperStderrDrainer.WaitForDrain(5000) }
 
     $exitCode = $script:HelperProcess.ExitCode
+    $stoppedReceived = if ($null -ne $script:HelperStdoutDrainer) { $script:HelperStdoutDrainer.StoppedReceived } else { $false }
+    $isNormalStop = ($exitCode -eq 0 -and $stoppedReceived)
+
     if ($exitCode -ne 0) {
         throw "Helper process exited with non-zero code: $exitCode (expected 0)."
+    }
+    if (-not $stoppedReceived) {
+        throw "Helper process exited with code 0 but did not emit STOPPED token."
     }
 
     # Record confirmed normal exit record in control/helper-slot-$Slot.exit.json
@@ -1673,19 +2026,21 @@ function Supervise-HelperStop([string]$FixtureRoot, [int]$Slot) {
         Slot         = $Slot
         Pid          = $script:HelperProcess.Id
         ExitCode     = $exitCode
-        NormalStop   = ($exitCode -eq 0)
+        NormalStop   = $isNormalStop
         StoppedAtUtc = [DateTime]::UtcNow.ToString("o")
     }
     $exitRecordPath = [System.IO.Path]::Combine($controlDir, "helper-slot-$Slot.exit.json")
     [System.IO.File]::WriteAllText($exitRecordPath, (ConvertTo-Json -InputObject $exitRecord), $script:Utf8NoBom)
 
+    if ($null -ne $script:HelperStdoutDrainer) { $script:HelperStdoutDrainer.Dispose(); $script:HelperStdoutDrainer = $null }
+    if ($null -ne $script:HelperStderrDrainer) { $script:HelperStderrDrainer.Dispose(); $script:HelperStderrDrainer = $null }
     $script:HelperProcess.Dispose()
     $script:HelperProcess = $null
-    $script:HelperOutputState = $null
 
     $state = Get-StateData -FixtureRoot $canonRoot
     $state.ActiveHelperPid = $null
     $state.ActiveHelperSlot = $null
+    $state.LastStoppedHelperSlot = $Slot
     Save-StateData -FixtureRoot $canonRoot -StateObject $state
 
     return @{
@@ -1746,25 +2101,14 @@ function Supervise-CompanionStart([string]$FixtureRoot, [bool]$NoAutoDiscovery, 
     $proc = New-Object System.Diagnostics.Process
     $proc.StartInfo = $psi
 
-    $proc.add_OutputDataReceived({
-        param($sender, $e)
-        if ($null -ne $e.Data) {
-            [System.IO.File]::AppendAllText($compStdoutLog, $e.Data + [System.Environment]::NewLine, $script:Utf8NoBom)
-        }
-    })
-    $proc.add_ErrorDataReceived({
-        param($sender, $e)
-        if ($null -ne $e.Data) {
-            [System.IO.File]::AppendAllText($compStderrLog, $e.Data + [System.Environment]::NewLine, $script:Utf8NoBom)
-        }
-    })
-
     if (-not $proc.Start()) {
         throw "Failed to start Companion process."
     }
 
-    $proc.BeginOutputReadLine()
-    $proc.BeginErrorReadLine()
+    $script:CompanionStdoutDrainer = New-Object DXVKCompanion.Validation.SafeProcessStreamDrainer($proc.StandardOutput, $compStdoutLog, $script:Utf8NoBom)
+    $script:CompanionStderrDrainer = New-Object DXVKCompanion.Validation.SafeProcessStreamDrainer($proc.StandardError, $compStderrLog, $script:Utf8NoBom)
+    $script:CompanionStdoutDrainer.Start()
+    $script:CompanionStderrDrainer.Start()
 
     # Retain process handle in supervisor state
     $script:CompanionProcess = $proc
@@ -1794,9 +2138,13 @@ function Supervise-CompanionStop([string]$FixtureRoot) {
         }
     }
 
-    Start-Sleep -Milliseconds 200
+    if ($null -ne $script:CompanionStdoutDrainer) { [void]$script:CompanionStdoutDrainer.WaitForDrain(5000) }
+    if ($null -ne $script:CompanionStderrDrainer) { [void]$script:CompanionStderrDrainer.WaitForDrain(5000) }
 
     $exitCode = $script:CompanionProcess.ExitCode
+
+    if ($null -ne $script:CompanionStdoutDrainer) { $script:CompanionStdoutDrainer.Dispose(); $script:CompanionStdoutDrainer = $null }
+    if ($null -ne $script:CompanionStderrDrainer) { $script:CompanionStderrDrainer.Dispose(); $script:CompanionStderrDrainer = $null }
     $script:CompanionProcess.Dispose()
     $script:CompanionProcess = $null
 
@@ -1847,10 +2195,12 @@ function Invoke-SuperviseAction {
 
     try {
         if ((Get-SafeCount $commandList) -gt 0) {
+            Invoke-SuperviseObservationCycle -FixtureRoot $canonRoot
             foreach ($line in $commandList) {
                 $trimmed = $line.Trim()
                 if ([string]::IsNullOrWhiteSpace($trimmed) -or $trimmed.StartsWith("#")) { continue }
 
+                Invoke-SuperviseObservationCycle -FixtureRoot $canonRoot
                 Write-Host "[SUPERVISOR EXEC] $trimmed"
                 $parts = $trimmed -split '\s+'
                 $cmd = $parts[0].ToLowerInvariant()
@@ -1880,7 +2230,8 @@ function Invoke-SuperviseAction {
                         $name = $parts[1]
                         $type = $parts[2]
                         $ver = if ($parts.Length -gt 3) { $parts[3] } else { "" }
-                        $res = Verify-CheckpointInternal -FixtureRoot $canonRoot -CheckpointName $name -ExpectedType $type -ExpectedVersion $ver
+                        $cmdSlot = if ($parts.Length -gt 4) { [int]$parts[4] } else { 0 }
+                        $res = Verify-CheckpointInternal -FixtureRoot $canonRoot -CheckpointName $name -ExpectedType $type -ExpectedVersion $ver -Slot $cmdSlot -PureDataCheck:$PureDataCheck
                     }
                     "end-batch" {
                         $st = Get-StateData -FixtureRoot $canonRoot
@@ -1893,14 +2244,13 @@ function Invoke-SuperviseAction {
                     }
                 }
                 $executionResults += $res
+                Invoke-SuperviseObservationCycle -FixtureRoot $canonRoot
             }
 
             # Enforce: Never return while unowned child processes remain active!
-            if ($null -ne $script:HelperProcess -and -not $script:HelperProcess.HasExited) {
-                throw "Supervisor command sequence completed while helper process (PID $($script:HelperProcess.Id)) is still running. Unowned processes prohibited."
-            }
-            if ($null -ne $script:CompanionProcess -and -not $script:CompanionProcess.HasExited) {
-                throw "Supervisor command sequence completed while companion process (PID $($script:CompanionProcess.Id)) is still running. Unowned processes prohibited."
+            if (($null -ne $script:HelperProcess -and -not $script:HelperProcess.HasExited) -or
+                ($null -ne $script:CompanionProcess -and -not $script:CompanionProcess.HasExited)) {
+                throw "Supervisor command sequence completed while child process is still running. Unowned processes prohibited."
             }
 
             return @{
@@ -1911,15 +2261,23 @@ function Invoke-SuperviseAction {
         } else {
             Write-Host "Entering interactive supervisor mode. Type 'help' for commands, 'exit' to quit."
             while ($true) {
+                Invoke-SuperviseObservationCycle -FixtureRoot $canonRoot
                 $st = Get-StateData -FixtureRoot $canonRoot
-                $prompt = "Trial [Helper=$($st.HelperStartAttempts)/4, Comp=$($st.CompanionStartAttempts)/8] > "
+                $prompt = "Trial [Helper=$($st.HelperStartAttempts)/4, Comp=$($st.CompanionStartAttempts)/8, Readiness=$($st.CurrentReadiness)] > "
                 Write-Host -NoNewline $prompt
                 $inputLine = [Console]::ReadLine()
                 if ($null -eq $inputLine) {
                     Write-Host "`nEOF detected on supervisor input."
-                    if (($null -ne $script:HelperProcess -and -not $script:HelperProcess.HasExited) -or
-                        ($null -ne $script:CompanionProcess -and -not $script:CompanionProcess.HasExited)) {
-                        Write-Warning "Supervisor exiting on EOF while child processes are still active. Handles retained in OS."
+                    $hasActive = ($null -ne $script:HelperProcess -and -not $script:HelperProcess.HasExited) -or
+                                 ($null -ne $script:CompanionProcess -and -not $script:CompanionProcess.HasExited)
+                    if ($hasActive) {
+                        Write-Host "Child processes are still running. Retaining supervisor ownership in observation loop until children exit..."
+                        while (($null -ne $script:HelperProcess -and -not $script:HelperProcess.HasExited) -or
+                               ($null -ne $script:CompanionProcess -and -not $script:CompanionProcess.HasExited)) {
+                            Invoke-SuperviseObservationCycle -FixtureRoot $canonRoot
+                            Start-Sleep -Milliseconds 500
+                        }
+                        Write-Host "All child processes have exited."
                     }
                     break
                 }
@@ -1969,7 +2327,8 @@ function Invoke-SuperviseAction {
                             $name = $parts[1]
                             $type = $parts[2]
                             $ver = if ($parts.Length -gt 3) { $parts[3] } else { "" }
-                            $res = Verify-CheckpointInternal -FixtureRoot $canonRoot -CheckpointName $name -ExpectedType $type -ExpectedVersion $ver
+                            $cmdSlot = if ($parts.Length -gt 4) { [int]$parts[4] } else { 0 }
+                            $res = Verify-CheckpointInternal -FixtureRoot $canonRoot -CheckpointName $name -ExpectedType $type -ExpectedVersion $ver -Slot $cmdSlot -PureDataCheck:$PureDataCheck
                             Write-Host "[SUCCESS] $($res.Message)"
                         }
                         "status" {
@@ -1989,7 +2348,7 @@ function Invoke-SuperviseAction {
                             Write-Host "  start-companion [--no-auto-discovery]"
                             Write-Host "  stop-companion"
                             Write-Host "  snapshot <CheckpointName>"
-                            Write-Host "  verify <CheckpointName> <Pending|Applied|Restored> [<Version>]"
+                            Write-Host "  verify <CheckpointName> <Pending|Applied|Restored> [<Version>] [<Slot>]"
                             Write-Host "  status"
                             Write-Host "  end-batch"
                             Write-Host "  exit"
@@ -2005,10 +2364,14 @@ function Invoke-SuperviseAction {
             return @{ Success = $true; Message = "Interactive supervisor exited." }
         }
     } finally {
-        $cleanState = Get-StateData -FixtureRoot $canonRoot
-        if ($cleanState.ActiveSupervisorPid -eq $PID) {
-            $cleanState.ActiveSupervisorPid = $null
-            Save-StateData -FixtureRoot $canonRoot -StateObject $cleanState
+        $hasActiveChildren = ($null -ne $script:HelperProcess -and -not $script:HelperProcess.HasExited) -or
+                             ($null -ne $script:CompanionProcess -and -not $script:CompanionProcess.HasExited)
+        if (-not $hasActiveChildren) {
+            $cleanState = Get-StateData -FixtureRoot $canonRoot
+            if ($cleanState.ActiveSupervisorPid -eq $PID) {
+                $cleanState.ActiveSupervisorPid = $null
+                Save-StateData -FixtureRoot $canonRoot -StateObject $cleanState
+            }
         }
     }
 }
@@ -2067,7 +2430,7 @@ try {
             $result = Take-SnapshotInternal -FixtureRoot $FixtureRoot -CheckpointName $CheckpointName
         }
         "Verify-Checkpoint" {
-            $result = Verify-CheckpointInternal -FixtureRoot $FixtureRoot -CheckpointName $CheckpointName -ExpectedType $ExpectedType -ExpectedVersion $ExpectedVersion
+            $result = Verify-CheckpointInternal -FixtureRoot $FixtureRoot -CheckpointName $CheckpointName -ExpectedType $ExpectedType -ExpectedVersion $ExpectedVersion -Slot $Slot -PureDataCheck:$PureDataCheck
         }
         "Status" {
             $st = Get-StateData -FixtureRoot $FixtureRoot
