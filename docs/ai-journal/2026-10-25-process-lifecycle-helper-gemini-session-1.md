@@ -59,5 +59,10 @@ Implemented standalone native x64 CPU-only helper `QueueFixture.cpp`, read-only 
   - Workflow Tests Run `40214666113`: Passed in 18s (386 Python tests).
   - Build and Test Run `40214665848`: Passed in 1m45s (1,309/1,309 Phase A tests passed).
   - Helper CPU Checks Run `40214666035`: Failed during smoke tests with `PSInvalidOperationException: There is no Runspace available to run scripts in this thread` because `Process.add_OutputDataReceived` invokes PowerShell script blocks on ThreadPool threads without an active Runspace.
+- **Attempt 2 Commit**: `0f90f387b931c0da038cc9d49ac1f0879fa11eab` (tree `378d2cfdadd211bf046b3d4ddb8f5432c76d6cf0`)
+  - Scope Check Run `40214956445`: Passed in 9s.
+  - PR Hygiene Run `40214956442`: Passed in 9s.
+  - Workflow Tests Run `40214956320`: Passed in 16s (386 Python tests).
+  - Helper CPU Checks Run `40214956485`: All 14 smoke tests passed cleanly; failed in subsequent `Generate provenance and inventory report` step with PowerShell `ParserError` on `"$provenancePath:"` where the trailing colon was parsed as a variable scope delimiter.
 - **Repair**:
-  - Replaced event handler `add_OutputDataReceived` with synchronous `StandardOutput.ReadToEnd()` for immediate exit test cases, and `.NET` `StandardOutput.ReadLineAsync()` tasks for interactive lifecycle cases, completely eliminating PowerShell thread pool Runspace affinity errors.
+  - Replaced `"$provenancePath:"` with `"$provenancePath"` in `.github/workflows/process-lifecycle-helper-cpu.yml`.

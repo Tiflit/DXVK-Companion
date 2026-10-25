@@ -415,7 +415,7 @@ jobs:
 
           $provenancePath = Join-Path $artifactDir 'provenance.json'
           $provenance | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $provenancePath -Encoding utf8
-          Write-Output "Provenance manifest written to $provenancePath:"
+          Write-Output "Provenance manifest written to $provenancePath"
           Get-Content -LiteralPath $provenancePath
 
       - name: Upload process lifecycle helper artifact
