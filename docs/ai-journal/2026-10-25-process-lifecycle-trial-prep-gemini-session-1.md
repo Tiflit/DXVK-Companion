@@ -51,7 +51,7 @@ Following Codex's grouped review on PR #302, the following coherent repairs were
 
 ## Cryptographic and Script Identifiers
 
-- **Repaired Script (`tools/validation/ProcessLifecycleTrial.ps1`) SHA-256:** `791fb1f77ef7a592aede693d187d9ab37904ea070ce7abdecf6bef15e57e13ae`
+- **Repaired Script (`tools/validation/ProcessLifecycleTrial.ps1`) SHA-256:** `a006699c82b34eeb4020bbac9737b3806edb0897b95d994ca3db701c7137e218`
 - **Helper Artifact:** ID `12609386490`, ZIP SHA256 `f75ec55738e6ca3c1a0cd0a342aefeaa0fb3addd03538f03f2ac7a43295750de`, EXE SHA256 `f720cecae0f13eeef6d9b5e2d259b51df97b37bc3347b241071e25e8c1548d70`
 - **Companion Candidate:** ID `12532606945`, ZIP SHA256 `32660fd3e3ed87385e47940d490db2e6ab93daad7e993fe4225dd157232b3b14`, EXE SHA256 `25012c67ade281e0d4585282bf485e4783a1f7c486018f8d1a038c5f2dc18ca4`
 
@@ -110,6 +110,7 @@ Following Codex review comment 6404748227 at head `31c43f4`, the following repai
 
 1. **Compiled C# Safe Process Stream Drainer (`SafeProcessStreamDrainer`)**:
    - Replaced worker-thread PowerShell scriptblock callbacks on `OutputDataReceived`/`ErrorDataReceived` with compiled C# `SafeProcessStreamDrainer` (invoked via `Add-Type` in PowerShell and tested in unit tests).
+   - Ensured C# 5.0 syntax compatibility for Windows PowerShell 5.1's in-process `Add-Type` compiler (avoiding C# 6/7 throw expressions, nameof, and null-conditional operators).
    - Reads asynchronously using background Tasks without Runspace bindings; flushes safely to log files; tracks lines read and volatile detection flags (`ReadyReceived`, `StoppedReceived`).
    - `Supervise-HelperStop` asserts both `ExitCode == 0` AND `$drainer.StoppedReceived` before marking normal exit.
 

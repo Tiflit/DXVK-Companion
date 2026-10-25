@@ -113,8 +113,8 @@ namespace DXVKCompanion.Validation
 
         public SafeProcessStreamDrainer(StreamReader reader, string logFilePath, Encoding encoding)
         {
-            if (reader == null) throw new ArgumentNullException(nameof(reader));
-            if (string.IsNullOrEmpty(logFilePath)) throw new ArgumentNullException(nameof(logFilePath));
+            if (reader == null) throw new ArgumentNullException("reader");
+            if (string.IsNullOrEmpty(logFilePath)) throw new ArgumentNullException("logFilePath");
 
             _reader = reader;
             var dir = Path.GetDirectoryName(logFilePath);
@@ -129,8 +129,14 @@ namespace DXVKCompanion.Validation
         }
 
         public SafeProcessStreamDrainer(Stream inputStream, string logFilePath, Encoding encoding)
-            : this(new StreamReader(inputStream ?? throw new ArgumentNullException(nameof(inputStream)), encoding ?? Encoding.UTF8), logFilePath, encoding)
+            : this(OpenStreamReader(inputStream, encoding), logFilePath, encoding)
         {
+        }
+
+        private static StreamReader OpenStreamReader(Stream inputStream, Encoding encoding)
+        {
+            if (inputStream == null) throw new ArgumentNullException("inputStream");
+            return new StreamReader(inputStream, encoding ?? Encoding.UTF8);
         }
 
         public void Start()
@@ -177,11 +183,11 @@ namespace DXVKCompanion.Validation
 
         public void Dispose()
         {
-            try { _cts.Cancel(); } catch {}
-            try { _drainTask?.Wait(1000); } catch {}
-            try { _writer?.Dispose(); } catch {}
-            try { _reader?.Dispose(); } catch {}
-            try { _cts?.Dispose(); } catch {}
+            try { if (_cts != null) _cts.Cancel(); } catch {}
+            try { if (_drainTask != null) _drainTask.Wait(1000); } catch {}
+            try { if (_writer != null) _writer.Dispose(); } catch {}
+            try { if (_reader != null) _reader.Dispose(); } catch {}
+            try { if (_cts != null) _cts.Dispose(); } catch {}
         }
     }
 }

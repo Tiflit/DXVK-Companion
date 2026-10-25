@@ -1081,7 +1081,7 @@ public sealed class ProcessLifecycleTrialPreparationTests
         var gamesPath = Path.Combine(root, "companion", "Profiles", "games.json");
         var multiProfiles = new[]
         {
-            new { ExeName = "QueueFixture.exe", DxvkEnabled = true, DxvkVersion = "v3.1" },
+            new { ExeName = "QueueFixture.exe", DxvkEnabled = true, DxvkVersion = (string?)"v3.1" },
             new { ExeName = "OtherGame.exe", DxvkEnabled = false, DxvkVersion = (string?)null }
         };
         File.WriteAllText(gamesPath, JsonSerializer.Serialize(multiProfiles));
