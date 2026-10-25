@@ -94,16 +94,13 @@ jobs:
           $helperExe = Join-Path $buildDir 'QueueFixture.exe'
           $testResults = [System.Collections.Generic.List[PSCustomObject]]::new()
 
-          function Run-SmokeCase {
+          function Run-ImmediateCase {
             param(
               [string]$Name,
               [string]$ExeToRun,
               [string[]]$ArgsList,
               [int]$ExpectedExitCode,
-              [string]$ExpectedStdoutPattern,
-              [string]$FixtureRoot = $null,
-              [int]$Slot = 1,
-              [scriptblock]$OnReady = $null
+              [string]$ExpectedStdoutPattern = ''
             )
 
             $startUtc = (Get-Date).ToUniversalTime().ToString('o')
@@ -117,74 +114,27 @@ jobs:
             $psi.RedirectStandardError = $true
             $psi.CreateNoWindow = $true
 
-            $stdoutBuilder = [System.Text.StringBuilder]::new()
-            $proc = [System.Diagnostics.Process]::new()
-            $proc.StartInfo = $psi
-
-            $proc.add_OutputDataReceived({
-              param($s, $e)
-              if ($null -ne $e.Data) {
-                [void]$stdoutBuilder.AppendLine($e.Data)
-              }
-            })
-
-            [void]$proc.Start()
-            $proc.BeginOutputReadLine()
-
-            if ($null -ne $OnReady) {
-              $readyWaitSw = [System.Diagnostics.Stopwatch]::StartNew()
-              $ready = $false
-              while ($readyWaitSw.ElapsedMilliseconds -lt 5000) {
-                if ($stdoutBuilder.ToString() -match 'READY') {
-                  $ready = $true
-                  break
-                }
-                Start-Sleep -Milliseconds 50
-              }
-
-              if (!$ready) {
-                if (![string]::IsNullOrEmpty($FixtureRoot)) {
-                  $stopFile = Join-Path $FixtureRoot "control/stop-$Slot.request"
-                  if (!(Test-Path -LiteralPath $stopFile)) {
-                    [System.IO.File]::WriteAllText($stopFile, 'stop')
-                  }
-                }
-                [void]$proc.WaitForExit(3000)
-                throw "Smoke case '$Name' timed out waiting for READY"
-              }
-
-              & $OnReady $proc $stdoutBuilder
-            }
-
+            $proc = [System.Diagnostics.Process]::Start($psi)
+            $stdout = $proc.StandardOutput.ReadToEnd().Trim()
             $exited = $proc.WaitForExit(5000)
             if (!$exited) {
-              if (![string]::IsNullOrEmpty($FixtureRoot)) {
-                $stopFile = Join-Path $FixtureRoot "control/stop-$Slot.request"
-                if (!(Test-Path -LiteralPath $stopFile)) {
-                  [System.IO.File]::WriteAllText($stopFile, 'stop')
-                }
-                $exited = $proc.WaitForExit(3000)
-              }
-              if (!$exited) {
-                throw "Smoke case '$Name' failed to exit within bounded wait; refusing forced termination per policy"
-              }
+              throw "Smoke case '$Name' failed to exit within bounded 5s wait"
             }
 
             $sw.Stop()
             $endUtc = (Get-Date).ToUniversalTime().ToString('o')
             $actualExitCode = $proc.ExitCode
-            $actualStdout = $stdoutBuilder.ToString().Trim()
 
             if ($actualExitCode -ne $ExpectedExitCode) {
-              throw "Smoke case '$Name' failed: expected exit code $ExpectedExitCode, got $actualExitCode. Stdout: '$actualStdout'"
+              throw "Smoke case '$Name' failed: expected exit code $ExpectedExitCode, got $actualExitCode. Stdout: '$stdout'"
             }
 
             if (![string]::IsNullOrEmpty($ExpectedStdoutPattern)) {
-              if ($actualStdout -notmatch $ExpectedStdoutPattern) {
-                throw "Smoke case '$Name' failed: stdout '$actualStdout' did not match pattern '$ExpectedStdoutPattern'"
+              if ($stdout -notmatch $ExpectedStdoutPattern) {
+                throw "Smoke case '$Name' failed: stdout '$stdout' did not match pattern '$ExpectedStdoutPattern'"
               }
-            } elseif (![string]::IsNullOrWhiteSpace($actualStdout)) {
-              throw "Smoke case '$Name' failed: expected empty stdout, got '$actualStdout'"
+            } elseif (![string]::IsNullOrWhiteSpace($stdout)) {
+              throw "Smoke case '$Name' failed: expected empty stdout, got '$stdout'"
             }
 
             $testResults.Add([PSCustomObject]@{
@@ -193,7 +143,7 @@ jobs:
               EndUtc = $endUtc
               DurationMs = $sw.ElapsedMilliseconds
               ExitCode = $actualExitCode
-              Stdout = $actualStdout
+              Stdout = $stdout
               Passed = $true
             })
 
@@ -201,17 +151,17 @@ jobs:
           }
 
           # 1. Invalid argument cases (must exit 2 without entering wait loop)
-          Run-SmokeCase -Name 'InvalidArgs_NoArgs' -ExeToRun $helperExe -ArgsList @() -ExpectedExitCode 2 -ExpectedStdoutPattern ''
-          Run-SmokeCase -Name 'InvalidArgs_WrongFlag' -ExeToRun $helperExe -ArgsList @('--wrong', '1') -ExpectedExitCode 2 -ExpectedStdoutPattern ''
-          Run-SmokeCase -Name 'InvalidArgs_MissingSlot' -ExeToRun $helperExe -ArgsList @('--slot') -ExpectedExitCode 2 -ExpectedStdoutPattern ''
-          Run-SmokeCase -Name 'InvalidArgs_SlotZero' -ExeToRun $helperExe -ArgsList @('--slot', '0') -ExpectedExitCode 2 -ExpectedStdoutPattern ''
-          Run-SmokeCase -Name 'InvalidArgs_SlotFive' -ExeToRun $helperExe -ArgsList @('--slot', '5') -ExpectedExitCode 2 -ExpectedStdoutPattern ''
-          Run-SmokeCase -Name 'InvalidArgs_Slot99' -ExeToRun $helperExe -ArgsList @('--slot', '99') -ExpectedExitCode 2 -ExpectedStdoutPattern ''
-          Run-SmokeCase -Name 'InvalidArgs_ExtraArgs' -ExeToRun $helperExe -ArgsList @('--slot', '1', 'extra') -ExpectedExitCode 2 -ExpectedStdoutPattern ''
+          Run-ImmediateCase -Name 'InvalidArgs_NoArgs' -ExeToRun $helperExe -ArgsList @() -ExpectedExitCode 2
+          Run-ImmediateCase -Name 'InvalidArgs_WrongFlag' -ExeToRun $helperExe -ArgsList @('--wrong', '1') -ExpectedExitCode 2
+          Run-ImmediateCase -Name 'InvalidArgs_MissingSlot' -ExeToRun $helperExe -ArgsList @('--slot') -ExpectedExitCode 2
+          Run-ImmediateCase -Name 'InvalidArgs_SlotZero' -ExeToRun $helperExe -ArgsList @('--slot', '0') -ExpectedExitCode 2
+          Run-ImmediateCase -Name 'InvalidArgs_SlotFive' -ExeToRun $helperExe -ArgsList @('--slot', '5') -ExpectedExitCode 2
+          Run-ImmediateCase -Name 'InvalidArgs_Slot99' -ExeToRun $helperExe -ArgsList @('--slot', '99') -ExpectedExitCode 2
+          Run-ImmediateCase -Name 'InvalidArgs_ExtraArgs' -ExeToRun $helperExe -ArgsList @('--slot', '1', 'extra') -ExpectedExitCode 2
 
           # 2. Invalid layout cases
           # 2a. Parent directory is helper-build, not target
-          Run-SmokeCase -Name 'InvalidLayout_WrongParentDir' -ExeToRun $helperExe -ArgsList @('--slot', '1') -ExpectedExitCode 3 -ExpectedStdoutPattern ''
+          Run-ImmediateCase -Name 'InvalidLayout_WrongParentDir' -ExeToRun $helperExe -ArgsList @('--slot', '1') -ExpectedExitCode 3
 
           # 2b. Renamed executable in valid layout
           $badNameRoot = Join-Path $env:RUNNER_TEMP 'fixture-badname'
@@ -219,14 +169,14 @@ jobs:
           New-Item -ItemType Directory -Path (Join-Path $badNameRoot 'control') -Force | Out-Null
           $badExe = Join-Path $badNameRoot 'target/RenamedFixture.exe'
           Copy-Item -LiteralPath $helperExe -Destination $badExe
-          Run-SmokeCase -Name 'InvalidLayout_WrongExeName' -ExeToRun $badExe -ArgsList @('--slot', '1') -ExpectedExitCode 3 -ExpectedStdoutPattern ''
+          Run-ImmediateCase -Name 'InvalidLayout_WrongExeName' -ExeToRun $badExe -ArgsList @('--slot', '1') -ExpectedExitCode 3
 
           # 2c. Control directory missing
           $noCtrlRoot = Join-Path $env:RUNNER_TEMP 'fixture-noctrl'
           New-Item -ItemType Directory -Path (Join-Path $noCtrlRoot 'target') -Force | Out-Null
           $noCtrlExe = Join-Path $noCtrlRoot 'target/QueueFixture.exe'
           Copy-Item -LiteralPath $helperExe -Destination $noCtrlExe
-          Run-SmokeCase -Name 'InvalidLayout_MissingControlDir' -ExeToRun $noCtrlExe -ArgsList @('--slot', '1') -ExpectedExitCode 4 -ExpectedStdoutPattern ''
+          Run-ImmediateCase -Name 'InvalidLayout_MissingControlDir' -ExeToRun $noCtrlExe -ArgsList @('--slot', '1') -ExpectedExitCode 4
 
           # 3. Valid lifecycle: slot 1 ready, stays alive, stops normally on marker
           $fixtureRoot = Join-Path $env:RUNNER_TEMP 'fixture-valid'
@@ -235,27 +185,129 @@ jobs:
           $validExe = Join-Path $fixtureRoot 'target/QueueFixture.exe'
           Copy-Item -LiteralPath $helperExe -Destination $validExe
 
-          Run-SmokeCase -Name 'ValidLifecycle_Slot1' -ExeToRun $validExe -ArgsList @('--slot', '1') -ExpectedExitCode 0 -ExpectedStdoutPattern '^READY\s+STOPPED$' -FixtureRoot $fixtureRoot -Slot 1 -OnReady {
-            param($p, $out)
-            if ($p.HasExited) { throw 'Process exited before observation interval' }
-            Start-Sleep -Milliseconds 500
-            if ($p.HasExited) { throw 'Process failed to stay alive across observation interval' }
-            $stopFile = Join-Path $fixtureRoot 'control/stop-1.request'
-            [System.IO.File]::WriteAllText($stopFile, 'stop')
+          $startUtc = (Get-Date).ToUniversalTime().ToString('o')
+          $sw = [System.Diagnostics.Stopwatch]::StartNew()
+
+          $psi1 = [System.Diagnostics.ProcessStartInfo]::new()
+          $psi1.FileName = $validExe
+          $psi1.Arguments = '--slot 1'
+          $psi1.UseShellExecute = $false
+          $psi1.RedirectStandardOutput = $true
+          $psi1.RedirectStandardError = $true
+          $psi1.CreateNoWindow = $true
+
+          $proc1 = [System.Diagnostics.Process]::Start($psi1)
+          $readTask1 = $proc1.StandardOutput.ReadLineAsync()
+          if (!$readTask1.Wait(5000)) {
+            throw 'ValidLifecycle_Slot1 timed out waiting for READY'
           }
+          $line1 = $readTask1.Result
+          if ($line1 -ne 'READY') {
+            throw "ValidLifecycle_Slot1 expected 'READY', got '$line1'"
+          }
+
+          if ($proc1.HasExited) {
+            throw 'ValidLifecycle_Slot1 exited prematurely before stop marker'
+          }
+          Start-Sleep -Milliseconds 500
+          if ($proc1.HasExited) {
+            throw 'ValidLifecycle_Slot1 failed to stay alive across observation interval'
+          }
+
+          $stopFile1 = Join-Path $fixtureRoot 'control/stop-1.request'
+          [System.IO.File]::WriteAllText($stopFile1, 'stop')
+
+          $readTask2 = $proc1.StandardOutput.ReadLineAsync()
+          if (!$readTask2.Wait(5000)) {
+            throw 'ValidLifecycle_Slot1 timed out waiting for STOPPED'
+          }
+          $line2 = $readTask2.Result
+          if ($line2 -ne 'STOPPED') {
+            throw "ValidLifecycle_Slot1 expected 'STOPPED', got '$line2'"
+          }
+
+          if (!$proc1.WaitForExit(5000)) {
+            throw 'ValidLifecycle_Slot1 failed to exit within bounded wait'
+          }
+          if ($proc1.ExitCode -ne 0) {
+            throw "ValidLifecycle_Slot1 expected exit 0, got $($proc1.ExitCode)"
+          }
+          $sw.Stop()
+
+          $testResults.Add([PSCustomObject]@{
+            Name = 'ValidLifecycle_Slot1'
+            StartUtc = $startUtc
+            EndUtc = (Get-Date).ToUniversalTime().ToString('o')
+            DurationMs = $sw.ElapsedMilliseconds
+            ExitCode = $proc1.ExitCode
+            Stdout = "$line1`n$line2"
+            Passed = $true
+          })
+          Write-Output "Smoke check PASS: ValidLifecycle_Slot1 (exit 0 in $($sw.ElapsedMilliseconds)ms)"
 
           # 4. Same slot relaunch refuses when stop marker is already present
-          Run-SmokeCase -Name 'RefuseRelaunch_Slot1_MarkerPresent' -ExeToRun $validExe -ArgsList @('--slot', '1') -ExpectedExitCode 5 -ExpectedStdoutPattern ''
+          Run-ImmediateCase -Name 'RefuseRelaunch_Slot1_MarkerPresent' -ExeToRun $validExe -ArgsList @('--slot', '1') -ExpectedExitCode 5
 
           # 5. Another slot demonstrates independence in the same fixture
-          Run-SmokeCase -Name 'SlotIndependence_Slot2' -ExeToRun $validExe -ArgsList @('--slot', '2') -ExpectedExitCode 0 -ExpectedStdoutPattern '^READY\s+STOPPED$' -FixtureRoot $fixtureRoot -Slot 2 -OnReady {
-            param($p, $out)
-            if ($p.HasExited) { throw 'Slot 2 exited prematurely' }
-            Start-Sleep -Milliseconds 500
-            if ($p.HasExited) { throw 'Slot 2 failed to stay alive' }
-            $stopFile = Join-Path $fixtureRoot 'control/stop-2.request'
-            [System.IO.File]::WriteAllText($stopFile, 'stop')
+          $startUtc = (Get-Date).ToUniversalTime().ToString('o')
+          $sw = [System.Diagnostics.Stopwatch]::StartNew()
+
+          $psi2 = [System.Diagnostics.ProcessStartInfo]::new()
+          $psi2.FileName = $validExe
+          $psi2.Arguments = '--slot 2'
+          $psi2.UseShellExecute = $false
+          $psi2.RedirectStandardOutput = $true
+          $psi2.RedirectStandardError = $true
+          $psi2.CreateNoWindow = $true
+
+          $proc2 = [System.Diagnostics.Process]::Start($psi2)
+          $readTaskSlot2 = $proc2.StandardOutput.ReadLineAsync()
+          if (!$readTaskSlot2.Wait(5000)) {
+            throw 'SlotIndependence_Slot2 timed out waiting for READY'
           }
+          $slot2Line1 = $readTaskSlot2.Result
+          if ($slot2Line1 -ne 'READY') {
+            throw "SlotIndependence_Slot2 expected 'READY', got '$slot2Line1'"
+          }
+
+          if ($proc2.HasExited) {
+            throw 'SlotIndependence_Slot2 exited prematurely before stop marker'
+          }
+          Start-Sleep -Milliseconds 500
+          if ($proc2.HasExited) {
+            throw 'SlotIndependence_Slot2 failed to stay alive across observation interval'
+          }
+
+          $stopFile2 = Join-Path $fixtureRoot 'control/stop-2.request'
+          [System.IO.File]::WriteAllText($stopFile2, 'stop')
+
+          $readTaskSlot2Stop = $proc2.StandardOutput.ReadLineAsync()
+          if (!$readTaskSlot2Stop.Wait(5000)) {
+            throw 'SlotIndependence_Slot2 timed out waiting for STOPPED'
+          }
+          $slot2Line2 = $readTaskSlot2Stop.Result
+          if ($slot2Line2 -ne 'STOPPED') {
+            throw "SlotIndependence_Slot2 expected 'STOPPED', got '$slot2Line2'"
+          }
+
+          if (!$proc2.WaitForExit(5000)) {
+            throw 'SlotIndependence_Slot2 failed to exit within bounded wait'
+          }
+          if ($proc2.ExitCode -ne 0) {
+            throw "SlotIndependence_Slot2 expected exit 0, got $($proc2.ExitCode)"
+          }
+          $sw.Stop()
+
+          $testResults.Add([PSCustomObject]@{
+            Name = 'SlotIndependence_Slot2'
+            StartUtc = $startUtc
+            EndUtc = (Get-Date).ToUniversalTime().ToString('o')
+            DurationMs = $sw.ElapsedMilliseconds
+            ExitCode = $proc2.ExitCode
+            Stdout = "$slot2Line1`n$slot2Line2"
+            Passed = $true
+          })
+          Write-Output "Smoke check PASS: SlotIndependence_Slot2 (exit 0 in $($sw.ElapsedMilliseconds)ms)"
 
           # 6. Directory marker error yields nonzero
           $dirFixtureRoot = Join-Path $env:RUNNER_TEMP 'fixture-dirmarker'
@@ -264,12 +316,53 @@ jobs:
           $dirExe = Join-Path $dirFixtureRoot 'target/QueueFixture.exe'
           Copy-Item -LiteralPath $helperExe -Destination $dirExe
 
-          Run-SmokeCase -Name 'DirectoryMarker_Slot3' -ExeToRun $dirExe -ArgsList @('--slot', '3') -ExpectedExitCode 6 -ExpectedStdoutPattern '^READY$' -FixtureRoot $dirFixtureRoot -Slot 3 -OnReady {
-            param($p, $out)
-            if ($p.HasExited) { throw 'Slot 3 exited prematurely' }
-            $dirMarker = Join-Path $dirFixtureRoot 'control/stop-3.request'
-            New-Item -ItemType Directory -Path $dirMarker -Force | Out-Null
+          $startUtc = (Get-Date).ToUniversalTime().ToString('o')
+          $sw = [System.Diagnostics.Stopwatch]::StartNew()
+
+          $psi3 = [System.Diagnostics.ProcessStartInfo]::new()
+          $psi3.FileName = $dirExe
+          $psi3.Arguments = '--slot 3'
+          $psi3.UseShellExecute = $false
+          $psi3.RedirectStandardOutput = $true
+          $psi3.RedirectStandardError = $true
+          $psi3.CreateNoWindow = $true
+
+          $proc3 = [System.Diagnostics.Process]::Start($psi3)
+          $readTaskDir = $proc3.StandardOutput.ReadLineAsync()
+          if (!$readTaskDir.Wait(5000)) {
+            throw 'DirectoryMarker_Slot3 timed out waiting for READY'
           }
+          $dirLine1 = $readTaskDir.Result
+          if ($dirLine1 -ne 'READY') {
+            throw "DirectoryMarker_Slot3 expected 'READY', got '$dirLine1'"
+          }
+
+          if ($proc3.HasExited) {
+            throw 'DirectoryMarker_Slot3 exited prematurely'
+          }
+
+          # Create directory marker
+          $dirMarker = Join-Path $dirFixtureRoot 'control/stop-3.request'
+          New-Item -ItemType Directory -Path $dirMarker -Force | Out-Null
+
+          if (!$proc3.WaitForExit(5000)) {
+            throw 'DirectoryMarker_Slot3 failed to exit within bounded wait'
+          }
+          if ($proc3.ExitCode -ne 6) {
+            throw "DirectoryMarker_Slot3 expected exit 6, got $($proc3.ExitCode)"
+          }
+          $sw.Stop()
+
+          $testResults.Add([PSCustomObject]@{
+            Name = 'DirectoryMarker_Slot3'
+            StartUtc = $startUtc
+            EndUtc = (Get-Date).ToUniversalTime().ToString('o')
+            DurationMs = $sw.ElapsedMilliseconds
+            ExitCode = $proc3.ExitCode
+            Stdout = $dirLine1
+            Passed = $true
+          })
+          Write-Output "Smoke check PASS: DirectoryMarker_Slot3 (exit 6 in $($sw.ElapsedMilliseconds)ms)"
 
           # Save smoke results JSON
           $smokeResultsPath = Join-Path $buildDir 'smoke-results.json'

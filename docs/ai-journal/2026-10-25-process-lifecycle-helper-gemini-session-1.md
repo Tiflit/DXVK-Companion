@@ -52,3 +52,12 @@ Implemented standalone native x64 CPU-only helper `QueueFixture.cpp`, read-only 
 - **Base commit**: `1cc3339e9eadaa443f6776928cce57953644e3d9` (tree `3bd58fca82de527e92c670652aa028569807cb02`)
 - **Policy identity**: `c40eb13d0d89cb4860b4ed50fd81561acf2fb0d9`
 - **Branch**: `feat/issue-299-process-lifecycle-helper`
+- **Initial Commit**: `7a55ad532153bd1443b33f255c95cbaa56c462bb` (tree `8635ad4b98ca8c25c48ab2358ccae1b39c6031bb`)
+- **Initial Hosted CI Results**:
+  - Scope Check Run `40214665886`: Passed in 11s.
+  - PR Hygiene Run `40214665793`: Passed in 10s.
+  - Workflow Tests Run `40214666113`: Passed in 18s (386 Python tests).
+  - Build and Test Run `40214665848`: Passed in 1m45s (1,309/1,309 Phase A tests passed).
+  - Helper CPU Checks Run `40214666035`: Failed during smoke tests with `PSInvalidOperationException: There is no Runspace available to run scripts in this thread` because `Process.add_OutputDataReceived` invokes PowerShell script blocks on ThreadPool threads without an active Runspace.
+- **Repair**:
+  - Replaced event handler `add_OutputDataReceived` with synchronous `StandardOutput.ReadToEnd()` for immediate exit test cases, and `.NET` `StandardOutput.ReadLineAsync()` tasks for interactive lifecycle cases, completely eliminating PowerShell thread pool Runspace affinity errors.
