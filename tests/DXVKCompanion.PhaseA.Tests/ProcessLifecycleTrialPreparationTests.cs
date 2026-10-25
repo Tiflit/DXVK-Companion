@@ -1081,12 +1081,12 @@ public sealed class ProcessLifecycleTrialPreparationTests
         var gamesPath = Path.Combine(root, "companion", "Profiles", "games.json");
         var multiProfiles = new[]
         {
-            new { ExeName = "QueueFixture.exe", DxvkEnabled = true, DxvkVersion = (string?)"v3.1" },
+            new { ExeName = "QueueFixture.exe", DxvkEnabled = false, DxvkVersion = (string?)null },
             new { ExeName = "OtherGame.exe", DxvkEnabled = false, DxvkVersion = (string?)null }
         };
         File.WriteAllText(gamesPath, JsonSerializer.Serialize(multiProfiles));
 
-        var result = RunScript($"-Action Verify-Checkpoint -FixtureRoot \"{root}\" -CheckpointName \"AppliedTest\" -ExpectedType \"Applied\" -ExpectedVersion \"v3.1\" -Slot 1 -PureDataCheck -JsonOutput");
+        var result = RunScript($"-Action Verify-Checkpoint -FixtureRoot \"{root}\" -CheckpointName \"RestoredTest\" -ExpectedType \"Restored\" -PureDataCheck -JsonOutput");
         Assert.NotEqual(0, result.ExitCode);
         Assert.Contains("expected exactly 1 profile in games.json", result.StandardOutput + result.StandardError);
     }
