@@ -36,20 +36,26 @@ Evaluated on DX11/x64 across two traversal orders:
 #### 2. Initial Deployment & Truthful History
 - Configures isolated `SettingsStore` Manual global policy (`GlobalManagementPolicy.Manual`).
 - Deploys Game D through real enable (`RequestEnableByPathAsync`) and disable (`RequestDisableByPathAsync`) to establish truthful durable history (`RestorationState.Restored`, cleared managed version, retained historical ownership).
+  - Before disable, performs deployed ownership, hash, and exact configuration checks via `ParseConfigAssignments` (asserting `dxvk.hud == "fps,devinfo"`, `dxvk.maxFrameRate == "60"`, user key `user.settingD == "4"`, and `ExpectedManagedSha256` matching deployed DLL and config bytes).
+  - After disable, verifies `AssertRestoredHistory` for Game D.
 - Deploys Game A, Game B, and Game C via single-call `RequestEnableByPathAsync` under `UseGlobal` manual policy with exact older selector `v2.5` without targetVersion override.
 - Verifies unconditional `ExpectedManagedSha256` comparisons against deployed game bytes for DLLs and configs.
+- Verifies exact configuration assignments via `ParseConfigAssignments`:
+  - Game A: generated keys (`dxvk.hud`, `dxvk.maxFrameRate`), preserved lookalikes (`dxvk.hudExtra`, `dxvk.maxFrameRateTarget`), user line `user.settingA`.
+  - Game B: generated keys, preserved lookalikes, user line `user.settingB`.
+  - Game C: only generated keys (`Count == 2`), no lookalike or user keys.
 - Verifies original native/config baselines and backup files across all targets.
 
 #### 3. Selector Modification & `UpdateAllEnabledAsync`
-- Reconstructs stack from disk. Verifies persisted policy and actual version before modifying selectors.
+- Reconstructs stack from disk. Verifies persisted policy and reloaded selector/API/architecture intent on all targets before modifying selectors (`profile.Api`, `profile.Architecture`, `profile.DxvkVersion`, `profile.DxvkEnabled`, `inst.ManagementPolicy.Mode`, `inst.ManagementPolicy.PinnedDxvkVersion`, `inst.ManagedDxvkArchitecture`, executable API and architecture).
 - Updates only persisted selectors: Game A and Game C select `v2.6`; Game B selects deliberately unavailable `v2.7-unavailable`. Game D remains unselected. Does not preassign profile actual versions.
-- Snapshots complete raw Game B resources and captures meaningful ownership before update.
+- Snapshots complete raw Game B resources, complete backups directory (`preUpdateBackupsSnapshot`), and captures meaningful ownership before update.
 - Reconstructs stack from disk and calls `UpdateAllEnabledAsync()`.
 - Verifies:
   - Traversal order matches profile enumeration order (`[GameB, GameA, GameC]` or `[GameA, GameB, GameC]`).
-  - Game A: `Applied`, updated to `v2.6`, release DLLs deployed, `ExpectedManagedSha256` matching deployed bytes, original baselines intact.
-  - Game B: `Failed`, actual version remains `v2.5`, selector remains `v2.7-unavailable`, complete raw game directory and backups completely unchanged, ownership matches pre-update state.
-  - Game C: `Applied`, updated to `v2.6`, release DLLs deployed, `ExpectedManagedSha256` matching deployed bytes, original baselines intact.
+  - Game A: `Applied`, updated to `v2.6`, release DLLs deployed, `ExpectedManagedSha256` matching deployed bytes, original baselines intact, configuration assignments verified via `ParseConfigAssignments`.
+  - Game B: `Failed`, actual version remains `v2.5`, selector remains `v2.7-unavailable`, complete raw game directory and backups completely unchanged (`AssertResourcesUnchanged(preUpdateBackupsSnapshot, backupsDir)`), ownership matches pre-update state.
+  - Game C: `Applied`, updated to `v2.6`, release DLLs deployed, `ExpectedManagedSha256` matching deployed bytes, original baselines intact, configuration assignments verified via `ParseConfigAssignments`.
   - Game D: intentionally omitted from results dictionary.
   - Retained batch refusal reason: `manager.LastRefusalReason` retains Game B's unavailable version diagnostic despite subsequent healthy successes.
   - Zero additional HTTP calls.
@@ -66,13 +72,13 @@ Evaluated on DX11/x64 across two traversal orders:
   - `QueuedRunning`: 0
   - Diagnostic messages: single message identifying `GameB.exe:` with backup hash mismatch, with no false attribution to Games A, C, or D.
   - Games A and C match their complete original raw file/directory snapshots.
-  - Game B resources (game, sources, faulted backup) remain completely untouched. Active management retained (`profileB.DxvkEnabled == true`, `instB.ManagedDxvkVersion == "v2.5"`), `instB.RestorationState == AttentionRequired`, no false Restored state, no pending action.
+  - Game B resources (game, sources, faulted backup) remain completely untouched. Active management retained with exact faulted ownership verified via `AssertFaultedOwnershipRetained` (verifying `AttentionRequired`, refusal diagnostic containing "backup hash mismatch", null `PendingAction`, and exact versions, policy, configs, executables, and managed records retained).
   - Zero additional HTTP calls.
 
 #### 5. Reload, Historical Ownership, and Repeat `RestoreAllAsync`
 - Reconstructs stack from disk.
-- Verifies exact nonempty historical ownership sets for restored Games A, C, D with cleared active versions, truthful retained baselines, and preserved backup files.
-- Verifies Game B remains in `AttentionRequired` with active management retained and documented refusal diagnostic.
+- Verifies exact nonempty historical ownership sets via `AssertRestoredHistory` for restored Games A, C, D with cleared active versions, truthful retained baselines, and preserved backup files.
+- Verifies Game B remains in `AttentionRequired` with active management and exact faulted ownership retained via `AssertFaultedOwnershipRetained`.
 - Repeats `RestoreAllAsync()`:
   - `TotalManaged`: 1 (Game B)
   - `Restored`: 0
@@ -80,6 +86,7 @@ Evaluated on DX11/x64 across two traversal orders:
   - `AlreadyRestored`: 3 (Games A, C, D)
   - `QueuedRunning`: 0
   - Message identifies `GameB.exe:` backup hash mismatch.
+- Reconstructs fresh stack from disk. Verifies `AssertRestoredHistory` on Games A, C, D and `AssertFaultedOwnershipRetained` on Game B.
 - Verifies Game B remains safely unresolved without silent repair and restored resources remain unchanged.
 - Verifies complete retained backup file set (7 backup files across the 4 installations).
 - Verifies sources remain intact.

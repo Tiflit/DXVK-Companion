@@ -264,6 +264,104 @@ public sealed class MixedBatchLifecycleAcceptanceTests
         }
     }
 
+    private static void AssertFaultedOwnershipRetained(
+        OwnershipSnapshot faultedBaseline,
+        GameProfile profile,
+        GameInstallation installation)
+    {
+        Assert.Equal(faultedBaseline.ProfileApi, profile.Api);
+        Assert.Equal(faultedBaseline.ProfileArchitecture, profile.Architecture);
+        Assert.Equal(faultedBaseline.ProfileDxvkVersion, profile.DxvkVersion);
+        Assert.Equal(faultedBaseline.ProfileDxvkEnabled, profile.DxvkEnabled);
+        Assert.Equal(faultedBaseline.ProfileHudEnabled, profile.HudEnabled);
+        Assert.Equal(faultedBaseline.ProfileFrameLimit, profile.FrameLimit);
+
+        Assert.Equal(RestorationState.AttentionRequired, installation.RestorationState);
+        Assert.Null(installation.PendingAction);
+        Assert.NotNull(installation.LastRefusalReason);
+        Assert.Contains("backup hash mismatch", installation.LastRefusalReason, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Equal(faultedBaseline.ManagedDxvkVersion, installation.ManagedDxvkVersion);
+        Assert.Equal(faultedBaseline.ManagedDxvkArchitecture, installation.ManagedDxvkArchitecture);
+        Assert.Equal(faultedBaseline.PolicyMode, installation.ManagementPolicy.Mode);
+        Assert.Equal(faultedBaseline.PolicyPinnedVersion, installation.ManagementPolicy.PinnedDxvkVersion);
+        Assert.Equal(faultedBaseline.ConfigHudEnabled, installation.Configuration.HudEnabled);
+        Assert.Equal(faultedBaseline.ConfigFrameLimit, installation.Configuration.FrameLimit);
+        Assert.Equal(faultedBaseline.ConfigFrameLimitEnabled, installation.Configuration.FrameLimitEnabled);
+
+        Assert.Equal(faultedBaseline.Executables.Count, installation.Executables.Count);
+        foreach (var (relPath, expExe) in faultedBaseline.Executables)
+        {
+            var actualExe = installation.FindExecutable(relPath);
+            Assert.NotNull(actualExe);
+            Assert.Equal(expExe.LastKnownApi, actualExe!.LastKnownApi);
+            Assert.Equal(expExe.LastKnownArchitecture, actualExe.LastKnownArchitecture);
+        }
+
+        Assert.Equal(faultedBaseline.ManagedFiles.Count, installation.ManagedFiles.Count);
+        foreach (var (relPath, expFile) in faultedBaseline.ManagedFiles)
+        {
+            var actualFile = installation.FindManagedFile(relPath);
+            Assert.NotNull(actualFile);
+            Assert.Equal(expFile.CurrentState, actualFile!.CurrentState);
+            Assert.Equal(expFile.OriginalState, actualFile.OriginalState);
+            Assert.Equal(expFile.OriginalSha256, actualFile.OriginalSha256);
+            Assert.Equal(expFile.ExpectedManagedSha256, actualFile.ExpectedManagedSha256);
+            Assert.Equal(expFile.BackupRelativePath, actualFile.BackupRelativePath);
+            Assert.Equal(expFile.ManagedDxvkVersion, actualFile.ManagedDxvkVersion);
+        }
+    }
+
+    private static void AssertRestoredHistory(
+        GameInstallation installation,
+        GameProfile profile,
+        string? expectedD3d11OriginalSha,
+        string? expectedConfOriginalSha,
+        string backupsDir)
+    {
+        Assert.False(profile.DxvkEnabled);
+        Assert.Equal(RestorationState.Restored, installation.RestorationState);
+        Assert.True(string.IsNullOrEmpty(installation.ManagedDxvkVersion));
+        Assert.Null(installation.PendingAction);
+
+        var expectedPaths = new[] { "d3d11.dll", "dxgi.dll", "dxvk.conf" };
+        Assert.Equal(
+            expectedPaths.OrderBy(p => p, StringComparer.OrdinalIgnoreCase),
+            installation.ManagedFiles.Select(f => f.RelativePath).OrderBy(p => p, StringComparer.OrdinalIgnoreCase));
+
+        foreach (var record in installation.ManagedFiles)
+        {
+            Assert.True(string.IsNullOrEmpty(record.ManagedDxvkVersion));
+            Assert.Equal(ManagedFileState.Consistent, record.CurrentState);
+        }
+
+        var d3d11Rec = installation.FindManagedFile("d3d11.dll")!;
+        Assert.Equal(FileOriginalState.Existing, d3d11Rec.OriginalState);
+        Assert.Equal(expectedD3d11OriginalSha, d3d11Rec.OriginalSha256);
+        Assert.NotNull(d3d11Rec.BackupRelativePath);
+        Assert.True(File.Exists(Path.Combine(backupsDir, d3d11Rec.BackupRelativePath!)));
+
+        var dxgiRec = installation.FindManagedFile("dxgi.dll")!;
+        Assert.Equal(FileOriginalState.Missing, dxgiRec.OriginalState);
+        Assert.Null(dxgiRec.OriginalSha256);
+        Assert.Null(dxgiRec.BackupRelativePath);
+
+        var confRec = installation.FindManagedFile("dxvk.conf")!;
+        if (expectedConfOriginalSha != null)
+        {
+            Assert.Equal(FileOriginalState.Existing, confRec.OriginalState);
+            Assert.Equal(expectedConfOriginalSha, confRec.OriginalSha256);
+            Assert.NotNull(confRec.BackupRelativePath);
+            Assert.True(File.Exists(Path.Combine(backupsDir, confRec.BackupRelativePath!)));
+        }
+        else
+        {
+            Assert.Equal(FileOriginalState.Missing, confRec.OriginalState);
+            Assert.Null(confRec.OriginalSha256);
+            Assert.Null(confRec.BackupRelativePath);
+        }
+    }
+
     private sealed record ServiceStack(
         string AppDataDir,
         CacheStore CacheStore,
@@ -526,15 +624,40 @@ public sealed class MixedBatchLifecycleAcceptanceTests
         var profileD1 = stack1.ProfileStore.GetOrCreate(exePathD);
         var enableDResult = await stack1.Manager.RequestEnableByPathAsync(profileD1);
         Assert.Equal(DxvkActionResult.Applied, enableDResult);
+        Assert.Equal("v2.5", profileD1.DxvkVersion);
+
+        // Deployed ownership, hashes, and exact configuration checks for Game D before Disable
+        var instDAfterEnable = stack1.LibraryStore.FindByInstallationPath(gameDirD)!;
+        Assert.Equal(Encoding.UTF8.GetBytes("v2.5:x64:d3d11"), File.ReadAllBytes(Path.Combine(gameDirD, "d3d11.dll")));
+        Assert.Equal(Encoding.UTF8.GetBytes("v2.5:x64:dxgi"), File.ReadAllBytes(Path.Combine(gameDirD, "dxgi.dll")));
+        Assert.True(File.Exists(Path.Combine(gameDirD, "dxvk.conf")));
+        var d3d11RecD1 = instDAfterEnable.FindManagedFile("d3d11.dll")!;
+        var dxgiRecD1 = instDAfterEnable.FindManagedFile("dxgi.dll")!;
+        var confRecD1 = instDAfterEnable.FindManagedFile("dxvk.conf")!;
+        Assert.Equal(ComputeSha256(File.ReadAllBytes(Path.Combine(gameDirD, "d3d11.dll"))), d3d11RecD1.ExpectedManagedSha256);
+        Assert.Equal(ComputeSha256(File.ReadAllBytes(Path.Combine(gameDirD, "dxgi.dll"))), dxgiRecD1.ExpectedManagedSha256);
+        Assert.Equal(ComputeSha256(File.ReadAllBytes(Path.Combine(gameDirD, "dxvk.conf"))), confRecD1.ExpectedManagedSha256);
+        Assert.Equal(FileOriginalState.Existing, d3d11RecD1.OriginalState);
+        Assert.Equal(ComputeSha256(nativeD3d11D), d3d11RecD1.OriginalSha256);
+        Assert.Equal(nativeD3d11D, File.ReadAllBytes(Path.Combine(backupsDir, d3d11RecD1.BackupRelativePath!)));
+        Assert.Equal(FileOriginalState.Missing, dxgiRecD1.OriginalState);
+        Assert.Null(dxgiRecD1.OriginalSha256);
+        Assert.Null(dxgiRecD1.BackupRelativePath);
+        Assert.Equal(FileOriginalState.Existing, confRecD1.OriginalState);
+        Assert.Equal(ComputeSha256(originalConfD), confRecD1.OriginalSha256);
+        Assert.Equal(originalConfD, File.ReadAllBytes(Path.Combine(backupsDir, confRecD1.BackupRelativePath!)));
+
+        var configDictD1 = ParseConfigAssignments(File.ReadAllText(Path.Combine(gameDirD, "dxvk.conf")));
+        Assert.Equal("fps,devinfo", configDictD1["dxvk.hud"]);
+        Assert.Equal("60", configDictD1["dxvk.maxFrameRate"]);
+        Assert.Equal("4", configDictD1["user.settingD"]);
+
         var disableDResult = await stack1.Manager.RequestDisableByPathAsync(profileD1);
         Assert.Equal(DxvkActionResult.Applied, disableDResult);
         AssertResourcesUnchanged(initialSnapshotD, gameDirD);
 
-        var instDAfterDisable = stack1.LibraryStore.FindByInstallationPath(gameDirD);
-        Assert.NotNull(instDAfterDisable);
-        Assert.Equal(RestorationState.Restored, instDAfterDisable!.RestorationState);
-        Assert.True(string.IsNullOrEmpty(instDAfterDisable.ManagedDxvkVersion));
-        Assert.False(profileD1.DxvkEnabled);
+        var instDAfterDisable = stack1.LibraryStore.FindByInstallationPath(gameDirD)!;
+        AssertRestoredHistory(instDAfterDisable, profileD1, ComputeSha256(nativeD3d11D), ComputeSha256(originalConfD), backupsDir);
 
         // Deploy A, B, C through normal single-call manager Enable
         var profileA1 = stack1.ProfileStore.GetOrCreate(exePathA);
@@ -584,6 +707,13 @@ public sealed class MixedBatchLifecycleAcceptanceTests
         Assert.Equal(ComputeSha256(originalConfA), confRecA1.OriginalSha256);
         Assert.Equal(originalConfA, File.ReadAllBytes(Path.Combine(backupsDir, confRecA1.BackupRelativePath!)));
 
+        var configDictA1 = ParseConfigAssignments(File.ReadAllText(Path.Combine(gameDirA, "dxvk.conf")));
+        Assert.Equal("fps,devinfo", configDictA1["dxvk.hud"]);
+        Assert.Equal("60", configDictA1["dxvk.maxFrameRate"]);
+        Assert.Equal("full", configDictA1["dxvk.hudExtra"]);
+        Assert.Equal("120", configDictA1["dxvk.maxFrameRateTarget"]);
+        Assert.Equal("1", configDictA1["user.settingA"]);
+
         // Target B verification
         Assert.Equal(Encoding.UTF8.GetBytes("v2.5:x64:d3d11"), File.ReadAllBytes(Path.Combine(gameDirB, "d3d11.dll")));
         Assert.Equal(Encoding.UTF8.GetBytes("v2.5:x64:dxgi"), File.ReadAllBytes(Path.Combine(gameDirB, "dxgi.dll")));
@@ -603,6 +733,13 @@ public sealed class MixedBatchLifecycleAcceptanceTests
         Assert.Equal(FileOriginalState.Existing, confRecB1.OriginalState);
         Assert.Equal(ComputeSha256(originalConfB), confRecB1.OriginalSha256);
         Assert.Equal(originalConfB, File.ReadAllBytes(Path.Combine(backupsDir, confRecB1.BackupRelativePath!)));
+
+        var configDictB1 = ParseConfigAssignments(File.ReadAllText(Path.Combine(gameDirB, "dxvk.conf")));
+        Assert.Equal("fps,devinfo", configDictB1["dxvk.hud"]);
+        Assert.Equal("60", configDictB1["dxvk.maxFrameRate"]);
+        Assert.Equal("compact", configDictB1["dxvk.hudExtra"]);
+        Assert.Equal("144", configDictB1["dxvk.maxFrameRateTarget"]);
+        Assert.Equal("2", configDictB1["user.settingB"]);
 
         // Target C verification (synthetic Missing baseline for dxvk.conf)
         Assert.Equal(Encoding.UTF8.GetBytes("v2.5:x64:d3d11"), File.ReadAllBytes(Path.Combine(gameDirC, "d3d11.dll")));
@@ -624,6 +761,17 @@ public sealed class MixedBatchLifecycleAcceptanceTests
         Assert.Null(confRecC1.OriginalSha256);
         Assert.Null(confRecC1.BackupRelativePath);
 
+        var configDictC1 = ParseConfigAssignments(File.ReadAllText(Path.Combine(gameDirC, "dxvk.conf")));
+        Assert.Equal("fps,devinfo", configDictC1["dxvk.hud"]);
+        Assert.Equal("60", configDictC1["dxvk.maxFrameRate"]);
+        Assert.Equal(2, configDictC1.Count);
+        Assert.False(configDictC1.ContainsKey("dxvk.hudExtra"));
+        Assert.False(configDictC1.ContainsKey("dxvk.maxFrameRateTarget"));
+        Assert.False(configDictC1.ContainsKey("user.settingA"));
+        Assert.False(configDictC1.ContainsKey("user.settingB"));
+        Assert.False(configDictC1.ContainsKey("user.settingC"));
+        Assert.False(configDictC1.ContainsKey("user.settingD"));
+
         // 3. Reload services & stores; verify persisted policy before changing only selectors
         var stack2 = ConstructServiceStack(appDataDir, httpClient);
         Assert.Equal(GlobalManagementPolicy.Manual, stack2.SettingsStore.GlobalPolicy);
@@ -639,11 +787,49 @@ public sealed class MixedBatchLifecycleAcceptanceTests
         var instC2 = stack2.LibraryStore.FindByInstallationPath(gameDirC)!;
         var instD2 = stack2.LibraryStore.FindByInstallationPath(gameDirD)!;
 
+        // Verify reloaded selector/API/architecture intent before changing selectors
+        Assert.Equal(GraphicsApi.DX11, profileA2.Api);
+        Assert.Equal("x64", profileA2.Architecture);
         Assert.Equal("v2.5", profileA2.DxvkVersion);
+        Assert.True(profileA2.DxvkEnabled);
+        Assert.Equal(ManagementMode.Global, instA2.ManagementPolicy.Mode);
+        Assert.Equal("v2.5", instA2.ManagementPolicy.PinnedDxvkVersion);
+        Assert.Equal("x64", instA2.ManagedDxvkArchitecture);
+        Assert.Equal(GraphicsApi.DX11, instA2.FindExecutable("GameA.exe")!.LastKnownApi);
+        Assert.Equal("x64", instA2.FindExecutable("GameA.exe")!.LastKnownArchitecture);
+        Assert.Equal("v2.5", instA2.ManagedDxvkVersion);
+
+        Assert.Equal(GraphicsApi.DX11, profileB2.Api);
+        Assert.Equal("x64", profileB2.Architecture);
         Assert.Equal("v2.5", profileB2.DxvkVersion);
+        Assert.True(profileB2.DxvkEnabled);
+        Assert.Equal(ManagementMode.Global, instB2.ManagementPolicy.Mode);
+        Assert.Equal("v2.5", instB2.ManagementPolicy.PinnedDxvkVersion);
+        Assert.Equal("x64", instB2.ManagedDxvkArchitecture);
+        Assert.Equal(GraphicsApi.DX11, instB2.FindExecutable("GameB.exe")!.LastKnownApi);
+        Assert.Equal("x64", instB2.FindExecutable("GameB.exe")!.LastKnownArchitecture);
+        Assert.Equal("v2.5", instB2.ManagedDxvkVersion);
+
+        Assert.Equal(GraphicsApi.DX11, profileC2.Api);
+        Assert.Equal("x64", profileC2.Architecture);
         Assert.Equal("v2.5", profileC2.DxvkVersion);
+        Assert.True(profileC2.DxvkEnabled);
+        Assert.Equal(ManagementMode.Global, instC2.ManagementPolicy.Mode);
+        Assert.Equal("v2.5", instC2.ManagementPolicy.PinnedDxvkVersion);
+        Assert.Equal("x64", instC2.ManagedDxvkArchitecture);
+        Assert.Equal(GraphicsApi.DX11, instC2.FindExecutable("GameC.exe")!.LastKnownApi);
+        Assert.Equal("x64", instC2.FindExecutable("GameC.exe")!.LastKnownArchitecture);
+        Assert.Equal("v2.5", instC2.ManagedDxvkVersion);
+
+        Assert.Equal(GraphicsApi.DX11, profileD2.Api);
+        Assert.Equal("x64", profileD2.Architecture);
         Assert.False(profileD2.DxvkEnabled);
+        Assert.Equal(ManagementMode.Global, instD2.ManagementPolicy.Mode);
+        Assert.Equal("v2.5", instD2.ManagementPolicy.PinnedDxvkVersion);
+        Assert.Equal(GraphicsApi.DX11, instD2.FindExecutable("GameD.exe")!.LastKnownApi);
+        Assert.Equal("x64", instD2.FindExecutable("GameD.exe")!.LastKnownArchitecture);
         Assert.Equal(RestorationState.Restored, instD2.RestorationState);
+        Assert.True(string.IsNullOrEmpty(instD2.ManagedDxvkVersion));
 
         // Change ONLY persisted selectors: A/C select v2.6, B selects deliberately unavailable exact version
         // (Do NOT preassign profile.DxvkVersion)
@@ -688,6 +874,7 @@ public sealed class MixedBatchLifecycleAcceptanceTests
 
         // Compare complete raw B game/backup sets and meaningful ownership before/after
         AssertResourcesUnchanged(preUpdateGameSnapshotB, gameDirB);
+        AssertResourcesUnchanged(preUpdateBackupsSnapshot, backupsDir);
         var profileB3 = stack3.ProfileStore.GetOrCreate(exePathB);
         var instB3 = stack3.LibraryStore.FindByInstallationPath(gameDirB)!;
         AssertOwnershipUnchanged(preUpdateOwnershipB, profileB3, instB3);
@@ -712,6 +899,13 @@ public sealed class MixedBatchLifecycleAcceptanceTests
         Assert.Equal(nativeD3d11A, File.ReadAllBytes(Path.Combine(backupsDir, d3d11RecA3.BackupRelativePath!)));
         Assert.Equal(ComputeSha256(originalConfA), confRecA3.OriginalSha256);
 
+        var configDictA3 = ParseConfigAssignments(File.ReadAllText(Path.Combine(gameDirA, "dxvk.conf")));
+        Assert.Equal("fps,devinfo", configDictA3["dxvk.hud"]);
+        Assert.Equal("60", configDictA3["dxvk.maxFrameRate"]);
+        Assert.Equal("full", configDictA3["dxvk.hudExtra"]);
+        Assert.Equal("120", configDictA3["dxvk.maxFrameRateTarget"]);
+        Assert.Equal("1", configDictA3["user.settingA"]);
+
         var profileC3 = stack3.ProfileStore.GetOrCreate(exePathC);
         var instC3 = stack3.LibraryStore.FindByInstallationPath(gameDirC)!;
         Assert.Equal("v2.6", profileC3.DxvkVersion);
@@ -727,6 +921,17 @@ public sealed class MixedBatchLifecycleAcceptanceTests
         Assert.Equal(ComputeSha256(nativeD3d11C), d3d11RecC3.OriginalSha256);
         Assert.Equal(nativeD3d11C, File.ReadAllBytes(Path.Combine(backupsDir, d3d11RecC3.BackupRelativePath!)));
         Assert.Null(confRecC3.OriginalSha256);
+
+        var configDictC3 = ParseConfigAssignments(File.ReadAllText(Path.Combine(gameDirC, "dxvk.conf")));
+        Assert.Equal("fps,devinfo", configDictC3["dxvk.hud"]);
+        Assert.Equal("60", configDictC3["dxvk.maxFrameRate"]);
+        Assert.Equal(2, configDictC3.Count);
+        Assert.False(configDictC3.ContainsKey("dxvk.hudExtra"));
+        Assert.False(configDictC3.ContainsKey("dxvk.maxFrameRateTarget"));
+        Assert.False(configDictC3.ContainsKey("user.settingA"));
+        Assert.False(configDictC3.ContainsKey("user.settingB"));
+        Assert.False(configDictC3.ContainsKey("user.settingC"));
+        Assert.False(configDictC3.ContainsKey("user.settingD"));
 
         // Target D remains untouched
         AssertResourcesUnchanged(initialSnapshotD, gameDirD);
@@ -777,11 +982,7 @@ public sealed class MixedBatchLifecycleAcceptanceTests
 
         var profileB4 = stack4.ProfileStore.GetOrCreate(exePathB);
         var instB4 = stack4.LibraryStore.FindByInstallationPath(gameDirB)!;
-        Assert.True(profileB4.DxvkEnabled);
-        Assert.Equal("v2.5", profileB4.DxvkVersion);
-        Assert.Equal("v2.5", instB4.ManagedDxvkVersion);
-        Assert.Equal(RestorationState.AttentionRequired, instB4.RestorationState);
-        Assert.Null(instB4.PendingAction);
+        AssertFaultedOwnershipRetained(faultedOwnershipB, profileB4, instB4);
 
         // Zero additional HTTP calls
         Assert.Equal(requestCountAfterAcquisition, transport.RequestCount);
@@ -801,37 +1002,13 @@ public sealed class MixedBatchLifecycleAcceptanceTests
         var instC5 = stack5.LibraryStore.FindByInstallationPath(gameDirC)!;
         var instD5 = stack5.LibraryStore.FindByInstallationPath(gameDirD)!;
 
-        // Restored A
-        Assert.False(profileA5.DxvkEnabled);
-        Assert.Equal(RestorationState.Restored, instA5.RestorationState);
-        Assert.True(string.IsNullOrEmpty(instA5.ManagedDxvkVersion));
-        Assert.Equal(3, instA5.ManagedFiles.Count);
-        Assert.Equal(ComputeSha256(nativeD3d11A), instA5.FindManagedFile("d3d11.dll")!.OriginalSha256);
-        Assert.Equal(ComputeSha256(originalConfA), instA5.FindManagedFile("dxvk.conf")!.OriginalSha256);
-        Assert.Null(instA5.FindManagedFile("dxgi.dll")!.OriginalSha256);
+        // Restored A/C/D history verification
+        AssertRestoredHistory(instA5, profileA5, ComputeSha256(nativeD3d11A), ComputeSha256(originalConfA), backupsDir);
+        AssertRestoredHistory(instC5, profileC5, ComputeSha256(nativeD3d11C), null, backupsDir);
+        AssertRestoredHistory(instD5, profileD5, ComputeSha256(nativeD3d11D), ComputeSha256(originalConfD), backupsDir);
 
-        // Restored C
-        Assert.False(profileC5.DxvkEnabled);
-        Assert.Equal(RestorationState.Restored, instC5.RestorationState);
-        Assert.True(string.IsNullOrEmpty(instC5.ManagedDxvkVersion));
-        Assert.Equal(3, instC5.ManagedFiles.Count);
-        Assert.Equal(ComputeSha256(nativeD3d11C), instC5.FindManagedFile("d3d11.dll")!.OriginalSha256);
-        Assert.Null(instC5.FindManagedFile("dxgi.dll")!.OriginalSha256);
-        Assert.Null(instC5.FindManagedFile("dxvk.conf")!.OriginalSha256);
-
-        // Restored D
-        Assert.False(profileD5.DxvkEnabled);
-        Assert.Equal(RestorationState.Restored, instD5.RestorationState);
-        Assert.True(string.IsNullOrEmpty(instD5.ManagedDxvkVersion));
-        Assert.Equal(3, instD5.ManagedFiles.Count);
-
-        // B remains in AttentionRequired with active management retained
-        Assert.True(profileB5.DxvkEnabled);
-        Assert.Equal("v2.5", profileB5.DxvkVersion);
-        Assert.Equal("v2.5", instB5.ManagedDxvkVersion);
-        Assert.Equal(RestorationState.AttentionRequired, instB5.RestorationState);
-        Assert.NotNull(instB5.LastRefusalReason);
-        Assert.Contains("backup hash mismatch", instB5.LastRefusalReason, StringComparison.OrdinalIgnoreCase);
+        // B remains in AttentionRequired with active management and exact faulted ownership retained
+        AssertFaultedOwnershipRetained(faultedOwnershipB, profileB5, instB5);
 
         // Repeat RestoreAll once: TotalManaged1, Restored0, FailedOrAttentionRequired1, AlreadyRestored3, QueuedRunning0
         var repeatSummary = await stack5.Manager.RestoreAllAsync();
@@ -853,6 +1030,23 @@ public sealed class MixedBatchLifecycleAcceptanceTests
         AssertResourcesUnchanged(faultedGameSnapshotB, gameDirB);
         AssertResourcesUnchanged(faultedSourcesSnapshot, sourcesDir);
         AssertResourcesUnchanged(faultedBackupsSnapshot, backupsDir);
+
+        // Reload fresh stack to verify persisted state after repeat RestoreAll
+        var stack6 = ConstructServiceStack(appDataDir, httpClient);
+        var profileA6 = stack6.ProfileStore.GetOrCreate(exePathA);
+        var profileB6 = stack6.ProfileStore.GetOrCreate(exePathB);
+        var profileC6 = stack6.ProfileStore.GetOrCreate(exePathC);
+        var profileD6 = stack6.ProfileStore.GetOrCreate(exePathD);
+
+        var instA6 = stack6.LibraryStore.FindByInstallationPath(gameDirA)!;
+        var instB6 = stack6.LibraryStore.FindByInstallationPath(gameDirB)!;
+        var instC6 = stack6.LibraryStore.FindByInstallationPath(gameDirC)!;
+        var instD6 = stack6.LibraryStore.FindByInstallationPath(gameDirD)!;
+
+        AssertRestoredHistory(instA6, profileA6, ComputeSha256(nativeD3d11A), ComputeSha256(originalConfA), backupsDir);
+        AssertRestoredHistory(instC6, profileC6, ComputeSha256(nativeD3d11C), null, backupsDir);
+        AssertRestoredHistory(instD6, profileD6, ComputeSha256(nativeD3d11D), ComputeSha256(originalConfD), backupsDir);
+        AssertFaultedOwnershipRetained(faultedOwnershipB, profileB6, instB6);
 
         // Exact complete expected backup files retained
         var finalBackupsSnapshot = SnapshotResources(backupsDir);

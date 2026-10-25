@@ -62,3 +62,25 @@ Implemented service-level acceptance coverage in `tests/DXVKCompanion.PhaseA.Tes
 - **Base commit**: `b1904d4a062483ac1c4a0c40bbe6a72ebe1eba62` (tree `80ebe37a524350592976f57d3281cc6276a90317`)
 - **Policy identity**: `c40eb13d0d89cb4860b4ed50fd81561acf2fb0d9`
 - **Branch**: `feat/issue-293-mixed-batch-lifecycle`
+
+## Review & Follow-up Repairs (Codex Review on PR #294)
+
+- **Initial Commit**: `19febbebb22cf9a8135185c336980e4effeb4ced` (tree `e5ea45cb236368969b0cc989193d90c20f7bbb33`)
+- **Initial Hosted CI Results**:
+  - Test Suite Run `40149803749`:
+    - Attempt 1: 1,308 passed, 1 failed (`DxvkModernApiCompatibilityTests.DxvkInstaller_AdoptExisting_DirectCall_RefusesUnsupportedApis(api: Vulkan)` on line 769).
+    - Attempt 2 (rerun failed jobs): 1,309 passed in 1m34s.
+  - Workflow Tests Run `40149803786`: 386 passed in 5.426s.
+- **Codex Grouped Review Feedback & Resolution**:
+  1. **Preservation snapshots at actual failure boundaries**:
+     - Added `AssertResourcesUnchanged(preUpdateBackupsSnapshot, backupsDir)` immediately after `UpdateAllEnabledAsync()` and before B's backup corruption, verifying that failed batch update mutates zero backups.
+     - Implemented `AssertFaultedOwnershipRetained` helper comparing reloaded B against `faultedOwnershipB`, allowing only the documented attention/refusal transition (`RestorationState.AttentionRequired`, `LastRefusalReason` containing backup hash mismatch, `PendingAction == null`, and exact record sets, hashes, backup paths, actual versions, selectors, and config intent retained).
+     - Applied `AssertFaultedOwnershipRetained` after first `RestoreAllAsync` reload and after repeat `RestoreAllAsync` fresh reload.
+  2. **Exact and complete restored history checks for A/C/D**:
+     - Implemented `AssertRestoredHistory` helper verifying exact paths `["d3d11.dll", "dxgi.dll", "dxvk.conf"]`, cleared `ManagedDxvkVersion`, `CurrentState == Consistent`, and truthful `OriginalState`/`OriginalSha256`/`BackupRelativePath` across existing vs absent baselines.
+     - Applied `AssertRestoredHistory` to Game D after its real install/disable lifecycle in Stage 2, and to Games A, C, D in Stage 5 after reload and after repeat `RestoreAllAsync` fresh reload.
+     - Added assertions verifying reloaded selector/API/architecture intent on A, B, C, D before changing selectors in Stage 3 (`profile.Api`, `profile.Architecture`, `profile.DxvkVersion`, `profile.DxvkEnabled`, `inst.ManagementPolicy.Mode`, `inst.ManagementPolicy.PinnedDxvkVersion`, `inst.ManagedDxvkArchitecture`, executable API and architecture).
+  3. **Exact configuration assertions via `ParseConfigAssignments`**:
+     - For Game D in Stage 2: performed deployed DLL bytes, hash, and exact configuration checks before disable (`dxvk.hud == "fps,devinfo"`, `dxvk.maxFrameRate == "60"`, `user.settingD == "4"`, `ExpectedManagedSha256` matching deployed bytes).
+     - For Games A, B, C in Stage 2: checked exact config assignments (A: `dxvk.hud`, `dxvk.maxFrameRate`, lookalikes `dxvk.hudExtra`, `dxvk.maxFrameRateTarget`, user key `user.settingA`; B: `dxvk.hud`, `dxvk.maxFrameRate`, lookalikes `dxvk.hudExtra`, `dxvk.maxFrameRateTarget`, user key `user.settingB`; C: only generated keys, no lookalike or user keys).
+     - After A/C update in Stage 3: verified exact config assignments for updated Game A and Game C.
