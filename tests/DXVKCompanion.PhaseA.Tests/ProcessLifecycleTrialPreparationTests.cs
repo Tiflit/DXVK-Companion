@@ -92,6 +92,30 @@ public sealed class ProcessLifecycleTrialPreparationTests
         return new ProcessResult(process.ExitCode, stdoutTask.Result, stderrTask.Result);
     }
 
+    private static void AssertScriptSuccess(ProcessResult result, bool expected = true)
+    {
+        if (string.IsNullOrWhiteSpace(result.StandardOutput))
+        {
+            Assert.Fail($"Expected JSON output with Success={expected}, but stdout was empty. Stderr: {result.StandardError}");
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(result.StandardOutput);
+            if (doc.RootElement.TryGetProperty("Success", out var successProp))
+            {
+                Assert.Equal(expected, successProp.GetBoolean());
+                return;
+            }
+        }
+        catch (JsonException)
+        {
+        }
+
+        var pattern = expected ? "\"Success\"\\s*:\\s*true" : "\"Success\"\\s*:\\s*false";
+        Assert.Matches(pattern, result.StandardOutput);
+    }
+
     private static string ComputeSha256Hex(byte[] data)
     {
         using var sha256 = SHA256.Create();
@@ -189,7 +213,7 @@ public sealed class ProcessLifecycleTrialPreparationTests
 
         var result = RunScript($"-Action Test-SafeZipArchive -ZipPath \"{zipPath}\" -JsonOutput");
         Assert.Equal(0, result.ExitCode);
-        Assert.Contains("\"Success\": true", result.StandardOutput);
+        AssertScriptSuccess(result, true);
     }
 
     [Fact]
@@ -204,7 +228,7 @@ public sealed class ProcessLifecycleTrialPreparationTests
 
         var result = RunScript($"-Action Test-SafeZipArchive -ZipPath \"{zipPath}\" -JsonOutput");
         Assert.NotEqual(0, result.ExitCode);
-        Assert.Contains("\"Success\": false", result.StandardOutput);
+        AssertScriptSuccess(result, false);
         Assert.Contains("traversal", result.StandardOutput);
     }
 
@@ -220,7 +244,7 @@ public sealed class ProcessLifecycleTrialPreparationTests
 
         var result = RunScript($"-Action Test-SafeZipArchive -ZipPath \"{zipPath}\" -JsonOutput");
         Assert.NotEqual(0, result.ExitCode);
-        Assert.Contains("\"Success\": false", result.StandardOutput);
+        AssertScriptSuccess(result, false);
         Assert.Contains("root-relative", result.StandardOutput);
     }
 
@@ -243,7 +267,7 @@ public sealed class ProcessLifecycleTrialPreparationTests
 
         var result = RunScript($"-Action Test-SafeZipArchive -ZipPath \"{zipPath}\" -JsonOutput");
         Assert.NotEqual(0, result.ExitCode);
-        Assert.Contains("\"Success\": false", result.StandardOutput);
+        AssertScriptSuccess(result, false);
         Assert.Contains("symbolic link", result.StandardOutput);
     }
 
@@ -259,7 +283,7 @@ public sealed class ProcessLifecycleTrialPreparationTests
 
         var result = RunScript($"-Action Test-SafeZipArchive -ZipPath \"{zipPath}\" -JsonOutput");
         Assert.NotEqual(0, result.ExitCode);
-        Assert.Contains("\"Success\": false", result.StandardOutput);
+        AssertScriptSuccess(result, false);
         Assert.Contains("Windows-aliased", result.StandardOutput);
     }
 
@@ -280,7 +304,7 @@ public sealed class ProcessLifecycleTrialPreparationTests
 
         var result = RunScript($"-Action Test-SafeZipArchive -ZipPath \"{zipPath}\" -JsonOutput");
         Assert.NotEqual(0, result.ExitCode);
-        Assert.Contains("\"Success\": false", result.StandardOutput);
+        AssertScriptSuccess(result, false);
         Assert.Contains("duplicate/colliding", result.StandardOutput);
     }
 
@@ -295,7 +319,7 @@ public sealed class ProcessLifecycleTrialPreparationTests
 
         var result = RunScript($"-Action Test-PathContainment -PathA \"{root}\" -PathB \"{sibling}\" -JsonOutput");
         Assert.NotEqual(0, result.ExitCode);
-        Assert.Contains("\"Success\": false", result.StandardOutput);
+        AssertScriptSuccess(result, false);
     }
 
     [Fact]
@@ -308,7 +332,7 @@ public sealed class ProcessLifecycleTrialPreparationTests
 
         var result = RunScript($"-Action Test-PathContainment -PathA \"{root}\" -PathB \"{contained}\" -JsonOutput");
         Assert.Equal(0, result.ExitCode);
-        Assert.Contains("\"Success\": true", result.StandardOutput);
+        AssertScriptSuccess(result, true);
     }
 
     [Fact]
@@ -402,7 +426,7 @@ public sealed class ProcessLifecycleTrialPreparationTests
         var manifestPath = Path.Combine(root, "baseline", "baseline_manifest.json");
         Assert.True(File.Exists(manifestPath));
         var manifestText = File.ReadAllText(manifestPath);
-        Assert.Contains("\"DxgiAbsent\": true", manifestText);
+        Assert.Matches("\"DxgiAbsent\"\\s*:\\s*true", manifestText);
 
         // Verify games.json was also seeded
         var gamesJsonPath = Path.Combine(root, "companion", "Profiles", "games.json");
@@ -556,7 +580,7 @@ public sealed class ProcessLifecycleTrialPreparationTests
 
         var result = RunScript($"-Action Compare-SemanticLibraryJson -PathA \"{jsonA}\" -PathB \"{jsonB}\" -JsonOutput");
         Assert.Equal(0, result.ExitCode);
-        Assert.Contains("\"Success\": true", result.StandardOutput);
+        AssertScriptSuccess(result, true);
     }
 
     [Fact]
@@ -599,7 +623,7 @@ public sealed class ProcessLifecycleTrialPreparationTests
 
         var result = RunScript($"-Action Compare-SemanticLibraryJson -PathA \"{jsonA}\" -PathB \"{jsonB}\" -JsonOutput");
         Assert.NotEqual(0, result.ExitCode);
-        Assert.Contains("\"Success\": false", result.StandardOutput);
+        AssertScriptSuccess(result, false);
         Assert.Contains("ManagedDxvkVersion", result.StandardOutput);
     }
 
@@ -612,14 +636,14 @@ public sealed class ProcessLifecycleTrialPreparationTests
         // Target currently matches baseline
         var check1 = RunScript($"-Action Compare-TargetBaseline -FixtureRoot \"{root}\" -JsonOutput");
         Assert.Equal(0, check1.ExitCode);
-        Assert.Contains("\"Success\": true", check1.StandardOutput);
+        AssertScriptSuccess(check1, true);
 
         // Mutate target d3d11.dll
         File.AppendAllText(Path.Combine(root, "target", "d3d11.dll"), "MUTATION");
 
         var check2 = RunScript($"-Action Compare-TargetBaseline -FixtureRoot \"{root}\" -JsonOutput");
         Assert.NotEqual(0, check2.ExitCode);
-        Assert.Contains("\"Success\": false", check2.StandardOutput);
+        AssertScriptSuccess(check2, false);
         Assert.Contains("mismatch", check2.StandardOutput);
     }
 
@@ -639,7 +663,7 @@ public sealed class ProcessLifecycleTrialPreparationTests
         // Verify LastCheckpointOutcome was persisted as Failed in state.json
         var statePath = Path.Combine(root, "state.json");
         var stateJson = File.ReadAllText(statePath);
-        Assert.Contains("\"LastCheckpointOutcome\": \"Failed\"", stateJson);
+        Assert.Matches("\"LastCheckpointOutcome\"\\s*:\\s*\"Failed\"", stateJson);
     }
 
     private static string SetUpTestFixture(SyntheticTestDirectory temp)

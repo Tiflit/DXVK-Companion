@@ -84,6 +84,9 @@ param(
 Set-StrictMode -Version 3.0
 $ErrorActionPreference = "Stop"
 
+Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
+Add-Type -AssemblyName System.IO.Compression -ErrorAction SilentlyContinue
+
 # ==============================================================================
 # Frozen Pins and Resource Limits (Issue #301)
 # ==============================================================================
