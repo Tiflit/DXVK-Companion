@@ -2,7 +2,7 @@
 
 ## Status and Authority
 
-The owner approved Issue [#299](https://github.com/Tiflit/DXVK-Companion/issues/299)'s bounded four-path contract and read-only hosted helper-build/smoke workflow ([recorded owner approval](https://github.com/Tiflit/DXVK-Companion/issues/299#issuecomment-6392305540)).
+The owner approved Issue [#299](https://github.com/Tiflit/DXVK-Companion/issues/299)'s bounded four-path contract and read-only hosted helper-build/smoke workflow ([recorded owner approval](https://github.com/Tiflit/DXVK-Companion/issues/299#issuecomment-6400475314)).
 Execution is strictly confined to hosted Windows GitHub Actions CI. No local builds, local tests, helper execution, application execution, downloads to the owner's laptop, or desktop bridging are authorized.
 This is **Stage A only** (helper build, import inspection, and cloud smoke verification). It does **not** adopt the later process-lifecycle runtime profile (Stage B host trial). Human alone merges.
 
@@ -40,7 +40,7 @@ The helper:
 | Startup | Pre-existing `stop-N.request` marker | (none) | `5` | Startup refused |
 | Readiness | Validation succeeded | `READY\n` | - | Helper active and polling |
 | Polling | Stop marker is a directory | (none) | `6` | Malformed marker rejection |
-| Polling | Unexpected file access or path error | (none) | `7` | I/O error during wait loop |
+| Polling | Unexpected file access, missing control directory, or path error | (none) | `7` | I/O or path error (e.g. control directory disappears after READY) |
 | Polling | 25-minute watchdog reached | `WATCHDOG\n` | `8` | Finite execution cap reached |
 | Termination | Regular-file marker `stop-N.request` present | `STOPPED\n` | `0` | Normal clean shutdown |
 
@@ -58,8 +58,9 @@ The hosted verification workflow runs on `windows-latest` under `permissions: co
 2. **Compilation**: Compiles `tools/validation/QueueFixture.cpp` to `%RUNNER_TEMP%\helper-build\QueueFixture.exe` with `/std:c++17 /EHsc /W4 /WX /O1 /MT`.
 3. **PE & Import Analysis**:
    - `dumpbin /headers`: Asserts `machine (x64)`.
-   - `dumpbin /dependents`: Asserts only `KERNEL32.dll`; asserts absence of all graphics DLLs.
-   - `dumpbin /imports`: Asserts zero process-spawning, dynamic-loading, or networking functions.
+   - `dumpbin /dependents`: Fail-closed parser asserts that `KERNEL32.dll` is the sole runtime dependency; rejects empty/malformed output, unrecognized DLLs, and all graphics libraries.
+   - `dumpbin /imports`: Normalizes hint/ordinal-prefixed symbol rows; asserts zero process-spawning (`CreateProcess*`, `ShellExecute*`, `WinExec`), dynamic library loading (`LoadLibrary*`), networking (`ws2_32`, sockets, WinInet), or graphics APIs.
+   - **Parser Negative Controls**: Verifies parser rejection against data fixtures containing hint-prefixed forbidden APIs and unexpected DLLs before trusting output.
 4. **Cloud-Owned Smoke Tests**:
    - `InvalidArgs`: Validates rejection (exit `2`, empty stdout) for missing args, invalid flag, missing slot, slot `0`, slot `5`, slot `99`, and extra args.
    - `InvalidLayout`: Validates rejection for wrong parent directory (exit `3`), renamed executable (exit `3`), and missing control directory (exit `4`).
@@ -67,9 +68,14 @@ The hosted verification workflow runs on `windows-latest` under `permissions: co
    - `RefuseRelaunch`: Validates refusal (exit `5`) when stop marker is already present.
    - `SlotIndependence`: Validates slot `2` runs and stops independently while slot `1` stop marker remains present.
    - `DirectoryMarker`: Validates directory marker error (exit `6`) when marker is created as a directory while helper is running.
+   - `DisappearingControlDir`: Validates exit code `7` promptly when the control directory is renamed/removed after `READY`, preventing indefinite polling until watchdog.
+   - **Harness Negative Controls**: Validates that test failures after `READY` trigger normal marker-driven child stopping in `finally`, and validates bounded output/exit timeouts without hanging.
 5. **Provenance Manifest & Artifact Packaging**:
-   - Produces `provenance.json` recording source SHA256, compiler identity, commit, tree, run ID, and file inventory.
+   - Safely reads PR head and base commit SHAs from GitHub event JSON (avoiding shell interpolation).
+   - Records MSVC compiler version, toolset identity, source SHA256, checkout commit/tree, run ID, and file inventory.
+   - Measures total artifact size and asserts compliance against the approved 100MiB cap.
    - Packages `QueueFixture.exe`, `QueueFixture.cpp`, `headers.txt`, `dependents.txt`, `imports.txt`, `smoke-results.json`, and `provenance.json` into artifact `process-lifecycle-helper-x64` via `actions/upload-artifact@v6`.
+   - On smoke failure, uploads diagnostic bundle `helper-smoke-failure-diagnostics` to retain failure evidence without presenting failing binaries as accepted.
 
 ## Boundary for Future Packaged Runtime Profile (Stage B)
 

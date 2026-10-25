@@ -118,7 +118,7 @@ int wmain(int argc, wchar_t* argv[]) {
         return 5;
     }
     DWORD err = GetLastError();
-    if (err != ERROR_FILE_NOT_FOUND && err != ERROR_PATH_NOT_FOUND) {
+    if (err != ERROR_FILE_NOT_FOUND) {
         return 4;
     }
 
@@ -148,8 +148,8 @@ int wmain(int argc, wchar_t* argv[]) {
         }
 
         DWORD loopErr = GetLastError();
-        if (loopErr != ERROR_FILE_NOT_FOUND && loopErr != ERROR_PATH_NOT_FOUND) {
-            // Unexpected access or path error yields nonzero
+        if (loopErr != ERROR_FILE_NOT_FOUND) {
+            // Unexpected access, missing control directory, or path error yields nonzero
             return 7;
         }
 
