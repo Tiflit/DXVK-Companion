@@ -925,6 +925,8 @@ public sealed class ExternalUpdateBaselineLifecycleAcceptanceTests
         var faultProfile = faultStack.ProfileStore.GetOrCreate(exePath);
         var faultInst = faultStack.LibraryStore.FindByInstallationPath(gameDir);
         Assert.NotNull(faultInst);
+        Assert.Equal(RestorationState.AttentionRequired, faultInst!.RestorationState);
+        Assert.Null(faultInst.PendingAction);
 
         // Capture meaningful complete ownership and profile state before failed authorized reapply request
         var expectedOwnershipBeforeFailedReapply = CaptureOwnership(faultProfile, faultInst!);
@@ -946,6 +948,8 @@ public sealed class ExternalUpdateBaselineLifecycleAcceptanceTests
         var reloadProfile = reloadStack.ProfileStore.GetOrCreate(exePath);
         var reloadInst = reloadStack.LibraryStore.FindByInstallationPath(gameDir);
         Assert.NotNull(reloadInst);
+        Assert.Equal(RestorationState.AttentionRequired, reloadInst!.RestorationState);
+        Assert.Null(reloadInst.PendingAction);
 
         // Complete ownership and profile state unchanged (exact record set, original/expected hashes, backup paths, versions, architecture, configuration intent)
         AssertOwnershipUnchanged(expectedOwnershipBeforeFailedReapply, reloadProfile, reloadInst!);

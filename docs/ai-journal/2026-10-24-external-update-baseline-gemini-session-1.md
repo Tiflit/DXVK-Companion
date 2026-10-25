@@ -57,6 +57,8 @@ Codex reviewed head `28b77ba33cef7987d555472a23ad036761ebbd5d` (base `17a7a49879
 
 ## Verification & Execution Record
 
+Codex focused delta review of repaired head `52ae222a14de1e60d778089d0becdba744fd2702` verified hosted application run40145800265 attempt1 (1307/1307) and workflow40145800332 attempt1 (386). The grouped repairs are effective. Codex then restored explicit `AttentionRequired` and null `PendingAction` assertions before and after failed authorized Reapply: the new ownership snapshot does not include pending actions and must not replace these required checks. This four-assertion test delta is Codex-authored and self-reviewed; no production code changed and no local tests/helpers/apps ran. Matching-head hosted CI evidence follows in the final PR Conversation record. Earlier failed CI attempts remain evidence with unknown causes.
+
 - **Tests First Policy**: Production code in `ManagedFileInspector`, `DxvkManager`, `DxvkInstaller`, and `DxvkRollback` was inspected and verified to already satisfy all invariants; production code remains untouched.
 - **Execution Mode**: Cloud-only hosted CI. Zero local builds, zero local tests, zero local diagnostic scripts executed.
 - **Base commit**: `17a7a49879d811cbae1415defc5cda09d4d6c0f0` (tree `ad94ad6959b02b47e60570ddc9f70587a74cb9d6`)
