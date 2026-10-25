@@ -1,0 +1,838 @@
+name: Process lifecycle helper CPU checks
+
+on:
+  pull_request:
+    paths:
+      - tools/validation/QueueFixture.cpp
+      - .github/workflows/process-lifecycle-helper-cpu.yml
+      - docs/validation/PACKAGED-PROCESS-LIFECYCLE-V1.md
+      - docs/ai-journal/2026-10-25-process-lifecycle-helper-gemini-session-1.md
+
+permissions:
+  contents: read
+
+jobs:
+  helper-cpu:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Identify source and preinstalled compiler
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git rev-parse HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'Source identity unavailable' }
+          Get-FileHash tools/validation/QueueFixture.cpp -Algorithm SHA256
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+          if (!(Test-Path -LiteralPath $vswhere)) { throw 'Preinstalled vswhere unavailable; no installation permitted' }
+          $installation = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if ($LASTEXITCODE -ne 0 -or @($installation).Count -ne 1 -or [string]::IsNullOrWhiteSpace($installation)) {
+            throw 'Preinstalled MSVC unavailable; no installation permitted'
+          }
+          $vsVersion = & $vswhere -latest -property installationVersion
+          $devcmd = Join-Path $installation 'Common7/Tools/VsDevCmd.bat'
+          if (!(Test-Path -LiteralPath $devcmd)) { throw 'Preinstalled compiler environment unavailable' }
+          "HELPER_VS=$installation" >> $env:GITHUB_ENV
+          "HELPER_VS_VERSION=$vsVersion" >> $env:GITHUB_ENV
+
+      - name: Compile x64 helper and inspect headers and imports
+        shell: cmd
+        run: |
+          call "%HELPER_VS%\Common7\Tools\VsDevCmd.bat" -no_logo -arch=x64 -host_arch=x64
+          if errorlevel 1 exit /b 1
+          mkdir "%RUNNER_TEMP%\helper-build"
+          if errorlevel 1 exit /b 1
+          cl > "%RUNNER_TEMP%\helper-build\cl-version.txt" 2>&1
+          cl /nologo /std:c++17 /EHsc /W4 /WX /O1 /MT tools\validation\QueueFixture.cpp /Fe:"%RUNNER_TEMP%\helper-build\QueueFixture.exe" /Fo:"%RUNNER_TEMP%\helper-build\QueueFixture.obj"
+          if errorlevel 1 exit /b 1
+          dumpbin /headers "%RUNNER_TEMP%\helper-build\QueueFixture.exe" > "%RUNNER_TEMP%\helper-build\headers.txt"
+          if errorlevel 1 exit /b 1
+          dumpbin /dependents "%RUNNER_TEMP%\helper-build\QueueFixture.exe" > "%RUNNER_TEMP%\helper-build\dependents.txt"
+          if errorlevel 1 exit /b 1
+          dumpbin /imports "%RUNNER_TEMP%\helper-build\QueueFixture.exe" > "%RUNNER_TEMP%\helper-build\imports.txt"
+          if errorlevel 1 exit /b 1
+
+      - name: Verify static imports, architecture, and toolchain protections
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $buildDir = Join-Path $env:RUNNER_TEMP 'helper-build'
+
+          function Parse-DumpbinDependents {
+            param([string]$Text)
+            if ([string]::IsNullOrWhiteSpace($Text)) { throw 'Dumpbin dependents text is empty or missing' }
+            $lines = $Text -split '\r?\n'
+            $inDeps = $false
+            $deps = [System.Collections.Generic.List[string]]::new()
+            foreach ($line in $lines) {
+              if ($line -match 'Image has the following dependencies:') { $inDeps = $true; continue }
+              if ($inDeps) {
+                if ($line -match '^\s*Summary\b') { break }
+                if ([string]::IsNullOrWhiteSpace($line)) { continue }
+                $trimmed = $line.Trim()
+                if ($trimmed -match '^[A-Za-z0-9._-]+\.dll$') {
+                  $deps.Add($trimmed)
+                } else {
+                  throw "Fail-closed: Malformed or unrecognized line in dependents table: '$trimmed'"
+                }
+              }
+            }
+            if ($deps.Count -eq 0) { throw 'Fail-closed: No dependent DLLs discovered in dumpbin dependents output' }
+            return $deps
+          }
+
+          function Parse-DumpbinImports {
+            param([string]$Text)
+            if ([string]::IsNullOrWhiteSpace($Text)) { throw 'Dumpbin imports text is empty or missing' }
+            $lines = $Text -split '\r?\n'
+            $symbols = [System.Collections.Generic.List[string]]::new()
+            $inImports = $false
+            foreach ($line in $lines) {
+              if ($line -match 'Section contains the following imports:') { $inImports = $true; continue }
+              if ($inImports) {
+                if ($line -match '^\s*Summary\b') { break }
+                if ([string]::IsNullOrWhiteSpace($line)) { continue }
+                $trimmed = $line.Trim()
+                if ($trimmed -match '(?i)^[A-Za-z0-9._-]+\.dll$' -or
+                    $trimmed -match 'Import Address Table' -or
+                    $trimmed -match 'Import Name Table' -or
+                    $trimmed -match 'time date stamp' -or
+                    $trimmed -match 'Index of first forwarder reference') {
+                  continue
+                }
+                if ($line -match '^\s*(?:[0-9a-fA-F]+\s+)?([A-Za-z_][A-Za-z0-9_@$?]*)\s*$') {
+                  $sym = $Matches[1].Trim()
+                  if ($sym -ieq 'Ordinal') {
+                    throw "Fail-closed: Ordinal-only import detected: '$trimmed'. Only named imports are permitted."
+                  }
+                  $symbols.Add($sym)
+                } else {
+                  throw "Fail-closed: Malformed, ordinal, or unrecognized line in imports table: '$trimmed'"
+                }
+              }
+            }
+            if ($symbols.Count -eq 0) { throw 'Fail-closed: No imported symbols discovered in dumpbin imports output' }
+            return $symbols
+          }
+
+          function Assert-ImportPolicy {
+            param(
+              [System.Collections.Generic.List[string]]$Dependents,
+              [System.Collections.Generic.List[string]]$Symbols
+            )
+            # 1. Assert exactly KERNEL32.dll dependency
+            foreach ($dep in $Dependents) {
+              if ($dep -notmatch '(?i)^kernel32\.dll$') {
+                throw "Fail-closed: Unexpected dependent DLL detected: '$dep'. Only KERNEL32.dll is permitted."
+              }
+            }
+
+            # 2. Accounted legitimate symbols: helper explicit calls and reviewed toolchain static CRT functions
+            $accountedSymbols = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+            @(
+              'GetStdHandle', 'GetFileAttributesW', 'WriteFile', 'GetLastError', 'Sleep', 'GetTickCount64', 'GetModuleFileNameW',
+              'QueryPerformanceCounter', 'GetCurrentProcessId', 'GetCurrentThreadId', 'GetSystemTimeAsFileTime', 'InitializeSListHead',
+              'SetUnhandledExceptionFilter', 'GetStartupInfoW', 'GetModuleHandleW', 'WriteConsoleW', 'RtlUnwindEx', 'SetLastError',
+              'FlsAlloc', 'FlsGetValue', 'FlsSetValue', 'FlsFree', 'EnterCriticalSection', 'LeaveCriticalSection', 'InitializeCriticalSectionEx',
+              'DeleteCriticalSection', 'RtlLookupFunctionEntry', 'EncodePointer', 'RaiseException', 'RtlPcToFileHeader', 'GetCurrentProcess',
+              'ExitProcess', 'TerminateProcess', 'FreeLibrary', 'GetModuleHandleExW', 'GetProcAddress', 'GetCommandLineA', 'GetCommandLineW',
+              'IsProcessorFeaturePresent', 'RtlCaptureContext', 'RtlVirtualUnwind', 'IsDebuggerPresent', 'UnhandledExceptionFilter',
+              'HeapFree', 'HeapAlloc', 'GetFileType', 'FindClose', 'FindFirstFileExW', 'FindNextFileW', 'IsValidCodePage', 'GetACP',
+              'GetOEMCP', 'GetCPInfo', 'MultiByteToWideChar', 'WideCharToMultiByte', 'GetEnvironmentStringsW', 'FreeEnvironmentStringsW',
+              'SetEnvironmentVariableW', 'SetStdHandle', 'GetStringTypeW', 'VirtualProtect', 'LoadLibraryExW', 'CompareStringW',
+              'LCMapStringW', 'GetProcessHeap', 'SetFilePointerEx', 'HeapSize', 'HeapReAlloc', 'FlushFileBuffers', 'GetConsoleOutputCP',
+              'GetConsoleMode', 'CloseHandle', 'CreateFileW'
+            ) | ForEach-Object { [void]$accountedSymbols.Add($_) }
+
+            # 3. Assert zero forbidden symbols and all symbols accounted for
+            foreach ($sym in $Symbols) {
+              if ($sym -match '^(?:CreateProcess[AW]?|CreateProcessAsUser[AW]?|CreateProcessWithLogon[AW]?|CreateProcessWithToken[AW]?|ShellExecute[AW]?|ShellExecuteEx[AW]?|WinExec)$') {
+                throw "Fail-closed: Forbidden process-spawning API detected in imports: '$sym'"
+              }
+              if ($sym -match '^(?:LoadLibrary[AW])$') {
+                throw "Fail-closed: Forbidden dynamic library loading API detected in imports: '$sym'"
+              }
+              if ($sym -match '^(?:WSA.*|socket|connect|send|recv|Internet.*|Http.*)$') {
+                throw "Fail-closed: Forbidden networking API detected in imports: '$sym'"
+              }
+              if ($sym -match '^(?:D3D.*|CreateDXGIFactory.*|vkCreate.*)$') {
+                throw "Fail-closed: Forbidden graphics API detected in imports: '$sym'"
+              }
+              if (!$accountedSymbols.Contains($sym)) {
+                throw "Fail-closed: Unaccounted imported symbol detected: '$sym'. Not in reviewed helper or toolchain CRT set."
+              }
+            }
+          }
+
+          # --- Parser Negative Controls (Data Fixtures) ---
+          Write-Output 'Running parser negative controls...'
+
+          # Control 1: Unexpected DLL rejection
+          $badDepsText = @(
+            '  Image has the following dependencies:',
+            '',
+            '    KERNEL32.dll',
+            '    USER32.dll',
+            '',
+            '  Summary'
+          ) -join "`r`n"
+          $badDeps = Parse-DumpbinDependents -Text $badDepsText
+          $caught1 = $false
+          try {
+            Assert-ImportPolicy -Dependents $badDeps -Symbols ([System.Collections.Generic.List[string]]@('Sleep'))
+          } catch {
+            if ($_.Exception.Message -match 'Unexpected dependent DLL detected') { $caught1 = $true }
+          }
+          if (!$caught1) { throw 'Negative control 1 failed: unexpected DLL was not rejected' }
+          Write-Output 'Negative control PASS: Unexpected DLL rejected'
+
+          # Control 2: Hint-prefixed LoadLibraryW rejection
+          $badImpsText1 = @(
+            'Section contains the following imports:',
+            '',
+            '  KERNEL32.dll',
+            '             14001F000 Import Address Table',
+            '             140026A60 Import Name Table',
+            '                     0 time date stamp',
+            '                     0 Index of first forwarder reference',
+            '',
+            '                         123 LoadLibraryW',
+            '                         456 Sleep',
+            '',
+            '  Summary'
+          ) -join "`r`n"
+          $badImps1 = Parse-DumpbinImports -Text $badImpsText1
+          $caught2 = $false
+          try {
+            Assert-ImportPolicy -Dependents ([System.Collections.Generic.List[string]]@('KERNEL32.dll')) -Symbols $badImps1
+          } catch {
+            if ($_.Exception.Message -match 'Forbidden dynamic library loading API') { $caught2 = $true }
+          }
+          if (!$caught2) { throw 'Negative control 2 failed: hint-prefixed LoadLibraryW was not rejected' }
+          Write-Output 'Negative control PASS: Hint-prefixed LoadLibraryW rejected'
+
+          # Control 3: Hint-prefixed CreateProcessW rejection
+          $badImpsText2 = @(
+            'Section contains the following imports:',
+            '',
+            '  KERNEL32.dll',
+            '             14001F000 Import Address Table',
+            '             140026A60 Import Name Table',
+            '                     0 time date stamp',
+            '                     0 Index of first forwarder reference',
+            '',
+            '                          4A CreateProcessW',
+            '',
+            '  Summary'
+          ) -join "`r`n"
+          $badImps2 = Parse-DumpbinImports -Text $badImpsText2
+          $caught3 = $false
+          try {
+            Assert-ImportPolicy -Dependents ([System.Collections.Generic.List[string]]@('KERNEL32.dll')) -Symbols $badImps2
+          } catch {
+            if ($_.Exception.Message -match 'Forbidden process-spawning API') { $caught3 = $true }
+          }
+          if (!$caught3) { throw 'Negative control 3 failed: hint-prefixed CreateProcessW was not rejected' }
+          Write-Output 'Negative control PASS: Hint-prefixed CreateProcessW rejected'
+
+          # Control 4: Empty dumpbin output fails closed
+          $caught4 = $false
+          try {
+            [void](Parse-DumpbinDependents -Text 'Dump of file ... Summary')
+          } catch {
+            if ($_.Exception.Message -match 'No dependent DLLs discovered') { $caught4 = $true }
+          }
+          if (!$caught4) { throw 'Negative control 4 failed: empty dependents did not fail closed' }
+          Write-Output 'Negative control PASS: Empty dependents failed closed'
+
+          # Control 5: Malformed non-DLL entry in dependents table fails closed
+          $badDepsMalformedText = @(
+            '  Image has the following dependencies:',
+            '',
+            '    KERNEL32.dll',
+            '    CORRUPTED_ENTRY_NOT_A_DLL',
+            '',
+            '  Summary'
+          ) -join "`r`n"
+          $caught5 = $false
+          try {
+            [void](Parse-DumpbinDependents -Text $badDepsMalformedText)
+          } catch {
+            if ($_.Exception.Message -match 'Malformed or unrecognized line in dependents table') { $caught5 = $true }
+          }
+          if (!$caught5) { throw 'Negative control 5 failed: malformed dependents line was not rejected' }
+          Write-Output 'Negative control PASS: Malformed dependents line rejected'
+
+          # Control 6: Ordinal-only import row in imports table fails closed
+          $badImpsOrdinalText = @(
+            'Section contains the following imports:',
+            '',
+            '  KERNEL32.dll',
+            '             14001F000 Import Address Table',
+            '             140026A60 Import Name Table',
+            '                     0 time date stamp',
+            '                     0 Index of first forwarder reference',
+            '',
+            '                         Ordinal    42',
+            '',
+            '  Summary'
+          ) -join "`r`n"
+          $caught6 = $false
+          try {
+            [void](Parse-DumpbinImports -Text $badImpsOrdinalText)
+          } catch {
+            if ($_.Exception.Message -match '(?:Malformed, ordinal|Ordinal-only import)') { $caught6 = $true }
+          }
+          if (!$caught6) { throw 'Negative control 6 failed: ordinal-only import line was not rejected' }
+          Write-Output 'Negative control PASS: Ordinal-only import line rejected'
+
+          # Control 7: Malformed symbol row in imports table fails closed
+          $badImpsMalformedText = @(
+            'Section contains the following imports:',
+            '',
+            '  KERNEL32.dll',
+            '             14001F000 Import Address Table',
+            '             140026A60 Import Name Table',
+            '                     0 time date stamp',
+            '                     0 Index of first forwarder reference',
+            '',
+            '                         100 %%%INVALID_SYMBOL%%%',
+            '',
+            '  Summary'
+          ) -join "`r`n"
+          $caught7 = $false
+          try {
+            [void](Parse-DumpbinImports -Text $badImpsMalformedText)
+          } catch {
+            if ($_.Exception.Message -match 'Malformed, ordinal, or unrecognized line in imports table') { $caught7 = $true }
+          }
+          if (!$caught7) { throw 'Negative control 7 failed: malformed symbol line was not rejected' }
+          Write-Output 'Negative control PASS: Malformed symbol line rejected'
+
+          # --- Actual Binary Verification ---
+          Write-Output 'Verifying actual QueueFixture.exe build artifacts...'
+
+          # 1. Architecture check
+          $headers = Get-Content -LiteralPath (Join-Path $buildDir 'headers.txt') -Raw
+          if ([string]::IsNullOrWhiteSpace($headers) -or $headers -notmatch '(?i)machine\s*\(\s*x64\s*\)') {
+            throw 'QueueFixture.exe architecture is not x64; refusing execution'
+          }
+          Write-Output 'Verified: target architecture is x64'
+
+          # 2. Fail-closed dependents check
+          $actualDeps = Parse-DumpbinDependents -Text (Get-Content -LiteralPath (Join-Path $buildDir 'dependents.txt') -Raw)
+          Write-Output "Discovered dependents: $($actualDeps -join ', ')"
+
+          # 3. Fail-closed imports check
+          $actualSymbols = Parse-DumpbinImports -Text (Get-Content -LiteralPath (Join-Path $buildDir 'imports.txt') -Raw)
+          Write-Output "Discovered $($actualSymbols.Count) imported symbols"
+
+          Assert-ImportPolicy -Dependents $actualDeps -Symbols $actualSymbols
+
+          Write-Output '=== Complete Verified Imported Symbol Listing ==='
+          foreach ($sym in $actualSymbols) {
+            Write-Output "  Import: $sym"
+          }
+          Write-Output 'Verified: fail-closed dependency set is strictly KERNEL32.dll with zero forbidden APIs'
+
+      - name: Run bounded smoke tests on fresh cloud fixtures
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $buildDir = Join-Path $env:RUNNER_TEMP 'helper-build'
+          $helperExe = Join-Path $buildDir 'QueueFixture.exe'
+          $testResults = [System.Collections.Generic.List[PSCustomObject]]::new()
+
+          function Invoke-FixtureCase {
+            param(
+              [string]$Name,
+              [string]$ExeToRun,
+              [string[]]$ArgsList,
+              [string]$FixtureRoot = $null,
+              [int]$Slot = 0,
+              [int]$ExpectedExitCode = 0,
+              [string]$ExpectedStdoutPattern = '',
+              [int]$TimeoutMs = 5000,
+              [scriptblock]$Action = $null
+            )
+
+            $startUtc = (Get-Date).ToUniversalTime().ToString('o')
+            $sw = [System.Diagnostics.Stopwatch]::StartNew()
+            $proc = $null
+            $stdoutBuilder = [System.Text.StringBuilder]::new()
+            $stderrBuilder = [System.Text.StringBuilder]::new()
+            $casePassed = $false
+            $failureReason = $null
+            $residualAlive = $false
+            $stopMarkerPath = if (![string]::IsNullOrEmpty($FixtureRoot) -and $Slot -ge 1 -and $Slot -le 4) {
+              Join-Path $FixtureRoot "control/stop-$Slot.request"
+            } else { $null }
+
+            $stderrTask = $null
+
+            # Monotonic deadline budget helper
+            $GetRemainingMs = {
+              param([string]$Step)
+              $rem = $TimeoutMs - [int]$sw.ElapsedMilliseconds
+              if ($rem -le 0) {
+                throw "Case '$Name' timed out at step '$Step' exceeding case deadline of ${TimeoutMs}ms (elapsed: $($sw.ElapsedMilliseconds)ms)"
+              }
+              return $rem
+            }
+
+            # Supervised line reader with monotonic deadline
+            $ReadLineWithTimeout = {
+              param([string]$StepName)
+              $rem = & $GetRemainingMs $StepName
+              $readTask = $proc.StandardOutput.ReadLineAsync()
+              if (!$readTask.Wait($rem)) {
+                throw "Case '$Name' timed out at step '$StepName' waiting for stdout line within ${rem}ms (case budget: ${TimeoutMs}ms, elapsed: $($sw.ElapsedMilliseconds)ms)"
+              }
+              $line = $readTask.Result
+              if ($null -ne $line) {
+                [void]$stdoutBuilder.AppendLine($line)
+              }
+              return $line
+            }
+
+            # Supervised exit waiter with monotonic deadline
+            $WaitForExitWithTimeout = {
+              param([string]$StepName)
+              $rem = & $GetRemainingMs $StepName
+              if (!$proc.WaitForExit($rem)) {
+                throw "Case '$Name' timed out at step '$StepName' waiting for process exit within ${rem}ms (case budget: ${TimeoutMs}ms, elapsed: $($sw.ElapsedMilliseconds)ms)"
+              }
+            }
+
+            try {
+              $psi = [System.Diagnostics.ProcessStartInfo]::new()
+              $psi.FileName = $ExeToRun
+              $psi.Arguments = ($ArgsList -join ' ')
+              $psi.UseShellExecute = $false
+              $psi.RedirectStandardOutput = $true
+              $psi.RedirectStandardError = $true
+              $psi.RedirectStandardInput = $false
+              $psi.CreateNoWindow = $true
+
+              $proc = [System.Diagnostics.Process]::Start($psi)
+
+              # Concurrently drain stderr for the entire duration of the process
+              $stderrTask = $proc.StandardError.ReadToEndAsync()
+
+              if ($null -ne $Action) {
+                & $Action $proc $ReadLineWithTimeout $WaitForExitWithTimeout $FixtureRoot $Slot
+              } else {
+                $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
+
+                $rem = & $GetRemainingMs 'DrainStreams'
+                $completed = [System.Threading.Tasks.Task]::WaitAll(@($stdoutTask, $stderrTask), $rem)
+                if (!$completed) {
+                  throw "Case '$Name' timed out draining streams within ${rem}ms (case budget: ${TimeoutMs}ms)"
+                }
+                [void]$stdoutBuilder.Append($stdoutTask.Result)
+                [void]$stderrBuilder.Append($stderrTask.Result)
+
+                $remExit = & $GetRemainingMs 'WaitForExit'
+                if (!$proc.WaitForExit($remExit)) {
+                  throw "Case '$Name' process did not exit within bounded wait ${remExit}ms"
+                }
+              }
+
+              $actualExitCode = $proc.ExitCode
+              if ($actualExitCode -ne $ExpectedExitCode) {
+                throw "Case '$Name' failed: expected exit code $ExpectedExitCode, got $actualExitCode. Stdout: '$($stdoutBuilder.ToString().Trim())'. Stderr: '$($stderrBuilder.ToString().Trim())'"
+              }
+
+              $actualStdout = $stdoutBuilder.ToString().Trim()
+              if (![string]::IsNullOrEmpty($ExpectedStdoutPattern)) {
+                if ($actualStdout -notmatch $ExpectedStdoutPattern) {
+                  throw "Case '$Name' failed: stdout '$actualStdout' did not match pattern '$ExpectedStdoutPattern'"
+                }
+              } elseif (![string]::IsNullOrWhiteSpace($actualStdout)) {
+                throw "Case '$Name' failed: expected empty stdout, got '$actualStdout'"
+              }
+
+              $casePassed = $true
+            } catch {
+              $failureReason = $_.Exception.Message
+              throw
+            } finally {
+              $recordedExitCode = -1
+              if ($null -ne $proc) {
+                if (!$proc.HasExited) {
+                  if (![string]::IsNullOrEmpty($stopMarkerPath)) {
+                    try {
+                      if (![System.IO.File]::Exists($stopMarkerPath)) {
+                        [System.IO.File]::WriteAllText($stopMarkerPath, 'stop')
+                      }
+                    } catch { }
+                  }
+                  [void]$proc.WaitForExit(3000)
+                }
+
+                if (!$proc.HasExited) {
+                  $residualAlive = $true
+                } else {
+                  $recordedExitCode = $proc.ExitCode
+                  if ($null -ne $stderrTask) {
+                    try {
+                      [void]$stderrTask.Wait(1000)
+                      if ($stderrTask.IsCompleted) {
+                        [void]$stderrBuilder.Append($stderrTask.Result)
+                      }
+                    } catch { }
+                  }
+                  $proc.Dispose()
+                }
+              }
+
+              $endUtc = (Get-Date).ToUniversalTime().ToString('o')
+              $sw.Stop()
+
+              $testResults.Add([PSCustomObject]@{
+                Name = $Name
+                StartUtc = $startUtc
+                EndUtc = $endUtc
+                DurationMs = $sw.ElapsedMilliseconds
+                Passed = $casePassed
+                ExitCode = $recordedExitCode
+                ExpectedExitCode = $ExpectedExitCode
+                Stdout = $stdoutBuilder.ToString().Trim()
+                Stderr = $stderrBuilder.ToString().Trim()
+                ResidualAlive = $residualAlive
+                FailureReason = $failureReason
+              })
+            }
+          }
+
+          $suiteFailed = $false
+          try {
+            # 1. Invalid argument cases (exit 2)
+            Invoke-FixtureCase -Name 'InvalidArgs_NoArgs' -ExeToRun $helperExe -ArgsList @() -ExpectedExitCode 2
+            Invoke-FixtureCase -Name 'InvalidArgs_WrongFlag' -ExeToRun $helperExe -ArgsList @('--wrong', '1') -ExpectedExitCode 2
+            Invoke-FixtureCase -Name 'InvalidArgs_MissingSlot' -ExeToRun $helperExe -ArgsList @('--slot') -ExpectedExitCode 2
+            Invoke-FixtureCase -Name 'InvalidArgs_SlotZero' -ExeToRun $helperExe -ArgsList @('--slot', '0') -ExpectedExitCode 2
+            Invoke-FixtureCase -Name 'InvalidArgs_SlotFive' -ExeToRun $helperExe -ArgsList @('--slot', '5') -ExpectedExitCode 2
+            Invoke-FixtureCase -Name 'InvalidArgs_Slot99' -ExeToRun $helperExe -ArgsList @('--slot', '99') -ExpectedExitCode 2
+            Invoke-FixtureCase -Name 'InvalidArgs_ExtraArgs' -ExeToRun $helperExe -ArgsList @('--slot', '1', 'extra') -ExpectedExitCode 2
+
+            # 2. Invalid layout cases
+            Invoke-FixtureCase -Name 'InvalidLayout_WrongParentDir' -ExeToRun $helperExe -ArgsList @('--slot', '1') -ExpectedExitCode 3
+
+            $badNameRoot = Join-Path $env:RUNNER_TEMP 'fixture-badname'
+            New-Item -ItemType Directory -Path (Join-Path $badNameRoot 'target') -Force | Out-Null
+            New-Item -ItemType Directory -Path (Join-Path $badNameRoot 'control') -Force | Out-Null
+            $badExe = Join-Path $badNameRoot 'target/RenamedFixture.exe'
+            Copy-Item -LiteralPath $helperExe -Destination $badExe
+            Invoke-FixtureCase -Name 'InvalidLayout_WrongExeName' -ExeToRun $badExe -ArgsList @('--slot', '1') -ExpectedExitCode 3
+
+            $noCtrlRoot = Join-Path $env:RUNNER_TEMP 'fixture-noctrl'
+            New-Item -ItemType Directory -Path (Join-Path $noCtrlRoot 'target') -Force | Out-Null
+            $noCtrlExe = Join-Path $noCtrlRoot 'target/QueueFixture.exe'
+            Copy-Item -LiteralPath $helperExe -Destination $noCtrlExe
+            Invoke-FixtureCase -Name 'InvalidLayout_MissingControlDir' -ExeToRun $noCtrlExe -ArgsList @('--slot', '1') -ExpectedExitCode 4
+
+            # 3. Valid lifecycle: slot 1 ready, stays alive, normal stop on marker
+            $fixtureRoot = Join-Path $env:RUNNER_TEMP 'fixture-valid'
+            New-Item -ItemType Directory -Path (Join-Path $fixtureRoot 'target') -Force | Out-Null
+            New-Item -ItemType Directory -Path (Join-Path $fixtureRoot 'control') -Force | Out-Null
+            $validExe = Join-Path $fixtureRoot 'target/QueueFixture.exe'
+            Copy-Item -LiteralPath $helperExe -Destination $validExe
+
+            Invoke-FixtureCase -Name 'ValidLifecycle_Slot1' -ExeToRun $validExe -ArgsList @('--slot', '1') -FixtureRoot $fixtureRoot -Slot 1 -ExpectedExitCode 0 -ExpectedStdoutPattern '^READY[\r\n]+STOPPED$' -Action {
+              param($p, $readL, $waitEx, $root, $s)
+              $line1 = & $readL 'WaitForReady'
+              if ($line1 -ne 'READY') {
+                throw "ValidLifecycle_Slot1 expected 'READY', got '$line1'"
+              }
+
+              if ($p.HasExited) {
+                throw 'ValidLifecycle_Slot1 exited prematurely before stop marker'
+              }
+              Start-Sleep -Milliseconds 500
+              if ($p.HasExited) {
+                throw 'ValidLifecycle_Slot1 failed to stay alive across observation interval'
+              }
+
+              $stopFile1 = Join-Path $root 'control/stop-1.request'
+              [System.IO.File]::WriteAllText($stopFile1, 'stop')
+
+              $line2 = & $readL 'WaitForStopped'
+              if ($line2 -ne 'STOPPED') {
+                throw "ValidLifecycle_Slot1 expected 'STOPPED', got '$line2'"
+              }
+
+              & $waitEx 'WaitForCleanExit'
+            }
+
+            # 4. Same slot relaunch refuses when marker is present
+            Invoke-FixtureCase -Name 'RefuseRelaunch_Slot1_MarkerPresent' -ExeToRun $validExe -ArgsList @('--slot', '1') -FixtureRoot $fixtureRoot -Slot 1 -ExpectedExitCode 5
+
+            # 5. Slot independence: slot 2 in same fixture runs while slot 1 marker exists
+            Invoke-FixtureCase -Name 'SlotIndependence_Slot2' -ExeToRun $validExe -ArgsList @('--slot', '2') -FixtureRoot $fixtureRoot -Slot 2 -ExpectedExitCode 0 -ExpectedStdoutPattern '^READY[\r\n]+STOPPED$' -Action {
+              param($p, $readL, $waitEx, $root, $s)
+              $slot2Line1 = & $readL 'WaitForReady'
+              if ($slot2Line1 -ne 'READY') {
+                throw "SlotIndependence_Slot2 expected 'READY', got '$slot2Line1'"
+              }
+
+              if ($p.HasExited) {
+                throw 'SlotIndependence_Slot2 exited prematurely before stop marker'
+              }
+              Start-Sleep -Milliseconds 500
+              if ($p.HasExited) {
+                throw 'SlotIndependence_Slot2 failed to stay alive across observation interval'
+              }
+
+              $stopFile2 = Join-Path $root 'control/stop-2.request'
+              [System.IO.File]::WriteAllText($stopFile2, 'stop')
+
+              $slot2Line2 = & $readL 'WaitForStopped'
+              if ($slot2Line2 -ne 'STOPPED') {
+                throw "SlotIndependence_Slot2 expected 'STOPPED', got '$slot2Line2'"
+              }
+
+              & $waitEx 'WaitForCleanExit'
+            }
+
+            # 6. Directory marker error yields exit 6
+            $dirFixtureRoot = Join-Path $env:RUNNER_TEMP 'fixture-dirmarker'
+            New-Item -ItemType Directory -Path (Join-Path $dirFixtureRoot 'target') -Force | Out-Null
+            New-Item -ItemType Directory -Path (Join-Path $dirFixtureRoot 'control') -Force | Out-Null
+            $dirExe = Join-Path $dirFixtureRoot 'target/QueueFixture.exe'
+            Copy-Item -LiteralPath $helperExe -Destination $dirExe
+
+            Invoke-FixtureCase -Name 'DirectoryMarker_Slot3' -ExeToRun $dirExe -ArgsList @('--slot', '3') -FixtureRoot $dirFixtureRoot -Slot 3 -ExpectedExitCode 6 -ExpectedStdoutPattern '^READY$' -Action {
+              param($p, $readL, $waitEx, $root, $s)
+              $dirLine1 = & $readL 'WaitForReady'
+              if ($dirLine1 -ne 'READY') {
+                throw "DirectoryMarker_Slot3 expected 'READY', got '$dirLine1'"
+              }
+
+              if ($p.HasExited) {
+                throw 'DirectoryMarker_Slot3 exited prematurely'
+              }
+
+              $dirMarker = Join-Path $root 'control/stop-3.request'
+              New-Item -ItemType Directory -Path $dirMarker -Force | Out-Null
+
+              & $waitEx 'WaitForExitAfterDirectoryMarker'
+            }
+
+            # 7. Disappearing control directory yields exit 7 (R4 regression check)
+            $disappearFixtureRoot = Join-Path $env:RUNNER_TEMP 'fixture-disappear'
+            New-Item -ItemType Directory -Path (Join-Path $disappearFixtureRoot 'target') -Force | Out-Null
+            $disappearControlDir = Join-Path $disappearFixtureRoot 'control'
+            New-Item -ItemType Directory -Path $disappearControlDir -Force | Out-Null
+            $disappearExe = Join-Path $disappearFixtureRoot 'target/QueueFixture.exe'
+            Copy-Item -LiteralPath $helperExe -Destination $disappearExe
+
+            Invoke-FixtureCase -Name 'DisappearingControlDir_Slot4' -ExeToRun $disappearExe -ArgsList @('--slot', '4') -FixtureRoot $disappearFixtureRoot -Slot 4 -ExpectedExitCode 7 -ExpectedStdoutPattern '^READY$' -Action {
+              param($p, $readL, $waitEx, $root, $s)
+              $line = & $readL 'WaitForReady'
+              if ($line -ne 'READY') {
+                throw "DisappearingControlDir_Slot4 expected 'READY', got '$line'"
+              }
+
+              if ($p.HasExited) {
+                throw 'DisappearingControlDir_Slot4 exited prematurely'
+              }
+
+              Rename-Item -LiteralPath (Join-Path $root 'control') -NewName 'control_renamed'
+
+              & $waitEx 'WaitForExitAfterDisappearingDir'
+            }
+
+            # 8. Harness Negative Control 1: Failure after READY triggers normal stop in finally (R1)
+            $negFailFixtureRoot = Join-Path $env:RUNNER_TEMP 'fixture-negfail'
+            New-Item -ItemType Directory -Path (Join-Path $negFailFixtureRoot 'target') -Force | Out-Null
+            New-Item -ItemType Directory -Path (Join-Path $negFailFixtureRoot 'control') -Force | Out-Null
+            $negFailExe = Join-Path $negFailFixtureRoot 'target/QueueFixture.exe'
+            Copy-Item -LiteralPath $helperExe -Destination $negFailExe
+
+            $negCaught = $false
+            try {
+              Invoke-FixtureCase -Name 'SimulatedFailure_AfterReady' -ExeToRun $negFailExe -ArgsList @('--slot', '1') -FixtureRoot $negFailFixtureRoot -Slot 1 -Action {
+                param($p, $readL, $waitEx, $root, $s)
+                $readyLine = & $readL 'WaitForReady'
+                if ($readyLine -ne 'READY') {
+                  throw "SimulatedFailure_AfterReady expected 'READY', got '$readyLine'"
+                }
+                throw 'Simulated assertion failure after READY'
+              }
+            } catch {
+              if ($_.Exception.Message -match 'Simulated assertion failure after READY') {
+                $negCaught = $true
+              }
+            }
+            if (!$negCaught) {
+              throw 'Harness negative control failed: simulated failure was not raised'
+            }
+            $simResult = $testResults | Where-Object { $_.Name -eq 'SimulatedFailure_AfterReady' } | Select-Object -Last 1
+            if ($null -eq $simResult -or $simResult.ResidualAlive -ne $false -or $simResult.ExitCode -ne 0) {
+              throw "Harness negative control failed: normal stop was not achieved on failure. Residual: $($simResult.ResidualAlive), Exit: $($simResult.ExitCode)"
+            }
+            Write-Output 'Harness negative control PASS: Simulated failure triggered normal marker-driven child exit (exit 0, ResidualAlive=false)'
+
+            # 9. Harness Negative Control 2: Stream drain timeout detection on live helper (R1)
+            $timeoutFixtureRoot = Join-Path $env:RUNNER_TEMP 'fixture-timeout'
+            New-Item -ItemType Directory -Path (Join-Path $timeoutFixtureRoot 'target') -Force | Out-Null
+            New-Item -ItemType Directory -Path (Join-Path $timeoutFixtureRoot 'control') -Force | Out-Null
+            $timeoutExe = Join-Path $timeoutFixtureRoot 'target/QueueFixture.exe'
+            Copy-Item -LiteralPath $helperExe -Destination $timeoutExe
+
+            $negTimeoutCaught = $false
+            $timeoutErrorMsg = $null
+            try {
+              Invoke-FixtureCase -Name 'SimulatedTimeout_Detection' -ExeToRun $timeoutExe -ArgsList @('--slot', '1') -FixtureRoot $timeoutFixtureRoot -Slot 1 -TimeoutMs 1500 -Action {
+                param($p, $readL, $waitEx, $root, $s)
+                $readyLine = & $readL 'WaitForReady'
+                if ($readyLine -ne 'READY') {
+                  throw "SimulatedTimeout_Detection expected 'READY', got '$readyLine'"
+                }
+                if ($p.HasExited) {
+                  throw 'SimulatedTimeout_Detection process exited prematurely before timeout could be tested'
+                }
+                # Deliberately withhold the stop marker. The helper remains alive and polling.
+                # Supervised ReadLineWithTimeout shares the 1500ms case deadline and must time out.
+                [void](& $readL 'WithheldStopMarker_ExpectTimeout')
+              }
+            } catch {
+              $timeoutErrorMsg = $_.Exception.Message
+              if ($timeoutErrorMsg -match 'timed out at step ''WithheldStopMarker_ExpectTimeout''') {
+                $negTimeoutCaught = $true
+              }
+            }
+            if (!$negTimeoutCaught) {
+              throw "Harness negative control failed: timeout at WithheldStopMarker_ExpectTimeout was not detected. Caught message: '$timeoutErrorMsg'"
+            }
+            $timeoutResult = $testResults | Where-Object { $_.Name -eq 'SimulatedTimeout_Detection' } | Select-Object -Last 1
+            if ($null -eq $timeoutResult) {
+              throw 'Harness negative control failed: no record for SimulatedTimeout_Detection'
+            }
+            if ($timeoutResult.ResidualAlive -ne $false) {
+              throw "Harness negative control failed: process remained alive after timeout cleanup"
+            }
+            if ($timeoutResult.ExitCode -ne 0) {
+              throw "Harness negative control failed: expected normal marker cleanup exit 0, got $($timeoutResult.ExitCode)"
+            }
+            if ($timeoutResult.DurationMs -lt 1400 -or $timeoutResult.DurationMs -gt 5000) {
+              throw "Harness negative control failed: duration $($timeoutResult.DurationMs)ms was not within expected timeout window"
+            }
+            Write-Output 'Harness negative control PASS: Bounded timeout detected on live helper and child stopped cleanly (exit 0, ResidualAlive=false)'
+
+          } catch {
+            $suiteFailed = $true
+            Write-Error "Smoke suite failure: $($_.Exception.Message)"
+          } finally {
+            $smokeResultsPath = Join-Path $buildDir 'smoke-results.json'
+            $testResults | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $smokeResultsPath -Encoding utf8
+            Write-Output "Smoke results ($($testResults.Count) records) written to $smokeResultsPath"
+          }
+
+          if ($suiteFailed) {
+            throw 'Smoke test suite failed'
+          }
+          Write-Output 'All smoke checks and harness negative controls passed successfully.'
+
+      - name: Upload smoke failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: helper-smoke-failure-diagnostics
+          path: ${{ runner.temp }}/helper-build/
+          if-no-files-found: ignore
+
+      - name: Generate provenance and inventory report
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $buildDir = Join-Path $env:RUNNER_TEMP 'helper-build'
+          $artifactDir = Join-Path $env:RUNNER_TEMP 'artifact'
+          New-Item -ItemType Directory -Path $artifactDir -Force | Out-Null
+
+          Copy-Item -LiteralPath (Join-Path $buildDir 'QueueFixture.exe') -Destination (Join-Path $artifactDir 'QueueFixture.exe')
+          Copy-Item -LiteralPath 'tools/validation/QueueFixture.cpp' -Destination (Join-Path $artifactDir 'QueueFixture.cpp')
+          Copy-Item -LiteralPath (Join-Path $buildDir 'headers.txt') -Destination (Join-Path $artifactDir 'headers.txt')
+          Copy-Item -LiteralPath (Join-Path $buildDir 'dependents.txt') -Destination (Join-Path $artifactDir 'dependents.txt')
+          Copy-Item -LiteralPath (Join-Path $buildDir 'imports.txt') -Destination (Join-Path $artifactDir 'imports.txt')
+          Copy-Item -LiteralPath (Join-Path $buildDir 'smoke-results.json') -Destination (Join-Path $artifactDir 'smoke-results.json')
+
+          $sourceHash = (Get-FileHash -LiteralPath 'tools/validation/QueueFixture.cpp' -Algorithm SHA256).Hash.ToLowerInvariant()
+          $checkoutCommit = (& git rev-parse HEAD).Trim()
+          $checkoutTree = (& git log -1 --format=%T HEAD).Trim()
+
+          # Safely read PR head and base SHAs from GitHub event payload
+          $eventJson = Get-Content -LiteralPath $env:GITHUB_EVENT_PATH -Raw | ConvertFrom-Json
+          $prHeadSha = $null
+          $prBaseSha = $null
+          if ($eventJson.pull_request) {
+            $prHeadSha = $eventJson.pull_request.head.sha
+            $prBaseSha = $eventJson.pull_request.base.sha
+          }
+          if ([string]::IsNullOrWhiteSpace($prHeadSha) -or $prHeadSha.Length -ne 40) {
+            throw 'Fail-closed: PR head commit SHA could not be determined from event payload'
+          }
+          if ([string]::IsNullOrWhiteSpace($prBaseSha) -or $prBaseSha.Length -ne 40) {
+            throw 'Fail-closed: PR base commit SHA could not be determined from event payload'
+          }
+
+          # Compiler & Toolset identity
+          $clVersionFile = Join-Path $buildDir 'cl-version.txt'
+          $clVersion = if (Test-Path -LiteralPath $clVersionFile) {
+            $matched = (Get-Content -LiteralPath $clVersionFile | Where-Object { $_ -match 'Optimizing Compiler' } | Select-Object -First 1)
+            if ($matched) { $matched.Trim() } else { 'MSVC x64' }
+          } else { 'MSVC x64' }
+          $vsInstallVersion = $env:HELPER_VS_VERSION
+
+          # Measure artifact inventory and assert total size against approved 100MiB cap
+          $totalSizeBytes = 0
+          $filesInventory = @()
+          Get-ChildItem -LiteralPath $artifactDir -File | ForEach-Object {
+            $h = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            $totalSizeBytes += $_.Length
+            $filesInventory += [PSCustomObject]@{
+              Name = $_.Name
+              Sha256 = $h
+              SizeBytes = $_.Length
+            }
+          }
+
+          $maxApprovedSizeBytes = 100 * 1024 * 1024 # 100 MiB = 104,857,600 bytes
+          if ($totalSizeBytes -gt $maxApprovedSizeBytes) {
+            throw "Total artifact size ($totalSizeBytes bytes) exceeds approved 100MiB limit ($maxApprovedSizeBytes bytes)"
+          }
+
+          $provenance = [PSCustomObject]@{
+            SourcePath = 'tools/validation/QueueFixture.cpp'
+            SourceSha256 = $sourceHash
+            TargetArchitecture = 'x64'
+            CompilerFlags = '/std:c++17 /EHsc /W4 /WX /O1 /MT'
+            CompilerVersion = $clVersion
+            VisualStudioVersion = $vsInstallVersion
+            PrHeadSha = $prHeadSha
+            PrBaseSha = $prBaseSha
+            CheckoutCommit = $checkoutCommit
+            CheckoutTree = $checkoutTree
+            GithubRunId = $env:GITHUB_RUN_ID
+            GithubRunAttempt = $env:GITHUB_RUN_ATTEMPT
+            GeneratedUtc = (Get-Date).ToUniversalTime().ToString('o')
+            TotalSizeBytes = $totalSizeBytes
+            ApprovedSizeBoundBytes = $maxApprovedSizeBytes
+            Files = $filesInventory
+          }
+
+          $provenancePath = Join-Path $artifactDir 'provenance.json'
+          $provenance | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $provenancePath -Encoding utf8
+          Write-Output "Provenance manifest written to $provenancePath"
+          Get-Content -LiteralPath $provenancePath
+
+      - name: Upload process lifecycle helper artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: process-lifecycle-helper-x64
+          path: ${{ runner.temp }}/artifact
+          if-no-files-found: error
