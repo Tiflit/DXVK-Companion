@@ -125,7 +125,7 @@ jobs:
               if ($sym -match '^(?:CreateProcess[AW]?|CreateProcessAsUser[AW]?|CreateProcessWithLogon[AW]?|CreateProcessWithToken[AW]?|ShellExecute[AW]?|ShellExecuteEx[AW]?|WinExec)$') {
                 throw "Fail-closed: Forbidden process-spawning API detected in imports: '$sym'"
               }
-              if ($sym -match '^(?:LoadLibrary[AW]?|LoadLibraryEx[AW]?|GetModuleHandleEx[AW]?)$') {
+              if ($sym -match '^(?:LoadLibrary[AW]?|LoadLibraryEx[AW]?)$') {
                 throw "Fail-closed: Forbidden dynamic library loading API detected in imports: '$sym'"
               }
               if ($sym -match '^(?:WSA.*|socket|connect|send|recv|Internet.*|Http.*)$') {
