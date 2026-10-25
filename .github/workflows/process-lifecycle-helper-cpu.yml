@@ -347,6 +347,7 @@ jobs:
               $failureReason = $_.Exception.Message
               throw
             } finally {
+              $recordedExitCode = -1
               if ($null -ne $proc) {
                 if (!$proc.HasExited) {
                   if (![string]::IsNullOrEmpty($stopMarkerPath)) {
@@ -362,6 +363,7 @@ jobs:
                 if (!$proc.HasExited) {
                   $residualAlive = $true
                 } else {
+                  $recordedExitCode = $proc.ExitCode
                   $proc.Dispose()
                 }
               }
@@ -375,7 +377,7 @@ jobs:
                 EndUtc = $endUtc
                 DurationMs = $sw.ElapsedMilliseconds
                 Passed = $casePassed
-                ExitCode = if ($null -ne $proc -and $proc.HasExited) { $proc.ExitCode } else { -1 }
+                ExitCode = $recordedExitCode
                 ExpectedExitCode = $ExpectedExitCode
                 Stdout = $stdoutBuilder.ToString().Trim()
                 Stderr = $stderrBuilder.ToString().Trim()
@@ -422,7 +424,7 @@ jobs:
             Invoke-FixtureCase -Name 'ValidLifecycle_Slot1' -ExeToRun $validExe -ArgsList @('--slot', '1') -FixtureRoot $fixtureRoot -Slot 1 -ExpectedExitCode 0 -ExpectedStdoutPattern '^READY[\r\n]+STOPPED$' -Action {
               param($p, $out, $err, $root, $s, $timeout)
               $readLineTask1 = $p.StandardOutput.ReadLineAsync()
-              if (![System.Threading.Tasks.Task]::WaitAny(@($readLineTask1), 4000)) {
+              if (!$readLineTask1.Wait(4000)) {
                 throw 'ValidLifecycle_Slot1 timed out waiting for READY'
               }
               $line1 = $readLineTask1.Result
@@ -443,7 +445,7 @@ jobs:
               [System.IO.File]::WriteAllText($stopFile1, 'stop')
 
               $readLineTask2 = $p.StandardOutput.ReadLineAsync()
-              if (![System.Threading.Tasks.Task]::WaitAny(@($readLineTask2), 4000)) {
+              if (!$readLineTask2.Wait(4000)) {
                 throw 'ValidLifecycle_Slot1 timed out waiting for STOPPED'
               }
               $line2 = $readLineTask2.Result
@@ -464,7 +466,7 @@ jobs:
             Invoke-FixtureCase -Name 'SlotIndependence_Slot2' -ExeToRun $validExe -ArgsList @('--slot', '2') -FixtureRoot $fixtureRoot -Slot 2 -ExpectedExitCode 0 -ExpectedStdoutPattern '^READY[\r\n]+STOPPED$' -Action {
               param($p, $out, $err, $root, $s, $timeout)
               $readTaskSlot2 = $p.StandardOutput.ReadLineAsync()
-              if (![System.Threading.Tasks.Task]::WaitAny(@($readTaskSlot2), 4000)) {
+              if (!$readTaskSlot2.Wait(4000)) {
                 throw 'SlotIndependence_Slot2 timed out waiting for READY'
               }
               $slot2Line1 = $readTaskSlot2.Result
@@ -485,7 +487,7 @@ jobs:
               [System.IO.File]::WriteAllText($stopFile2, 'stop')
 
               $readTaskSlot2Stop = $p.StandardOutput.ReadLineAsync()
-              if (![System.Threading.Tasks.Task]::WaitAny(@($readTaskSlot2Stop), 4000)) {
+              if (!$readTaskSlot2Stop.Wait(4000)) {
                 throw 'SlotIndependence_Slot2 timed out waiting for STOPPED'
               }
               $slot2Line2 = $readTaskSlot2Stop.Result
@@ -509,7 +511,7 @@ jobs:
             Invoke-FixtureCase -Name 'DirectoryMarker_Slot3' -ExeToRun $dirExe -ArgsList @('--slot', '3') -FixtureRoot $dirFixtureRoot -Slot 3 -ExpectedExitCode 6 -ExpectedStdoutPattern '^READY$' -Action {
               param($p, $out, $err, $root, $s, $timeout)
               $readTaskDir = $p.StandardOutput.ReadLineAsync()
-              if (![System.Threading.Tasks.Task]::WaitAny(@($readTaskDir), 4000)) {
+              if (!$readTaskDir.Wait(4000)) {
                 throw 'DirectoryMarker_Slot3 timed out waiting for READY'
               }
               $dirLine1 = $readTaskDir.Result
@@ -541,7 +543,7 @@ jobs:
             Invoke-FixtureCase -Name 'DisappearingControlDir_Slot4' -ExeToRun $disappearExe -ArgsList @('--slot', '4') -FixtureRoot $disappearFixtureRoot -Slot 4 -ExpectedExitCode 7 -ExpectedStdoutPattern '^READY$' -Action {
               param($p, $out, $err, $root, $s, $timeout)
               $readTask = $p.StandardOutput.ReadLineAsync()
-              if (![System.Threading.Tasks.Task]::WaitAny(@($readTask), 4000)) {
+              if (!$readTask.Wait(4000)) {
                 throw 'DisappearingControlDir_Slot4 timed out waiting for READY'
               }
               $line = $readTask.Result
@@ -574,7 +576,7 @@ jobs:
               Invoke-FixtureCase -Name 'SimulatedFailure_AfterReady' -ExeToRun $negFailExe -ArgsList @('--slot', '1') -FixtureRoot $negFailFixtureRoot -Slot 1 -Action {
                 param($p, $out, $err, $root, $s, $timeout)
                 $readTask = $p.StandardOutput.ReadLineAsync()
-                if (![System.Threading.Tasks.Task]::WaitAny(@($readTask), 4000)) {
+                if (!$readTask.Wait(4000)) {
                   throw 'SimulatedFailure_AfterReady timed out waiting for READY'
                 }
                 [void]$out.AppendLine($readTask.Result)
