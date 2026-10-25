@@ -3,10 +3,13 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
+using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
+using DXVKCompanion.Models;
+using DXVKCompanion.Storage;
 using Xunit;
 
 namespace DXVKCompanion.PhaseATests;
@@ -14,6 +17,16 @@ namespace DXVKCompanion.PhaseATests;
 public sealed class ProcessLifecycleTrialPreparationTests
 {
     private sealed record ProcessResult(int ExitCode, string StandardOutput, string StandardError);
+
+    private static void AssertHostedCiEnvironment()
+    {
+        var isCi = Environment.GetEnvironmentVariable("GITHUB_ACTIONS");
+        if (!string.Equals(isCi, "true", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                "Host workstation execution is strictly prohibited. ProcessLifecycleTrialPreparationTests may only run in approved hosted GitHub Actions CI.");
+        }
+    }
 
     private static string FindRepositoryRoot()
     {
@@ -43,13 +56,18 @@ public sealed class ProcessLifecycleTrialPreparationTests
 
     private static ProcessResult RunScript(string arguments, int timeoutMilliseconds = 30000)
     {
+        AssertHostedCiEnvironment();
+
         var repoRoot = FindRepositoryRoot();
         var scriptPath = Path.Combine(repoRoot, "tools", "validation", "ProcessLifecycleTrial.ps1");
         Assert.True(File.Exists(scriptPath), $"Script not found at: {scriptPath}");
 
+        var powershellPath = GetPowerShellExecutablePath();
+        Assert.True(File.Exists(powershellPath), $"PowerShell executable not found at: {powershellPath}");
+
         var psi = new ProcessStartInfo
         {
-            FileName = GetPowerShellExecutablePath(),
+            FileName = powershellPath,
             Arguments = $"-NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"{scriptPath}\" {arguments}",
             UseShellExecute = false,
             RedirectStandardOutput = true,
@@ -66,11 +84,11 @@ public sealed class ProcessLifecycleTrialPreparationTests
 
         if (!process.WaitForExit(timeoutMilliseconds))
         {
-            try { process.Kill(); } catch { }
-            throw new TimeoutException($"PowerShell process timed out after {timeoutMilliseconds}ms for args: {arguments}");
+            // Do NOT force-kill child process! Report timeout and retain residual process information.
+            throw new TimeoutException($"PowerShell process timed out after {timeoutMilliseconds}ms for args: {arguments}. Residual process {process.Id} retained.");
         }
 
-        Task.WaitAll(stdoutTask, stderrTask);
+        Task.WaitAll(new Task[] { stdoutTask, stderrTask }, 5000);
         return new ProcessResult(process.ExitCode, stdoutTask.Result, stderrTask.Result);
     }
 
@@ -81,7 +99,7 @@ public sealed class ProcessLifecycleTrialPreparationTests
         return Convert.ToHexString(hash).ToLowerInvariant();
     }
 
-    private static string CreateSyntheticZip(string zipFilePath, IDictionary<string, byte[]> entries)
+    private static string CreateSyntheticZip(string zipFilePath, IDictionary<string, byte[]> entries, Action<ZipArchive>? customMutator = null)
     {
         var dir = Path.GetDirectoryName(zipFilePath);
         if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
@@ -99,20 +117,24 @@ public sealed class ProcessLifecycleTrialPreparationTests
             entryStream.Write(entryBytes, 0, entryBytes.Length);
         }
 
+        customMutator?.Invoke(archive);
         return zipFilePath;
     }
 
     [Fact]
     public void Script_Exists_And_ParsesWithoutSyntaxErrors()
     {
+        AssertHostedCiEnvironment();
+
         var repoRoot = FindRepositoryRoot();
         var scriptPath = Path.Combine(repoRoot, "tools", "validation", "ProcessLifecycleTrial.ps1");
         Assert.True(File.Exists(scriptPath));
 
+        var powershellPath = GetPowerShellExecutablePath();
         var psi = new ProcessStartInfo
         {
-            FileName = GetPowerShellExecutablePath(),
-            Arguments = $"-NoProfile -NonInteractive -Command \"$errs = $null; [System.Management.Automation.Language.Parser]::ParseFile('{scriptPath.Replace("'", "''")}', [ref]$null, [ref]$errs); if ($errs.Count -gt 0) {{ $errs | ForEach-Object {{ Write-Error $_ }}; exit 1 }} else {{ Write-Output 'PARSED_OK' }}\"",
+            FileName = powershellPath,
+            Arguments = $"-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command \"$errs = $null; [System.Management.Automation.Language.Parser]::ParseFile('{scriptPath.Replace("'", "''")}', [ref]$null, [ref]$errs); if ($errs.Count -gt 0) {{ $errs | ForEach-Object {{ Write-Error $_ }}; exit 1 }} else {{ Write-Output 'PARSED_OK' }}\"",
             UseShellExecute = false,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
@@ -122,16 +144,23 @@ public sealed class ProcessLifecycleTrialPreparationTests
 
         using var proc = Process.Start(psi);
         Assert.NotNull(proc);
-        var output = proc.StandardOutput.ReadToEnd();
-        proc.WaitForExit(10000);
+        var stdoutTask = proc.StandardOutput.ReadToEndAsync();
+        var stderrTask = proc.StandardError.ReadToEndAsync();
+
+        bool exited = proc.WaitForExit(10000);
+        Assert.True(exited, "AST parser process timed out after 10000ms.");
+        Task.WaitAll(new Task[] { stdoutTask, stderrTask }, 5000);
 
         Assert.Equal(0, proc.ExitCode);
-        Assert.Contains("PARSED_OK", output);
+        Assert.Contains("PARSED_OK", stdoutTask.Result);
+        Assert.Empty(stderrTask.Result);
     }
 
     [Fact]
     public void Script_FrozenPins_MatchPublishedConstants()
     {
+        AssertHostedCiEnvironment();
+
         var repoRoot = FindRepositoryRoot();
         var scriptPath = Path.Combine(repoRoot, "tools", "validation", "ProcessLifecycleTrial.ps1");
         var text = File.ReadAllText(scriptPath);
@@ -195,6 +224,45 @@ public sealed class ProcessLifecycleTrialPreparationTests
     }
 
     [Fact]
+    public void SafeZipArchive_SymlinkEntry_IsRejected()
+    {
+        using var temp = new SyntheticTestDirectory();
+        var zipPath = temp.GetPath("symlink.zip");
+        CreateSyntheticZip(zipPath, new Dictionary<string, byte[]>
+        {
+            { "normal.txt", Encoding.ASCII.GetBytes("hello") }
+        }, archive =>
+        {
+            var symlinkEntry = archive.CreateEntry("link.txt");
+            // Set Unix mode to S_IFLNK (0xA000) in high word of ExternalAttributes
+            symlinkEntry.ExternalAttributes = 0xA1ED << 16;
+            using var s = symlinkEntry.Open();
+            s.Write(Encoding.ASCII.GetBytes("target.txt"));
+        });
+
+        var result = RunScript($"-Action Test-SafeZipArchive -ZipPath \"{zipPath}\" -JsonOutput");
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains("\"Success\": false", result.StandardOutput);
+        Assert.Contains("symbolic link", result.StandardOutput);
+    }
+
+    [Fact]
+    public void SafeZipArchive_WindowsTrailingAlias_IsRejected()
+    {
+        using var temp = new SyntheticTestDirectory();
+        var zipPath = temp.GetPath("alias.zip");
+        CreateSyntheticZip(zipPath, new Dictionary<string, byte[]>
+        {
+            { "badname.txt ", Encoding.ASCII.GetBytes("aliased") }
+        });
+
+        var result = RunScript($"-Action Test-SafeZipArchive -ZipPath \"{zipPath}\" -JsonOutput");
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains("\"Success\": false", result.StandardOutput);
+        Assert.Contains("Windows-aliased", result.StandardOutput);
+    }
+
+    [Fact]
     public void SafeZipArchive_DuplicateEntries_IsRejected()
     {
         using var temp = new SyntheticTestDirectory();
@@ -216,15 +284,15 @@ public sealed class ProcessLifecycleTrialPreparationTests
     }
 
     [Fact]
-    public void PathContainment_PathOutsideRoot_IsRejected()
+    public void PathContainment_SiblingPrefixEscape_IsRejected()
     {
         using var temp = new SyntheticTestDirectory();
-        var root = temp.GetPath("base_root");
+        var root = temp.GetPath("trial_root");
         Directory.CreateDirectory(root);
-        var outside = temp.GetPath("other_root");
-        Directory.CreateDirectory(outside);
+        var sibling = temp.GetPath("trial_root_other");
+        Directory.CreateDirectory(sibling);
 
-        var result = RunScript($"-Action Test-PathContainment -PathA \"{root}\" -PathB \"{outside}\" -JsonOutput");
+        var result = RunScript($"-Action Test-PathContainment -PathA \"{root}\" -PathB \"{sibling}\" -JsonOutput");
         Assert.NotEqual(0, result.ExitCode);
         Assert.Contains("\"Success\": false", result.StandardOutput);
     }
@@ -243,12 +311,22 @@ public sealed class ProcessLifecycleTrialPreparationTests
     }
 
     [Fact]
-    public void Setup_RefusesExistingNonEmptyRoot()
+    public void CheckpointName_PathTraversal_IsRejected()
     {
         using var temp = new SyntheticTestDirectory();
-        var root = temp.GetPath("non_empty_root");
+        var root = SetUpTestFixture(temp);
+
+        var result = RunScript($"-Action Take-Snapshot -FixtureRoot \"{root}\" -CheckpointName \"..\\escape\" -JsonOutput");
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains("Invalid checkpoint name", result.StandardOutput + result.StandardError);
+    }
+
+    [Fact]
+    public void Setup_RefusesPreExistingEmptyRoot()
+    {
+        using var temp = new SyntheticTestDirectory();
+        var root = temp.GetPath("existing_empty_root");
         Directory.CreateDirectory(root);
-        File.WriteAllText(Path.Combine(root, "pre_existing.txt"), "data");
 
         var helperZip = temp.GetPath("dummy_helper.zip");
         CreateSyntheticZip(helperZip, new Dictionary<string, byte[]> { { "QueueFixture.exe", Encoding.ASCII.GetBytes("dummy") } });
@@ -257,7 +335,7 @@ public sealed class ProcessLifecycleTrialPreparationTests
 
         var result = RunScript($"-Action Setup -FixtureRoot \"{root}\" -HelperZipPath \"{helperZip}\" -CompanionZipPath \"{compZip}\" -JsonOutput");
         Assert.NotEqual(0, result.ExitCode);
-        Assert.Contains("not empty", result.StandardOutput + result.StandardError);
+        Assert.Contains("already exists", result.StandardOutput + result.StandardError);
     }
 
     [Fact]
@@ -273,109 +351,152 @@ public sealed class ProcessLifecycleTrialPreparationTests
 
         var result = RunScript($"-Action Setup -FixtureRoot \"{root}\" -HelperZipPath \"{helperZip}\" -CompanionZipPath \"{compZip}\" -JsonOutput");
         Assert.NotEqual(0, result.ExitCode);
-        Assert.Contains("SHA256 mismatch", result.StandardOutput + result.StandardError);
+        Assert.Contains("mismatch", result.StandardOutput + result.StandardError);
     }
 
     [Fact]
-    public void Setup_SucceedsWithTestPins_InitializesDirectoryStructure()
+    public void PositiveSetup_RealStores_LoadSeededInstallationAndSettings()
     {
-        using var temp = new SyntheticTestDirectory();
-        var root = temp.GetPath("trial_root");
+        AssertHostedCiEnvironment();
 
-        var helperExeBytes = Encoding.ASCII.GetBytes("TEST_HELPER_EXE_BYTES");
-        var helperExeHash = ComputeSha256Hex(helperExeBytes);
-        var helperZip = temp.GetPath("helper.zip");
-        CreateSyntheticZip(helperZip, new Dictionary<string, byte[]> { { "QueueFixture.exe", helperExeBytes } });
-        var helperZipHash = ComputeSha256Hex(File.ReadAllBytes(helperZip));
-
-        var compExeBytes = Encoding.ASCII.GetBytes("TEST_COMPANION_EXE_BYTES");
-        var compExeHash = ComputeSha256Hex(compExeBytes);
-        var compZip = temp.GetPath("companion.zip");
-        CreateSyntheticZip(compZip, new Dictionary<string, byte[]> { { "DXVK-Companion.exe", compExeBytes } });
-        var compZipHash = ComputeSha256Hex(File.ReadAllBytes(compZip));
-
-        var testPinsJson = JsonSerializer.Serialize(new
-        {
-            HelperZipSha256 = helperZipHash,
-            HelperExeSha256 = helperExeHash,
-            CompanionZipSha256 = compZipHash,
-            CompanionExeSha256 = compExeHash
-        });
-
-        var escapedJson = testPinsJson.Replace("\"", "\\\"");
-        var result = RunScript($"-Action Setup -FixtureRoot \"{root}\" -HelperZipPath \"{helperZip}\" -CompanionZipPath \"{compZip}\" -TestPinsJson \"{escapedJson}\" -JsonOutput");
-        Assert.Equal(0, result.ExitCode);
-
-        // Verify seeded layout
-        Assert.True(File.Exists(Path.Combine(root, "target", "QueueFixture.exe")));
-        Assert.True(File.Exists(Path.Combine(root, "target", "d3d11.dll")));
-        Assert.True(File.Exists(Path.Combine(root, "target", "dxvk.conf")));
-        Assert.True(File.Exists(Path.Combine(root, "target", "sentinel.txt")));
-        Assert.True(Directory.Exists(Path.Combine(root, "control")));
-        Assert.True(File.Exists(Path.Combine(root, "baseline", "baseline_manifest.json")));
-        Assert.True(File.Exists(Path.Combine(root, "companion", "DXVK-Companion.exe")));
-        Assert.True(File.Exists(Path.Combine(root, "companion", "settings.json")));
-        Assert.True(File.Exists(Path.Combine(root, "companion", "Profiles", "game-library.json")));
-        Assert.True(File.Exists(Path.Combine(root, "state.json")));
-
-        var stateText = File.ReadAllText(Path.Combine(root, "state.json"));
-        Assert.Contains("\"TestPinsUsed\": true", stateText);
-    }
-
-    [Fact]
-    public void LaunchHelper_RefusesMissingAdoptionAttestation()
-    {
         using var temp = new SyntheticTestDirectory();
         var root = SetUpTestFixture(temp);
 
-        var result = RunScript($"-Action Start-Helper -FixtureRoot \"{root}\" -Slot 1 -JsonOutput");
+        var settingsPath = Path.Combine(root, "companion", "settings.json");
+        var libraryPath = Path.Combine(root, "companion", "Profiles", "game-library.json");
+        var backupsDir = Path.Combine(root, "companion", "Profiles", "Backups");
+
+        // Verify with real SettingsStore
+        var settings = SettingsStore.Load(settingsPath);
+        Assert.Equal(GlobalManagementPolicy.Manual, settings.GlobalPolicy);
+        Assert.False(settings.LaunchOnStartup);
+        Assert.False(settings.AutoEnableDxvkForNewGames);
+
+        // Verify with real GameLibraryStore
+        var store = new GameLibraryStore(libraryPath, backupsDir);
+        var installations = store.GetAll();
+        Assert.Single(installations);
+
+        var target = installations.First();
+        Assert.Equal("QueueFixture Trial Target", target.DisplayName);
+        Assert.Equal(ManagementMode.UseGlobal, target.ManagementPolicy.Mode);
+        Assert.False(target.ManagementPolicy.IsAutomated(settings.GlobalPolicy));
+        Assert.Null(target.ManagedDxvkVersion);
+        Assert.Equal("x64", target.ManagedDxvkArchitecture);
+        Assert.Equal(RestorationState.None, target.RestorationState);
+        Assert.Equal(InstallationConflictFlags.None, target.ConflictFlags);
+        Assert.False(target.Configuration.HudEnabled);
+        Assert.Equal(0, target.Configuration.FrameLimit);
+        Assert.False(target.Configuration.FrameLimitEnabled);
+
+        Assert.Single(target.Executables);
+        var exe = target.Executables[0];
+        Assert.Equal("QueueFixture.exe", exe.RelativePath);
+        Assert.Equal(GraphicsApi.D3D11, exe.LastKnownApi);
+        Assert.Equal("x64", exe.LastKnownArchitecture);
+        Assert.Empty(target.ManagedFiles);
+        Assert.Null(target.PendingAction);
+
+        // Verify baseline manifest asserting absent dxgi
+        var manifestPath = Path.Combine(root, "baseline", "baseline_manifest.json");
+        Assert.True(File.Exists(manifestPath));
+        var manifestText = File.ReadAllText(manifestPath);
+        Assert.Contains("\"DxgiAbsent\": true", manifestText);
+
+        // Verify games.json was also seeded
+        var gamesJsonPath = Path.Combine(root, "companion", "Profiles", "games.json");
+        Assert.True(File.Exists(gamesJsonPath));
+    }
+
+    [Fact]
+    public void BatchGuard_MissingAdoptionAttestation_RefusesWithExactReason()
+    {
+        using var temp = new SyntheticTestDirectory();
+        var root = SetUpIsolatedState(temp, testPinsUsed: false);
+
+        var result = RunScript($"-Action Test-BatchGuard -FixtureRoot \"{root}\" -Slot 1 -AdoptionAttestation \"WRONG_TOKEN\" -JsonOutput");
         Assert.NotEqual(0, result.ExitCode);
-        Assert.Contains("adoption attestation", result.StandardOutput + result.StandardError);
+        Assert.Contains("missing or invalid adoption attestation token", result.StandardOutput + result.StandardError);
     }
 
     [Fact]
-    public void LaunchHelper_RefusesWhenTestPinsUsed()
+    public void BatchGuard_TestPinsUsed_RefusesWithExactReason()
     {
         using var temp = new SyntheticTestDirectory();
-        var root = SetUpTestFixture(temp);
+        var root = SetUpIsolatedState(temp, testPinsUsed: true);
 
-        // Even with valid adoption token, test pins refuse execution before Process.Start!
-        var result = RunScript($"-Action Start-Helper -FixtureRoot \"{root}\" -Slot 1 -AdoptionAttestation \"ADOPTED-PROCESS-LIFECYCLE-V1\" -JsonOutput");
+        var result = RunScript($"-Action Test-BatchGuard -FixtureRoot \"{root}\" -Slot 1 -AdoptionAttestation \"ADOPTED-PROCESS-LIFECYCLE-V1\" -JsonOutput");
         Assert.NotEqual(0, result.ExitCode);
-        Assert.Contains("prepared with test pins and cannot be launched", result.StandardOutput + result.StandardError);
+        Assert.Contains("fixture root was initialized with test pins and cannot be launched", result.StandardOutput + result.StandardError);
     }
 
     [Fact]
-    public void LaunchHelper_RefusesPreExistingStopMarker()
+    public void BatchGuard_PreExistingStopMarker_RefusesWithExactReason()
     {
         using var temp = new SyntheticTestDirectory();
-        var root = SetUpTestFixture(temp);
+        var root = SetUpIsolatedState(temp, testPinsUsed: false);
 
-        // Create pre-existing stop marker
         var marker = Path.Combine(root, "control", "stop-1.request");
         File.WriteAllText(marker, "STOP\n");
 
         var result = RunScript($"-Action Test-BatchGuard -FixtureRoot \"{root}\" -Slot 1 -AdoptionAttestation \"ADOPTED-PROCESS-LIFECYCLE-V1\" -JsonOutput");
         Assert.NotEqual(0, result.ExitCode);
-        Assert.Contains("Stop marker already exists", result.StandardOutput + result.StandardError);
+        Assert.Contains("Stop marker already exists: stop-1.request. Startup refused.", result.StandardOutput + result.StandardError);
     }
 
     [Fact]
-    public void BatchGuard_RefusesWhenExhaustedOrEnded()
+    public void BatchGuard_MaxHelperStartsExhausted_RefusesWithExactReason()
     {
         using var temp = new SyntheticTestDirectory();
-        var root = SetUpTestFixture(temp);
-
-        var statePath = Path.Combine(root, "state.json");
-        var stateJson = File.ReadAllText(statePath);
-        using var doc = JsonDocument.Parse(stateJson);
-        var dict = JsonSerializer.Deserialize<Dictionary<string, object>>(stateJson)!;
-        dict["HelperStartCount"] = 4;
-        File.WriteAllText(statePath, JsonSerializer.Serialize(dict));
+        var root = SetUpIsolatedState(temp, testPinsUsed: false, helperStartAttempts: 4);
 
         var result = RunScript($"-Action Test-BatchGuard -FixtureRoot \"{root}\" -Slot 1 -AdoptionAttestation \"ADOPTED-PROCESS-LIFECYCLE-V1\" -JsonOutput");
         Assert.NotEqual(0, result.ExitCode);
-        Assert.Contains("Maximum helper start count", result.StandardOutput + result.StandardError);
+        Assert.Contains("Maximum helper start attempt count (4) reached.", result.StandardOutput + result.StandardError);
+    }
+
+    [Fact]
+    public void BatchGuard_MaxCompanionStartsExhausted_RefusesWithExactReason()
+    {
+        using var temp = new SyntheticTestDirectory();
+        var root = SetUpIsolatedState(temp, testPinsUsed: false, companionStartAttempts: 8);
+
+        var result = RunScript($"-Action Test-BatchGuard -FixtureRoot \"{root}\" -NoAutoDiscovery -AdoptionAttestation \"ADOPTED-PROCESS-LIFECYCLE-V1\" -JsonOutput");
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains("Maximum Companion start attempt count (8) reached.", result.StandardOutput + result.StandardError);
+    }
+
+    [Fact]
+    public void BatchGuard_SlotReused_RefusesWithExactReason()
+    {
+        using var temp = new SyntheticTestDirectory();
+        var root = SetUpIsolatedState(temp, testPinsUsed: false, usedSlots: new[] { 1 });
+
+        var result = RunScript($"-Action Test-BatchGuard -FixtureRoot \"{root}\" -Slot 1 -AdoptionAttestation \"ADOPTED-PROCESS-LIFECYCLE-V1\" -JsonOutput");
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains("Slot 1 has already been used in this batch. Slot reuse is prohibited.", result.StandardOutput + result.StandardError);
+    }
+
+    [Fact]
+    public void BatchGuard_BatchEnded_RefusesWithExactReason()
+    {
+        using var temp = new SyntheticTestDirectory();
+        var root = SetUpIsolatedState(temp, testPinsUsed: false, isEnded: true);
+
+        var result = RunScript($"-Action Test-BatchGuard -FixtureRoot \"{root}\" -Slot 1 -AdoptionAttestation \"ADOPTED-PROCESS-LIFECYCLE-V1\" -JsonOutput");
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains("Batch is marked ended. Further starts are refused.", result.StandardOutput + result.StandardError);
+    }
+
+    [Fact]
+    public void BatchGuard_PriorCheckpointFailed_RefusesWithExactReason()
+    {
+        using var temp = new SyntheticTestDirectory();
+        var root = SetUpIsolatedState(temp, testPinsUsed: false, lastOutcome: "Failed");
+
+        var result = RunScript($"-Action Test-BatchGuard -FixtureRoot \"{root}\" -Slot 1 -AdoptionAttestation \"ADOPTED-PROCESS-LIFECYCLE-V1\" -JsonOutput");
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains("Prior checkpoint failed. Further starts are refused.", result.StandardOutput + result.StandardError);
     }
 
     [Fact]
@@ -405,7 +526,7 @@ public sealed class ProcessLifecycleTrialPreparationTests
       ""Id"": ""test-inst"",
       ""DisplayName"": ""Game 1"",
       ""InstallationPath"": ""C:\\Games\\Game1"",
-      ""ManagementPolicy"": { ""Mode"": ""Disabled"", ""PinnedDxvkVersion"": null },
+      ""ManagementPolicy"": { ""Mode"": ""UseGlobal"", ""PinnedDxvkVersion"": null },
       ""ManagedDxvkVersion"": null,
       ""ManagedDxvkArchitecture"": ""x64"",
       ""RestorationState"": ""None"",
@@ -422,7 +543,7 @@ public sealed class ProcessLifecycleTrialPreparationTests
       ""RestorationState"": ""None"",
       ""ManagedDxvkArchitecture"": ""x64"",
       ""ManagedDxvkVersion"": null,
-      ""ManagementPolicy"": { ""PinnedDxvkVersion"": null, ""Mode"": ""Disabled"" },
+      ""ManagementPolicy"": { ""PinnedDxvkVersion"": null, ""Mode"": ""UseGlobal"" },
       ""InstallationPath"": ""C:/Games/Game1"",
       ""DisplayName"": ""Game 1"",
       ""Id"": ""test-inst"",
@@ -448,7 +569,7 @@ public sealed class ProcessLifecycleTrialPreparationTests
       ""Id"": ""test-inst"",
       ""DisplayName"": ""Game 1"",
       ""InstallationPath"": ""C:\\Games\\Game1"",
-      ""ManagementPolicy"": { ""Mode"": ""Disabled"", ""PinnedDxvkVersion"": null },
+      ""ManagementPolicy"": { ""Mode"": ""UseGlobal"", ""PinnedDxvkVersion"": null },
       ""ManagedDxvkVersion"": ""v3.1"",
       ""ManagedDxvkArchitecture"": ""x64"",
       ""RestorationState"": ""None"",
@@ -465,7 +586,7 @@ public sealed class ProcessLifecycleTrialPreparationTests
       ""Id"": ""test-inst"",
       ""DisplayName"": ""Game 1"",
       ""InstallationPath"": ""C:\\Games\\Game1"",
-      ""ManagementPolicy"": { ""Mode"": ""Disabled"", ""PinnedDxvkVersion"": null },
+      ""ManagementPolicy"": { ""Mode"": ""UseGlobal"", ""PinnedDxvkVersion"": null },
       ""ManagedDxvkVersion"": ""v3.1.1"",
       ""ManagedDxvkArchitecture"": ""x64"",
       ""RestorationState"": ""None"",
@@ -502,7 +623,7 @@ public sealed class ProcessLifecycleTrialPreparationTests
     }
 
     [Fact]
-    public void VerifyCheckpoint_RestoredFailsIfUnexpectedFileOrMismatch()
+    public void VerifyCheckpoint_FailsOnLeftoverDxgi_AndPersistsFailedState()
     {
         using var temp = new SyntheticTestDirectory();
         var root = SetUpTestFixture(temp);
@@ -513,6 +634,11 @@ public sealed class ProcessLifecycleTrialPreparationTests
         var result = RunScript($"-Action Verify-Checkpoint -FixtureRoot \"{root}\" -CheckpointName \"Checkpoint7-Restored\" -ExpectedType \"Restored\" -JsonOutput");
         Assert.NotEqual(0, result.ExitCode);
         Assert.Contains("dxgi.dll unexpectedly present", result.StandardOutput + result.StandardError);
+
+        // Verify LastCheckpointOutcome was persisted as Failed in state.json
+        var statePath = Path.Combine(root, "state.json");
+        var stateJson = File.ReadAllText(statePath);
+        Assert.Contains("\"LastCheckpointOutcome\": \"Failed\"", stateJson);
     }
 
     private static string SetUpTestFixture(SyntheticTestDirectory temp)
@@ -524,18 +650,26 @@ public sealed class ProcessLifecycleTrialPreparationTests
         var helperZip = temp.GetPath("helper.zip");
         CreateSyntheticZip(helperZip, new Dictionary<string, byte[]> { { "QueueFixture.exe", helperExeBytes } });
         var helperZipHash = ComputeSha256Hex(File.ReadAllBytes(helperZip));
+        var helperZipSize = new FileInfo(helperZip).Length;
+        var helperExeSize = helperExeBytes.Length;
 
         var compExeBytes = Encoding.ASCII.GetBytes("TEST_COMPANION_EXE_BYTES");
         var compExeHash = ComputeSha256Hex(compExeBytes);
         var compZip = temp.GetPath("companion.zip");
         CreateSyntheticZip(compZip, new Dictionary<string, byte[]> { { "DXVK-Companion.exe", compExeBytes } });
         var compZipHash = ComputeSha256Hex(File.ReadAllBytes(compZip));
+        var compZipSize = new FileInfo(compZip).Length;
+        var compExeSize = compExeBytes.Length;
 
         var testPinsJson = JsonSerializer.Serialize(new
         {
+            HelperZipSize = helperZipSize,
             HelperZipSha256 = helperZipHash,
+            HelperExeSize = helperExeSize,
             HelperExeSha256 = helperExeHash,
+            CompanionZipSize = compZipSize,
             CompanionZipSha256 = compZipHash,
+            CompanionExeSize = compExeSize,
             CompanionExeSha256 = compExeHash
         });
 
@@ -543,6 +677,45 @@ public sealed class ProcessLifecycleTrialPreparationTests
         var result = RunScript($"-Action Setup -FixtureRoot \"{root}\" -HelperZipPath \"{helperZip}\" -CompanionZipPath \"{compZip}\" -TestPinsJson \"{escapedJson}\" -JsonOutput");
         Assert.Equal(0, result.ExitCode);
 
+        return root;
+    }
+
+    private static string SetUpIsolatedState(
+        SyntheticTestDirectory temp,
+        bool testPinsUsed,
+        int helperStartAttempts = 0,
+        int companionStartAttempts = 0,
+        int[]? usedSlots = null,
+        bool isEnded = false,
+        string lastOutcome = "Success")
+    {
+        var root = temp.GetPath("isolated_state_root");
+        Directory.CreateDirectory(root);
+        Directory.CreateDirectory(Path.Combine(root, "control"));
+
+        var state = new
+        {
+            BatchStartTimeUtc = DateTime.UtcNow.ToString("o"),
+            SetupElapsedMilliseconds = 100,
+            HelperStartAttempts = helperStartAttempts,
+            CompanionStartAttempts = companionStartAttempts,
+            MaxHelperStarts = 4,
+            MaxCompanionStarts = 8,
+            MaxDurationSeconds = 7200,
+            MaxFootprintBytes = 2147483648L,
+            UsedSlots = usedSlots ?? Array.Empty<int>(),
+            CurrentCheckpoint = "Setup",
+            LastCheckpointOutcome = lastOutcome,
+            LastFailedCheckpoint = (string?)null,
+            IsEnded = isEnded,
+            TestPinsUsed = testPinsUsed,
+            ActiveHelperPid = (int?)null,
+            ActiveCompanionPid = (int?)null,
+            Checkpoints = new[] { "Setup" }
+        };
+
+        var statePath = Path.Combine(root, "state.json");
+        File.WriteAllText(statePath, JsonSerializer.Serialize(state, new JsonSerializerOptions { WriteIndented = true }));
         return root;
     }
 }
