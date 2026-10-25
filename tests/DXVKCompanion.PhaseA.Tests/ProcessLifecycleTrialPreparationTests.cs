@@ -17,6 +17,7 @@ namespace DXVKCompanion.PhaseATests;
 public sealed class ProcessLifecycleTrialPreparationTests
 {
     private sealed record ProcessResult(int ExitCode, string StandardOutput, string StandardError);
+    private static readonly List<Process> s_retainedProcesses = new();
 
     private static void AssertHostedCiEnvironment()
     {
@@ -76,20 +77,50 @@ public sealed class ProcessLifecycleTrialPreparationTests
             WorkingDirectory = repoRoot
         };
 
-        using var process = new Process { StartInfo = psi };
-        process.Start();
-
-        var stdoutTask = process.StandardOutput.ReadToEndAsync();
-        var stderrTask = process.StandardError.ReadToEndAsync();
-
-        if (!process.WaitForExit(timeoutMilliseconds))
+        var process = new Process { StartInfo = psi };
+        try
         {
-            // Do NOT force-kill child process! Report timeout and retain residual process information.
-            throw new TimeoutException($"PowerShell process timed out after {timeoutMilliseconds}ms for args: {arguments}. Residual process {process.Id} retained.");
-        }
+            process.Start();
 
-        Task.WaitAll(new Task[] { stdoutTask, stderrTask }, 5000);
-        return new ProcessResult(process.ExitCode, stdoutTask.Result, stderrTask.Result);
+            var stdoutTask = process.StandardOutput.ReadToEndAsync();
+            var stderrTask = process.StandardError.ReadToEndAsync();
+
+            if (!process.WaitForExit(timeoutMilliseconds))
+            {
+                lock (s_retainedProcesses)
+                {
+                    s_retainedProcesses.Add(process);
+                }
+                throw new TimeoutException($"PowerShell process timed out after {timeoutMilliseconds}ms for args: {arguments}. Residual process {process.Id} retained.");
+            }
+
+            var waitFinished = Task.WaitAll(new Task[] { stdoutTask, stderrTask }, 5000);
+            if (!waitFinished)
+            {
+                lock (s_retainedProcesses)
+                {
+                    s_retainedProcesses.Add(process);
+                }
+                throw new TimeoutException($"PowerShell stdout/stderr draining timed out after 5000ms for args: {arguments}. Residual process {process.Id} retained.");
+            }
+
+            return new ProcessResult(process.ExitCode, stdoutTask.Result, stderrTask.Result);
+        }
+        catch (TimeoutException)
+        {
+            // Process handle retained in s_retainedProcesses without disposing
+            throw;
+        }
+        finally
+        {
+            lock (s_retainedProcesses)
+            {
+                if (!s_retainedProcesses.Contains(process))
+                {
+                    process.Dispose();
+                }
+            }
+        }
     }
 
     private static void AssertScriptSuccess(ProcessResult result, bool expected = true)
@@ -428,9 +459,20 @@ public sealed class ProcessLifecycleTrialPreparationTests
         var manifestText = File.ReadAllText(manifestPath);
         Assert.Matches("\"DxgiAbsent\"\\s*:\\s*true", manifestText);
 
-        // Verify games.json was also seeded
+        // Verify games.json was seeded as a valid ProfileStore payload
         var gamesJsonPath = Path.Combine(root, "companion", "Profiles", "games.json");
         Assert.True(File.Exists(gamesJsonPath));
+        var profileStore = new ProfileStore(gamesJsonPath);
+        Assert.False(profileStore.HasBrokenLoad, $"ProfileStore load should not be broken: {profileStore.BrokenLoadReason}");
+        Assert.Null(profileStore.BrokenLoadReason);
+        var profiles = profileStore.GetAll().ToList();
+        Assert.Single(profiles);
+        var p = profiles[0];
+        Assert.Equal("QueueFixture.exe", p.ExeName);
+        Assert.Equal(GraphicsApi.DX11, p.Api);
+        Assert.Equal("x64", p.Architecture);
+        Assert.False(p.DxvkEnabled);
+        Assert.Null(p.DxvkVersion);
     }
 
     [Fact]
@@ -664,6 +706,205 @@ public sealed class ProcessLifecycleTrialPreparationTests
         var statePath = Path.Combine(root, "state.json");
         var stateJson = File.ReadAllText(statePath);
         Assert.Matches("\"LastCheckpointOutcome\"\\s*:\\s*\"Failed\"", stateJson);
+    }
+
+    [Fact]
+    public void ProfileStore_LoadRejectsInvalidObjectSchema_WhenFileContainsLibraryObject()
+    {
+        AssertHostedCiEnvironment();
+
+        using var temp = new SyntheticTestDirectory();
+        var gamesPath = temp.CreateFile("games.json", @"{
+  ""SchemaVersion"": 1,
+  ""Installations"": []
+}");
+
+        var store = new ProfileStore(gamesPath);
+        Assert.True(store.HasBrokenLoad);
+        Assert.NotNull(store.BrokenLoadReason);
+        Assert.Contains("corrupted JSON", store.BrokenLoadReason);
+    }
+
+    [Fact]
+    public void CompareSemanticLibraryJson_DetectsModifiedManagedFilesField_WhenRecordCountsEqual()
+    {
+        using var temp = new SyntheticTestDirectory();
+        var jsonA = temp.CreateFile("a.json", @"{
+  ""SchemaVersion"": 1,
+  ""Installations"": [
+    {
+      ""Id"": ""test-inst"",
+      ""DisplayName"": ""Game 1"",
+      ""InstallationPath"": ""C:\\Games\\Game1"",
+      ""ManagementPolicy"": { ""Mode"": ""UseGlobal"", ""PinnedDxvkVersion"": null },
+      ""ManagedDxvkVersion"": ""v3.1"",
+      ""ManagedDxvkArchitecture"": ""x64"",
+      ""RestorationState"": ""None"",
+      ""ConflictFlags"": ""None"",
+      ""ManagedFiles"": [
+        {
+          ""RelativePath"": ""d3d11.dll"",
+          ""OriginalState"": ""Existing"",
+          ""BackupRelativePath"": ""Backups\\d3d11.dll.bak"",
+          ""OriginalSha256"": ""orig_hash_1111"",
+          ""ExpectedManagedSha256"": ""exp_hash_2222"",
+          ""ManagedDxvkVersion"": ""v3.1"",
+          ""OriginalDxvkVersion"": null,
+          ""CurrentState"": ""Managed""
+        }
+      ],
+      ""PendingAction"": null
+    }
+  ]
+}");
+
+        // In jsonB, BackupRelativePath has been modified despite same ManagedFiles count (1)
+        var jsonB = temp.CreateFile("b.json", @"{
+  ""SchemaVersion"": 1,
+  ""Installations"": [
+    {
+      ""Id"": ""test-inst"",
+      ""DisplayName"": ""Game 1"",
+      ""InstallationPath"": ""C:\\Games\\Game1"",
+      ""ManagementPolicy"": { ""Mode"": ""UseGlobal"", ""PinnedDxvkVersion"": null },
+      ""ManagedDxvkVersion"": ""v3.1"",
+      ""ManagedDxvkArchitecture"": ""x64"",
+      ""RestorationState"": ""None"",
+      ""ConflictFlags"": ""None"",
+      ""ManagedFiles"": [
+        {
+          ""RelativePath"": ""d3d11.dll"",
+          ""OriginalState"": ""Existing"",
+          ""BackupRelativePath"": ""Backups\\tampered_backup.bak"",
+          ""OriginalSha256"": ""orig_hash_1111"",
+          ""ExpectedManagedSha256"": ""exp_hash_2222"",
+          ""ManagedDxvkVersion"": ""v3.1"",
+          ""OriginalDxvkVersion"": null,
+          ""CurrentState"": ""Managed""
+        }
+      ],
+      ""PendingAction"": null
+    }
+  ]
+}");
+
+        var result = RunScript($"-Action Compare-SemanticLibraryJson -PathA \"{jsonA}\" -PathB \"{jsonB}\" -JsonOutput");
+        Assert.NotEqual(0, result.ExitCode);
+        AssertScriptSuccess(result, false);
+        Assert.Contains("BackupRelativePath", result.StandardOutput);
+    }
+
+    [Fact]
+    public void CompareSemanticLibraryJson_DetectsManagementPolicyPinnedVersionMismatch()
+    {
+        using var temp = new SyntheticTestDirectory();
+        var jsonA = temp.CreateFile("a.json", @"{
+  ""SchemaVersion"": 1,
+  ""Installations"": [
+    {
+      ""Id"": ""test-inst"",
+      ""DisplayName"": ""Game 1"",
+      ""InstallationPath"": ""C:\\Games\\Game1"",
+      ""ManagementPolicy"": { ""Mode"": ""PinnedVersion"", ""PinnedDxvkVersion"": ""v3.1"" },
+      ""ManagedDxvkVersion"": ""v3.1"",
+      ""ManagedDxvkArchitecture"": ""x64"",
+      ""RestorationState"": ""None"",
+      ""ConflictFlags"": ""None"",
+      ""PendingAction"": null
+    }
+  ]
+}");
+
+        var jsonB = temp.CreateFile("b.json", @"{
+  ""SchemaVersion"": 1,
+  ""Installations"": [
+    {
+      ""Id"": ""test-inst"",
+      ""DisplayName"": ""Game 1"",
+      ""InstallationPath"": ""C:\\Games\\Game1"",
+      ""ManagementPolicy"": { ""Mode"": ""PinnedVersion"", ""PinnedDxvkVersion"": ""v3.1.1"" },
+      ""ManagedDxvkVersion"": ""v3.1"",
+      ""ManagedDxvkArchitecture"": ""x64"",
+      ""RestorationState"": ""None"",
+      ""ConflictFlags"": ""None"",
+      ""PendingAction"": null
+    }
+  ]
+}");
+
+        var result = RunScript($"-Action Compare-SemanticLibraryJson -PathA \"{jsonA}\" -PathB \"{jsonB}\" -JsonOutput");
+        Assert.NotEqual(0, result.ExitCode);
+        AssertScriptSuccess(result, false);
+        Assert.Contains("PinnedDxvkVersion mismatch", result.StandardOutput);
+    }
+
+    [Fact]
+    public void CompareTargetBaseline_DetectsUnexpectedEmptyDirectory()
+    {
+        using var temp = new SyntheticTestDirectory();
+        var root = SetUpTestFixture(temp);
+
+        // Add unexpected directory inside target
+        Directory.CreateDirectory(Path.Combine(root, "target", "unexpected_subdir"));
+
+        var result = RunScript($"-Action Compare-TargetBaseline -FixtureRoot \"{root}\" -JsonOutput");
+        Assert.NotEqual(0, result.ExitCode);
+        AssertScriptSuccess(result, false);
+        Assert.Contains("Unexpected directory present in target", result.StandardOutput);
+    }
+
+    [Fact]
+    public void VerifyCheckpoint_Applied_RefusesWhenOfficialReferenceIsMissing()
+    {
+        using var temp = new SyntheticTestDirectory();
+        var root = SetUpTestFixture(temp);
+
+        // Prepare target with DLLs, but official reference directory is absent
+        File.WriteAllText(Path.Combine(root, "target", "dxgi.dll"), "TARGET_DXGI");
+        File.WriteAllText(Path.Combine(root, "target", "d3d11.dll"), "TARGET_D3D11");
+
+        // Attempt verification with ExpectedVersion v3.1 whose reference is not in reference/v3.1/x64
+        var result = RunScript($"-Action Verify-Checkpoint -FixtureRoot \"{root}\" -CheckpointName \"Checkpoint3-Applied\" -ExpectedType \"Applied\" -ExpectedVersion \"v3.1\" -JsonOutput");
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains("official reference", result.StandardOutput + result.StandardError);
+    }
+
+    [Fact]
+    public void VerifyCheckpoint_TerminalFailureLatching_PreventsSubsequentQualification()
+    {
+        using var temp = new SyntheticTestDirectory();
+        var root = SetUpTestFixture(temp);
+
+        // Intentionally induce a checkpoint failure (e.g. unrecognized type)
+        var failResult = RunScript($"-Action Verify-Checkpoint -FixtureRoot \"{root}\" -CheckpointName \"BadCheckpoint\" -ExpectedType \"NonExistentType\" -JsonOutput");
+        Assert.NotEqual(0, failResult.ExitCode);
+
+        // Verify state is Failed
+        var stateJson = File.ReadAllText(Path.Combine(root, "state.json"));
+        Assert.Matches("\"LastCheckpointOutcome\"\\s*:\\s*\"Failed\"", stateJson);
+
+        // A subsequent valid checkpoint verification must be immediately refused due to terminal failure latch
+        var secondResult = RunScript($"-Action Verify-Checkpoint -FixtureRoot \"{root}\" -CheckpointName \"SubsequentCheckpoint\" -ExpectedType \"Restored\" -JsonOutput");
+        Assert.NotEqual(0, secondResult.ExitCode);
+        Assert.Contains("previously entered terminal failure", secondResult.StandardOutput + secondResult.StandardError);
+    }
+
+    [Fact]
+    public void TakeSnapshot_TerminalFailureLatching_RefusesSnapshot()
+    {
+        using var temp = new SyntheticTestDirectory();
+        var root = SetUpTestFixture(temp);
+
+        // Set state to Failed
+        var statePath = Path.Combine(root, "state.json");
+        var stateObj = JsonSerializer.Deserialize<Dictionary<string, object>>(File.ReadAllText(statePath))!;
+        stateObj["LastCheckpointOutcome"] = "Failed";
+        stateObj["LastFailedCheckpoint"] = "PriorFailure";
+        File.WriteAllText(statePath, JsonSerializer.Serialize(stateObj, new JsonSerializerOptions { WriteIndented = true }));
+
+        var result = RunScript($"-Action Take-Snapshot -FixtureRoot \"{root}\" -CheckpointName \"Snap1\" -JsonOutput");
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains("terminal failure state", result.StandardOutput + result.StandardError);
     }
 
     private static string SetUpTestFixture(SyntheticTestDirectory temp)

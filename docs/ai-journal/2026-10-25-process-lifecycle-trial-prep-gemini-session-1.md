@@ -51,14 +51,50 @@ Following Codex's grouped review on PR #302, the following coherent repairs were
 
 ## Cryptographic and Script Identifiers
 
-- **Repaired Script (`tools/validation/ProcessLifecycleTrial.ps1`) SHA-256:** `48db7f44235e804eba252054186509f28cff1204d188d6fce161c64839a1e588`
+- **Repaired Script (`tools/validation/ProcessLifecycleTrial.ps1`) SHA-256:** `83f2e6a5264b0c096f6a32ca612240a21a4e22abb6cabda57bd73bfa5129b3da`
 - **Helper Artifact:** ID `12609386490`, ZIP SHA256 `f75ec55738e6ca3c1a0cd0a342aefeaa0fb3addd03538f03f2ac7a43295750de`, EXE SHA256 `f720cecae0f13eeef6d9b5e2d259b51df97b37bc3347b241071e25e8c1548d70`
 - **Companion Candidate:** ID `12532606945`, ZIP SHA256 `32660fd3e3ed87385e47940d490db2e6ab93daad7e993fe4225dd157232b3b14`, EXE SHA256 `25012c67ade281e0d4585282bf485e4783a1f7c486018f8d1a038c5f2dc18ca4`
 
-## External SDK Setup Blocker and Proposed CI Repair
+## Delta Repair Cycle — Addressing Codex Review Findings (F1–F5)
 
-In both `main` postmerge run `40224152390` (attempts 1 and 2) and PR #302 run `40227401067`, `actions/setup-dotnet@v6` failed before restore/build/tests due to HTTP 409 responses from Microsoft's download endpoint for `dotnet-runtime-10.0.14-win-x64.zip` and `dotnet-sdk-8.0.427-win-x64.zip`.
+Following Codex's delta review on PR #302 (comment 6404194697), the following in-scope repairs and tests were implemented within the approved four-path boundary:
 
-Per relay instructions, this issue cannot be patched under Issue #301 (which strictly permits only four paths). For coordinator/owner review, the following minimal, separately scoped workflow repair is proposed:
-- In `.github/workflows/build-and-test.yml`, configure `actions/setup-dotnet@v6` to use a pinned SDK version (e.g. `dotnet-version: '8.0.403'` or `8.0.x` with an explicit fallback/mirror or runner-installed SDK) rather than resolving to the transient 409 endpoint.
+### 1. F1 — Retained Process Supervision & Durable Logging
+- **Handle Retention**: Supervisor never returns or exits while owned child processes (`QueueFixture.exe` or `DXVK-Companion.exe`) remain active. In batch mode (`Commands`/`CommandFile`), unstopped processes at the end of the command sequence cause an explicit exception rather than silent handle abandonment.
+- **Durable Streams & Asynchronous Draining**: Wired asynchronous `OutputDataReceived` and `ErrorDataReceived` handlers with `BeginOutputReadLine()` and `BeginErrorReadLine()` on both helper and companion, draining streams continuously to durable log files: `logs/helper-slot-$Slot-stdout.log`, `logs/helper-slot-$Slot-stderr.log`, `logs/companion-stdout.log`, and `logs/companion-stderr.log`.
+- **Active-Slot Binding & Normal Exit Evidence**: `Supervise-HelperStop` validates the requested slot against `$state.ActiveHelperSlot`. Normal stops record confirmed exit evidence in `control/helper-slot-$Slot.exit.json` (`ExitCode = 0`, `NormalStop = true`, `StoppedAtUtc`).
+- **Session Identity**: Recorded `$state.ActiveSupervisorPid = $PID` in `state.json` to detect and refuse duplicate concurrent supervisor sessions on the same fixture root.
+- **Interactive Supervision Resilience**: Gracefully handles EOF on `[Console]::ReadLine()` and catches interactive command exceptions using `Write-Host` (preventing premature supervisor exit under `$ErrorActionPreference = "Stop"`).
+
+### 2. F2 / F3 — Root Checks, Reparse Protection, Resource & Terminal Failure Guards
+- **Per-Effect Root & Reparse-Free Path Validation**: All derived paths (`target`, `control`, `baseline`, `companion`, `snapshots`, `logs`, `reference`, `Profiles`, `Backups`) are validated at use using `Validate-RootBoundPath`, which traverses ancestor directories to assert absence of reparse points/junctions.
+- **Projected Footprint Guard**: `Take-SnapshotInternal` calculates projected snapshot size (target + profiles + control) and asserts that current footprint + projected size does not exceed `$script:MAX_FIXTURE_ROOT_BYTES` (2 GiB).
+- **Terminal Failure Latching**: Wrapped `Verify-CheckpointInternal` in a comprehensive try/catch. Any verification error or unstable store read latches `$state.LastCheckpointOutcome = "Failed"`, `$state.LastFailedCheckpoint = $cleanName`, and `$state.LastFailedReason`. Once a qualification enters failure, subsequent checkpoint verifications and snapshots are immediately refused. Success can never silently overwrite a prior failure.
+
+### 3. F4 — games.json Seeding, Phase-Aware Pending, Strict Applied/Restored, and References
+- **Valid `games.json` Seeding**: Seeded `companion/Profiles/games.json` with a valid JSON array of `GameProfile` (`Api = 3` / DX11, `Architecture = "x64"`, `DxvkEnabled = false`, `DxvkVersion = null`), matching `ProfileStore.Load()` deserialization requirements and preventing broken load state.
+- **Phase-Aware `Pending` Checkpoints**: Accepted pending types `Install`, `Update`, `Reapply`, and `Restore`. For `Install`, target matches native baseline (`Compare-TargetBaselineInternal`). For later phases (`Update`, `Reapply`, `Restore`), target matches currently managed reference DLLs (`Compare-TargetManagedReferenceInternal`) and asserts `QueueFixture.exe` and sentinel integrity.
+- **Strict `Applied` Verification**: Official reference payload is mandatory (throws if reference directory or DLLs are absent); target DLL hashes match reference files bit-for-bit; native backup in `Profiles/Backups/` must match `OriginalSha256` in `inst.ManagedFiles` and the pre-trial baseline hash; confirmed helper normal exit record `helper-slot-$Slot.exit.json` is verified; `games.json` verified for `DxvkEnabled = true` and `DxvkVersion = $ExpectedVersion`.
+- **Strict `Restored` Verification**: Target matches baseline; `ManagedDxvkVersion` is null; `PendingAction` is null; `games.json` verified for `DxvkEnabled = false` and `DxvkVersion = null`.
+- **Deep Semantic Comparison**: Expanded `Compare-SemanticLibraryJsonInternal` to deeply compare all `ManagedFiles` properties (`OriginalState`, `BackupRelativePath`, `OriginalSha256`, `ExpectedManagedSha256`, `ManagedDxvkVersion`, `OriginalDxvkVersion`, `CurrentState`) as well as `ManagementPolicy.PinnedDxvkVersion`.
+
+### 4. F5 — Execution Accounting Reconciliation & Test Suite Fixes
+- **Workstation Execution Accounting**:
+  - In Session 1 debugging, local PowerShell diagnostic scripts (`test_compare.ps1`) were created, run, and deleted to troubleshoot StrictMode count issues. This was an acknowledged deviation from the zero-local-execution policy.
+  - In this repair cycle (Session 2), ZERO local test scripts, binary runs, dot-sourcing, or test commands were executed on the workstation. All testing and validation are performed strictly and exclusively via hosted GitHub Actions CI.
+- **Test Runner Stream Draining & Handle Retention**:
+  - In `ProcessLifecycleTrialPreparationTests.cs`, updated `RunScript` to evaluate `bool waitFinished = Task.WaitAll(..., 5000)` and throw `TimeoutException` if stdout/stderr draining times out.
+  - On timeout, process handles are added to `s_retainedProcesses` without disposing, preserving actual handle retention.
+- **Expanded Regression Coverage**:
+  - Added unit test asserting `ProfileStore.Load()` rejects library object schema when seeded into `games.json`.
+  - Added unit test asserting `Compare-SemanticLibraryJson` detects modified `ManagedFiles` properties when record counts are equal.
+  - Added unit test asserting `Compare-SemanticLibraryJson` detects `ManagementPolicy.PinnedDxvkVersion` mismatch.
+  - Added unit test asserting `Compare-TargetBaseline` detects unexpected empty subdirectories.
+  - Added unit test asserting `Verify-Checkpoint` Applied fails when official reference payload is missing.
+  - Added unit test asserting `Verify-Checkpoint` terminal failure latching blocks subsequent qualifications.
+  - Added unit test asserting `Take-Snapshot` refuses snapshot capture when fixture is in terminal failure state.
+
+## Hosted CI Status
+
+In PR #302 hosted run `40239300282` (job `121307463123`), all 1,336 tests passed under .NET SDK 8.0 without any CI modifications. No CI downgrade or edit is warranted. All verification for this repair cycle is submitted directly to cloud CI.
 
