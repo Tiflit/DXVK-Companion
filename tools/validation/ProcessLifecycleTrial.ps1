@@ -544,6 +544,23 @@ function Get-SafePropertyValue($Object, [string]$PropertyName) {
     return $p.Value
 }
 
+function Get-SafeCount($Value) {
+    if ($null -eq $Value) { return 0 }
+    if ($Value -is [System.Array]) { return $Value.Length }
+    if ($Value -is [System.Collections.ICollection]) { return $Value.Count }
+    return 1
+}
+
+function Get-SafeEnumerable($Value) {
+    if ($null -eq $Value) { return [System.Collections.ArrayList]::new() }
+    if ($Value -is [System.Collections.IEnumerable] -and -not ($Value -is [string])) {
+        return $Value
+    }
+    $list = [System.Collections.ArrayList]::new()
+    [void]$list.Add($Value)
+    return $list
+}
+
 function Compare-SemanticLibraryJsonInternal([string]$JsonA, [string]$JsonB) {
     try {
         $objA = if (Test-Path -LiteralPath $JsonA -PathType Leaf) {
@@ -566,21 +583,21 @@ function Compare-SemanticLibraryJsonInternal([string]$JsonA, [string]$JsonB) {
 
         $listRawA = Get-SafePropertyValue -Object $objA -PropertyName "Installations"
         $listRawB = Get-SafePropertyValue -Object $objB -PropertyName "Installations"
-        $listA = if ($null -eq $listRawA) { @() } else { @($listRawA) }
-        $listB = if ($null -eq $listRawB) { @() } else { @($listRawB) }
+        $countA = Get-SafeCount $listRawA
+        $countB = Get-SafeCount $listRawB
 
-        if ($listA.Count -ne $listB.Count) {
-            return @{ IsEquivalent = $false; Reason = "Installations count mismatch: $($listA.Count) vs $($listB.Count)" }
+        if ($countA -ne $countB) {
+            return @{ IsEquivalent = $false; Reason = "Installations count mismatch: $countA vs $countB" }
         }
 
         # Index by stable Id
         $mapB = @{}
-        foreach ($inst in $listB) {
+        foreach ($inst in (Get-SafeEnumerable $listRawB)) {
             $instId = Get-SafePropertyValue -Object $inst -PropertyName "Id"
             $mapB["$instId"] = $inst
         }
 
-        foreach ($instA in $listA) {
+        foreach ($instA in (Get-SafeEnumerable $listRawA)) {
             $key = "$(Get-SafePropertyValue -Object $instA -PropertyName 'Id')"
             if (-not $mapB.ContainsKey($key)) {
                 return @{ IsEquivalent = $false; Reason = "Installation Id '$key' missing in second object." }
@@ -648,17 +665,17 @@ function Compare-SemanticLibraryJsonInternal([string]$JsonA, [string]$JsonB) {
             # Executables comparison by RelativePath
             $execsRawA = Get-SafePropertyValue -Object $instA -PropertyName "Executables"
             $execsRawB = Get-SafePropertyValue -Object $instB -PropertyName "Executables"
-            $execsA = if ($null -eq $execsRawA) { @() } else { @($execsRawA) }
-            $execsB = if ($null -eq $execsRawB) { @() } else { @($execsRawB) }
-            if ($execsA.Count -ne $execsB.Count) {
+            $countExecA = Get-SafeCount $execsRawA
+            $countExecB = Get-SafeCount $execsRawB
+            if ($countExecA -ne $countExecB) {
                 return @{ IsEquivalent = $false; Reason = "Executables count mismatch on '$key'." }
             }
             $execMapB = @{}
-            foreach ($e in $execsB) {
+            foreach ($e in (Get-SafeEnumerable $execsRawB)) {
                 $rel = Get-SafePropertyValue -Object $e -PropertyName "RelativePath"
                 $execMapB["$rel"] = $e
             }
-            foreach ($eA in $execsA) {
+            foreach ($eA in (Get-SafeEnumerable $execsRawA)) {
                 $eKey = "$(Get-SafePropertyValue -Object $eA -PropertyName 'RelativePath')"
                 if (-not $execMapB.ContainsKey($eKey)) {
                     return @{ IsEquivalent = $false; Reason = "Executable '$eKey' missing on '$key'." }
@@ -676,9 +693,9 @@ function Compare-SemanticLibraryJsonInternal([string]$JsonA, [string]$JsonB) {
             # ManagedFiles comparison by RelativePath
             $mFilesRawA = Get-SafePropertyValue -Object $instA -PropertyName "ManagedFiles"
             $mFilesRawB = Get-SafePropertyValue -Object $instB -PropertyName "ManagedFiles"
-            $mFilesA = if ($null -eq $mFilesRawA) { @() } else { @($mFilesRawA) }
-            $mFilesB = if ($null -eq $mFilesRawB) { @() } else { @($mFilesRawB) }
-            if ($mFilesA.Count -ne $mFilesB.Count) {
+            $countMfA = Get-SafeCount $mFilesRawA
+            $countMfB = Get-SafeCount $mFilesRawB
+            if ($countMfA -ne $countMfB) {
                 return @{ IsEquivalent = $false; Reason = "ManagedFiles count mismatch on '$key'." }
             }
         }
