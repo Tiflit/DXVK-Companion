@@ -47,9 +47,15 @@ The helper:
 ### 4. Sandboxing and Resource Invariants
 - **No static graphics dependencies**: The helper imports zero graphics libraries (`d3d9.dll`, `d3d10.dll`, `d3d10_1.dll`, `d3d10core.dll`, `d3d11.dll`, `d3d12.dll`, `dxgi.dll`, `vulkan-1.dll`).
 - **No helper-authored file writes**: The helper never writes, creates, modifies, or deletes any files or directories on disk.
-- **No process spawning or dynamic library loading**: The helper does not import or call `CreateProcess`, `ShellExecute`, `WinExec`, `LoadLibrary`, or `LoadLibraryEx`.
+- **No helper-authored process spawning or dynamic library loading**: The helper source code authors zero calls to `CreateProcess*`, `ShellExecute*`, `WinExec`, `LoadLibrary*`, or any dynamic loading APIs. (Attributable correction: statically linked CRT startup/locale routines in `libcmt.lib` import `LoadLibraryExW`, `FreeLibrary`, and `GetProcAddress` from `KERNEL32.dll` for internal fallback bindings; direct helper-authored dynamic loaders such as `LoadLibraryA`/`LoadLibraryW` and process creation remain strictly forbidden and absent).
 - **No networking or registry calls**: Zero sockets, HTTP, WinInet, or registry access.
-- **Pure Win32 / static CRT dependencies**: Links statically with `/MT`; runtime imports are confined strictly to `KERNEL32.dll`.
+- **Pure Win32 / static CRT dependencies**: Links statically with `/MT`; runtime imports are confined strictly to `KERNEL32.dll`. Exactly 73 functions are imported: 7 authored directly by the helper, and 66 originating from the statically linked MSVC runtime (`libcmt.lib`).
+
+### 5. Toolchain Runtime Linkage & Loader Origin
+- **Compiler and CRT**: Built with MSVC `/std:c++17 /EHsc /W4 /WX /O1 /MT`. Statically links the C runtime library `libcmt.lib`.
+- **Helper-Authored APIs (7 functions)**: `GetStdHandle`, `GetFileAttributesW`, `WriteFile`, `GetLastError`, `Sleep`, `GetTickCount64`, `GetModuleFileNameW`.
+- **Toolchain CRT Infrastructure (66 functions)**: Imported from `KERNEL32.dll` by MSVC's static C/C++ runtime library (`libcmt.lib`) for structured exception handling (`/EHsc`), CRT startup (`wmainCRTStartup`), heap memory allocation, code page conversion, and locale fallbacks (`LoadLibraryExW`, `FreeLibrary`, `GetProcAddress`).
+- **Strictly Forbidden and Absent**: The binary imports zero graphics libraries (`d3d*.dll`, `dxgi.dll`, `vulkan-1.dll`), zero networking libraries (`ws2_32.dll`, `wininet.dll`), zero process creation APIs (`CreateProcess*`, `ShellExecute*`, `WinExec`), and zero direct dynamic loaders (`LoadLibraryA`, `LoadLibraryW`).
 
 ## Hosted CI Workflow (`.github/workflows/process-lifecycle-helper-cpu.yml`)
 
@@ -59,8 +65,8 @@ The hosted verification workflow runs on `windows-latest` under `permissions: co
 3. **PE & Import Analysis**:
    - `dumpbin /headers`: Asserts `machine (x64)`.
    - `dumpbin /dependents`: Fail-closed parser asserts that `KERNEL32.dll` is the sole runtime dependency; rejects empty/malformed output, unrecognized DLLs, and all graphics libraries.
-   - `dumpbin /imports`: Normalizes hint/ordinal-prefixed symbol rows; asserts zero process-spawning (`CreateProcess*`, `ShellExecute*`, `WinExec`), dynamic library loading (`LoadLibrary*`), networking (`ws2_32`, sockets, WinInet), or graphics APIs.
-   - **Parser Negative Controls**: Verifies parser rejection against data fixtures containing hint-prefixed forbidden APIs and unexpected DLLs before trusting output.
+   - `dumpbin /imports`: Strips hint/ordinal prefixes and rejects malformed/ordinal rows; verifies that all 73 imported functions belong strictly to the accounted set of helper-authored Win32 calls and reviewed static CRT (`libcmt.lib`) infrastructure; strictly asserts zero process-spawning (`CreateProcess*`), zero helper-authored dynamic loaders (`LoadLibraryA`/`LoadLibraryW`), zero networking (`ws2_32`, WinInet), and zero graphics APIs.
+   - **Parser Negative Controls**: Verifies fail-closed parser rejection against data fixtures containing unexpected DLLs, hint-prefixed forbidden APIs (`LoadLibraryW`, `CreateProcessW`), malformed dependents rows, ordinal-only import rows, and malformed symbol rows before trusting output.
 4. **Cloud-Owned Smoke Tests**:
    - `InvalidArgs`: Validates rejection (exit `2`, empty stdout) for missing args, invalid flag, missing slot, slot `0`, slot `5`, slot `99`, and extra args.
    - `InvalidLayout`: Validates rejection for wrong parent directory (exit `3`), renamed executable (exit `3`), and missing control directory (exit `4`).
@@ -69,7 +75,7 @@ The hosted verification workflow runs on `windows-latest` under `permissions: co
    - `SlotIndependence`: Validates slot `2` runs and stops independently while slot `1` stop marker remains present.
    - `DirectoryMarker`: Validates directory marker error (exit `6`) when marker is created as a directory while helper is running.
    - `DisappearingControlDir`: Validates exit code `7` promptly when the control directory is renamed/removed after `READY`, preventing indefinite polling until watchdog.
-   - **Harness Negative Controls**: Validates that test failures after `READY` trigger normal marker-driven child stopping in `finally`, and validates bounded output/exit timeouts without hanging.
+   - **Harness Negative Controls**: Validates that test failures after `READY` trigger normal marker-driven child stopping in `finally` (exit `0`, `ResidualAlive == false`), and validates bounded stream drain timeout detection on a live helper without leaving orphan processes.
 5. **Provenance Manifest & Artifact Packaging**:
    - Safely reads PR head and base commit SHAs from GitHub event JSON (avoiding shell interpolation).
    - Records MSVC compiler version, toolset identity, source SHA256, checkout commit/tree, run ID, and file inventory.

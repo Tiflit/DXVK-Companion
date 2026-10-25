@@ -71,9 +71,12 @@ jobs:
               if ($line -match 'Image has the following dependencies:') { $inDeps = $true; continue }
               if ($inDeps) {
                 if ($line -match '^\s*Summary\b') { break }
+                if ([string]::IsNullOrWhiteSpace($line)) { continue }
                 $trimmed = $line.Trim()
-                if ($trimmed.EndsWith('.dll', [System.StringComparison]::OrdinalIgnoreCase)) {
+                if ($trimmed -match '^[A-Za-z0-9._-]+\.dll$') {
                   $deps.Add($trimmed)
+                } else {
+                  throw "Fail-closed: Malformed or unrecognized line in dependents table: '$trimmed'"
                 }
               }
             }
@@ -91,16 +94,23 @@ jobs:
               if ($line -match 'Section contains the following imports:') { $inImports = $true; continue }
               if ($inImports) {
                 if ($line -match '^\s*Summary\b') { break }
-                if ($line -match '(?i)\.dll\s*$' -or
-                    $line -match 'Import Address Table' -or
-                    $line -match 'Import Name Table' -or
-                    $line -match 'time date stamp' -or
-                    $line -match 'Index of first forwarder reference') {
+                if ([string]::IsNullOrWhiteSpace($line)) { continue }
+                $trimmed = $line.Trim()
+                if ($trimmed -match '(?i)^[A-Za-z0-9._-]+\.dll$' -or
+                    $trimmed -match 'Import Address Table' -or
+                    $trimmed -match 'Import Name Table' -or
+                    $trimmed -match 'time date stamp' -or
+                    $trimmed -match 'Index of first forwarder reference') {
                   continue
                 }
                 if ($line -match '^\s*(?:[0-9a-fA-F]+\s+)?([A-Za-z_][A-Za-z0-9_@$?]*)\s*$') {
                   $sym = $Matches[1].Trim()
+                  if ($sym -ieq 'Ordinal') {
+                    throw "Fail-closed: Ordinal-only import detected: '$trimmed'. Only named imports are permitted."
+                  }
                   $symbols.Add($sym)
+                } else {
+                  throw "Fail-closed: Malformed, ordinal, or unrecognized line in imports table: '$trimmed'"
                 }
               }
             }
@@ -238,6 +248,70 @@ jobs:
           if (!$caught4) { throw 'Negative control 4 failed: empty dependents did not fail closed' }
           Write-Output 'Negative control PASS: Empty dependents failed closed'
 
+          # Control 5: Malformed non-DLL entry in dependents table fails closed
+          $badDepsMalformedText = @(
+            '  Image has the following dependencies:',
+            '',
+            '    KERNEL32.dll',
+            '    CORRUPTED_ENTRY_NOT_A_DLL',
+            '',
+            '  Summary'
+          ) -join "`r`n"
+          $caught5 = $false
+          try {
+            [void](Parse-DumpbinDependents -Text $badDepsMalformedText)
+          } catch {
+            if ($_.Exception.Message -match 'Malformed or unrecognized line in dependents table') { $caught5 = $true }
+          }
+          if (!$caught5) { throw 'Negative control 5 failed: malformed dependents line was not rejected' }
+          Write-Output 'Negative control PASS: Malformed dependents line rejected'
+
+          # Control 6: Ordinal-only import row in imports table fails closed
+          $badImpsOrdinalText = @(
+            'Section contains the following imports:',
+            '',
+            '  KERNEL32.dll',
+            '             14001F000 Import Address Table',
+            '             140026A60 Import Name Table',
+            '                     0 time date stamp',
+            '                     0 Index of first forwarder reference',
+            '',
+            '                         Ordinal    42',
+            '',
+            '  Summary'
+          ) -join "`r`n"
+          $caught6 = $false
+          try {
+            [void](Parse-DumpbinImports -Text $badImpsOrdinalText)
+          } catch {
+            if ($_.Exception.Message -match '(?:Malformed, ordinal|Ordinal-only import)') { $caught6 = $true }
+          }
+          if (!$caught6) { throw 'Negative control 6 failed: ordinal-only import line was not rejected' }
+          Write-Output 'Negative control PASS: Ordinal-only import line rejected'
+
+          # Control 7: Malformed symbol row in imports table fails closed
+          $badImpsMalformedText = @(
+            'Section contains the following imports:',
+            '',
+            '  KERNEL32.dll',
+            '             14001F000 Import Address Table',
+            '             140026A60 Import Name Table',
+            '                     0 time date stamp',
+            '                     0 Index of first forwarder reference',
+            '',
+            '                         100 %%%INVALID_SYMBOL%%%',
+            '',
+            '  Summary'
+          ) -join "`r`n"
+          $caught7 = $false
+          try {
+            [void](Parse-DumpbinImports -Text $badImpsMalformedText)
+          } catch {
+            if ($_.Exception.Message -match 'Malformed, ordinal, or unrecognized line in imports table') { $caught7 = $true }
+          }
+          if (!$caught7) { throw 'Negative control 7 failed: malformed symbol line was not rejected' }
+          Write-Output 'Negative control PASS: Malformed symbol line rejected'
+
           # --- Actual Binary Verification ---
           Write-Output 'Verifying actual QueueFixture.exe build artifacts...'
 
@@ -297,6 +371,42 @@ jobs:
               Join-Path $FixtureRoot "control/stop-$Slot.request"
             } else { $null }
 
+            $stderrTask = $null
+
+            # Monotonic deadline budget helper
+            $GetRemainingMs = {
+              param([string]$Step)
+              $rem = $TimeoutMs - [int]$sw.ElapsedMilliseconds
+              if ($rem -le 0) {
+                throw "Case '$Name' timed out at step '$Step' exceeding case deadline of ${TimeoutMs}ms (elapsed: $($sw.ElapsedMilliseconds)ms)"
+              }
+              return $rem
+            }
+
+            # Supervised line reader with monotonic deadline
+            $ReadLineWithTimeout = {
+              param([string]$StepName)
+              $rem = & $GetRemainingMs $StepName
+              $readTask = $proc.StandardOutput.ReadLineAsync()
+              if (!$readTask.Wait($rem)) {
+                throw "Case '$Name' timed out at step '$StepName' waiting for stdout line within ${rem}ms (case budget: ${TimeoutMs}ms, elapsed: $($sw.ElapsedMilliseconds)ms)"
+              }
+              $line = $readTask.Result
+              if ($null -ne $line) {
+                [void]$stdoutBuilder.AppendLine($line)
+              }
+              return $line
+            }
+
+            # Supervised exit waiter with monotonic deadline
+            $WaitForExitWithTimeout = {
+              param([string]$StepName)
+              $rem = & $GetRemainingMs $StepName
+              if (!$proc.WaitForExit($rem)) {
+                throw "Case '$Name' timed out at step '$StepName' waiting for process exit within ${rem}ms (case budget: ${TimeoutMs}ms, elapsed: $($sw.ElapsedMilliseconds)ms)"
+              }
+            }
+
             try {
               $psi = [System.Diagnostics.ProcessStartInfo]::new()
               $psi.FileName = $ExeToRun
@@ -309,22 +419,25 @@ jobs:
 
               $proc = [System.Diagnostics.Process]::Start($psi)
 
+              # Concurrently drain stderr for the entire duration of the process
+              $stderrTask = $proc.StandardError.ReadToEndAsync()
+
               if ($null -ne $Action) {
-                & $Action $proc $stdoutBuilder $stderrBuilder $FixtureRoot $Slot $TimeoutMs
+                & $Action $proc $ReadLineWithTimeout $WaitForExitWithTimeout $FixtureRoot $Slot
               } else {
                 $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
-                $stderrTask = $proc.StandardError.ReadToEndAsync()
 
-                $completed = [System.Threading.Tasks.Task]::WaitAll(@($stdoutTask, $stderrTask), $TimeoutMs)
+                $rem = & $GetRemainingMs 'DrainStreams'
+                $completed = [System.Threading.Tasks.Task]::WaitAll(@($stdoutTask, $stderrTask), $rem)
                 if (!$completed) {
-                  throw "Case '$Name' timed out draining streams within ${TimeoutMs}ms"
+                  throw "Case '$Name' timed out draining streams within ${rem}ms (case budget: ${TimeoutMs}ms)"
                 }
                 [void]$stdoutBuilder.Append($stdoutTask.Result)
                 [void]$stderrBuilder.Append($stderrTask.Result)
 
-                $waitMs = [Math]::Max(1000, $TimeoutMs - [int]$sw.ElapsedMilliseconds)
-                if (!$proc.WaitForExit($waitMs)) {
-                  throw "Case '$Name' process did not exit within bounded wait"
+                $remExit = & $GetRemainingMs 'WaitForExit'
+                if (!$proc.WaitForExit($remExit)) {
+                  throw "Case '$Name' process did not exit within bounded wait ${remExit}ms"
                 }
               }
 
@@ -364,6 +477,14 @@ jobs:
                   $residualAlive = $true
                 } else {
                   $recordedExitCode = $proc.ExitCode
+                  if ($null -ne $stderrTask) {
+                    try {
+                      [void]$stderrTask.Wait(1000)
+                      if ($stderrTask.IsCompleted) {
+                        [void]$stderrBuilder.Append($stderrTask.Result)
+                      }
+                    } catch { }
+                  }
                   $proc.Dispose()
                 }
               }
@@ -422,13 +543,8 @@ jobs:
             Copy-Item -LiteralPath $helperExe -Destination $validExe
 
             Invoke-FixtureCase -Name 'ValidLifecycle_Slot1' -ExeToRun $validExe -ArgsList @('--slot', '1') -FixtureRoot $fixtureRoot -Slot 1 -ExpectedExitCode 0 -ExpectedStdoutPattern '^READY[\r\n]+STOPPED$' -Action {
-              param($p, $out, $err, $root, $s, $timeout)
-              $readLineTask1 = $p.StandardOutput.ReadLineAsync()
-              if (!$readLineTask1.Wait(4000)) {
-                throw 'ValidLifecycle_Slot1 timed out waiting for READY'
-              }
-              $line1 = $readLineTask1.Result
-              [void]$out.AppendLine($line1)
+              param($p, $readL, $waitEx, $root, $s)
+              $line1 = & $readL 'WaitForReady'
               if ($line1 -ne 'READY') {
                 throw "ValidLifecycle_Slot1 expected 'READY', got '$line1'"
               }
@@ -444,19 +560,12 @@ jobs:
               $stopFile1 = Join-Path $root 'control/stop-1.request'
               [System.IO.File]::WriteAllText($stopFile1, 'stop')
 
-              $readLineTask2 = $p.StandardOutput.ReadLineAsync()
-              if (!$readLineTask2.Wait(4000)) {
-                throw 'ValidLifecycle_Slot1 timed out waiting for STOPPED'
-              }
-              $line2 = $readLineTask2.Result
-              [void]$out.AppendLine($line2)
+              $line2 = & $readL 'WaitForStopped'
               if ($line2 -ne 'STOPPED') {
                 throw "ValidLifecycle_Slot1 expected 'STOPPED', got '$line2'"
               }
 
-              if (!$p.WaitForExit(4000)) {
-                throw 'ValidLifecycle_Slot1 failed to exit within bounded wait after STOPPED'
-              }
+              & $waitEx 'WaitForCleanExit'
             }
 
             # 4. Same slot relaunch refuses when marker is present
@@ -464,13 +573,8 @@ jobs:
 
             # 5. Slot independence: slot 2 in same fixture runs while slot 1 marker exists
             Invoke-FixtureCase -Name 'SlotIndependence_Slot2' -ExeToRun $validExe -ArgsList @('--slot', '2') -FixtureRoot $fixtureRoot -Slot 2 -ExpectedExitCode 0 -ExpectedStdoutPattern '^READY[\r\n]+STOPPED$' -Action {
-              param($p, $out, $err, $root, $s, $timeout)
-              $readTaskSlot2 = $p.StandardOutput.ReadLineAsync()
-              if (!$readTaskSlot2.Wait(4000)) {
-                throw 'SlotIndependence_Slot2 timed out waiting for READY'
-              }
-              $slot2Line1 = $readTaskSlot2.Result
-              [void]$out.AppendLine($slot2Line1)
+              param($p, $readL, $waitEx, $root, $s)
+              $slot2Line1 = & $readL 'WaitForReady'
               if ($slot2Line1 -ne 'READY') {
                 throw "SlotIndependence_Slot2 expected 'READY', got '$slot2Line1'"
               }
@@ -486,19 +590,12 @@ jobs:
               $stopFile2 = Join-Path $root 'control/stop-2.request'
               [System.IO.File]::WriteAllText($stopFile2, 'stop')
 
-              $readTaskSlot2Stop = $p.StandardOutput.ReadLineAsync()
-              if (!$readTaskSlot2Stop.Wait(4000)) {
-                throw 'SlotIndependence_Slot2 timed out waiting for STOPPED'
-              }
-              $slot2Line2 = $readTaskSlot2Stop.Result
-              [void]$out.AppendLine($slot2Line2)
+              $slot2Line2 = & $readL 'WaitForStopped'
               if ($slot2Line2 -ne 'STOPPED') {
                 throw "SlotIndependence_Slot2 expected 'STOPPED', got '$slot2Line2'"
               }
 
-              if (!$p.WaitForExit(4000)) {
-                throw 'SlotIndependence_Slot2 failed to exit within bounded wait'
-              }
+              & $waitEx 'WaitForCleanExit'
             }
 
             # 6. Directory marker error yields exit 6
@@ -509,13 +606,8 @@ jobs:
             Copy-Item -LiteralPath $helperExe -Destination $dirExe
 
             Invoke-FixtureCase -Name 'DirectoryMarker_Slot3' -ExeToRun $dirExe -ArgsList @('--slot', '3') -FixtureRoot $dirFixtureRoot -Slot 3 -ExpectedExitCode 6 -ExpectedStdoutPattern '^READY$' -Action {
-              param($p, $out, $err, $root, $s, $timeout)
-              $readTaskDir = $p.StandardOutput.ReadLineAsync()
-              if (!$readTaskDir.Wait(4000)) {
-                throw 'DirectoryMarker_Slot3 timed out waiting for READY'
-              }
-              $dirLine1 = $readTaskDir.Result
-              [void]$out.AppendLine($dirLine1)
+              param($p, $readL, $waitEx, $root, $s)
+              $dirLine1 = & $readL 'WaitForReady'
               if ($dirLine1 -ne 'READY') {
                 throw "DirectoryMarker_Slot3 expected 'READY', got '$dirLine1'"
               }
@@ -527,9 +619,7 @@ jobs:
               $dirMarker = Join-Path $root 'control/stop-3.request'
               New-Item -ItemType Directory -Path $dirMarker -Force | Out-Null
 
-              if (!$p.WaitForExit(4000)) {
-                throw 'DirectoryMarker_Slot3 failed to exit within bounded wait'
-              }
+              & $waitEx 'WaitForExitAfterDirectoryMarker'
             }
 
             # 7. Disappearing control directory yields exit 7 (R4 regression check)
@@ -541,13 +631,8 @@ jobs:
             Copy-Item -LiteralPath $helperExe -Destination $disappearExe
 
             Invoke-FixtureCase -Name 'DisappearingControlDir_Slot4' -ExeToRun $disappearExe -ArgsList @('--slot', '4') -FixtureRoot $disappearFixtureRoot -Slot 4 -ExpectedExitCode 7 -ExpectedStdoutPattern '^READY$' -Action {
-              param($p, $out, $err, $root, $s, $timeout)
-              $readTask = $p.StandardOutput.ReadLineAsync()
-              if (!$readTask.Wait(4000)) {
-                throw 'DisappearingControlDir_Slot4 timed out waiting for READY'
-              }
-              $line = $readTask.Result
-              [void]$out.AppendLine($line)
+              param($p, $readL, $waitEx, $root, $s)
+              $line = & $readL 'WaitForReady'
               if ($line -ne 'READY') {
                 throw "DisappearingControlDir_Slot4 expected 'READY', got '$line'"
               }
@@ -556,15 +641,12 @@ jobs:
                 throw 'DisappearingControlDir_Slot4 exited prematurely'
               }
 
-              # Rename control directory while helper is polling
               Rename-Item -LiteralPath (Join-Path $root 'control') -NewName 'control_renamed'
 
-              if (!$p.WaitForExit(4000)) {
-                throw 'DisappearingControlDir_Slot4 failed to exit promptly on disappearing control directory'
-              }
+              & $waitEx 'WaitForExitAfterDisappearingDir'
             }
 
-            # 8. Harness Negative Control: Failure after READY triggers normal stop in finally (R1)
+            # 8. Harness Negative Control 1: Failure after READY triggers normal stop in finally (R1)
             $negFailFixtureRoot = Join-Path $env:RUNNER_TEMP 'fixture-negfail'
             New-Item -ItemType Directory -Path (Join-Path $negFailFixtureRoot 'target') -Force | Out-Null
             New-Item -ItemType Directory -Path (Join-Path $negFailFixtureRoot 'control') -Force | Out-Null
@@ -574,12 +656,11 @@ jobs:
             $negCaught = $false
             try {
               Invoke-FixtureCase -Name 'SimulatedFailure_AfterReady' -ExeToRun $negFailExe -ArgsList @('--slot', '1') -FixtureRoot $negFailFixtureRoot -Slot 1 -Action {
-                param($p, $out, $err, $root, $s, $timeout)
-                $readTask = $p.StandardOutput.ReadLineAsync()
-                if (!$readTask.Wait(4000)) {
-                  throw 'SimulatedFailure_AfterReady timed out waiting for READY'
+                param($p, $readL, $waitEx, $root, $s)
+                $readyLine = & $readL 'WaitForReady'
+                if ($readyLine -ne 'READY') {
+                  throw "SimulatedFailure_AfterReady expected 'READY', got '$readyLine'"
                 }
-                [void]$out.AppendLine($readTask.Result)
                 throw 'Simulated assertion failure after READY'
               }
             } catch {
@@ -596,25 +677,52 @@ jobs:
             }
             Write-Output 'Harness negative control PASS: Simulated failure triggered normal marker-driven child exit (exit 0, ResidualAlive=false)'
 
-            # 9. Harness Negative Control: Stream drain timeout detection (R1)
+            # 9. Harness Negative Control 2: Stream drain timeout detection on live helper (R1)
+            $timeoutFixtureRoot = Join-Path $env:RUNNER_TEMP 'fixture-timeout'
+            New-Item -ItemType Directory -Path (Join-Path $timeoutFixtureRoot 'target') -Force | Out-Null
+            New-Item -ItemType Directory -Path (Join-Path $timeoutFixtureRoot 'control') -Force | Out-Null
+            $timeoutExe = Join-Path $timeoutFixtureRoot 'target/QueueFixture.exe'
+            Copy-Item -LiteralPath $helperExe -Destination $timeoutExe
+
             $negTimeoutCaught = $false
+            $timeoutErrorMsg = $null
             try {
-              Invoke-FixtureCase -Name 'SimulatedTimeout_Detection' -ExeToRun $validExe -ArgsList @('--slot', '1') -FixtureRoot $fixtureRoot -Slot 1 -TimeoutMs 500 -Action {
-                param($p, $out, $err, $root, $s, $timeout)
-                Start-Sleep -Milliseconds 1200
-                throw 'Should not reach here'
+              Invoke-FixtureCase -Name 'SimulatedTimeout_Detection' -ExeToRun $timeoutExe -ArgsList @('--slot', '1') -FixtureRoot $timeoutFixtureRoot -Slot 1 -TimeoutMs 1500 -Action {
+                param($p, $readL, $waitEx, $root, $s)
+                $readyLine = & $readL 'WaitForReady'
+                if ($readyLine -ne 'READY') {
+                  throw "SimulatedTimeout_Detection expected 'READY', got '$readyLine'"
+                }
+                if ($p.HasExited) {
+                  throw 'SimulatedTimeout_Detection process exited prematurely before timeout could be tested'
+                }
+                # Deliberately withhold the stop marker. The helper remains alive and polling.
+                # Supervised ReadLineWithTimeout shares the 1500ms case deadline and must time out.
+                [void](& $readL 'WithheldStopMarker_ExpectTimeout')
               }
             } catch {
-              $negTimeoutCaught = $true
+              $timeoutErrorMsg = $_.Exception.Message
+              if ($timeoutErrorMsg -match 'timed out at step ''WithheldStopMarker_ExpectTimeout''') {
+                $negTimeoutCaught = $true
+              }
             }
             if (!$negTimeoutCaught) {
-              throw 'Harness negative control failed: timeout was not detected'
+              throw "Harness negative control failed: timeout at WithheldStopMarker_ExpectTimeout was not detected. Caught message: '$timeoutErrorMsg'"
             }
             $timeoutResult = $testResults | Where-Object { $_.Name -eq 'SimulatedTimeout_Detection' } | Select-Object -Last 1
-            if ($null -eq $timeoutResult -or $timeoutResult.ResidualAlive -ne $false) {
-              throw "Harness negative control failed: timeout handling did not clean up child. Residual: $($timeoutResult.ResidualAlive)"
+            if ($null -eq $timeoutResult) {
+              throw 'Harness negative control failed: no record for SimulatedTimeout_Detection'
             }
-            Write-Output 'Harness negative control PASS: Bounded timeout detected and child stopped cleanly'
+            if ($timeoutResult.ResidualAlive -ne $false) {
+              throw "Harness negative control failed: process remained alive after timeout cleanup"
+            }
+            if ($timeoutResult.ExitCode -ne 0) {
+              throw "Harness negative control failed: expected normal marker cleanup exit 0, got $($timeoutResult.ExitCode)"
+            }
+            if ($timeoutResult.DurationMs -lt 1400 -or $timeoutResult.DurationMs -gt 5000) {
+              throw "Harness negative control failed: duration $($timeoutResult.DurationMs)ms was not within expected timeout window"
+            }
+            Write-Output 'Harness negative control PASS: Bounded timeout detected on live helper and child stopped cleanly (exit 0, ResidualAlive=false)'
 
           } catch {
             $suiteFailed = $true
