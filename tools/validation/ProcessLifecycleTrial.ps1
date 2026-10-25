@@ -537,6 +537,13 @@ function Compare-TargetBaselineInternal([string]$FixtureRoot) {
     return @{ IsMatch = $true; Reason = "Target strictly matches immutable baseline." }
 }
 
+function Get-SafePropertyValue($Object, [string]$PropertyName) {
+    if ($null -eq $Object) { return $null }
+    $p = $Object.PSObject.Properties[$PropertyName]
+    if ($null -eq $p) { return $null }
+    return $p.Value
+}
+
 function Compare-SemanticLibraryJsonInternal([string]$JsonA, [string]$JsonB) {
     try {
         $objA = if (Test-Path -LiteralPath $JsonA -PathType Leaf) {
@@ -551,12 +558,16 @@ function Compare-SemanticLibraryJsonInternal([string]$JsonA, [string]$JsonB) {
             ConvertFrom-Json -InputObject $JsonB
         }
 
-        if ($objA.SchemaVersion -ne $objB.SchemaVersion) {
-            return @{ IsEquivalent = $false; Reason = "SchemaVersion mismatch: $($objA.SchemaVersion) vs $($objB.SchemaVersion)" }
+        $schemaA = Get-SafePropertyValue -Object $objA -PropertyName "SchemaVersion"
+        $schemaB = Get-SafePropertyValue -Object $objB -PropertyName "SchemaVersion"
+        if ($schemaA -ne $schemaB) {
+            return @{ IsEquivalent = $false; Reason = "SchemaVersion mismatch: $schemaA vs $schemaB" }
         }
 
-        $listA = @($objA.Installations)
-        $listB = @($objB.Installations)
+        $listRawA = Get-SafePropertyValue -Object $objA -PropertyName "Installations"
+        $listRawB = Get-SafePropertyValue -Object $objB -PropertyName "Installations"
+        $listA = if ($null -eq $listRawA) { @() } else { @($listRawA) }
+        $listB = if ($null -eq $listRawB) { @() } else { @($listRawB) }
 
         if ($listA.Count -ne $listB.Count) {
             return @{ IsEquivalent = $false; Reason = "Installations count mismatch: $($listA.Count) vs $($listB.Count)" }
@@ -565,11 +576,12 @@ function Compare-SemanticLibraryJsonInternal([string]$JsonA, [string]$JsonB) {
         # Index by stable Id
         $mapB = @{}
         foreach ($inst in $listB) {
-            $mapB["$($inst.Id)"] = $inst
+            $instId = Get-SafePropertyValue -Object $inst -PropertyName "Id"
+            $mapB["$instId"] = $inst
         }
 
         foreach ($instA in $listA) {
-            $key = "$($instA.Id)"
+            $key = "$(Get-SafePropertyValue -Object $instA -PropertyName 'Id')"
             if (-not $mapB.ContainsKey($key)) {
                 return @{ IsEquivalent = $false; Reason = "Installation Id '$key' missing in second object." }
             }
@@ -582,65 +594,90 @@ function Compare-SemanticLibraryJsonInternal([string]$JsonA, [string]$JsonB) {
                 "LastCancellationOutcome", "LastRefusalReason"
             )
             foreach ($p in $props) {
-                $vA = if ($null -eq $instA.$p) { "" } else { "$($instA.$p)" }
-                $vB = if ($null -eq $instB.$p) { "" } else { "$($instB.$p)" }
+                $rawA = Get-SafePropertyValue -Object $instA -PropertyName $p
+                $rawB = Get-SafePropertyValue -Object $instB -PropertyName $p
+                $vA = if ($null -eq $rawA) { "" } else { "$rawA" }
+                $vB = if ($null -eq $rawB) { "" } else { "$rawB" }
                 if ($vA -ne $vB) {
                     return @{ IsEquivalent = $false; Reason = "Property '$p' mismatch on installation '$key': '$vA' vs '$vB'" }
                 }
             }
 
             # Canonical path comparison
-            $pathA = [System.IO.Path]::GetFullPath("$($instA.InstallationPath)").TrimEnd('\', '/')
-            $pathB = [System.IO.Path]::GetFullPath("$($instB.InstallationPath)").TrimEnd('\', '/')
+            $pathAVal = Get-SafePropertyValue -Object $instA -PropertyName "InstallationPath"
+            $pathBVal = Get-SafePropertyValue -Object $instB -PropertyName "InstallationPath"
+            $pathA = if ($null -eq $pathAVal) { "" } else { [System.IO.Path]::GetFullPath("$pathAVal").TrimEnd('\', '/') }
+            $pathB = if ($null -eq $pathBVal) { "" } else { [System.IO.Path]::GetFullPath("$pathBVal").TrimEnd('\', '/') }
             if ($pathA -ne $pathB) {
                 return @{ IsEquivalent = $false; Reason = "InstallationPath mismatch on '$key': '$pathA' vs '$pathB'" }
             }
 
             # ManagementPolicy comparison
-            $modeA = if ($null -eq $instA.ManagementPolicy) { "" } else { "$($instA.ManagementPolicy.Mode)" }
-            $modeB = if ($null -eq $instB.ManagementPolicy) { "" } else { "$($instB.ManagementPolicy.Mode)" }
+            $policyA = Get-SafePropertyValue -Object $instA -PropertyName "ManagementPolicy"
+            $policyB = Get-SafePropertyValue -Object $instB -PropertyName "ManagementPolicy"
+            $modeA = if ($null -eq $policyA) { "" } else { "$(Get-SafePropertyValue -Object $policyA -PropertyName 'Mode')" }
+            $modeB = if ($null -eq $policyB) { "" } else { "$(Get-SafePropertyValue -Object $policyB -PropertyName 'Mode')" }
             if ($modeA -ne $modeB) {
                 return @{ IsEquivalent = $false; Reason = "ManagementPolicy.Mode mismatch on '$key': '$modeA' vs '$modeB'" }
             }
 
             # Configuration comparison
-            if ($null -ne $instA.Configuration -and $null -ne $instB.Configuration) {
-                if ($instA.Configuration.HudEnabled -ne $instB.Configuration.HudEnabled -or
-                    $instA.Configuration.FrameLimit -ne $instB.Configuration.FrameLimit -or
-                    $instA.Configuration.FrameLimitEnabled -ne $instB.Configuration.FrameLimitEnabled) {
+            $configA = Get-SafePropertyValue -Object $instA -PropertyName "Configuration"
+            $configB = Get-SafePropertyValue -Object $instB -PropertyName "Configuration"
+            if ($null -ne $configA -and $null -ne $configB) {
+                $hudA = Get-SafePropertyValue -Object $configA -PropertyName "HudEnabled"
+                $hudB = Get-SafePropertyValue -Object $configB -PropertyName "HudEnabled"
+                $flA = Get-SafePropertyValue -Object $configA -PropertyName "FrameLimit"
+                $flB = Get-SafePropertyValue -Object $configB -PropertyName "FrameLimit"
+                $fleA = Get-SafePropertyValue -Object $configA -PropertyName "FrameLimitEnabled"
+                $fleB = Get-SafePropertyValue -Object $configB -PropertyName "FrameLimitEnabled"
+                if ($hudA -ne $hudB -or $flA -ne $flB -or $fleA -ne $fleB) {
                     return @{ IsEquivalent = $false; Reason = "Configuration mismatch on installation '$key'." }
                 }
             }
 
             # PendingAction comparison
-            $pendingA = if ($null -eq $instA.PendingAction) { "None" } else { "$($instA.PendingAction.Type):$($instA.PendingAction.TargetDxvkVersion)" }
-            $pendingB = if ($null -eq $instB.PendingAction) { "None" } else { "$($instB.PendingAction.Type):$($instB.PendingAction.TargetDxvkVersion)" }
+            $pendingActionA = Get-SafePropertyValue -Object $instA -PropertyName "PendingAction"
+            $pendingActionB = Get-SafePropertyValue -Object $instB -PropertyName "PendingAction"
+            $pendingA = if ($null -eq $pendingActionA) { "None" } else { "$(Get-SafePropertyValue -Object $pendingActionA -PropertyName 'Type'):$(Get-SafePropertyValue -Object $pendingActionA -PropertyName 'TargetDxvkVersion')" }
+            $pendingB = if ($null -eq $pendingActionB) { "None" } else { "$(Get-SafePropertyValue -Object $pendingActionB -PropertyName 'Type'):$(Get-SafePropertyValue -Object $pendingActionB -PropertyName 'TargetDxvkVersion')" }
             if ($pendingA -ne $pendingB) {
                 return @{ IsEquivalent = $false; Reason = "PendingAction mismatch on '$key': '$pendingA' vs '$pendingB'" }
             }
 
             # Executables comparison by RelativePath
-            $execsA = @($instA.Executables)
-            $execsB = @($instB.Executables)
+            $execsRawA = Get-SafePropertyValue -Object $instA -PropertyName "Executables"
+            $execsRawB = Get-SafePropertyValue -Object $instB -PropertyName "Executables"
+            $execsA = if ($null -eq $execsRawA) { @() } else { @($execsRawA) }
+            $execsB = if ($null -eq $execsRawB) { @() } else { @($execsRawB) }
             if ($execsA.Count -ne $execsB.Count) {
                 return @{ IsEquivalent = $false; Reason = "Executables count mismatch on '$key'." }
             }
             $execMapB = @{}
-            foreach ($e in $execsB) { $execMapB["$($e.RelativePath)"] = $e }
+            foreach ($e in $execsB) {
+                $rel = Get-SafePropertyValue -Object $e -PropertyName "RelativePath"
+                $execMapB["$rel"] = $e
+            }
             foreach ($eA in $execsA) {
-                $eKey = "$($eA.RelativePath)"
+                $eKey = "$(Get-SafePropertyValue -Object $eA -PropertyName 'RelativePath')"
                 if (-not $execMapB.ContainsKey($eKey)) {
                     return @{ IsEquivalent = $false; Reason = "Executable '$eKey' missing on '$key'." }
                 }
                 $eB = $execMapB[$eKey]
-                if ("$($eA.LastKnownApi)" -ne "$($eB.LastKnownApi)" -or "$($eA.LastKnownArchitecture)" -ne "$($eB.LastKnownArchitecture)") {
+                $apiA = Get-SafePropertyValue -Object $eA -PropertyName "LastKnownApi"
+                $apiB = Get-SafePropertyValue -Object $eB -PropertyName "LastKnownApi"
+                $archA = Get-SafePropertyValue -Object $eA -PropertyName "LastKnownArchitecture"
+                $archB = Get-SafePropertyValue -Object $eB -PropertyName "LastKnownArchitecture"
+                if ("$apiA" -ne "$apiB" -or "$archA" -ne "$archB") {
                     return @{ IsEquivalent = $false; Reason = "Executable metadata mismatch for '$eKey'." }
                 }
             }
 
             # ManagedFiles comparison by RelativePath
-            $mFilesA = @($instA.ManagedFiles)
-            $mFilesB = @($instB.ManagedFiles)
+            $mFilesRawA = Get-SafePropertyValue -Object $instA -PropertyName "ManagedFiles"
+            $mFilesRawB = Get-SafePropertyValue -Object $instB -PropertyName "ManagedFiles"
+            $mFilesA = if ($null -eq $mFilesRawA) { @() } else { @($mFilesRawA) }
+            $mFilesB = if ($null -eq $mFilesRawB) { @() } else { @($mFilesRawB) }
             if ($mFilesA.Count -ne $mFilesB.Count) {
                 return @{ IsEquivalent = $false; Reason = "ManagedFiles count mismatch on '$key'." }
             }
