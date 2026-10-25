@@ -120,12 +120,29 @@ jobs:
               }
             }
 
-            # 2. Assert zero forbidden symbols
+            # 2. Accounted legitimate symbols: helper explicit calls and reviewed toolchain static CRT functions
+            $accountedSymbols = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+            @(
+              'GetStdHandle', 'GetFileAttributesW', 'WriteFile', 'GetLastError', 'Sleep', 'GetTickCount64', 'GetModuleFileNameW',
+              'QueryPerformanceCounter', 'GetCurrentProcessId', 'GetCurrentThreadId', 'GetSystemTimeAsFileTime', 'InitializeSListHead',
+              'SetUnhandledExceptionFilter', 'GetStartupInfoW', 'GetModuleHandleW', 'WriteConsoleW', 'RtlUnwindEx', 'SetLastError',
+              'FlsAlloc', 'FlsGetValue', 'FlsSetValue', 'FlsFree', 'EnterCriticalSection', 'LeaveCriticalSection', 'InitializeCriticalSectionEx',
+              'DeleteCriticalSection', 'RtlLookupFunctionEntry', 'EncodePointer', 'RaiseException', 'RtlPcToFileHeader', 'GetCurrentProcess',
+              'ExitProcess', 'TerminateProcess', 'FreeLibrary', 'GetModuleHandleExW', 'GetProcAddress', 'GetCommandLineA', 'GetCommandLineW',
+              'IsProcessorFeaturePresent', 'RtlCaptureContext', 'RtlVirtualUnwind', 'IsDebuggerPresent', 'UnhandledExceptionFilter',
+              'HeapFree', 'HeapAlloc', 'GetFileType', 'FindClose', 'FindFirstFileExW', 'FindNextFileW', 'IsValidCodePage', 'GetACP',
+              'GetOEMCP', 'GetCPInfo', 'MultiByteToWideChar', 'WideCharToMultiByte', 'GetEnvironmentStringsW', 'FreeEnvironmentStringsW',
+              'SetEnvironmentVariableW', 'SetStdHandle', 'GetStringTypeW', 'VirtualProtect', 'LoadLibraryExW', 'CompareStringW',
+              'LCMapStringW', 'GetProcessHeap', 'SetFilePointerEx', 'HeapSize', 'HeapReAlloc', 'FlushFileBuffers', 'GetConsoleOutputCP',
+              'GetConsoleMode', 'CloseHandle', 'CreateFileW'
+            ) | ForEach-Object { [void]$accountedSymbols.Add($_) }
+
+            # 3. Assert zero forbidden symbols and all symbols accounted for
             foreach ($sym in $Symbols) {
               if ($sym -match '^(?:CreateProcess[AW]?|CreateProcessAsUser[AW]?|CreateProcessWithLogon[AW]?|CreateProcessWithToken[AW]?|ShellExecute[AW]?|ShellExecuteEx[AW]?|WinExec)$') {
                 throw "Fail-closed: Forbidden process-spawning API detected in imports: '$sym'"
               }
-              if ($sym -match '^(?:LoadLibrary[AW]?|LoadLibraryEx[AW]?)$') {
+              if ($sym -match '^(?:LoadLibrary[AW])$') {
                 throw "Fail-closed: Forbidden dynamic library loading API detected in imports: '$sym'"
               }
               if ($sym -match '^(?:WSA.*|socket|connect|send|recv|Internet.*|Http.*)$') {
@@ -133,6 +150,9 @@ jobs:
               }
               if ($sym -match '^(?:D3D.*|CreateDXGIFactory.*|vkCreate.*)$') {
                 throw "Fail-closed: Forbidden graphics API detected in imports: '$sym'"
+              }
+              if (!$accountedSymbols.Contains($sym)) {
+                throw "Fail-closed: Unaccounted imported symbol detected: '$sym'. Not in reviewed helper or toolchain CRT set."
               }
             }
           }
