@@ -908,30 +908,370 @@ public sealed class ProcessLifecycleTrialPreparationTests
     }
 
     [Fact]
-    public async Task SafeProcessStreamDrainer_StreamsDataAndDetectsTokens()
+    public void SafeProcessStreamDrainer_ShippedDrainer_StreamsAndDetectsTokens()
+    {
+        AssertHostedCiEnvironment();
+
+        using var temp = new SyntheticTestDirectory();
+        var logFile = temp.GetPath("test_output.log");
+        var text = "Initializing QueueFixture`nREADY slot 1`nProcessing payload`nSTOPPED slot 1`n";
+
+        var result = RunScript($"-Action Test-Drainer -TestInputText \"{text}\" -LogPath \"{logFile}\" -JsonOutput");
+        Assert.Equal(0, result.ExitCode);
+        AssertScriptSuccess(result, true);
+
+        using var doc = JsonDocument.Parse(result.StandardOutput);
+        var root = doc.RootElement;
+        Assert.True(root.GetProperty("ReadyReceived").GetBoolean());
+        Assert.True(root.GetProperty("StoppedReceived").GetBoolean());
+        Assert.True(root.GetProperty("IsCompleted").GetBoolean());
+        Assert.False(root.GetProperty("HasFault").GetBoolean());
+        Assert.True(root.GetProperty("DrainedSuccessfully").GetBoolean());
+        Assert.Equal(4, root.GetProperty("LinesRead").GetInt32());
+
+        Assert.True(File.Exists(logFile));
+        var written = File.ReadAllText(logFile);
+        Assert.Contains("READY slot 1", written);
+        Assert.Contains("STOPPED slot 1", written);
+    }
+
+    [Fact]
+    public void SafeProcessStreamDrainer_ShippedDrainer_DetectsAndExposesFault()
     {
         AssertHostedCiEnvironment();
 
         using var temp = new SyntheticTestDirectory();
         var logFile = temp.GetPath("test_output.log");
 
-        var text = "Initializing QueueFixture\nREADY slot 1\nProcessing payload\nSTOPPED slot 1\n";
-        var memStream = new MemoryStream(Encoding.UTF8.GetBytes(text));
+        var result = RunScript($"-Action Test-Drainer -SimulateFault -LogPath \"{logFile}\" -JsonOutput");
+        Assert.Equal(0, result.ExitCode);
 
-        using (var drainer = new SafeProcessStreamDrainer(memStream, logFile))
+        using var doc = JsonDocument.Parse(result.StandardOutput);
+        var root = doc.RootElement;
+        Assert.True(root.GetProperty("HasFault").GetBoolean());
+        Assert.False(root.GetProperty("DrainedSuccessfully").GetBoolean());
+        Assert.False(string.IsNullOrEmpty(root.GetProperty("FaultMessage").GetString()));
+    }
+
+    [Fact]
+    public void SafeProcessStreamDrainer_ShippedDrainer_EnforcesMaxBytesCap()
+    {
+        AssertHostedCiEnvironment();
+
+        using var temp = new SyntheticTestDirectory();
+        var logFile = temp.GetPath("test_output.log");
+        var longLine = new string('A', 500);
+
+        var result = RunScript($"-Action Test-Drainer -TestInputText \"{longLine}\" -LogPath \"{logFile}\" -MaxBytes 100 -JsonOutput");
+        Assert.Equal(0, result.ExitCode);
+
+        using var doc = JsonDocument.Parse(result.StandardOutput);
+        var root = doc.RootElement;
+        Assert.True(root.GetProperty("HasFault").GetBoolean());
+        Assert.Contains("Maximum log stream size exceeded", root.GetProperty("FaultMessage").GetString());
+    }
+
+    [Fact]
+    public void ParseTarListing_AcceptsValidBsdtarListing()
+    {
+        AssertHostedCiEnvironment();
+
+        using var temp = new SyntheticTestDirectory();
+        var listFile = temp.CreateFile("listing.txt", string.Join(Environment.NewLine, new[]
         {
-            drainer.Start();
-            var drained = drainer.WaitForDrain(5000);
-            Assert.True(drained);
-            Assert.True(drainer.ReadyReceived);
-            Assert.True(drainer.StoppedReceived);
-            Assert.Equal(4, drainer.LinesRead);
-        }
+            "-rw-r--r--  0 root   root  8000000 Jan  1  1970 dxvk-3.1/x64/d3d11.dll",
+            "-rw-r--r--  0 root   root  2000000 Jan  1  1970 dxvk-3.1/x64/dxgi.dll"
+        }));
 
-        Assert.True(File.Exists(logFile));
-        var written = await File.ReadAllTextAsync(logFile);
-        Assert.Contains("READY slot 1", written);
-        Assert.Contains("STOPPED slot 1", written);
+        var result = RunScript($"-Action Test-ParseTarListing -ListingFilePath \"{listFile}\" -JsonOutput");
+        Assert.Equal(0, result.ExitCode);
+        AssertScriptSuccess(result, true);
+
+        using var doc = JsonDocument.Parse(result.StandardOutput);
+        var root = doc.RootElement;
+        Assert.Equal(2, root.GetProperty("EntryCount").GetInt32());
+        Assert.Equal(10000000L, root.GetProperty("TotalBytes").GetInt64());
+        Assert.True(root.GetProperty("HasD3d11").GetBoolean());
+        Assert.True(root.GetProperty("HasDxgi").GetBoolean());
+    }
+
+    [Fact]
+    public void ParseTarListing_RejectsMalformedOrUnknownSize()
+    {
+        AssertHostedCiEnvironment();
+
+        using var temp = new SyntheticTestDirectory();
+        var listFile = temp.CreateFile("listing.txt", string.Join(Environment.NewLine, new[]
+        {
+            "-rw-r--r--  0 root   root  NOT_A_NUMBER Jan  1  1970 dxvk-3.1/x64/d3d11.dll",
+            "-rw-r--r--  0 root   root  2000000 Jan  1  1970 dxvk-3.1/x64/dxgi.dll"
+        }));
+
+        var result = RunScript($"-Action Test-ParseTarListing -ListingFilePath \"{listFile}\" -JsonOutput");
+        Assert.NotEqual(0, result.ExitCode);
+        AssertScriptSuccess(result, false);
+        Assert.Contains("Malformed or unknown entry size in tar listing", result.StandardOutput + result.StandardError);
+    }
+
+    [Fact]
+    public void ParseTarListing_RejectsForbiddenEntryType()
+    {
+        AssertHostedCiEnvironment();
+
+        using var temp = new SyntheticTestDirectory();
+        var listFile = temp.CreateFile("listing.txt", string.Join(Environment.NewLine, new[]
+        {
+            "lrwxrwxrwx  0 root   root       12 Jan  1  1970 dxvk-3.1/x64/d3d11.dll -> /etc/passwd",
+            "-rw-r--r--  0 root   root  2000000 Jan  1  1970 dxvk-3.1/x64/dxgi.dll"
+        }));
+
+        var result = RunScript($"-Action Test-ParseTarListing -ListingFilePath \"{listFile}\" -JsonOutput");
+        Assert.NotEqual(0, result.ExitCode);
+        AssertScriptSuccess(result, false);
+        Assert.Contains("forbidden entry type 'l'", result.StandardOutput + result.StandardError);
+    }
+
+    [Fact]
+    public void ParseTarListing_RejectsDuplicateEntry()
+    {
+        AssertHostedCiEnvironment();
+
+        using var temp = new SyntheticTestDirectory();
+        var listFile = temp.CreateFile("listing.txt", string.Join(Environment.NewLine, new[]
+        {
+            "-rw-r--r--  0 root   root  8000000 Jan  1  1970 dxvk-3.1/x64/d3d11.dll",
+            "-rw-r--r--  0 root   root  8000000 Jan  1  1970 ./dxvk-3.1/x64/d3d11.dll",
+            "-rw-r--r--  0 root   root  2000000 Jan  1  1970 dxvk-3.1/x64/dxgi.dll"
+        }));
+
+        var result = RunScript($"-Action Test-ParseTarListing -ListingFilePath \"{listFile}\" -JsonOutput");
+        Assert.NotEqual(0, result.ExitCode);
+        AssertScriptSuccess(result, false);
+        Assert.Contains("duplicate or colliding entry", result.StandardOutput + result.StandardError);
+    }
+
+    [Fact]
+    public void ParseTarListing_RejectsOverLimitTotalBytes()
+    {
+        AssertHostedCiEnvironment();
+
+        using var temp = new SyntheticTestDirectory();
+        var listFile = temp.CreateFile("listing.txt", string.Join(Environment.NewLine, new[]
+        {
+            "-rw-r--r--  0 root   root  105000000 Jan  1  1970 dxvk-3.1/x64/d3d11.dll",
+            "-rw-r--r--  0 root   root    2000000 Jan  1  1970 dxvk-3.1/x64/dxgi.dll"
+        }));
+
+        var result = RunScript($"-Action Test-ParseTarListing -ListingFilePath \"{listFile}\" -JsonOutput");
+        Assert.NotEqual(0, result.ExitCode);
+        AssertScriptSuccess(result, false);
+        Assert.Contains("exceeds limit", result.StandardOutput + result.StandardError);
+    }
+
+    [Fact]
+    public void ExtractCompanionProvenance_ValidZip_SucceedsWithHeadSha()
+    {
+        AssertHostedCiEnvironment();
+
+        using var temp = new SyntheticTestDirectory();
+        var provZip = temp.GetPath("provenance.zip");
+        var destDir = temp.GetPath("prov_dest");
+
+        var provJson = JsonSerializer.Serialize(new
+        {
+            head_sha = "abc12345def67890abc12345def67890abc12345",
+            run_id = "777888",
+            run_attempt = "1"
+        });
+        CreateSyntheticZip(provZip, new Dictionary<string, byte[]>
+        {
+            { "build-provenance.json", Encoding.UTF8.GetBytes(provJson) }
+        });
+        var provZipHash = ComputeSha256Hex(File.ReadAllBytes(provZip));
+        var provZipSize = new FileInfo(provZip).Length;
+
+        var pins = JsonSerializer.Serialize(new
+        {
+            CompanionProvenanceSize = provZipSize,
+            CompanionProvenanceSha256 = provZipHash,
+            CompanionCommit = "abc12345def67890abc12345def67890abc12345",
+            CompanionRunId = "777888"
+        });
+        var escapedPins = pins.Replace("\"", "\\\"");
+
+        var result = RunScript($"-Action Test-Provenance -PathA \"{provZip}\" -PathB \"{destDir}\" -TestPinsJson \"{escapedPins}\" -JsonOutput");
+        Assert.Equal(0, result.ExitCode);
+        AssertScriptSuccess(result, true);
+        Assert.True(File.Exists(Path.Combine(destDir, "build-provenance.json")));
+    }
+
+    [Fact]
+    public void ExtractCompanionProvenance_WrongSourceSha_Throws()
+    {
+        AssertHostedCiEnvironment();
+
+        using var temp = new SyntheticTestDirectory();
+        var provZip = temp.GetPath("provenance.zip");
+        var destDir = temp.GetPath("prov_dest");
+
+        var provJson = JsonSerializer.Serialize(new
+        {
+            head_sha = "WRONG_HEAD_SHA_00000000000000000000000000",
+            run_id = "777888"
+        });
+        CreateSyntheticZip(provZip, new Dictionary<string, byte[]>
+        {
+            { "build-provenance.json", Encoding.UTF8.GetBytes(provJson) }
+        });
+        var provZipHash = ComputeSha256Hex(File.ReadAllBytes(provZip));
+        var provZipSize = new FileInfo(provZip).Length;
+
+        var pins = JsonSerializer.Serialize(new
+        {
+            CompanionProvenanceSize = provZipSize,
+            CompanionProvenanceSha256 = provZipHash,
+            CompanionCommit = "EXPECTED_COMMIT_1111111111111111111111111111111",
+            CompanionRunId = "777888"
+        });
+        var escapedPins = pins.Replace("\"", "\\\"");
+
+        var result = RunScript($"-Action Test-Provenance -PathA \"{provZip}\" -PathB \"{destDir}\" -TestPinsJson \"{escapedPins}\" -JsonOutput");
+        Assert.NotEqual(0, result.ExitCode);
+        AssertScriptSuccess(result, false);
+        Assert.Contains("Companion provenance commit mismatch", result.StandardOutput + result.StandardError);
+    }
+
+    [Fact]
+    public void ExtractCompanionProvenance_MissingManifest_Throws()
+    {
+        AssertHostedCiEnvironment();
+
+        using var temp = new SyntheticTestDirectory();
+        var provZip = temp.GetPath("provenance.zip");
+        var destDir = temp.GetPath("prov_dest");
+
+        CreateSyntheticZip(provZip, new Dictionary<string, byte[]>
+        {
+            { "other_file.txt", Encoding.UTF8.GetBytes("not_provenance") }
+        });
+        var provZipHash = ComputeSha256Hex(File.ReadAllBytes(provZip));
+        var provZipSize = new FileInfo(provZip).Length;
+
+        var pins = JsonSerializer.Serialize(new
+        {
+            CompanionProvenanceSize = provZipSize,
+            CompanionProvenanceSha256 = provZipHash
+        });
+        var escapedPins = pins.Replace("\"", "\\\"");
+
+        var result = RunScript($"-Action Test-Provenance -PathA \"{provZip}\" -PathB \"{destDir}\" -TestPinsJson \"{escapedPins}\" -JsonOutput");
+        Assert.NotEqual(0, result.ExitCode);
+        AssertScriptSuccess(result, false);
+        Assert.Contains("does not contain build-provenance.json", result.StandardOutput + result.StandardError);
+    }
+
+    [Fact]
+    public void Setup_HelperPackageProvenance_RejectsTamperedSourceSha()
+    {
+        AssertHostedCiEnvironment();
+
+        using var temp = new SyntheticTestDirectory();
+        var root = temp.GetPath("trial_root");
+
+        var helperExeBytes = Encoding.ASCII.GetBytes("TEST_HELPER_EXE_BYTES");
+        var helperExeHash = ComputeSha256Hex(helperExeBytes);
+        var helperProvBytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new
+        {
+            SourcePath = "tools/validation/QueueFixture.cpp",
+            SourceSha256 = "ACTUAL_TAMPERED_SHA",
+            CheckoutCommit = "TEST_COMMIT",
+            CheckoutTree = "TEST_TREE",
+            GithubRunId = "12345",
+            Files = new[]
+            {
+                new { Name = "QueueFixture.exe", Sha256 = helperExeHash, SizeBytes = (long)helperExeBytes.Length }
+            }
+        }));
+        var helperZip = temp.GetPath("helper.zip");
+        CreateSyntheticZip(helperZip, new Dictionary<string, byte[]>
+        {
+            { "QueueFixture.exe", helperExeBytes },
+            { "provenance.json", helperProvBytes }
+        });
+        var helperZipHash = ComputeSha256Hex(File.ReadAllBytes(helperZip));
+        var helperZipSize = new FileInfo(helperZip).Length;
+
+        var compExeBytes = Encoding.ASCII.GetBytes("TEST_COMPANION_EXE_BYTES");
+        var compZip = temp.GetPath("companion.zip");
+        CreateSyntheticZip(compZip, new Dictionary<string, byte[]> { { "DXVK-Companion.exe", compExeBytes } });
+        var compZipHash = ComputeSha256Hex(File.ReadAllBytes(compZip));
+        var compZipSize = new FileInfo(compZip).Length;
+
+        var testPinsJson = JsonSerializer.Serialize(new
+        {
+            HelperZipSize = helperZipSize,
+            HelperZipSha256 = helperZipHash,
+            HelperExeSize = helperExeBytes.Length,
+            HelperExeSha256 = helperExeHash,
+            HelperProvenance = new
+            {
+                SourceSha256 = "EXPECTED_UNMODIFIED_SHA",
+                CheckoutCommit = "TEST_COMMIT",
+                CheckoutTree = "TEST_TREE"
+            },
+            CompanionZipSize = compZipSize,
+            CompanionZipSha256 = compZipHash,
+            CompanionExeSize = compExeBytes.Length,
+            CompanionExeSha256 = ComputeSha256Hex(compExeBytes)
+        });
+        var escapedJson = testPinsJson.Replace("\"", "\\\"");
+
+        var result = RunScript($"-Action Setup -FixtureRoot \"{root}\" -HelperZipPath \"{helperZip}\" -CompanionZipPath \"{compZip}\" -TestPinsJson \"{escapedJson}\" -JsonOutput");
+        Assert.NotEqual(0, result.ExitCode);
+        AssertScriptSuccess(result, false);
+        Assert.Contains("Helper provenance SourceSha256 mismatch", result.StandardOutput + result.StandardError);
+    }
+
+    [Fact]
+    public void ObservationCycle_ExceedingDurationBudget_LatchesTerminalHold()
+    {
+        AssertHostedCiEnvironment();
+
+        using var temp = new SyntheticTestDirectory();
+        var root = SetUpTestFixture(temp);
+
+        var statePath = Path.Combine(root, "state.json");
+        var stateObj = JsonSerializer.Deserialize<Dictionary<string, object>>(File.ReadAllText(statePath))!;
+        stateObj["TrialStartUtc"] = DateTime.UtcNow.AddSeconds(-8000).ToString("o");
+        File.WriteAllText(statePath, JsonSerializer.Serialize(stateObj, new JsonSerializerOptions { WriteIndented = true }));
+
+        var result = RunScript($"-Action Supervise -FixtureRoot \"{root}\" -Commands @(\"status\") -JsonOutput");
+        Assert.Equal(0, result.ExitCode);
+
+        var stateAfter = JsonSerializer.Deserialize<Dictionary<string, object>>(File.ReadAllText(statePath))!;
+        Assert.True(bool.Parse(stateAfter["TerminalHold"].ToString()!));
+        Assert.Equal("Failed", stateAfter["LastCheckpointOutcome"].ToString());
+        Assert.Equal("NotReady", stateAfter["CurrentReadiness"].ToString());
+    }
+
+    [Fact]
+    public void Supervise_TerminalHold_RefusesNewActions_RetainsSupervision()
+    {
+        AssertHostedCiEnvironment();
+
+        using var temp = new SyntheticTestDirectory();
+        var root = SetUpTestFixture(temp);
+
+        var statePath = Path.Combine(root, "state.json");
+        var stateObj = JsonSerializer.Deserialize<Dictionary<string, object>>(File.ReadAllText(statePath))!;
+        stateObj["TerminalHold"] = true;
+        stateObj["TerminalHoldReason"] = "Simulated terminal hold for test";
+        stateObj["LastCheckpointOutcome"] = "Failed";
+        File.WriteAllText(statePath, JsonSerializer.Serialize(stateObj, new JsonSerializerOptions { WriteIndented = true }));
+
+        var result = RunScript($"-Action Supervise -FixtureRoot \"{root}\" -Commands @(\"start-helper 1\") -JsonOutput");
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains("Supervisor is in terminal hold state", result.StandardOutput + result.StandardError);
     }
 
     [Fact]
@@ -1117,99 +1457,30 @@ public sealed class ProcessLifecycleTrialPreparationTests
         Assert.Contains("live owned helper process handle is required", result.StandardOutput + result.StandardError);
     }
 
-    internal sealed class SafeProcessStreamDrainer : IDisposable
-    {
-        private readonly StreamReader _reader;
-        private readonly StreamWriter _writer;
-        private readonly System.Threading.CancellationTokenSource _cts;
-        private Task? _drainTask;
-
-        public volatile bool ReadyReceived;
-        public volatile bool StoppedReceived;
-        public int LinesRead;
-
-        public SafeProcessStreamDrainer(StreamReader reader, string logFilePath, Encoding? encoding = null)
-        {
-            if (reader == null) throw new ArgumentNullException(nameof(reader));
-            if (string.IsNullOrEmpty(logFilePath)) throw new ArgumentNullException(nameof(logFilePath));
-
-            _reader = reader;
-            var dir = Path.GetDirectoryName(logFilePath);
-            if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
-            {
-                Directory.CreateDirectory(dir);
-            }
-
-            var fs = new FileStream(logFilePath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite);
-            _writer = new StreamWriter(fs, encoding ?? new UTF8Encoding(false)) { AutoFlush = true };
-            _cts = new System.Threading.CancellationTokenSource();
-        }
-
-        public SafeProcessStreamDrainer(Stream inputStream, string logFilePath, Encoding? encoding = null)
-            : this(new StreamReader(inputStream ?? throw new ArgumentNullException(nameof(inputStream)), encoding ?? Encoding.UTF8), logFilePath, encoding)
-        {
-        }
-
-        public void Start()
-        {
-            _drainTask = Task.Run(async () =>
-            {
-                try
-                {
-                    while (!_cts.Token.IsCancellationRequested)
-                    {
-                        var line = await _reader.ReadLineAsync().ConfigureAwait(false);
-                        if (line == null) break;
-                        System.Threading.Interlocked.Increment(ref LinesRead);
-                        if (line.IndexOf("READY", StringComparison.OrdinalIgnoreCase) >= 0)
-                        {
-                            ReadyReceived = true;
-                        }
-                        if (line.IndexOf("STOPPED", StringComparison.OrdinalIgnoreCase) >= 0)
-                        {
-                            StoppedReceived = true;
-                        }
-                        await _writer.WriteLineAsync(line).ConfigureAwait(false);
-                    }
-                }
-                catch
-                {
-                    // Stream closed, process exited, or drain canceled
-                }
-            });
-        }
-
-        public bool WaitForDrain(int timeoutMs)
-        {
-            if (_drainTask == null) return true;
-            try
-            {
-                return _drainTask.Wait(timeoutMs);
-            }
-            catch
-            {
-                return false;
-            }
-        }
-
-        public void Dispose()
-        {
-            try { _cts.Cancel(); } catch {}
-            try { _drainTask?.Wait(1000); } catch {}
-            try { _writer?.Dispose(); } catch {}
-            try { _reader?.Dispose(); } catch {}
-            try { _cts?.Dispose(); } catch {}
-        }
-    }
-
     private static string SetUpTestFixture(SyntheticTestDirectory temp)
     {
         var root = temp.GetPath("trial_root");
 
         var helperExeBytes = Encoding.ASCII.GetBytes("TEST_HELPER_EXE_BYTES");
         var helperExeHash = ComputeSha256Hex(helperExeBytes);
+        var helperProvBytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new
+        {
+            SourcePath = "tools/validation/QueueFixture.cpp",
+            SourceSha256 = "TEST_SRC_SHA",
+            CheckoutCommit = "TEST_COMMIT",
+            CheckoutTree = "TEST_TREE",
+            GithubRunId = "12345",
+            Files = new[]
+            {
+                new { Name = "QueueFixture.exe", Sha256 = helperExeHash, SizeBytes = (long)helperExeBytes.Length }
+            }
+        }));
         var helperZip = temp.GetPath("helper.zip");
-        CreateSyntheticZip(helperZip, new Dictionary<string, byte[]> { { "QueueFixture.exe", helperExeBytes } });
+        CreateSyntheticZip(helperZip, new Dictionary<string, byte[]>
+        {
+            { "QueueFixture.exe", helperExeBytes },
+            { "provenance.json", helperProvBytes }
+        });
         var helperZipHash = ComputeSha256Hex(File.ReadAllBytes(helperZip));
         var helperZipSize = new FileInfo(helperZip).Length;
         var helperExeSize = helperExeBytes.Length;
@@ -1228,6 +1499,12 @@ public sealed class ProcessLifecycleTrialPreparationTests
             HelperZipSha256 = helperZipHash,
             HelperExeSize = helperExeSize,
             HelperExeSha256 = helperExeHash,
+            HelperProvenance = new
+            {
+                SourceSha256 = "TEST_SRC_SHA",
+                CheckoutCommit = "TEST_COMMIT",
+                CheckoutTree = "TEST_TREE"
+            },
             CompanionZipSize = compZipSize,
             CompanionZipSha256 = compZipHash,
             CompanionExeSize = compExeSize,
@@ -1257,7 +1534,9 @@ public sealed class ProcessLifecycleTrialPreparationTests
         var state = new
         {
             BatchStartTimeUtc = DateTime.UtcNow.ToString("o"),
+            TrialStartUtc = DateTime.UtcNow.ToString("o"),
             SetupElapsedMilliseconds = 100,
+            ElapsedMilliseconds = 100,
             HelperStartAttempts = helperStartAttempts,
             CompanionStartAttempts = companionStartAttempts,
             MaxHelperStarts = 4,
@@ -1268,10 +1547,21 @@ public sealed class ProcessLifecycleTrialPreparationTests
             CurrentCheckpoint = "Setup",
             LastCheckpointOutcome = lastOutcome,
             LastFailedCheckpoint = (string?)null,
+            LastFailedReason = (string?)null,
+            TerminalHold = false,
+            TerminalHoldReason = (string?)null,
+            CurrentReadiness = "Ready",
+            ReadinessReason = "Ready",
+            CurrentFootprintBytes = 1000L,
+            ActiveProcesses = Array.Empty<object>(),
+            AdoptedScriptSha256 = (string?)null,
+            AdoptedToken = (string?)null,
             IsEnded = isEnded,
             TestPinsUsed = testPinsUsed,
             ActiveHelperPid = (int?)null,
+            ActiveHelperSlot = (int?)null,
             ActiveCompanionPid = (int?)null,
+            ActiveSupervisorPid = (int?)null,
             Checkpoints = new[] { "Setup" }
         };
 

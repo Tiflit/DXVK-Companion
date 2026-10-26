@@ -51,7 +51,7 @@ Following Codex's grouped review on PR #302, the following coherent repairs were
 
 ## Cryptographic and Script Identifiers
 
-- **Repaired Script (`tools/validation/ProcessLifecycleTrial.ps1`) SHA-256:** `a006699c82b34eeb4020bbac9737b3806edb0897b95d994ca3db701c7137e218`
+- **Repaired Script (`tools/validation/ProcessLifecycleTrial.ps1`) SHA-256:** `247d91656418588b3f9fa62314cfd0171ef2ddef57869cc0c14e6e72b37f709d`
 - **Helper Artifact:** ID `12609386490`, ZIP SHA256 `f75ec55738e6ca3c1a0cd0a342aefeaa0fb3addd03538f03f2ac7a43295750de`, EXE SHA256 `f720cecae0f13eeef6d9b5e2d259b51df97b37bc3347b241071e25e8c1548d70`
 - **Companion Candidate:** ID `12532606945`, ZIP SHA256 `32660fd3e3ed87385e47940d490db2e6ab93daad7e993fe4225dd157232b3b14`, EXE SHA256 `25012c67ade281e0d4585282bf485e4783a1f7c486018f8d1a038c5f2dc18ca4`
 
@@ -139,6 +139,36 @@ Following Codex review comment 6404748227 at head `31c43f4`, the following repai
    - `VerifyCheckpoint_Applied_ResolvesBackupRelativeToBackupsRoot`: Tests native backup resolution relative to `Profiles/Backups/`.
    - `VerifyCheckpoint_GamesJson_RequiresSingleProfile`: Tests rejection of multi-profile `games.json`.
    - `VerifyCheckpoint_Pending_RequiresLiveHelper_WhenNotPureDataCheck`: Tests live helper requirement when `-PureDataCheck` is omitted.
+
+## Delta Repair Cycle 3 — Addressing Codex Review 6405199238 (C1–C4 Closure)
+
+Following Codex focused review comment 6405199238 at head `39cd6bf`, the following targeted repairs and regressions were implemented strictly within the four allowed paths:
+
+### 1. C1 — Pinned Provenance Extraction & Helper Package Validation
+- Replaced undefined `Extract-SafeZipArchive` call in `Extract-CompanionProvenance` with `Expand-SafeZipArchiveInternal`.
+- Updated schema validation to support `head_sha` recorded by CI `build-provenance.json` as well as `sha` and `commit`, failing closed on missing commit fields under StrictMode.
+- Added helper package provenance validation in `Setup`: extracts `provenance.json` from `helper_package` and validates `SourceSha256`, `CheckoutCommit`, `CheckoutTree`, `GithubRunId`, and `Files` inventory containing `QueueFixture.exe` with matching hash and size against frozen constants.
+- Ensured `PureDataCheck` sets `$state.NonQualifyingPureDataCheck = $true` and `$state.LastCheckpointOutcome = "PureDataCheck"`, explicitly preventing synthetic test qualifications from masquerading as qualified production trial runs.
+- Added data-only regression tests exercising positive extraction, wrong commit SHA, missing manifest, and tampered helper provenance.
+
+### 2. C2 — Continuous Owner Monitoring, Error/Cap Survival, and Readiness Binding
+- Replaced blocking `[Console]::ReadLine()` in interactive supervisor with a bounded 500ms asynchronous read loop (`Task.Run([Console]::ReadLine)`), running `Invoke-SuperviseObservationCycle` continuously during operator pauses.
+- Implemented full batch monotonic budget tracking from `TrialStartUtc` without resets or omissions across owner restarts.
+- Evaluated declared numeric process limits: helper working set (50 MiB), helper CPU time (10 min), companion working set (500 MiB), companion CPU time (30 min), root footprint (2 GiB), trial duration (120 min).
+- On cap, command exhaustion, batch exception, or EOF while children remain alive: latches durable `TerminalHold = $true` (refusing new test actions while allowing clean stops/status), retains owned process handles, and maintains continuous stream draining and observation until children safely exit.
+- Explicit cooperative readiness binding: computes `CurrentReadiness` ("Ready" / "NotReady") based on `TerminalHold`, prior failures, start attempt caps, elapsed duration, and adopted attestation.
+
+### 3. C3 — Tested Embedded Drainer & Observable Faults
+- Removed duplicated `SafeProcessStreamDrainer` C# class from test suite. All tests now exercise the embedded C# class in `ProcessLifecycleTrial.ps1` via `-Action Test-Drainer`.
+- Upgraded `SafeProcessStreamDrainer`: writes line to disk BEFORE setting `ReadyReceived` / `StoppedReceived`, captures I/O exceptions in `HasFault` and `FaultMessage`, exposes `IsCompleted`, bounds log file size via `MaxBytes` (100 MiB default), and causes `WaitForDrain(timeoutMs)` to return `false` on timeout or fault.
+- `Supervise-HelperStop` and `Supervise-CompanionStop` evaluate `WaitForDrain(5000)` and assert `-not $drainer.HasFault`, throwing on lost output or I/O failure rather than silently certifying success.
+- Added regression tests for token detection, I/O fault exposure, and byte limit cap.
+
+### 4. C4 — Fail-Closed Tar Inspection Bounds & Retained Evidence
+- Implemented `Parse-TarListingInternal`: fail-closed parser for bsdtar/tar listing format validating entry types (`-` and `d` only, rejecting symlinks `l` and specials), duplicate/colliding entry paths via normalized HashSet, entry count caps (500), and total expanded byte size caps (100 MiB).
+- Guaranteed that non-numeric/unknown size tokens throw immediately instead of silently defaulting to 0.
+- `Extract-BoundedDxvkTarGz`: executes bounded `tar.exe` inspection and extraction (30s timeouts), writes listing and error output directly into `$canonRoot/logs/` (`dxvk-$Version-listing.txt`, `dxvk-$Version-inspect-stderr.txt`, `dxvk-$Version-extract-stderr.txt`), and preserves all logs permanently without cleanup.
+- Added regression tests for accepted listing, malformed sizes, forbidden types, duplicate entries, and size caps.
 
 
 

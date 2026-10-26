@@ -16,7 +16,10 @@ param(
         "Test-BatchGuard",
         "Take-Snapshot",
         "Verify-Checkpoint",
-        "Status"
+        "Status",
+        "Test-Drainer",
+        "Test-ParseTarListing",
+        "Test-Provenance"
     )]
     [string]$Action,
 
@@ -78,6 +81,33 @@ param(
     [string]$CommandFile,
 
     [Parameter(Mandatory = $false)]
+    [string]$TestInputText,
+
+    [Parameter(Mandatory = $false)]
+    [string]$LogPath,
+
+    [Parameter(Mandatory = $false)]
+    [int]$TimeoutMs = 5000,
+
+    [Parameter(Mandatory = $false)]
+    [long]$MaxBytes = 104857600L,
+
+    [Parameter(Mandatory = $false)]
+    [string[]]$Lines,
+
+    [Parameter(Mandatory = $false)]
+    [string]$ListingFilePath,
+
+    [Parameter(Mandatory = $false)]
+    [long]$MaxEntries = 500,
+
+    [Parameter(Mandatory = $false)]
+    [long]$MaxTotalBytes = 104857600L,
+
+    [Parameter(Mandatory = $false)]
+    [switch]$SimulateFault,
+
+    [Parameter(Mandatory = $false)]
     [switch]$PureDataCheck,
 
     [Parameter(Mandatory = $false)]
@@ -110,13 +140,19 @@ namespace DXVKCompanion.Validation
         public volatile bool ReadyReceived;
         public volatile bool StoppedReceived;
         public int LinesRead;
+        public volatile bool IsCompleted;
+        public volatile bool HasFault;
+        public string FaultMessage;
+        public long BytesWritten;
+        public readonly long MaxBytes;
 
-        public SafeProcessStreamDrainer(StreamReader reader, string logFilePath, Encoding encoding)
+        public SafeProcessStreamDrainer(StreamReader reader, string logFilePath, Encoding encoding, long maxBytes)
         {
             if (reader == null) throw new ArgumentNullException("reader");
             if (string.IsNullOrEmpty(logFilePath)) throw new ArgumentNullException("logFilePath");
 
             _reader = reader;
+            MaxBytes = maxBytes > 0 ? maxBytes : 104857600L;
             var dir = Path.GetDirectoryName(logFilePath);
             if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
             {
@@ -128,8 +164,18 @@ namespace DXVKCompanion.Validation
             _cts = new CancellationTokenSource();
         }
 
+        public SafeProcessStreamDrainer(StreamReader reader, string logFilePath, Encoding encoding)
+            : this(reader, logFilePath, encoding, 104857600L)
+        {
+        }
+
+        public SafeProcessStreamDrainer(Stream inputStream, string logFilePath, Encoding encoding, long maxBytes)
+            : this(OpenStreamReader(inputStream, encoding), logFilePath, encoding, maxBytes)
+        {
+        }
+
         public SafeProcessStreamDrainer(Stream inputStream, string logFilePath, Encoding encoding)
-            : this(OpenStreamReader(inputStream, encoding), logFilePath, encoding)
+            : this(inputStream, logFilePath, encoding, 104857600L)
         {
         }
 
@@ -149,7 +195,20 @@ namespace DXVKCompanion.Validation
                     {
                         var line = await _reader.ReadLineAsync().ConfigureAwait(false);
                         if (line == null) break;
+
+                        var lineByteCount = (long)Encoding.UTF8.GetByteCount(line) + 2;
+                        if (BytesWritten + lineByteCount > MaxBytes)
+                        {
+                            HasFault = true;
+                            FaultMessage = "Maximum log stream size exceeded (" + MaxBytes + " bytes).";
+                            break;
+                        }
+
+                        await _writer.WriteLineAsync(line).ConfigureAwait(false);
+                        BytesWritten += lineByteCount;
+
                         Interlocked.Increment(ref LinesRead);
+
                         if (line.IndexOf("READY", StringComparison.OrdinalIgnoreCase) >= 0)
                         {
                             ReadyReceived = true;
@@ -158,12 +217,16 @@ namespace DXVKCompanion.Validation
                         {
                             StoppedReceived = true;
                         }
-                        await _writer.WriteLineAsync(line).ConfigureAwait(false);
+                    }
+                    if (!HasFault)
+                    {
+                        IsCompleted = true;
                     }
                 }
-                catch
+                catch (Exception ex)
                 {
-                    // Stream closed, process exited, or drain canceled
+                    HasFault = true;
+                    FaultMessage = ex.Message;
                 }
             });
         }
@@ -173,10 +236,13 @@ namespace DXVKCompanion.Validation
             if (_drainTask == null) return true;
             try
             {
-                return _drainTask.Wait(timeoutMs);
+                bool finished = _drainTask.Wait(timeoutMs);
+                return finished && !HasFault;
             }
-            catch
+            catch (Exception ex)
             {
+                HasFault = true;
+                FaultMessage = ex.Message;
                 return false;
             }
         }
@@ -185,7 +251,7 @@ namespace DXVKCompanion.Validation
         {
             try { if (_cts != null) _cts.Cancel(); } catch {}
             try { if (_drainTask != null) _drainTask.Wait(1000); } catch {}
-            try { if (_writer != null) _writer.Dispose(); } catch {}
+            try { if (_writer != null) { _writer.Flush(); _writer.Dispose(); } } catch {}
             try { if (_reader != null) _reader.Dispose(); } catch {}
             try { if (_cts != null) _cts.Dispose(); } catch {}
         }
@@ -232,12 +298,16 @@ $script:FROZEN_DXVK_31_ASSET_ID       = "534051057"
 $script:FROZEN_DXVK_31_SIZE           = 18056721
 $script:FROZEN_DXVK_31_SHA256         = "30f9cc326874be344285582275446968cfa4c069db31ce56df312d6644179154"
 
-# Strict Batch Budgets
-$script:MAX_TRIAL_DURATION_SECONDS    = 7200    # 120 minutes total
-$script:MAX_HELPER_STARTS             = 4
-$script:MAX_COMPANION_STARTS          = 8
-$script:MAX_FIXTURE_ROOT_BYTES        = 2147483648L  # 2 GiB
-$script:HELPER_WATCHDOG_SECONDS       = 1500        # 25 minutes
+# Strict Batch Budgets and Declared Numeric Limits
+$script:MAX_TRIAL_DURATION_SECONDS      = 7200    # 120 minutes total
+$script:MAX_HELPER_STARTS               = 4
+$script:MAX_COMPANION_STARTS            = 8
+$script:MAX_FIXTURE_ROOT_BYTES          = 2147483648L  # 2 GiB
+$script:HELPER_WATCHDOG_SECONDS         = 1500        # 25 minutes
+$script:MAX_HELPER_WORKING_SET_BYTES    = 52428800L   # 50 MiB
+$script:MAX_COMPANION_WORKING_SET_BYTES = 524288000L  # 500 MiB
+$script:MAX_HELPER_CPU_MILLISECONDS     = 600000L     # 10 minutes CPU
+$script:MAX_COMPANION_CPU_MILLISECONDS  = 1800000L    # 30 minutes CPU
 
 # Required Adoption Attestation Token
 $script:REQUIRED_ADOPTION_TOKEN       = "ADOPTED-PROCESS-LIFECYCLE-V1"
@@ -538,29 +608,54 @@ function Invoke-SuperviseObservationCycle([string]$FixtureRoot) {
     $canon = Validate-RootBoundPath -RootPath $FixtureRoot -CandidatePath $FixtureRoot
     $state = Get-StateData -FixtureRoot $canon
 
-    # 1. Monotonic elapsed accounting
-    if ($null -eq $script:SupervisorMonotonicTimer) {
-        $script:SupervisorMonotonicTimer = [System.Diagnostics.Stopwatch]::StartNew()
+    # 1. Monotonic elapsed accounting from Setup start without gaps or resets
+    if (-not [string]::IsNullOrWhiteSpace($state.TrialStartUtc)) {
+        try {
+            $trialStart = [DateTime]::Parse($state.TrialStartUtc, $null, [System.Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
+            $totalElapsedMs = [long]([DateTime]::UtcNow - $trialStart).TotalMilliseconds
+            $state.ElapsedMilliseconds = [Math]::Max([long]$state.ElapsedMilliseconds, $totalElapsedMs)
+        } catch {
+            if ($null -eq $script:SupervisorMonotonicTimer) {
+                $script:SupervisorMonotonicTimer = [System.Diagnostics.Stopwatch]::StartNew()
+            }
+            $state.ElapsedMilliseconds = [long]($state.SetupElapsedMilliseconds + $script:SupervisorMonotonicTimer.ElapsedMilliseconds)
+        }
+    } else {
+        if ($null -eq $script:SupervisorMonotonicTimer) {
+            $script:SupervisorMonotonicTimer = [System.Diagnostics.Stopwatch]::StartNew()
+        }
+        $state.ElapsedMilliseconds = [long]($state.SetupElapsedMilliseconds + $script:SupervisorMonotonicTimer.ElapsedMilliseconds)
     }
-    $state.ElapsedMilliseconds = [long]($state.SetupElapsedMilliseconds + $script:SupervisorMonotonicTimer.ElapsedMilliseconds)
     $elapsedSeconds = [long]($state.ElapsedMilliseconds / 1000)
 
+    # Check trial duration limit
     if ($elapsedSeconds -gt $script:MAX_TRIAL_DURATION_SECONDS) {
+        $state.TerminalHold = $true
+        $state.TerminalHoldReason = "Trial duration budget ($($script:MAX_TRIAL_DURATION_SECONDS)s) exceeded ($($elapsedSeconds)s)."
         $state.LastCheckpointOutcome = "Failed"
         $state.LastFailedCheckpoint = "TrialDurationExhausted"
-        $state.LastFailedReason = "Maximum trial duration ($($script:MAX_TRIAL_DURATION_SECONDS)s) exceeded."
-        Save-StateData -FixtureRoot $canon -StateObject $state
-        throw "Trial duration budget exceeded: $($elapsedSeconds)s > $($script:MAX_TRIAL_DURATION_SECONDS)s."
+        $state.LastFailedReason = $state.TerminalHoldReason
     }
 
-    # 2. Sample active child processes (CPU time & working set)
+    # 2. Check root storage footprint
+    $currentFootprint = Measure-DirectoryFootprintBytes -DirectoryPath $canon
+    $state.CurrentFootprintBytes = $currentFootprint
+    if ($currentFootprint -gt $script:MAX_FIXTURE_ROOT_BYTES) {
+        $state.TerminalHold = $true
+        $state.TerminalHoldReason = "Fixture root footprint ($currentFootprint bytes) exceeds 2 GiB limit ($($script:MAX_FIXTURE_ROOT_BYTES) bytes)."
+        $state.LastCheckpointOutcome = "Failed"
+        $state.LastFailedCheckpoint = "FootprintExhausted"
+        $state.LastFailedReason = $state.TerminalHoldReason
+    }
+
+    # 3. Sample active child processes (CPU time & working set) and evaluate thresholds
     $activeProcesses = @()
     if ($null -ne $script:HelperProcess -and -not $script:HelperProcess.HasExited) {
         try {
             $script:HelperProcess.Refresh()
-            $cpuMs = $script:HelperProcess.TotalProcessorTime.TotalMilliseconds
-            $wsBytes = $script:HelperProcess.WorkingSet64
-            $peakWs = $script:HelperProcess.PeakWorkingSet64
+            $cpuMs = [long]$script:HelperProcess.TotalProcessorTime.TotalMilliseconds
+            $wsBytes = [long]$script:HelperProcess.WorkingSet64
+            $peakWs = [long]$script:HelperProcess.PeakWorkingSet64
             $activeProcesses += [PSCustomObject]@{
                 Role = "Helper"
                 Slot = $state.ActiveHelperSlot
@@ -570,15 +665,30 @@ function Invoke-SuperviseObservationCycle([string]$FixtureRoot) {
                 PeakWorkingSetBytes = $peakWs
                 SampledAtUtc = [DateTime]::UtcNow.ToString("o")
             }
+
+            if ($wsBytes -gt $script:MAX_HELPER_WORKING_SET_BYTES) {
+                $state.TerminalHold = $true
+                $state.TerminalHoldReason = "Helper working set ($wsBytes bytes) exceeds limit ($($script:MAX_HELPER_WORKING_SET_BYTES) bytes)."
+                $state.LastCheckpointOutcome = "Failed"
+                $state.LastFailedCheckpoint = "HelperMemoryExhausted"
+                $state.LastFailedReason = $state.TerminalHoldReason
+            }
+            if ($cpuMs -gt $script:MAX_HELPER_CPU_MILLISECONDS) {
+                $state.TerminalHold = $true
+                $state.TerminalHoldReason = "Helper CPU time ($cpuMs ms) exceeds limit ($($script:MAX_HELPER_CPU_MILLISECONDS) ms)."
+                $state.LastCheckpointOutcome = "Failed"
+                $state.LastFailedCheckpoint = "HelperCpuExhausted"
+                $state.LastFailedReason = $state.TerminalHoldReason
+            }
         } catch {}
     }
 
     if ($null -ne $script:CompanionProcess -and -not $script:CompanionProcess.HasExited) {
         try {
             $script:CompanionProcess.Refresh()
-            $cpuMs = $script:CompanionProcess.TotalProcessorTime.TotalMilliseconds
-            $wsBytes = $script:CompanionProcess.WorkingSet64
-            $peakWs = $script:CompanionProcess.PeakWorkingSet64
+            $cpuMs = [long]$script:CompanionProcess.TotalProcessorTime.TotalMilliseconds
+            $wsBytes = [long]$script:CompanionProcess.WorkingSet64
+            $peakWs = [long]$script:CompanionProcess.PeakWorkingSet64
             $activeProcesses += [PSCustomObject]@{
                 Role = "Companion"
                 Pid = $script:CompanionProcess.Id
@@ -587,30 +697,62 @@ function Invoke-SuperviseObservationCycle([string]$FixtureRoot) {
                 PeakWorkingSetBytes = $peakWs
                 SampledAtUtc = [DateTime]::UtcNow.ToString("o")
             }
+
+            if ($wsBytes -gt $script:MAX_COMPANION_WORKING_SET_BYTES) {
+                $state.TerminalHold = $true
+                $state.TerminalHoldReason = "Companion working set ($wsBytes bytes) exceeds limit ($($script:MAX_COMPANION_WORKING_SET_BYTES) bytes)."
+                $state.LastCheckpointOutcome = "Failed"
+                $state.LastFailedCheckpoint = "CompanionMemoryExhausted"
+                $state.LastFailedReason = $state.TerminalHoldReason
+            }
+            if ($cpuMs -gt $script:MAX_COMPANION_CPU_MILLISECONDS) {
+                $state.TerminalHold = $true
+                $state.TerminalHoldReason = "Companion CPU time ($cpuMs ms) exceeds limit ($($script:MAX_COMPANION_CPU_MILLISECONDS) ms)."
+                $state.LastCheckpointOutcome = "Failed"
+                $state.LastFailedCheckpoint = "CompanionCpuExhausted"
+                $state.LastFailedReason = $state.TerminalHoldReason
+            }
         } catch {}
     }
     $state.ActiveProcesses = $activeProcesses
 
-    # 3. Fail-closed target & settings validation
+    # 4. Fail-closed target & settings validation
     $companionSettingsPath = [System.IO.Path]::Combine($canon, "companion", "settings.json")
     if (Test-Path -LiteralPath $companionSettingsPath -PathType Leaf) {
         $settingsRaw = [System.IO.File]::ReadAllText($companionSettingsPath, $script:Utf8NoBom)
         $settingsObj = ConvertFrom-Json -InputObject $settingsRaw
         if ("$($settingsObj.GlobalPolicy)" -ne "Manual") {
+            $state.TerminalHold = $true
+            $state.TerminalHoldReason = "Settings GlobalPolicy altered from Manual to $($settingsObj.GlobalPolicy)."
             $state.LastCheckpointOutcome = "Failed"
             $state.LastFailedCheckpoint = "SettingsTampered"
-            $state.LastFailedReason = "Settings GlobalPolicy altered from Manual to $($settingsObj.GlobalPolicy)."
-            Save-StateData -FixtureRoot $canon -StateObject $state
-            throw "Settings tampered: GlobalPolicy is '$($settingsObj.GlobalPolicy)' (expected 'Manual')."
+            $state.LastFailedReason = $state.TerminalHoldReason
         }
     }
 
-    # 4. Current readiness evaluation
+    # 5. Cooperative readiness evaluation
     $isReady = $true
-    if ($state.LastCheckpointOutcome -eq "Failed") {
+    $readinessReason = "Ready"
+
+    if ($state.TerminalHold) {
         $isReady = $false
+        $readinessReason = $state.TerminalHoldReason
+    } elseif ($state.LastCheckpointOutcome -eq "Failed") {
+        $isReady = $false
+        $readinessReason = "Prior checkpoint verification failed: $($state.LastFailedReason)"
+    } elseif ([int]$state.HelperStartAttempts -ge $script:MAX_HELPER_STARTS) {
+        $isReady = $false
+        $readinessReason = "Helper start limit reached ($($state.HelperStartAttempts)/$($script:MAX_HELPER_STARTS))."
+    } elseif ([int]$state.CompanionStartAttempts -ge $script:MAX_COMPANION_STARTS) {
+        $isReady = $false
+        $readinessReason = "Companion start limit reached ($($state.CompanionStartAttempts)/$($script:MAX_COMPANION_STARTS))."
+    } elseif ($elapsedSeconds -gt $script:MAX_TRIAL_DURATION_SECONDS) {
+        $isReady = $false
+        $readinessReason = "Trial duration budget exceeded."
     }
+
     $state.CurrentReadiness = if ($isReady) { "Ready" } else { "NotReady" }
+    $state.ReadinessReason = $readinessReason
 
     Save-StateData -FixtureRoot $canon -StateObject $state
 }
@@ -634,6 +776,10 @@ function Test-BatchGuardInternal(
 
     if ($state.IsEnded) {
         return @{ CanProceed = $false; Reason = "Batch is marked ended. Further starts are refused." }
+    }
+
+    if ($state.TerminalHold) {
+        return @{ CanProceed = $false; Reason = "Terminal hold active: $($state.TerminalHoldReason)" }
     }
 
     if ($state.LastCheckpointOutcome -eq "Failed") {
@@ -1017,18 +1163,115 @@ function Compare-SemanticLibraryJsonInternal([string]$JsonA, [string]$JsonB) {
     }
 }
 
+function Parse-TarListingInternal(
+    [string[]]$Lines,
+    [long]$MaxEntries = 500,
+    [long]$MaxTotalBytes = 104857600L
+) {
+    if ($null -eq $Lines) { throw "Lines array cannot be null." }
+
+    [long]$totalBytes = 0
+    $hasD3d11 = $false
+    $hasDxgi = $false
+    $seenPaths = New-Object System.Collections.Generic.HashSet[string] ([System.StringComparer]::OrdinalIgnoreCase)
+    $entryCount = 0
+
+    foreach ($rawLine in $Lines) {
+        if ([string]::IsNullOrWhiteSpace($rawLine)) { continue }
+        $line = $rawLine.Trim()
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+
+        $typeChar = $line[0]
+        if ($typeChar -ne '-' -and $typeChar -ne 'd') {
+            throw "DXVK tar archive contains forbidden entry type '$typeChar': $line"
+        }
+
+        $tokens = $line -split '\s+'
+        if ($tokens.Length -lt 6) {
+            throw "Malformed tar listing row (insufficient tokens): $line"
+        }
+
+        [long]$entryBytes = 0L
+        $pathToken = $null
+
+        if ($typeChar -eq '-') {
+            $parsedSize = $false
+            if ($tokens.Length -ge 8 -and [long]::TryParse($tokens[4], [ref]$entryBytes)) {
+                if ($entryBytes -lt 0) { throw "Negative entry size in tar listing: $tokens[4]" }
+                $parsedSize = $true
+                $pathToken = ($tokens[7..($tokens.Length - 1)] -join " ")
+            } elseif ($tokens.Length -ge 6 -and $tokens[1].Contains("/") -and [long]::TryParse($tokens[2], [ref]$entryBytes)) {
+                if ($entryBytes -lt 0) { throw "Negative entry size in tar listing: $tokens[2]" }
+                $parsedSize = $true
+                $pathToken = ($tokens[5..($tokens.Length - 1)] -join " ")
+            } elseif ([long]::TryParse($tokens[4], [ref]$entryBytes)) {
+                if ($entryBytes -lt 0) { throw "Negative entry size in tar listing: $tokens[4]" }
+                $parsedSize = $true
+                $pathToken = $tokens[-1]
+            }
+
+            if (-not $parsedSize) {
+                throw "Malformed or unknown entry size in tar listing: $line"
+            }
+        } else {
+            # Directory entry
+            $entryBytes = 0L
+            $pathToken = $tokens[-1]
+        }
+
+        if ([string]::IsNullOrWhiteSpace($pathToken)) {
+            throw "Malformed tar listing row (missing path): $line"
+        }
+
+        if ($pathToken.Contains("..") -or $pathToken.StartsWith("/") -or $pathToken.StartsWith("\")) {
+            throw "DXVK tar archive contains illegal traversal path: $pathToken"
+        }
+
+        $normalizedPath = $pathToken.Replace('\', '/').TrimStart('/').TrimEnd('/')
+        if ($seenPaths.Contains($normalizedPath)) {
+            throw "DXVK tar archive contains duplicate or colliding entry: $pathToken"
+        }
+        [void]$seenPaths.Add($normalizedPath)
+
+        $entryCount++
+        if ($entryCount -gt $MaxEntries) {
+            throw "DXVK tar archive exceeds maximum allowed entry count ($MaxEntries): $entryCount"
+        }
+
+        $totalBytes += $entryBytes
+        if ($totalBytes -gt $MaxTotalBytes) {
+            throw "DXVK tar archive expanded size ($totalBytes bytes) exceeds limit ($MaxTotalBytes bytes)."
+        }
+
+        if ($pathToken -like "*/x64/d3d11.dll") { $hasD3d11 = $true }
+        if ($pathToken -like "*/x64/dxgi.dll") { $hasDxgi = $true }
+    }
+
+    if (-not $hasD3d11 -or -not $hasDxgi) {
+        throw "DXVK tar archive does not contain required x64/d3d11.dll and x64/dxgi.dll."
+    }
+
+    return [PSCustomObject]@{
+        EntryCount = $entryCount
+        TotalBytes = $totalBytes
+        HasD3d11 = $hasD3d11
+        HasDxgi = $hasDxgi
+        Entries = @($seenPaths)
+    }
+}
+
 function Extract-CompanionProvenance(
     [string]$ProvenancePath,
     [string]$DestinationDir,
-    [bool]$TestPinsUsed,
-    $TestPins
+    [bool]$TestPinsUsed = $false,
+    $TestPins = $null
 ) {
     if (-not (Test-Path -LiteralPath $ProvenancePath -PathType Leaf)) {
         throw "Companion provenance file not found: $ProvenancePath"
     }
 
-    $expectedProvSize = if ($TestPinsUsed -and $TestPins.CompanionProvenanceSize) { [long]$TestPins.CompanionProvenanceSize } else { $script:FROZEN_COMPANION_PROVENANCE_SIZE }
-    $expectedProvHash = if ($TestPinsUsed -and $TestPins.CompanionProvenanceSha256) { $TestPins.CompanionProvenanceSha256 } else { $script:FROZEN_COMPANION_PROVENANCE_SHA256 }
+    $expectedProvSize = if ($TestPinsUsed -and $null -ne $TestPins -and $TestPins.CompanionProvenanceSize) { [long]$TestPins.CompanionProvenanceSize } else { $script:FROZEN_COMPANION_PROVENANCE_SIZE }
+    $expectedProvHash = if ($TestPinsUsed -and $null -ne $TestPins -and $TestPins.CompanionProvenanceSha256) { $TestPins.CompanionProvenanceSha256 } else { $script:FROZEN_COMPANION_PROVENANCE_SHA256 }
 
     $provItem = Get-Item -LiteralPath $ProvenancePath -Force
     if ($provItem.Length -ne $expectedProvSize) {
@@ -1056,8 +1299,11 @@ function Extract-CompanionProvenance(
     $provObj = $null
     if ($isZip) {
         [void][System.IO.Directory]::CreateDirectory($DestinationDir)
-        Extract-SafeZipArchive -ZipPath $ProvenancePath -DestinationDir $DestinationDir -MaxEntryCount 5 -MaxTotalBytes 65536
+        Expand-SafeZipArchiveInternal -ZipFilePath $ProvenancePath -DestinationDirectory $DestinationDir -MaxEntries 10 -MaxTotalBytes 1048576L
         $provJsonPath = [System.IO.Path]::Combine($DestinationDir, "build-provenance.json")
+        if (-not (Test-Path -LiteralPath $provJsonPath -PathType Leaf)) {
+            $provJsonPath = [System.IO.Path]::Combine($DestinationDir, "provenance.json")
+        }
         if (-not (Test-Path -LiteralPath $provJsonPath -PathType Leaf)) {
             throw "Companion provenance archive does not contain build-provenance.json"
         }
@@ -1073,12 +1319,33 @@ function Extract-CompanionProvenance(
         }
     }
 
+    $actualCommit = if ($null -ne $provObj.PSObject.Properties['head_sha']) {
+        "$($provObj.head_sha)"
+    } elseif ($null -ne $provObj.PSObject.Properties['sha']) {
+        "$($provObj.sha)"
+    } elseif ($null -ne $provObj.PSObject.Properties['commit']) {
+        "$($provObj.commit)"
+    } else {
+        $null
+    }
+
+    if ([string]::IsNullOrWhiteSpace($actualCommit)) {
+        throw "Companion provenance manifest does not contain a head_sha, sha, or commit property."
+    }
+
     if (-not $TestPinsUsed) {
-        if ($provObj.commit -ne $script:FROZEN_COMPANION_SRC_COMMIT) {
-            throw "Companion provenance commit mismatch: expected $($script:FROZEN_COMPANION_SRC_COMMIT), got $($provObj.commit)"
+        if ($actualCommit -ne $script:FROZEN_COMPANION_SRC_COMMIT) {
+            throw "Companion provenance commit mismatch: expected $($script:FROZEN_COMPANION_SRC_COMMIT), got '$actualCommit'"
         }
         if ("$($provObj.run_id)" -ne $script:FROZEN_COMPANION_RUN_ID) {
-            throw "Companion provenance run_id mismatch: expected $($script:FROZEN_COMPANION_RUN_ID), got $($provObj.run_id)"
+            throw "Companion provenance run_id mismatch: expected $($script:FROZEN_COMPANION_RUN_ID), got '$($provObj.run_id)'"
+        }
+    } else {
+        if ($null -ne $TestPins -and $null -ne (Get-SafePropertyValue -Object $TestPins -PropertyName "CompanionCommit") -and $actualCommit -ne $TestPins.CompanionCommit) {
+            throw "Companion provenance commit mismatch: expected $($TestPins.CompanionCommit), got '$actualCommit'"
+        }
+        if ($null -ne $TestPins -and $null -ne (Get-SafePropertyValue -Object $TestPins -PropertyName "CompanionRunId") -and "$($provObj.run_id)" -ne "$($TestPins.CompanionRunId)") {
+            throw "Companion provenance run_id mismatch: expected $($TestPins.CompanionRunId), got '$($provObj.run_id)'"
         }
     }
 }
@@ -1086,7 +1353,8 @@ function Extract-CompanionProvenance(
 function Extract-BoundedDxvkTarGz(
     [string]$TarGzPath,
     [string]$Version,
-    [string]$DestinationDir
+    [string]$DestinationDir,
+    [string]$LogsDir = ""
 ) {
     if (-not (Test-Path -LiteralPath $TarGzPath -PathType Leaf)) {
         throw "DXVK archive not found: $TarGzPath"
@@ -1104,88 +1372,94 @@ function Extract-BoundedDxvkTarGz(
         throw "DXVK $Version archive SHA256 mismatch: expected $expectedHash, got $actualHash"
     }
 
-    $tarExe = "tar.exe"
-    $tempListPath = [System.IO.Path]::GetTempFileName()
-    $tempErrPath = [System.IO.Path]::GetTempFileName()
-    try {
-        $p = Start-Process -FilePath $tarExe -ArgumentList "-ztvf `"$TarGzPath`"" -NoNewWindow -Wait -PassThru -RedirectStandardOutput $tempListPath -RedirectStandardError $tempErrPath
-        if ($p.ExitCode -ne 0) {
-            $err = [System.IO.File]::ReadAllText($tempErrPath)
-            throw "Failed to inspect tar archive '$TarGzPath' (exit code $($p.ExitCode)): $err"
-        }
-
-        $lines = [System.IO.File]::ReadAllLines($tempListPath)
-        if ($lines.Length -gt 500) {
-            throw "DXVK tar archive exceeds maximum allowed entry count (500): $($lines.Length)"
-        }
-
-        [long]$totalBytes = 0
-        $hasD3d11 = $false
-        $hasDxgi = $false
-
-        foreach ($line in $lines) {
-            if ([string]::IsNullOrWhiteSpace($line)) { continue }
-            $typeChar = $line[0]
-            if ($typeChar -ne '-' -and $typeChar -ne 'd') {
-                throw "DXVK tar archive contains forbidden entry type '$typeChar': $line"
-            }
-
-            $tokens = $line -split '\s+'
-            if ($tokens.Length -ge 6) {
-                $sizeToken = $tokens[2]
-                $pathToken = $tokens[-1]
-
-                if ($pathToken.Contains("..") -or $pathToken.StartsWith("/") -or $pathToken.StartsWith("\")) {
-                    throw "DXVK tar archive contains illegal traversal path: $pathToken"
-                }
-
-                if ($typeChar -eq '-') {
-                    $entryBytes = 0L
-                    if ([long]::TryParse($sizeToken, [ref]$entryBytes)) {
-                        $totalBytes += $entryBytes
-                    }
-                }
-
-                if ($pathToken -like "*/x64/d3d11.dll") { $hasD3d11 = $true }
-                if ($pathToken -like "*/x64/dxgi.dll") { $hasDxgi = $true }
-            }
-        }
-
-        if ($totalBytes -gt 104857600L) {
-            throw "DXVK tar archive expanded size ($totalBytes bytes) exceeds 100 MiB limit."
-        }
-        if (-not $hasD3d11 -or -not $hasDxgi) {
-            throw "DXVK tar archive does not contain required x64/d3d11.dll and x64/dxgi.dll."
-        }
-
-        [void][System.IO.Directory]::CreateDirectory($DestinationDir)
-        $cleanVer = $Version.TrimStart('v')
-        $prefix = "dxvk-$cleanVer"
-        & $tarExe -xzf $TarGzPath -C $DestinationDir --strip-components 2 "$prefix/x64/d3d11.dll" "$prefix/x64/dxgi.dll"
-        if ($LASTEXITCODE -ne 0) {
-            throw "tar.exe extraction failed with exit code $LASTEXITCODE."
-        }
-
-        $extD3d11 = [System.IO.Path]::Combine($DestinationDir, "d3d11.dll")
-        $extDxgi = [System.IO.Path]::Combine($DestinationDir, "dxgi.dll")
-        if (-not (Test-Path -LiteralPath $extD3d11 -PathType Leaf) -or -not (Test-Path -LiteralPath $extDxgi -PathType Leaf)) {
-            throw "Extracted DXVK reference DLLs not found in $DestinationDir."
-        }
-
-        $refManifest = [PSCustomObject]@{
-            Version = $Version
-            ExtractedAtUtc = [DateTime]::UtcNow.ToString("o")
-            Files = @(
-                [PSCustomObject]@{ RelativePath = "d3d11.dll"; SizeBytes = (Get-Item -LiteralPath $extD3d11).Length; Sha256 = Compute-FileSha256 -FilePath $extD3d11 },
-                [PSCustomObject]@{ RelativePath = "dxgi.dll"; SizeBytes = (Get-Item -LiteralPath $extDxgi).Length; Sha256 = Compute-FileSha256 -FilePath $extDxgi }
-            )
-        }
-        $refManifestJson = ConvertTo-Json -InputObject $refManifest -Depth 5
-        [System.IO.File]::WriteAllText([System.IO.Path]::Combine($DestinationDir, "manifest.json"), $refManifestJson, $script:Utf8NoBom)
-    } finally {
-        if (Test-Path -LiteralPath $tempListPath) { Remove-Item -LiteralPath $tempListPath -Force -ErrorAction SilentlyContinue }
-        if (Test-Path -LiteralPath $tempErrPath) { Remove-Item -LiteralPath $tempErrPath -Force -ErrorAction SilentlyContinue }
+    $effectiveLogsDir = if (-not [string]::IsNullOrWhiteSpace($LogsDir)) {
+        $LogsDir
+    } else {
+        $parentLogs = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($DestinationDir, "..", "..", "logs"))
+        if (Test-Path -LiteralPath $parentLogs -PathType Container) { $parentLogs } else { $DestinationDir }
     }
+    [void][System.IO.Directory]::CreateDirectory($effectiveLogsDir)
+
+    $listingPath = [System.IO.Path]::Combine($effectiveLogsDir, "dxvk-$Version-listing.txt")
+    $inspectErrPath = [System.IO.Path]::Combine($effectiveLogsDir, "dxvk-$Version-inspect-stderr.txt")
+
+    $tarExe = "tar.exe"
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $tarExe
+    $psi.Arguments = "-ztvf `"$TarGzPath`""
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.CreateNoWindow = $true
+
+    $p = [System.Diagnostics.Process]::Start($psi)
+    $stdoutTask = $p.StandardOutput.ReadToEndAsync()
+    $stderrTask = $p.StandardError.ReadToEndAsync()
+
+    if (-not $p.WaitForExit(30000)) {
+        try { $p.Kill() } catch {}
+        throw "DXVK tar archive inspection timed out after 30000ms."
+    }
+
+    $listingText = $stdoutTask.Result
+    $errText = $stderrTask.Result
+
+    # Retain inspection output and errors permanently in logs directory
+    [System.IO.File]::WriteAllText($listingPath, $listingText, $script:Utf8NoBom)
+    [System.IO.File]::WriteAllText($inspectErrPath, $errText, $script:Utf8NoBom)
+
+    if ($p.ExitCode -ne 0) {
+        throw "Failed to inspect tar archive '$TarGzPath' (exit code $($p.ExitCode)): $errText"
+    }
+
+    $lines = $listingText -split '\r?\n'
+    $parseResult = Parse-TarListingInternal -Lines $lines -MaxEntries 500 -MaxTotalBytes 104857600L
+
+    [void][System.IO.Directory]::CreateDirectory($DestinationDir)
+    $cleanVer = $Version.TrimStart('v')
+    $prefix = "dxvk-$cleanVer"
+
+    $extractPsi = New-Object System.Diagnostics.ProcessStartInfo
+    $extractPsi.FileName = $tarExe
+    $extractPsi.Arguments = "-xzf `"$TarGzPath`" -C `"$DestinationDir`" --strip-components 2 `"$prefix/x64/d3d11.dll`" `"$prefix/x64/dxgi.dll`""
+    $extractPsi.UseShellExecute = $false
+    $extractPsi.RedirectStandardOutput = $true
+    $extractPsi.RedirectStandardError = $true
+    $extractPsi.CreateNoWindow = $true
+
+    $ep = [System.Diagnostics.Process]::Start($extractPsi)
+    $extErrTask = $ep.StandardError.ReadToEndAsync()
+
+    if (-not $ep.WaitForExit(30000)) {
+        try { $ep.Kill() } catch {}
+        throw "DXVK tar extraction timed out after 30000ms."
+    }
+    $extErr = $extErrTask.Result
+    $extractLogPath = [System.IO.Path]::Combine($effectiveLogsDir, "dxvk-$Version-extract-stderr.txt")
+    [System.IO.File]::WriteAllText($extractLogPath, $extErr, $script:Utf8NoBom)
+
+    if ($ep.ExitCode -ne 0) {
+        throw "tar.exe extraction failed with exit code $($ep.ExitCode): $extErr"
+    }
+
+    $extD3d11 = [System.IO.Path]::Combine($DestinationDir, "d3d11.dll")
+    $extDxgi = [System.IO.Path]::Combine($DestinationDir, "dxgi.dll")
+    if (-not (Test-Path -LiteralPath $extD3d11 -PathType Leaf) -or -not (Test-Path -LiteralPath $extDxgi -PathType Leaf)) {
+        throw "Extracted DXVK reference DLLs not found in $DestinationDir."
+    }
+
+    $refManifest = [PSCustomObject]@{
+        Version = $Version
+        ArchiveSha256 = $actualHash
+        ArchiveSizeBytes = $tarItem.Length
+        ExtractedAtUtc = [DateTime]::UtcNow.ToString("o")
+        Files = @(
+            [PSCustomObject]@{ RelativePath = "d3d11.dll"; SizeBytes = (Get-Item -LiteralPath $extD3d11).Length; Sha256 = Compute-FileSha256 -FilePath $extD3d11 },
+            [PSCustomObject]@{ RelativePath = "dxgi.dll"; SizeBytes = (Get-Item -LiteralPath $extDxgi).Length; Sha256 = Compute-FileSha256 -FilePath $extDxgi }
+        )
+    }
+    $refManifestJson = ConvertTo-Json -InputObject $refManifest -Depth 5
+    [System.IO.File]::WriteAllText([System.IO.Path]::Combine($DestinationDir, "manifest.json"), $refManifestJson, $script:Utf8NoBom)
 }
 
 # ==============================================================================
@@ -1289,6 +1563,68 @@ function Invoke-SetupAction {
     $extractedHelperExe = [System.IO.Path]::Combine($helperExtractDir, "QueueFixture.exe")
     if (-not (Test-Path -LiteralPath $extractedHelperExe -PathType Leaf)) {
         throw "Extracted helper package does not contain QueueFixture.exe"
+    }
+
+    # Validate helper package provenance manifest (C1)
+    $helperProvPath = [System.IO.Path]::Combine($helperExtractDir, "provenance.json")
+    if (-not (Test-Path -LiteralPath $helperProvPath -PathType Leaf)) {
+        if (-not $testPinsUsed) {
+            throw "Extracted helper package does not contain required provenance.json"
+        }
+    } else {
+        try {
+            $helperProvRaw = [System.IO.File]::ReadAllText($helperProvPath, $script:Utf8NoBom)
+            $helperProvObj = ConvertFrom-Json -InputObject $helperProvRaw
+        } catch {
+            throw "Extracted helper package provenance.json is invalid JSON: $_"
+        }
+
+        if (-not $testPinsUsed) {
+            if ($helperProvObj.SourceSha256 -ne $script:FROZEN_HELPER_SRC_SHA256) {
+                throw "Helper provenance SourceSha256 mismatch: expected $($script:FROZEN_HELPER_SRC_SHA256), got '$($helperProvObj.SourceSha256)'"
+            }
+            if ($helperProvObj.CheckoutCommit -ne $script:FROZEN_HELPER_CHECKOUT_COMMIT) {
+                throw "Helper provenance CheckoutCommit mismatch: expected $($script:FROZEN_HELPER_CHECKOUT_COMMIT), got '$($helperProvObj.CheckoutCommit)'"
+            }
+            if ($helperProvObj.CheckoutTree -ne $script:FROZEN_HELPER_TREE) {
+                throw "Helper provenance CheckoutTree mismatch: expected $($script:FROZEN_HELPER_TREE), got '$($helperProvObj.CheckoutTree)'"
+            }
+            if ("$($helperProvObj.GithubRunId)" -ne $script:FROZEN_HELPER_RUN_ID) {
+                throw "Helper provenance GithubRunId mismatch: expected $($script:FROZEN_HELPER_RUN_ID), got '$($helperProvObj.GithubRunId)'"
+            }
+
+            # Verify files inventory contains QueueFixture.exe
+            $helperExeFoundInInventory = $false
+            if ($helperProvObj.Files) {
+                foreach ($f in $helperProvObj.Files) {
+                    if ($f.Name -eq "QueueFixture.exe") {
+                        $helperExeFoundInInventory = $true
+                        if ($f.Sha256 -ne $script:FROZEN_HELPER_EXE_SHA256) {
+                            throw "Helper provenance file inventory QueueFixture.exe Sha256 mismatch: expected $($script:FROZEN_HELPER_EXE_SHA256), got '$($f.Sha256)'"
+                        }
+                        if ($f.SizeBytes -ne $script:FROZEN_HELPER_EXE_SIZE) {
+                            throw "Helper provenance file inventory QueueFixture.exe SizeBytes mismatch: expected $($script:FROZEN_HELPER_EXE_SIZE), got $($f.SizeBytes)"
+                        }
+                    }
+                }
+            }
+            if (-not $helperExeFoundInInventory) {
+                throw "Helper provenance file inventory does not contain QueueFixture.exe"
+            }
+        } else {
+            if ($null -ne $testPins -and $null -ne (Get-SafePropertyValue -Object $testPins -PropertyName "HelperProvenance")) {
+                $hp = $testPins.HelperProvenance
+                if ($hp.SourceSha256 -and $helperProvObj.SourceSha256 -ne $hp.SourceSha256) {
+                    throw "Helper provenance SourceSha256 mismatch: expected $($hp.SourceSha256), got '$($helperProvObj.SourceSha256)'"
+                }
+                if ($hp.CheckoutCommit -and $helperProvObj.CheckoutCommit -ne $hp.CheckoutCommit) {
+                    throw "Helper provenance CheckoutCommit mismatch: expected $($hp.CheckoutCommit), got '$($helperProvObj.CheckoutCommit)'"
+                }
+                if ($hp.CheckoutTree -and $helperProvObj.CheckoutTree -ne $hp.CheckoutTree) {
+                    throw "Helper provenance CheckoutTree mismatch: expected $($hp.CheckoutTree), got '$($helperProvObj.CheckoutTree)'"
+                }
+            }
+        }
     }
 
     # Validate helper package manifest if present
@@ -1466,10 +1802,19 @@ function Invoke-SetupAction {
     $legacyGamesJson = ConvertTo-Json -InputObject @($legacyProfile) -Depth 5
     [System.IO.File]::WriteAllText($legacyGamesPath, $legacyGamesJson, $script:Utf8NoBom)
 
-    # Initialize state.json with monotonic timings and start attempts
+    # Initialize state.json with monotonic timings, start attempts, and cooperative readiness
+    $scriptSha = if ($null -ne $MyInvocation.MyCommand.Path -and (Test-Path -LiteralPath $MyInvocation.MyCommand.Path -PathType Leaf)) {
+        Compute-FileSha256 -FilePath $MyInvocation.MyCommand.Path
+    } else {
+        $null
+    }
+    $initialFootprint = Measure-DirectoryFootprintBytes -DirectoryPath $rootFull
+
     $initialState = [PSCustomObject]@{
         BatchStartTimeUtc        = $setupStartUtc
+        TrialStartUtc            = $setupStartUtc
         SetupElapsedMilliseconds = $stopwatch.ElapsedMilliseconds
+        ElapsedMilliseconds      = $stopwatch.ElapsedMilliseconds
         HelperStartAttempts      = 0
         CompanionStartAttempts   = 0
         MaxHelperStarts          = $script:MAX_HELPER_STARTS
@@ -1481,6 +1826,14 @@ function Invoke-SetupAction {
         LastCheckpointOutcome    = "Success"
         LastFailedCheckpoint     = $null
         LastFailedReason         = $null
+        TerminalHold             = $false
+        TerminalHoldReason       = $null
+        CurrentReadiness         = "Ready"
+        ReadinessReason          = "Initial setup complete"
+        CurrentFootprintBytes    = $initialFootprint
+        ActiveProcesses          = @()
+        AdoptedScriptSha256      = $scriptSha
+        AdoptedToken             = $null
         IsEnded                  = $false
         TestPinsUsed             = $testPinsUsed
         ActiveHelperPid          = $null
@@ -1508,6 +1861,9 @@ function Take-SnapshotInternal([string]$FixtureRoot, [string]$CheckpointName) {
     $cleanName = Validate-CheckpointName -Name $CheckpointName
 
     $state = Get-StateData -FixtureRoot $canonRoot
+    if ($state.TerminalHold) {
+        throw "Snapshot refused: Supervisor is in terminal hold state: $($state.TerminalHoldReason)"
+    }
     if ($state.LastCheckpointOutcome -eq "Failed") {
         throw "Snapshot refused: Fixture qualification is in terminal failure state ('$($state.LastFailedCheckpoint)')."
     }
@@ -1594,6 +1950,9 @@ function Verify-CheckpointInternal(
     $cleanName = Validate-CheckpointName -Name $CheckpointName
 
     $state = Get-StateData -FixtureRoot $canonRoot
+    if ($state.TerminalHold) {
+        throw "Verification refused: Supervisor is in terminal hold state: $($state.TerminalHoldReason)"
+    }
     if ($state.LastCheckpointOutcome -eq "Failed") {
         throw "Verification refused: Fixture qualification previously entered terminal failure at checkpoint '$($state.LastFailedCheckpoint)'."
     }
@@ -1877,13 +2236,20 @@ function Verify-CheckpointInternal(
 
         # Success - latch success only if prior outcome wasn't failed
         $state = Get-StateData -FixtureRoot $canonRoot
-        $state.LastCheckpointOutcome = "Success"
+        if ($PureDataCheck) {
+            $state.LastCheckpointOutcome = "PureDataCheck"
+            $state.NonQualifyingPureDataCheck = $true
+        } else {
+            $state.LastCheckpointOutcome = "Success"
+        }
         Save-StateData -FixtureRoot $canonRoot -StateObject $state
         return @{
             Success = $true
             Message = "Checkpoint '$cleanName' verified successfully as $ExpectedType."
             CheckpointName = $cleanName
             ExpectedType = $ExpectedType
+            PureDataCheck = [bool]$PureDataCheck
+            QualifiedResult = (-not $PureDataCheck)
         }
     } catch {
         $state = Get-StateData -FixtureRoot $canonRoot
@@ -2013,8 +2379,18 @@ function Supervise-HelperStop([string]$FixtureRoot, [int]$Slot) {
         throw "Helper process failed to exit within 10000ms after stop marker created. Process retained."
     }
 
-    if ($null -ne $script:HelperStdoutDrainer) { [void]$script:HelperStdoutDrainer.WaitForDrain(5000) }
-    if ($null -ne $script:HelperStderrDrainer) { [void]$script:HelperStderrDrainer.WaitForDrain(5000) }
+    if ($null -ne $script:HelperStdoutDrainer) {
+        $outDrained = $script:HelperStdoutDrainer.WaitForDrain(5000)
+        if (-not $outDrained -or $script:HelperStdoutDrainer.HasFault) {
+            throw "Helper stdout stream drain failed: $($script:HelperStdoutDrainer.FaultMessage)"
+        }
+    }
+    if ($null -ne $script:HelperStderrDrainer) {
+        $errDrained = $script:HelperStderrDrainer.WaitForDrain(5000)
+        if (-not $errDrained -or $script:HelperStderrDrainer.HasFault) {
+            throw "Helper stderr stream drain failed: $($script:HelperStderrDrainer.FaultMessage)"
+        }
+    }
 
     $exitCode = $script:HelperProcess.ExitCode
     $stoppedReceived = if ($null -ne $script:HelperStdoutDrainer) { $script:HelperStdoutDrainer.StoppedReceived } else { $false }
@@ -2144,8 +2520,18 @@ function Supervise-CompanionStop([string]$FixtureRoot) {
         }
     }
 
-    if ($null -ne $script:CompanionStdoutDrainer) { [void]$script:CompanionStdoutDrainer.WaitForDrain(5000) }
-    if ($null -ne $script:CompanionStderrDrainer) { [void]$script:CompanionStderrDrainer.WaitForDrain(5000) }
+    if ($null -ne $script:CompanionStdoutDrainer) {
+        $outDrained = $script:CompanionStdoutDrainer.WaitForDrain(5000)
+        if (-not $outDrained -or $script:CompanionStdoutDrainer.HasFault) {
+            throw "Companion stdout stream drain failed: $($script:CompanionStdoutDrainer.FaultMessage)"
+        }
+    }
+    if ($null -ne $script:CompanionStderrDrainer) {
+        $errDrained = $script:CompanionStderrDrainer.WaitForDrain(5000)
+        if (-not $errDrained -or $script:CompanionStderrDrainer.HasFault) {
+            throw "Companion stderr stream drain failed: $($script:CompanionStderrDrainer.FaultMessage)"
+        }
+    }
 
     $exitCode = $script:CompanionProcess.ExitCode
 
@@ -2179,6 +2565,15 @@ function Invoke-SuperviseAction {
         }
     }
     $state.ActiveSupervisorPid = $PID
+    if (-not [string]::IsNullOrWhiteSpace($AdoptionAttestation)) {
+        $state.AdoptedToken = $AdoptionAttestation
+    }
+    $scriptSha = if ($null -ne $MyInvocation.MyCommand.Path -and (Test-Path -LiteralPath $MyInvocation.MyCommand.Path -PathType Leaf)) {
+        Compute-FileSha256 -FilePath $MyInvocation.MyCommand.Path
+    } else {
+        $null
+    }
+    $state.AdoptedScriptSha256 = $scriptSha
     Save-StateData -FixtureRoot $canonRoot -StateObject $state
 
     Write-Host "======================================================================"
@@ -2207,9 +2602,16 @@ function Invoke-SuperviseAction {
                 if ([string]::IsNullOrWhiteSpace($trimmed) -or $trimmed.StartsWith("#")) { continue }
 
                 Invoke-SuperviseObservationCycle -FixtureRoot $canonRoot
+                $st = Get-StateData -FixtureRoot $canonRoot
+
                 Write-Host "[SUPERVISOR EXEC] $trimmed"
                 $parts = $trimmed -split '\s+'
                 $cmd = $parts[0].ToLowerInvariant()
+
+                # If in terminal hold, refuse test actions (only allow stopping and status)
+                if ($st.TerminalHold -and @("start-helper", "start-companion", "snapshot", "verify") -contains $cmd) {
+                    throw "Action refused: Supervisor is in terminal hold state: $($st.TerminalHoldReason)"
+                }
 
                 $res = $null
                 switch ($cmd) {
@@ -2239,6 +2641,10 @@ function Invoke-SuperviseAction {
                         $cmdSlot = if ($parts.Length -gt 4) { [int]$parts[4] } else { 0 }
                         $res = Verify-CheckpointInternal -FixtureRoot $canonRoot -CheckpointName $name -ExpectedType $type -ExpectedVersion $ver -Slot $cmdSlot -PureDataCheck:$PureDataCheck
                     }
+                    "status" {
+                        $stState = Get-StateData -FixtureRoot $canonRoot
+                        $res = @{ Success = $true; State = $stState }
+                    }
                     "end-batch" {
                         $st = Get-StateData -FixtureRoot $canonRoot
                         $st.IsEnded = $true
@@ -2253,10 +2659,17 @@ function Invoke-SuperviseAction {
                 Invoke-SuperviseObservationCycle -FixtureRoot $canonRoot
             }
 
-            # Enforce: Never return while unowned child processes remain active!
-            if (($null -ne $script:HelperProcess -and -not $script:HelperProcess.HasExited) -or
-                ($null -ne $script:CompanionProcess -and -not $script:CompanionProcess.HasExited)) {
-                throw "Supervisor command sequence completed while child process is still running. Unowned processes prohibited."
+            # If any child process remains running after command sequence finishes:
+            $hasActiveChildren = ($null -ne $script:HelperProcess -and -not $script:HelperProcess.HasExited) -or
+                                 ($null -ne $script:CompanionProcess -and -not $script:CompanionProcess.HasExited)
+            if ($hasActiveChildren) {
+                Write-Host "[SUPERVISOR HOLD] Command sequence completed while child processes are still running. Retaining process handles and observation loop until children exit..."
+                while (($null -ne $script:HelperProcess -and -not $script:HelperProcess.HasExited) -or
+                       ($null -ne $script:CompanionProcess -and -not $script:CompanionProcess.HasExited)) {
+                    Invoke-SuperviseObservationCycle -FixtureRoot $canonRoot
+                    Start-Sleep -Milliseconds 500
+                }
+                Write-Host "[SUPERVISOR HOLD] All child processes have exited."
             }
 
             return @{
@@ -2271,7 +2684,14 @@ function Invoke-SuperviseAction {
                 $st = Get-StateData -FixtureRoot $canonRoot
                 $prompt = "Trial [Helper=$($st.HelperStartAttempts)/4, Comp=$($st.CompanionStartAttempts)/8, Readiness=$($st.CurrentReadiness)] > "
                 Write-Host -NoNewline $prompt
-                $inputLine = [Console]::ReadLine()
+
+                # Bounded asynchronous console read with periodic observation cycle
+                $readTask = [System.Threading.Tasks.Task[string]]::Run([System.Func[string]]{ [Console]::ReadLine() })
+                while (-not $readTask.Wait(500)) {
+                    Invoke-SuperviseObservationCycle -FixtureRoot $canonRoot
+                }
+                $inputLine = $readTask.Result
+
                 if ($null -eq $inputLine) {
                     Write-Host "`nEOF detected on supervisor input."
                     $hasActive = ($null -ne $script:HelperProcess -and -not $script:HelperProcess.HasExited) -or
@@ -2304,6 +2724,11 @@ function Invoke-SuperviseAction {
                 try {
                     $parts = $trimmed -split '\s+'
                     $cmd = $parts[0].ToLowerInvariant()
+
+                    if ($st.TerminalHold -and @("start-helper", "start-companion", "snapshot", "verify") -contains $cmd) {
+                        throw "Action refused: Supervisor is in terminal hold state: $($st.TerminalHoldReason)"
+                    }
+
                     switch ($cmd) {
                         "start-helper" {
                             $s = [int]$parts[1]
@@ -2369,6 +2794,18 @@ function Invoke-SuperviseAction {
             }
             return @{ Success = $true; Message = "Interactive supervisor exited." }
         }
+    } catch {
+        $hasActive = ($null -ne $script:HelperProcess -and -not $script:HelperProcess.HasExited) -or
+                     ($null -ne $script:CompanionProcess -and -not $script:CompanionProcess.HasExited)
+        if ($hasActive) {
+            Write-Host "[SUPERVISOR HOLD] Error encountered while child processes active ($($_)). Maintaining handle retention and observation loop until children exit..."
+            while (($null -ne $script:HelperProcess -and -not $script:HelperProcess.HasExited) -or
+                   ($null -ne $script:CompanionProcess -and -not $script:CompanionProcess.HasExited)) {
+                Invoke-SuperviseObservationCycle -FixtureRoot $canonRoot
+                Start-Sleep -Milliseconds 500
+            }
+        }
+        throw
     } finally {
         $hasActiveChildren = ($null -ne $script:HelperProcess -and -not $script:HelperProcess.HasExited) -or
                              ($null -ne $script:CompanionProcess -and -not $script:CompanionProcess.HasExited)
@@ -2444,6 +2881,86 @@ try {
                 Success = $true
                 Message = "Status retrieved."
                 State = $st
+            }
+        }
+        "Test-Drainer" {
+            if ([string]::IsNullOrWhiteSpace($LogPath)) {
+                throw "LogPath parameter is required for Test-Drainer."
+            }
+            $stream = $null
+            if ($SimulateFault) {
+                $stream = New-Object System.IO.MemoryStream
+                $stream.Dispose()
+            } elseif (-not [string]::IsNullOrWhiteSpace($TestInputText)) {
+                $bytes = [System.Text.Encoding]::UTF8.GetBytes($TestInputText)
+                $stream = New-Object System.IO.MemoryStream($bytes, $false)
+            } else {
+                $bytes = New-Object byte[] 0
+                $stream = New-Object System.IO.MemoryStream($bytes, $false)
+            }
+
+            $drainer = New-Object DXVKCompanion.Validation.SafeProcessStreamDrainer($stream, $LogPath, $script:Utf8NoBom, $MaxBytes)
+            try {
+                $drainer.Start()
+                $drained = $drainer.WaitForDrain($TimeoutMs)
+                $logContent = ""
+                if (Test-Path -LiteralPath $LogPath -PathType Leaf) {
+                    $logContent = [System.IO.File]::ReadAllText($LogPath, $script:Utf8NoBom)
+                }
+                $result = @{
+                    Success             = $true
+                    LinesRead           = $drainer.LinesRead
+                    ReadyReceived       = [bool]$drainer.ReadyReceived
+                    StoppedReceived     = [bool]$drainer.StoppedReceived
+                    IsCompleted         = [bool]$drainer.IsCompleted
+                    HasFault            = [bool]$drainer.HasFault
+                    FaultMessage        = $drainer.FaultMessage
+                    BytesWritten        = $drainer.BytesWritten
+                    DrainedSuccessfully = [bool]$drained
+                    LogContent          = $logContent
+                }
+            } finally {
+                $drainer.Dispose()
+                if ($null -ne $stream) {
+                    try { $stream.Dispose() } catch {}
+                }
+            }
+        }
+        "Test-ParseTarListing" {
+            $inputLines = $Lines
+            if (-not [string]::IsNullOrWhiteSpace($ListingFilePath)) {
+                if (-not (Test-Path -LiteralPath $ListingFilePath -PathType Leaf)) {
+                    throw "Listing file not found: $ListingFilePath"
+                }
+                $inputLines = [System.IO.File]::ReadAllLines($ListingFilePath, $script:Utf8NoBom)
+            }
+            if ($null -eq $inputLines) {
+                $inputLines = @()
+            }
+            $parsed = Parse-TarListingInternal -Lines $inputLines -MaxEntries $MaxEntries -MaxTotalBytes $MaxTotalBytes
+            $result = @{
+                Success    = $true
+                EntryCount = $parsed.EntryCount
+                TotalBytes = $parsed.TotalBytes
+                HasD3d11   = $parsed.HasD3d11
+                HasDxgi    = $parsed.HasDxgi
+                Entries    = $parsed.Entries
+            }
+        }
+        "Test-Provenance" {
+            if ([string]::IsNullOrWhiteSpace($PathA)) { throw "PathA (ProvenancePath) is required for Test-Provenance." }
+            if ([string]::IsNullOrWhiteSpace($PathB)) { throw "PathB (DestinationDir) is required for Test-Provenance." }
+
+            $pinsUsed = -not [string]::IsNullOrWhiteSpace($TestPinsJson)
+            $pins = $null
+            if ($pinsUsed) {
+                $pins = ConvertFrom-Json -InputObject $TestPinsJson
+            }
+
+            Extract-CompanionProvenance -ProvenancePath $PathA -DestinationDir $PathB -TestPinsUsed $pinsUsed -TestPins $pins
+            $result = @{
+                Success = $true
+                Message = "Companion provenance validated successfully."
             }
         }
     }
