@@ -1462,6 +1462,509 @@ public sealed class ProcessLifecycleTrialPreparationTests
         Assert.Contains("live owned helper process handle is required", result.StandardOutput + result.StandardError);
     }
 
+    // =========================================================================
+    // B1 Regressions: Interactive Stdin Supervision Without PowerShell Runspace Fault
+    // =========================================================================
+
+    [Fact]
+    public async Task Supervise_InteractiveMode_WithRedirectedStdin_ProcessesIdleObservationAndCommandsCleanly()
+    {
+        AssertHostedCiEnvironment();
+
+        using var temp = new SyntheticTestDirectory();
+        var root = SetUpTestFixture(temp);
+        WriteReadinessRecord(root);
+
+        var statePath = Path.Combine(root, "state.json");
+        using var initialDoc = JsonDocument.Parse(File.ReadAllText(statePath));
+        var initialElapsedMs = initialDoc.RootElement.GetProperty("ElapsedMilliseconds").GetInt64();
+
+        var repoRoot = FindRepositoryRoot();
+        var scriptPath = Path.Combine(repoRoot, "tools", "validation", "ProcessLifecycleTrial.ps1");
+        var powershellPath = GetPowerShellExecutablePath();
+
+        var psi = new ProcessStartInfo
+        {
+            FileName = powershellPath,
+            Arguments = $"-NoProfile -ExecutionPolicy Bypass -File \"{scriptPath}\" -Action Supervise -FixtureRoot \"{root}\" -AdoptionAttestation \"ADOPTED-PROCESS-LIFECYCLE-V1\"",
+            UseShellExecute = false,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+            WorkingDirectory = repoRoot
+        };
+
+        var process = new Process { StartInfo = psi };
+        try
+        {
+            process.Start();
+            var stdoutTask = process.StandardOutput.ReadToEndAsync();
+            var stderrTask = process.StandardError.ReadToEndAsync();
+
+            // Allow >600ms of idle interactive waiting so at least two 200ms PollReadLine observation cycles run on the owning runspace
+            await Task.Delay(650);
+
+            await process.StandardInput.WriteLineAsync("status");
+            await process.StandardInput.FlushAsync();
+            await Task.Delay(250);
+
+            await process.StandardInput.WriteLineAsync("end-batch");
+            await process.StandardInput.FlushAsync();
+            await Task.Delay(150);
+
+            await process.StandardInput.WriteLineAsync("exit");
+            await process.StandardInput.FlushAsync();
+            process.StandardInput.Close();
+
+            if (!process.WaitForExit(15000))
+            {
+                lock (s_retainedProcesses) { s_retainedProcesses.Add(process); }
+                throw new TimeoutException($"Interactive Supervise timed out after 15000ms. Residual process {process.Id} retained.");
+            }
+
+            var stdout = await stdoutTask;
+            var stderr = await stderrTask;
+
+            Assert.True(process.ExitCode == 0, $"Interactive Supervise failed with exit code {process.ExitCode}.\nSTDOUT: {stdout}\nSTDERR: {stderr}");
+            Assert.DoesNotContain("Runspace", stdout + stderr, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("Entering interactive supervisor mode", stdout);
+            Assert.Contains("[SUCCESS] Batch ended.", stdout);
+            Assert.Contains("[SUCCESS] Interactive supervisor exited.", stdout);
+
+            using var afterDoc = JsonDocument.Parse(File.ReadAllText(statePath));
+            var afterRoot = afterDoc.RootElement;
+            Assert.True(afterRoot.GetProperty("IsEnded").GetBoolean());
+            Assert.Equal("Ready", afterRoot.GetProperty("CurrentReadiness").GetString());
+            Assert.Equal(0, afterRoot.GetProperty("HelperStartAttempts").GetInt32());
+            Assert.Equal(0, afterRoot.GetProperty("CompanionStartAttempts").GetInt32());
+            Assert.True(afterRoot.GetProperty("ElapsedMilliseconds").GetInt64() > initialElapsedMs,
+                $"Expected monotonic ElapsedMilliseconds to advance during idle interactive observation (initial={initialElapsedMs}, after={afterRoot.GetProperty("ElapsedMilliseconds").GetInt64()}).");
+        }
+        finally
+        {
+            lock (s_retainedProcesses)
+            {
+                if (!s_retainedProcesses.Contains(process))
+                {
+                    process.Dispose();
+                }
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Supervise_InteractiveMode_EofOnRedirectedStdin_ExitsCleanlyWithoutRunspaceFault()
+    {
+        AssertHostedCiEnvironment();
+
+        using var temp = new SyntheticTestDirectory();
+        var root = SetUpTestFixture(temp);
+        WriteReadinessRecord(root);
+
+        var repoRoot = FindRepositoryRoot();
+        var scriptPath = Path.Combine(repoRoot, "tools", "validation", "ProcessLifecycleTrial.ps1");
+        var powershellPath = GetPowerShellExecutablePath();
+
+        var psi = new ProcessStartInfo
+        {
+            FileName = powershellPath,
+            Arguments = $"-NoProfile -ExecutionPolicy Bypass -File \"{scriptPath}\" -Action Supervise -FixtureRoot \"{root}\" -AdoptionAttestation \"ADOPTED-PROCESS-LIFECYCLE-V1\"",
+            UseShellExecute = false,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+            WorkingDirectory = repoRoot
+        };
+
+        var process = new Process { StartInfo = psi };
+        try
+        {
+            process.Start();
+            var stdoutTask = process.StandardOutput.ReadToEndAsync();
+            var stderrTask = process.StandardError.ReadToEndAsync();
+
+            // Wait for at least one idle PollReadLine observation interval, then close stdin (EOF)
+            await Task.Delay(450);
+            process.StandardInput.Close();
+
+            if (!process.WaitForExit(15000))
+            {
+                lock (s_retainedProcesses) { s_retainedProcesses.Add(process); }
+                throw new TimeoutException($"Interactive EOF Supervise timed out after 15000ms. Residual process {process.Id} retained.");
+            }
+
+            var stdout = await stdoutTask;
+            var stderr = await stderrTask;
+
+            Assert.True(process.ExitCode == 0, $"Interactive EOF Supervise failed with exit code {process.ExitCode}.\nSTDOUT: {stdout}\nSTDERR: {stderr}");
+            Assert.DoesNotContain("Runspace", stdout + stderr, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("EOF detected on supervisor input.", stdout);
+            Assert.Contains("[SUCCESS] Interactive supervisor exited.", stdout);
+
+            var statePath = Path.Combine(root, "state.json");
+            using var afterDoc = JsonDocument.Parse(File.ReadAllText(statePath));
+            var afterRoot = afterDoc.RootElement;
+            Assert.Equal(JsonValueKind.Null, afterRoot.GetProperty("ActiveSupervisorPid").ValueKind);
+            Assert.Equal(0, afterRoot.GetProperty("HelperStartAttempts").GetInt32());
+            Assert.Equal(0, afterRoot.GetProperty("CompanionStartAttempts").GetInt32());
+        }
+        finally
+        {
+            lock (s_retainedProcesses)
+            {
+                if (!s_retainedProcesses.Contains(process))
+                {
+                    process.Dispose();
+                }
+            }
+        }
+    }
+
+    // =========================================================================
+    // B2 Regressions: Zero Force-Kill & Bounded Child Stream Draining / Retention
+    // =========================================================================
+
+    [Fact]
+    public void Script_SourceInspection_ContainsZeroForceKillCalls()
+    {
+        AssertHostedCiEnvironment();
+
+        var repoRoot = FindRepositoryRoot();
+        var scriptPath = Path.Combine(repoRoot, "tools", "validation", "ProcessLifecycleTrial.ps1");
+        var scriptText = File.ReadAllText(scriptPath);
+
+        Assert.DoesNotContain(".Kill(", scriptText, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Stop-Process", scriptText, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("taskkill", scriptText, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void BoundedChildProcess_NormalCompletion_DrainsStdoutAndStderrToLogs()
+    {
+        AssertHostedCiEnvironment();
+
+        using var temp = new SyntheticTestDirectory();
+        var stdoutLog = temp.GetPath("child_stdout.log");
+        var stderrLog = temp.GetPath("child_stderr.log");
+        var cmdPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "cmd.exe");
+
+        var result = RunScript(
+            $"-Action Test-BoundedChild -ChildFileName \"{cmdPath}\" -ChildArguments \"/c echo CHILD_STDOUT_OK & echo CHILD_STDERR_OK 1>&2\" -LogPath \"{stdoutLog}\" -StderrLogPath \"{stderrLog}\" -TimeoutMs 5000 -JsonOutput");
+        Assert.Equal(0, result.ExitCode);
+        AssertScriptSuccess(result, true);
+
+        using var doc = JsonDocument.Parse(result.StandardOutput);
+        var root = doc.RootElement;
+        Assert.True(root.GetProperty("Completed").GetBoolean());
+        Assert.False(root.GetProperty("TimedOut").GetBoolean());
+        Assert.False(root.GetProperty("Retained").GetBoolean());
+        Assert.Equal(0, root.GetProperty("RetainedProcessCount").GetInt32());
+        Assert.Equal(0, root.GetProperty("ExitCode").GetInt32());
+        Assert.True(root.GetProperty("StdoutDrained").GetBoolean());
+        Assert.True(root.GetProperty("StderrDrained").GetBoolean());
+        Assert.False(root.GetProperty("StdoutFault").GetBoolean());
+        Assert.False(root.GetProperty("StderrFault").GetBoolean());
+
+        Assert.True(File.Exists(stdoutLog));
+        Assert.True(File.Exists(stderrLog));
+        Assert.Contains("CHILD_STDOUT_OK", File.ReadAllText(stdoutLog));
+        Assert.Contains("CHILD_STDERR_OK", File.ReadAllText(stderrLog));
+    }
+
+    [Fact]
+    public void BoundedChildProcess_Timeout_RetainsProcessAndLogsWithoutKill()
+    {
+        AssertHostedCiEnvironment();
+
+        using var temp = new SyntheticTestDirectory();
+        var stdoutLog = temp.GetPath("timeout_stdout.log");
+        var stderrLog = temp.GetPath("timeout_stderr.log");
+        var powershellPath = GetPowerShellExecutablePath();
+
+        // Data-only command that emits output, sleeps briefly (~1.5s), and exits naturally on its own while Test-BoundedChild times out at 250ms
+        var result = RunScript(
+            $"-Action Test-BoundedChild -ChildFileName \"{powershellPath}\" -ChildArguments \"-NoProfile -NonInteractive -Command Write-Output 'BEFORE_TIMEOUT_OUT'; [Console]::Error.WriteLine('BEFORE_TIMEOUT_ERR'); Start-Sleep -Milliseconds 1500\" -LogPath \"{stdoutLog}\" -StderrLogPath \"{stderrLog}\" -TimeoutMs 250 -JsonOutput");
+        Assert.Equal(0, result.ExitCode);
+        AssertScriptSuccess(result, true);
+
+        using var doc = JsonDocument.Parse(result.StandardOutput);
+        var root = doc.RootElement;
+        Assert.False(root.GetProperty("Completed").GetBoolean());
+        Assert.True(root.GetProperty("TimedOut").GetBoolean());
+        Assert.True(root.GetProperty("Retained").GetBoolean());
+        Assert.Equal(1, root.GetProperty("RetainedProcessCount").GetInt32());
+        Assert.True(root.GetProperty("ProcessId").GetInt32() > 0);
+
+        Assert.True(File.Exists(stdoutLog));
+        Assert.True(File.Exists(stderrLog));
+    }
+
+    // =========================================================================
+    // B3 Regressions: Cooperative Readiness/Revision Binding & Monotonic Clock
+    // =========================================================================
+
+    [Fact]
+    public void Setup_DoesNotAutoAdoptRunningScript_AndStartsNotReady()
+    {
+        AssertHostedCiEnvironment();
+
+        using var temp = new SyntheticTestDirectory();
+        var root = SetUpTestFixture(temp);
+
+        var statePath = Path.Combine(root, "state.json");
+        using var doc = JsonDocument.Parse(File.ReadAllText(statePath));
+        var state = doc.RootElement;
+
+        Assert.Equal("NotReady", state.GetProperty("CurrentReadiness").GetString());
+        Assert.Equal(JsonValueKind.Null, state.GetProperty("AdoptedScriptSha256").ValueKind);
+        Assert.Equal(JsonValueKind.Null, state.GetProperty("AdoptedToken").ValueKind);
+        Assert.Equal(GetCurrentScriptSha256(), state.GetProperty("SetupScriptSha256").GetString());
+        Assert.True(state.GetProperty("MonotonicOriginTimestamp").GetInt64() > 0);
+        Assert.True(state.GetProperty("MonotonicFrequency").GetInt64() > 0);
+        Assert.True(state.GetProperty("LastMonotonicTimestamp").GetInt64() >= state.GetProperty("MonotonicOriginTimestamp").GetInt64());
+    }
+
+    [Fact]
+    public void BatchGuard_MissingReadinessRecord_RefusesBeforeProcessStart()
+    {
+        AssertHostedCiEnvironment();
+
+        using var temp = new SyntheticTestDirectory();
+        var root = SetUpIsolatedState(temp, testPinsUsed: false, includeReadinessRecord: false);
+
+        var guardRes = RunScript($"-Action Test-BatchGuard -FixtureRoot \"{root}\" -Slot 1 -AdoptionAttestation \"ADOPTED-PROCESS-LIFECYCLE-V1\" -JsonOutput");
+        Assert.NotEqual(0, guardRes.ExitCode);
+        Assert.Contains("missing explicit owner readiness record", guardRes.StandardOutput + guardRes.StandardError);
+
+        var supRes = RunScript($"-Action Supervise -FixtureRoot \"{root}\" -AdoptionAttestation \"ADOPTED-PROCESS-LIFECYCLE-V1\" -Commands \"start-helper 1\" -JsonOutput");
+        Assert.NotEqual(0, supRes.ExitCode);
+        Assert.Contains("missing explicit owner readiness record", supRes.StandardOutput + supRes.StandardError);
+
+        using var stateDoc = JsonDocument.Parse(File.ReadAllText(Path.Combine(root, "state.json")));
+        Assert.Equal(0, stateDoc.RootElement.GetProperty("HelperStartAttempts").GetInt32());
+        Assert.Equal(JsonValueKind.Null, stateDoc.RootElement.GetProperty("AdoptedScriptSha256").ValueKind);
+    }
+
+    [Fact]
+    public void BatchGuard_WrongAdoptedScriptHash_RefusesBeforeProcessStart()
+    {
+        AssertHostedCiEnvironment();
+
+        using var temp = new SyntheticTestDirectory();
+        var root = SetUpIsolatedState(
+            temp,
+            testPinsUsed: false,
+            adoptedScriptShaOverride: "0000000000000000000000000000000000000000000000000000000000000000");
+
+        var supRes = RunScript($"-Action Supervise -FixtureRoot \"{root}\" -AdoptionAttestation \"ADOPTED-PROCESS-LIFECYCLE-V1\" -Commands \"start-helper 1\" -JsonOutput");
+        Assert.NotEqual(0, supRes.ExitCode);
+        Assert.Contains("does not match running script SHA256", supRes.StandardOutput + supRes.StandardError);
+
+        using var stateDoc = JsonDocument.Parse(File.ReadAllText(Path.Combine(root, "state.json")));
+        Assert.Equal(0, stateDoc.RootElement.GetProperty("HelperStartAttempts").GetInt32());
+        Assert.Equal(JsonValueKind.Null, stateDoc.RootElement.GetProperty("AdoptedScriptSha256").ValueKind);
+    }
+
+    [Fact]
+    public void BatchGuard_StaleReadinessConfirmation_RefusesBeforeProcessStart()
+    {
+        AssertHostedCiEnvironment();
+
+        using var temp = new SyntheticTestDirectory();
+        var root = SetUpIsolatedState(
+            temp,
+            testPinsUsed: false,
+            confirmedAtUtcOverride: DateTime.UtcNow.AddHours(-2).ToString("o"));
+
+        var supRes = RunScript($"-Action Supervise -FixtureRoot \"{root}\" -AdoptionAttestation \"ADOPTED-PROCESS-LIFECYCLE-V1\" -Commands \"start-helper 1\" -JsonOutput");
+        Assert.NotEqual(0, supRes.ExitCode);
+        Assert.Contains("stale readiness confirmation", supRes.StandardOutput + supRes.StandardError);
+
+        using var stateDoc = JsonDocument.Parse(File.ReadAllText(Path.Combine(root, "state.json")));
+        Assert.Equal(0, stateDoc.RootElement.GetProperty("HelperStartAttempts").GetInt32());
+    }
+
+    [Fact]
+    public void BatchGuard_UnacknowledgedOwnerAvailabilityOrOpenGames_RefusesBeforeProcessStart()
+    {
+        AssertHostedCiEnvironment();
+
+        using var temp = new SyntheticTestDirectory();
+        var root = SetUpIsolatedState(
+            temp,
+            testPinsUsed: false,
+            ownerAvailable: false,
+            gamesAndCompanionClosed: false);
+
+        var supRes = RunScript($"-Action Supervise -FixtureRoot \"{root}\" -AdoptionAttestation \"ADOPTED-PROCESS-LIFECYCLE-V1\" -Commands \"start-helper 1\" -JsonOutput");
+        Assert.NotEqual(0, supRes.ExitCode);
+        Assert.Contains("OwnerAvailable = true", supRes.StandardOutput + supRes.StandardError);
+
+        using var stateDoc = JsonDocument.Parse(File.ReadAllText(Path.Combine(root, "state.json")));
+        Assert.Equal(0, stateDoc.RootElement.GetProperty("HelperStartAttempts").GetInt32());
+    }
+
+    [Fact]
+    public void MonotonicClock_WallClockRollback_StillAdvancesElapsedViaMonotonicTicks()
+    {
+        AssertHostedCiEnvironment();
+
+        using var temp = new SyntheticTestDirectory();
+        var root = SetUpTestFixture(temp);
+        WriteReadinessRecord(root);
+
+        var statePath = Path.Combine(root, "state.json");
+        using var initialDoc = JsonDocument.Parse(File.ReadAllText(statePath));
+        var stateRoot = initialDoc.RootElement;
+        var originTick = stateRoot.GetProperty("MonotonicOriginTimestamp").GetInt64();
+        var freq = stateRoot.GetProperty("MonotonicFrequency").GetInt64();
+        var trialStartUtc = DateTime.Parse(stateRoot.GetProperty("TrialStartUtc").GetString()!).ToUniversalTime();
+
+        // Advance monotonic tick by +15 seconds, while rolling wall-clock time BACKWARD by -120 seconds before TrialStartUtc
+        var advancedTick = originTick + (freq * 15L);
+        var rolledBackUtc = trialStartUtc.AddSeconds(-120).ToString("o");
+
+        var result = RunScript(
+            $"-Action Supervise -FixtureRoot \"{root}\" -AdoptionAttestation \"ADOPTED-PROCESS-LIFECYCLE-V1\" -TestMonotonicTick {advancedTick} -TestMonotonicFrequency {freq} -TestCurrentUtc \"{rolledBackUtc}\" -Commands status -JsonOutput");
+        Assert.True(result.ExitCode == 0, $"Supervise status failed: {result.StandardOutput}\n{result.StandardError}");
+
+        using var afterDoc = JsonDocument.Parse(File.ReadAllText(statePath));
+        var afterState = afterDoc.RootElement;
+        Assert.False(afterState.GetProperty("TerminalHold").GetBoolean());
+        var elapsedMs = afterState.GetProperty("ElapsedMilliseconds").GetInt64();
+        Assert.True(elapsedMs >= 15000L, $"Expected ElapsedMilliseconds >= 15000ms via monotonic ticks despite backward wall-clock shift, got {elapsedMs}ms.");
+    }
+
+    [Fact]
+    public void MonotonicClock_SupervisorRestartGap_ConservativelyAccountsForElapsedTime()
+    {
+        AssertHostedCiEnvironment();
+
+        using var temp = new SyntheticTestDirectory();
+        var root = SetUpTestFixture(temp);
+
+        var statePath = Path.Combine(root, "state.json");
+        var stateObj = JsonSerializer.Deserialize<Dictionary<string, object>>(File.ReadAllText(statePath))!;
+        var originTick = long.Parse(stateObj["MonotonicOriginTimestamp"].ToString()!);
+        var freq = long.Parse(stateObj["MonotonicFrequency"].ToString()!);
+        var trialStartUtc = DateTime.Parse(stateObj["TrialStartUtc"].ToString()!).ToUniversalTime();
+
+        // Simulate a previous supervisor session (different PID) that recorded LastWallClockUtc at T+5s,
+        // and a new supervisor session starting at T+45s where monotonic ticks only advanced by +2s
+        stateObj["LastMonotonicSessionPid"] = 999999;
+        stateObj["LastWallClockUtc"] = trialStartUtc.AddSeconds(5).ToString("o");
+        stateObj["ElapsedMilliseconds"] = 5000L;
+        stateObj["AccumulatedMonotonicMs"] = 5000L;
+        File.WriteAllText(statePath, JsonSerializer.Serialize(stateObj, new JsonSerializerOptions { WriteIndented = true }));
+
+        var futureUtc = trialStartUtc.AddSeconds(45).ToString("o");
+        WriteReadinessRecord(root, confirmedAtUtcOverride: futureUtc);
+
+        var nextTick = originTick + (freq * 7L);
+        var result = RunScript(
+            $"-Action Supervise -FixtureRoot \"{root}\" -AdoptionAttestation \"ADOPTED-PROCESS-LIFECYCLE-V1\" -TestMonotonicTick {nextTick} -TestMonotonicFrequency {freq} -TestCurrentUtc \"{futureUtc}\" -Commands status -JsonOutput");
+        Assert.True(result.ExitCode == 0, $"Supervise status failed: {result.StandardOutput}\n{result.StandardError}");
+
+        using var afterDoc = JsonDocument.Parse(File.ReadAllText(statePath));
+        var afterState = afterDoc.RootElement;
+        Assert.False(afterState.GetProperty("TerminalHold").GetBoolean());
+        var elapsedMs = afterState.GetProperty("ElapsedMilliseconds").GetInt64();
+        Assert.True(elapsedMs >= 45000L, $"Expected conservative restart accounting >= 45000ms, got {elapsedMs}ms.");
+    }
+
+    [Fact]
+    public void MonotonicClock_MissingOrInvalidOrigin_LatchesTerminalHoldWithoutReset()
+    {
+        AssertHostedCiEnvironment();
+
+        using var temp = new SyntheticTestDirectory();
+        var root = SetUpTestFixture(temp);
+        WriteReadinessRecord(root);
+
+        var statePath = Path.Combine(root, "state.json");
+        var stateObj = JsonSerializer.Deserialize<Dictionary<string, object>>(File.ReadAllText(statePath))!;
+        stateObj["ElapsedMilliseconds"] = 12345L;
+        stateObj["AccumulatedMonotonicMs"] = 12345L;
+        stateObj["MonotonicOriginTimestamp"] = 0L; // Invalid non-positive origin
+        File.WriteAllText(statePath, JsonSerializer.Serialize(stateObj, new JsonSerializerOptions { WriteIndented = true }));
+
+        var result = RunScript($"-Action Supervise -FixtureRoot \"{root}\" -AdoptionAttestation \"ADOPTED-PROCESS-LIFECYCLE-V1\" -Commands status -JsonOutput");
+        Assert.Equal(0, result.ExitCode);
+
+        using var afterDoc = JsonDocument.Parse(File.ReadAllText(statePath));
+        var afterState = afterDoc.RootElement;
+        Assert.True(afterState.GetProperty("TerminalHold").GetBoolean());
+        Assert.Equal("Failed", afterState.GetProperty("LastCheckpointOutcome").GetString());
+        Assert.Equal("NotReady", afterState.GetProperty("CurrentReadiness").GetString());
+        Assert.Contains("Monotonic clock integrity failure", afterState.GetProperty("TerminalHoldReason").GetString()!);
+        Assert.True(afterState.GetProperty("ElapsedMilliseconds").GetInt64() >= 12345L,
+            "Invalid monotonic state must not reset prior ElapsedMilliseconds.");
+    }
+
+    [Fact]
+    public void Supervise_TerminalHold_EnforcesOwnerFirstCompanionStopBeforeHelperStop()
+    {
+        AssertHostedCiEnvironment();
+
+        using var temp = new SyntheticTestDirectory();
+        var root = SetUpTestFixture(temp);
+        WriteReadinessRecord(root);
+
+        var statePath = Path.Combine(root, "state.json");
+        var stateObj = JsonSerializer.Deserialize<Dictionary<string, object>>(File.ReadAllText(statePath))!;
+        stateObj["TerminalHold"] = true;
+        stateObj["TerminalHoldReason"] = "Simulated hold while Companion and Helper active";
+        stateObj["LastCheckpointOutcome"] = "Failed";
+        stateObj["ActiveCompanionPid"] = 42424;
+        stateObj["ActiveHelperPid"] = 42425;
+        stateObj["ActiveHelperSlot"] = 1;
+        File.WriteAllText(statePath, JsonSerializer.Serialize(stateObj, new JsonSerializerOptions { WriteIndented = true }));
+
+        var result = RunScript($"-Action Supervise -FixtureRoot \"{root}\" -AdoptionAttestation \"ADOPTED-PROCESS-LIFECYCLE-V1\" -Commands \"stop-helper 1\" -JsonOutput");
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains("close Companion normally (stop-companion) before stopping helper", result.StandardOutput + result.StandardError);
+    }
+
+    private static string GetCurrentScriptSha256()
+    {
+        var repoRoot = FindRepositoryRoot();
+        var scriptPath = Path.Combine(repoRoot, "tools", "validation", "ProcessLifecycleTrial.ps1");
+        return ComputeSha256Hex(File.ReadAllBytes(scriptPath));
+    }
+
+    private static void WriteReadinessRecord(
+        string root,
+        string? adoptedScriptShaOverride = null,
+        string? confirmedAtUtcOverride = null,
+        bool ownerAvailable = true,
+        bool gamesAndCompanionClosed = true,
+        string? batchStartTimeUtcOverride = null)
+    {
+        var statePath = Path.Combine(root, "state.json");
+        using var stateDoc = JsonDocument.Parse(File.ReadAllText(statePath));
+        var batchStartUtc = batchStartTimeUtcOverride ?? stateDoc.RootElement.GetProperty("BatchStartTimeUtc").GetString()!;
+
+        var readiness = new
+        {
+            ProfileId = "process-lifecycle-v1",
+            AdoptionToken = "ADOPTED-PROCESS-LIFECYCLE-V1",
+            AdoptedScriptSha256 = adoptedScriptShaOverride ?? GetCurrentScriptSha256(),
+            FixtureRoot = Path.GetFullPath(root).TrimEnd('\\', '/'),
+            BatchStartTimeUtc = batchStartUtc,
+            OwnerAvailable = ownerAvailable,
+            GamesAndCompanionClosed = gamesAndCompanionClosed,
+            ConfirmedAtUtc = confirmedAtUtcOverride ?? DateTime.UtcNow.ToString("o")
+        };
+
+        var controlDir = Path.Combine(root, "control");
+        Directory.CreateDirectory(controlDir);
+        File.WriteAllText(
+            Path.Combine(controlDir, "readiness.json"),
+            JsonSerializer.Serialize(readiness, new JsonSerializerOptions { WriteIndented = true }));
+    }
+
     private static string SetUpTestFixture(SyntheticTestDirectory temp)
     {
         var root = temp.GetPath("trial_root");
@@ -1530,18 +2033,33 @@ public sealed class ProcessLifecycleTrialPreparationTests
         int companionStartAttempts = 0,
         int[]? usedSlots = null,
         bool isEnded = false,
-        string lastOutcome = "Success")
+        string lastOutcome = "Success",
+        bool includeReadinessRecord = true,
+        string? adoptedScriptShaOverride = null,
+        string? confirmedAtUtcOverride = null,
+        bool ownerAvailable = true,
+        bool gamesAndCompanionClosed = true)
     {
         var root = temp.GetPath("isolated_state_root");
         Directory.CreateDirectory(root);
         Directory.CreateDirectory(Path.Combine(root, "control"));
 
+        var nowUtc = DateTime.UtcNow.ToString("o");
+        var originTick = Stopwatch.GetTimestamp();
+        var freq = Stopwatch.Frequency;
+
         var state = new
         {
-            BatchStartTimeUtc = DateTime.UtcNow.ToString("o"),
-            TrialStartUtc = DateTime.UtcNow.ToString("o"),
-            SetupElapsedMilliseconds = 100,
-            ElapsedMilliseconds = 100,
+            BatchStartTimeUtc = nowUtc,
+            TrialStartUtc = nowUtc,
+            SetupElapsedMilliseconds = 100L,
+            ElapsedMilliseconds = 100L,
+            MonotonicOriginTimestamp = originTick,
+            MonotonicFrequency = freq,
+            LastMonotonicTimestamp = originTick + (freq / 10),
+            AccumulatedMonotonicMs = 100L,
+            LastWallClockUtc = nowUtc,
+            LastMonotonicSessionPid = Environment.ProcessId,
             HelperStartAttempts = helperStartAttempts,
             CompanionStartAttempts = companionStartAttempts,
             MaxHelperStarts = 4,
@@ -1555,10 +2073,11 @@ public sealed class ProcessLifecycleTrialPreparationTests
             LastFailedReason = (string?)null,
             TerminalHold = false,
             TerminalHoldReason = (string?)null,
-            CurrentReadiness = "Ready",
-            ReadinessReason = "Ready",
+            CurrentReadiness = "NotReady",
+            ReadinessReason = "Pending explicit owner adoption and readiness confirmation",
             CurrentFootprintBytes = 1000L,
             ActiveProcesses = Array.Empty<object>(),
+            SetupScriptSha256 = GetCurrentScriptSha256(),
             AdoptedScriptSha256 = (string?)null,
             AdoptedToken = (string?)null,
             IsEnded = isEnded,
@@ -1575,6 +2094,18 @@ public sealed class ProcessLifecycleTrialPreparationTests
 
         var statePath = Path.Combine(root, "state.json");
         File.WriteAllText(statePath, JsonSerializer.Serialize(state, new JsonSerializerOptions { WriteIndented = true }));
+
+        if (includeReadinessRecord)
+        {
+            WriteReadinessRecord(
+                root,
+                adoptedScriptShaOverride: adoptedScriptShaOverride,
+                confirmedAtUtcOverride: confirmedAtUtcOverride,
+                ownerAvailable: ownerAvailable,
+                gamesAndCompanionClosed: gamesAndCompanionClosed,
+                batchStartTimeUtcOverride: nowUtc);
+        }
+
         return root;
     }
 }

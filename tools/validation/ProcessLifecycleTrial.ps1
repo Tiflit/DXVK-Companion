@@ -19,7 +19,8 @@ param(
         "Status",
         "Test-Drainer",
         "Test-ParseTarListing",
-        "Test-Provenance"
+        "Test-Provenance",
+        "Test-BoundedChild"
     )]
     [string]$Action,
 
@@ -55,6 +56,30 @@ param(
 
     [Parameter(Mandatory = $false)]
     [string]$AdoptionAttestation,
+
+    [Parameter(Mandatory = $false)]
+    [string]$ReadinessRecordPath,
+
+    [Parameter(Mandatory = $false)]
+    [string]$ReadinessJson,
+
+    [Parameter(Mandatory = $false)]
+    [string]$ChildFileName,
+
+    [Parameter(Mandatory = $false)]
+    [string]$ChildArguments,
+
+    [Parameter(Mandatory = $false)]
+    [string]$StderrLogPath,
+
+    [Parameter(Mandatory = $false)]
+    [long]$TestMonotonicTick = -1,
+
+    [Parameter(Mandatory = $false)]
+    [long]$TestMonotonicFrequency = -1,
+
+    [Parameter(Mandatory = $false)]
+    [string]$TestCurrentUtc,
 
     [Parameter(Mandatory = $false)]
     [switch]$NoAutoDiscovery,
@@ -273,6 +298,46 @@ namespace DXVKCompanion.Validation
         public override void Write(byte[] buffer, int offset, int count) { throw new NotSupportedException(); }
         public override int Read(byte[] buffer, int offset, int count) { throw new IOException("Simulated stream fault during read."); }
     }
+
+    public sealed class SafeInteractiveLineReader
+    {
+        private readonly TextReader _reader;
+        private Task<string> _activeReadTask;
+
+        public SafeInteractiveLineReader()
+            : this(Console.In)
+        {
+        }
+
+        public SafeInteractiveLineReader(TextReader reader)
+        {
+            if (reader == null) throw new ArgumentNullException("reader");
+            _reader = reader;
+        }
+
+        public bool PollReadLine(int timeoutMs, out string line)
+        {
+            line = null;
+            if (_activeReadTask == null)
+            {
+                _activeReadTask = Task.Run(new Func<string>(ReadNextLine));
+            }
+
+            if (!_activeReadTask.Wait(timeoutMs))
+            {
+                return false;
+            }
+
+            line = _activeReadTask.GetAwaiter().GetResult();
+            _activeReadTask = null;
+            return true;
+        }
+
+        private string ReadNextLine()
+        {
+            return _reader.ReadLine();
+        }
+    }
 }
 "@ -Language CSharp
 }
@@ -336,6 +401,7 @@ $script:HelperStdoutDrainer = $null
 $script:HelperStderrDrainer = $null
 $script:CompanionStdoutDrainer = $null
 $script:CompanionStderrDrainer = $null
+$script:RetainedTimedOutProcesses = [System.Collections.ArrayList]::new()
 $script:SupervisorMonotonicTimer = $null
 $script:Utf8NoBom = New-Object System.Text.UTF8Encoding $false
 
@@ -645,8 +711,15 @@ function Get-StateData([string]$FixtureRoot) {
         ReadinessReason            = ""
         CurrentFootprintBytes      = 0L
         ActiveProcesses            = @()
+        SetupScriptSha256          = $null
         AdoptedScriptSha256        = $null
         AdoptedToken               = $null
+        MonotonicOriginTimestamp   = $null
+        MonotonicFrequency         = $null
+        LastMonotonicTimestamp     = $null
+        AccumulatedMonotonicMs     = $null
+        LastWallClockUtc           = $null
+        LastMonotonicSessionPid    = $null
         IsEnded                    = $false
         TestPinsUsed               = $false
         ActiveHelperPid            = $null
@@ -674,28 +747,235 @@ function Save-StateData([string]$FixtureRoot, $StateObject) {
     [System.IO.File]::WriteAllText($statePath, $json, $script:Utf8NoBom)
 }
 
+function Get-EffectiveReferenceUtc {
+    if (-not [string]::IsNullOrWhiteSpace($TestCurrentUtc)) {
+        return [DateTime]::Parse($TestCurrentUtc, $null, [System.Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
+    }
+    return [DateTime]::UtcNow
+}
+
+function Get-EffectiveMonotonicTick {
+    if ($TestMonotonicTick -ge 0) {
+        return $TestMonotonicTick
+    }
+    return [System.Diagnostics.Stopwatch]::GetTimestamp()
+}
+
+function Get-EffectiveMonotonicFrequency {
+    if ($TestMonotonicFrequency -gt 0) {
+        return $TestMonotonicFrequency
+    }
+    return [System.Diagnostics.Stopwatch]::Frequency
+}
+
+function Validate-CooperativeReadinessInternal(
+    [string]$FixtureRoot,
+    [object]$StateObject,
+    [string]$Attestation = "",
+    [string]$ExplicitReadinessPath = "",
+    [string]$ExplicitReadinessJson = "",
+    [DateTime]$ReferenceUtc = ([DateTime]::UtcNow)
+) {
+    $canonRoot = Validate-RootBoundPath -RootPath $FixtureRoot -CandidatePath $FixtureRoot
+    $rawJson = $null
+
+    if (-not [string]::IsNullOrWhiteSpace($ExplicitReadinessJson)) {
+        $rawJson = $ExplicitReadinessJson
+    } elseif (-not [string]::IsNullOrWhiteSpace($ExplicitReadinessPath)) {
+        if (-not (Test-Path -LiteralPath $ExplicitReadinessPath -PathType Leaf)) {
+            return @{ IsValid = $false; Reason = "Execution refused: explicit readiness record file not found at '$ExplicitReadinessPath'." }
+        }
+        $rawJson = [System.IO.File]::ReadAllText($ExplicitReadinessPath, $script:Utf8NoBom)
+    } else {
+        $defaultPath = [System.IO.Path]::Combine($canonRoot, "control", "readiness.json")
+        if (-not (Test-Path -LiteralPath $defaultPath -PathType Leaf)) {
+            return @{ IsValid = $false; Reason = "Execution refused: missing explicit owner readiness record (expected control/readiness.json or -ReadinessRecordPath)." }
+        }
+        $rawJson = [System.IO.File]::ReadAllText($defaultPath, $script:Utf8NoBom)
+    }
+
+    $rec = $null
+    try {
+        $rec = ConvertFrom-Json -InputObject $rawJson
+    } catch {
+        return @{ IsValid = $false; Reason = "Execution refused: readiness record is invalid JSON: $_" }
+    }
+
+    if ($null -eq $rec) {
+        return @{ IsValid = $false; Reason = "Execution refused: readiness record is empty." }
+    }
+
+    $recToken = "$(Get-SafePropertyValue -Object $rec -PropertyName 'AdoptionToken')"
+    if ($recToken -ne $script:REQUIRED_ADOPTION_TOKEN) {
+        return @{ IsValid = $false; Reason = "Execution refused: readiness record AdoptionToken '$recToken' does not match required token '$($script:REQUIRED_ADOPTION_TOKEN)'." }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($Attestation) -and $Attestation -ne $recToken) {
+        return @{ IsValid = $false; Reason = "Execution refused: adoption attestation parameter does not match readiness record AdoptionToken." }
+    }
+
+    $recProfile = "$(Get-SafePropertyValue -Object $rec -PropertyName 'ProfileId')"
+    if ($recProfile -ne "process-lifecycle-v1") {
+        return @{ IsValid = $false; Reason = "Execution refused: readiness record ProfileId '$recProfile' does not match 'process-lifecycle-v1'." }
+    }
+
+    $currentScriptSha = if (-not [string]::IsNullOrWhiteSpace($PSCommandPath) -and (Test-Path -LiteralPath $PSCommandPath -PathType Leaf)) {
+        Compute-FileSha256 -FilePath $PSCommandPath
+    } else {
+        ""
+    }
+    $recScriptSha = "$(Get-SafePropertyValue -Object $rec -PropertyName 'AdoptedScriptSha256')".ToLowerInvariant()
+    if ([string]::IsNullOrWhiteSpace($recScriptSha) -or $recScriptSha -ne $currentScriptSha.ToLowerInvariant()) {
+        return @{ IsValid = $false; Reason = "Execution refused: readiness record AdoptedScriptSha256 ('$recScriptSha') does not match running script SHA256 ('$currentScriptSha'). Auto-adoption is prohibited." }
+    }
+
+    $recRootRaw = "$(Get-SafePropertyValue -Object $rec -PropertyName 'FixtureRoot')"
+    if ([string]::IsNullOrWhiteSpace($recRootRaw)) {
+        return @{ IsValid = $false; Reason = "Execution refused: readiness record is missing FixtureRoot binding." }
+    }
+    $recRootCanon = [System.IO.Path]::GetFullPath($recRootRaw).TrimEnd('\', '/')
+    if (-not [string]::Equals($recRootCanon, $canonRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+        return @{ IsValid = $false; Reason = "Execution refused: readiness record FixtureRoot ('$recRootCanon') does not match active FixtureRoot ('$canonRoot')." }
+    }
+
+    $recBatchUtc = "$(Get-SafePropertyValue -Object $rec -PropertyName 'BatchStartTimeUtc')"
+    if ([string]::IsNullOrWhiteSpace($recBatchUtc) -or $recBatchUtc -ne "$($StateObject.BatchStartTimeUtc)") {
+        return @{ IsValid = $false; Reason = "Execution refused: readiness record BatchStartTimeUtc ('$recBatchUtc') does not match batch state ('$($StateObject.BatchStartTimeUtc)')." }
+    }
+
+    $recPid = Get-SafePropertyValue -Object $rec -PropertyName "SupervisorPid"
+    if ($null -ne $recPid -and "$recPid" -ne "" -and [int]$recPid -gt 0) {
+        $expectedPid = if ($null -ne $StateObject.ActiveSupervisorPid) { [int]$StateObject.ActiveSupervisorPid } else { $PID }
+        if ([int]$recPid -ne $expectedPid -and [int]$recPid -ne $PID) {
+            return @{ IsValid = $false; Reason = "Execution refused: readiness record SupervisorPid ($recPid) does not match current supervisor session PID ($PID)." }
+        }
+    }
+
+    $ownerAvail = Get-SafePropertyValue -Object $rec -PropertyName "OwnerAvailable"
+    if ($ownerAvail -ne $true) {
+        return @{ IsValid = $false; Reason = "Execution refused: readiness record does not confirm OwnerAvailable = true." }
+    }
+
+    $closedGames = Get-SafePropertyValue -Object $rec -PropertyName "GamesAndCompanionClosed"
+    if ($closedGames -ne $true) {
+        return @{ IsValid = $false; Reason = "Execution refused: readiness record does not confirm GamesAndCompanionClosed = true." }
+    }
+
+    $confirmedRaw = "$(Get-SafePropertyValue -Object $rec -PropertyName 'ConfirmedAtUtc')"
+    if ([string]::IsNullOrWhiteSpace($confirmedRaw)) {
+        return @{ IsValid = $false; Reason = "Execution refused: readiness record is missing ConfirmedAtUtc timestamp." }
+    }
+    $confirmedUtc = [DateTime]::MinValue
+    try {
+        $confirmedUtc = [DateTime]::Parse($confirmedRaw, $null, [System.Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
+    } catch {
+        return @{ IsValid = $false; Reason = "Execution refused: readiness record ConfirmedAtUtc ('$confirmedRaw') is not a valid ISO-8601 timestamp." }
+    }
+
+    $ageSeconds = ($ReferenceUtc - $confirmedUtc).TotalSeconds
+    if ($ageSeconds -lt -300) {
+        return @{ IsValid = $false; Reason = "Execution refused: readiness record ConfirmedAtUtc ('$confirmedRaw') is in the future relative to reference clock." }
+    }
+    if ($ageSeconds -gt 1800) {
+        return @{ IsValid = $false; Reason = "Execution refused: stale readiness confirmation (ConfirmedAtUtc '$confirmedRaw' is $([int]$ageSeconds)s old; max freshness is 1800s)." }
+    }
+
+    return @{
+        IsValid             = $true
+        Reason              = "Ready"
+        AdoptedScriptSha256 = $recScriptSha
+        AdoptedToken        = $recToken
+    }
+}
+
 function Invoke-SuperviseObservationCycle([string]$FixtureRoot) {
     $canon = Validate-RootBoundPath -RootPath $FixtureRoot -CandidatePath $FixtureRoot
     $state = Get-StateData -FixtureRoot $canon
 
-    # 1. Monotonic elapsed accounting from Setup start without gaps or resets
-    if (-not [string]::IsNullOrWhiteSpace($state.TrialStartUtc)) {
+    $nowUtc = Get-EffectiveReferenceUtc
+    $currentTick = Get-EffectiveMonotonicTick
+    $currentFreq = Get-EffectiveMonotonicFrequency
+
+    # 1. Real monotonic elapsed accounting from Setup start with conservative wall-clock cross-check
+    $priorElapsedMs = if ($null -ne $state.ElapsedMilliseconds -and [long]$state.ElapsedMilliseconds -gt 0) { [long]$state.ElapsedMilliseconds } else { 0L }
+    $priorAccumMonoMs = if ($null -ne $state.AccumulatedMonotonicMs -and [long]$state.AccumulatedMonotonicMs -gt 0) { [long]$state.AccumulatedMonotonicMs } else { $priorElapsedMs }
+
+    $monoValid = $true
+    $monoInvalidReason = $null
+
+    if ($null -eq $state.MonotonicOriginTimestamp -or [long]$state.MonotonicOriginTimestamp -le 0) {
+        $monoValid = $false
+        $monoInvalidReason = "Missing or non-positive MonotonicOriginTimestamp in state.json."
+    } elseif ($null -eq $state.MonotonicFrequency -or [long]$state.MonotonicFrequency -le 0) {
+        $monoValid = $false
+        $monoInvalidReason = "Missing or non-positive MonotonicFrequency in state.json."
+    } elseif ($null -eq $state.LastMonotonicTimestamp -or [long]$state.LastMonotonicTimestamp -lt [long]$state.MonotonicOriginTimestamp) {
+        $monoValid = $false
+        $monoInvalidReason = "Invalid LastMonotonicTimestamp (precedes MonotonicOriginTimestamp) in state.json."
+    } elseif ([long]$state.MonotonicFrequency -ne $currentFreq) {
+        $monoValid = $false
+        $monoInvalidReason = "MonotonicFrequency changed ($($state.MonotonicFrequency) vs $currentFreq); monotonic continuity invalidated."
+    } elseif ($currentTick -lt [long]$state.LastMonotonicTimestamp) {
+        $monoValid = $false
+        $monoInvalidReason = "Monotonic timestamp regressed ($currentTick < $($state.LastMonotonicTimestamp)); monotonic continuity invalidated."
+    }
+
+    $wallTotalMs = 0L
+    $wallDeltaMs = 0L
+    if ([string]::IsNullOrWhiteSpace($state.TrialStartUtc)) {
+        $monoValid = $false
+        $monoInvalidReason = "Missing TrialStartUtc in state.json."
+    } else {
         try {
             $trialStart = [DateTime]::Parse($state.TrialStartUtc, $null, [System.Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
-            $totalElapsedMs = [long]([DateTime]::UtcNow - $trialStart).TotalMilliseconds
-            $state.ElapsedMilliseconds = [Math]::Max([long]$state.ElapsedMilliseconds, $totalElapsedMs)
+            $wallTotalMs = [Math]::Max(0L, [long]($nowUtc - $trialStart).TotalMilliseconds)
         } catch {
-            if ($null -eq $script:SupervisorMonotonicTimer) {
-                $script:SupervisorMonotonicTimer = [System.Diagnostics.Stopwatch]::StartNew()
-            }
-            $state.ElapsedMilliseconds = [long]($state.SetupElapsedMilliseconds + $script:SupervisorMonotonicTimer.ElapsedMilliseconds)
+            $monoValid = $false
+            $monoInvalidReason = "Malformed TrialStartUtc in state.json: $_"
         }
-    } else {
-        if ($null -eq $script:SupervisorMonotonicTimer) {
-            $script:SupervisorMonotonicTimer = [System.Diagnostics.Stopwatch]::StartNew()
-        }
-        $state.ElapsedMilliseconds = [long]($state.SetupElapsedMilliseconds + $script:SupervisorMonotonicTimer.ElapsedMilliseconds)
     }
+
+    if (-not [string]::IsNullOrWhiteSpace($state.LastWallClockUtc)) {
+        try {
+            $lastWall = [DateTime]::Parse($state.LastWallClockUtc, $null, [System.Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
+            $wallDeltaMs = [Math]::Max(0L, [long]($nowUtc - $lastWall).TotalMilliseconds)
+        } catch {}
+    }
+
+    if (-not $monoValid) {
+        # Fail closed on missing or invalid monotonic state without resetting prior elapsed time
+        $conservativeElapsed = [Math]::Max($priorElapsedMs, [Math]::Max($priorAccumMonoMs, ($priorElapsedMs + $wallDeltaMs)))
+        $conservativeElapsed = [Math]::Max($conservativeElapsed, $wallTotalMs)
+        $state.ElapsedMilliseconds = $conservativeElapsed
+        $state.AccumulatedMonotonicMs = $conservativeElapsed
+        $state.TerminalHold = $true
+        $state.TerminalHoldReason = "Monotonic clock integrity failure: $monoInvalidReason"
+        $state.LastCheckpointOutcome = "Failed"
+        $state.LastFailedCheckpoint = "MonotonicClockIntegrity"
+        $state.LastFailedReason = $state.TerminalHoldReason
+    } else {
+        $freq = [double]([long]$state.MonotonicFrequency)
+        $originTick = [long]$state.MonotonicOriginTimestamp
+        $lastTick = [long]$state.LastMonotonicTimestamp
+
+        $deltaMonoMs = [long][Math]::Floor((($currentTick - $lastTick) * 1000.0) / $freq)
+        $originMonoMs = [long][Math]::Floor((($currentTick - $originTick) * 1000.0) / $freq)
+
+        # Across supervisor restarts (different PID), conservatively cover any positive wall-clock gap
+        $effectiveDeltaMs = $deltaMonoMs
+        if ($null -ne $state.LastMonotonicSessionPid -and [int]$state.LastMonotonicSessionPid -ne $PID) {
+            $effectiveDeltaMs = [Math]::Max($deltaMonoMs, $wallDeltaMs)
+        }
+
+        $newAccumMonoMs = [Math]::Max(($priorAccumMonoMs + $effectiveDeltaMs), $originMonoMs)
+        $newElapsedMs = [Math]::Max($priorElapsedMs, [Math]::Max($newAccumMonoMs, $wallTotalMs))
+
+        $state.AccumulatedMonotonicMs = $newElapsedMs
+        $state.ElapsedMilliseconds = $newElapsedMs
+        $state.LastMonotonicTimestamp = $currentTick
+        $state.LastWallClockUtc = $nowUtc.ToString("o")
+        $state.LastMonotonicSessionPid = $PID
+    }
+
     $elapsedSeconds = [long]($state.ElapsedMilliseconds / 1000)
 
     # Check trial duration limit
@@ -733,7 +1013,7 @@ function Invoke-SuperviseObservationCycle([string]$FixtureRoot) {
                 TotalCpuMilliseconds = $cpuMs
                 WorkingSetBytes = $wsBytes
                 PeakWorkingSetBytes = $peakWs
-                SampledAtUtc = [DateTime]::UtcNow.ToString("o")
+                SampledAtUtc = $nowUtc.ToString("o")
             }
 
             if ($wsBytes -gt $script:MAX_HELPER_WORKING_SET_BYTES) {
@@ -765,7 +1045,7 @@ function Invoke-SuperviseObservationCycle([string]$FixtureRoot) {
                 TotalCpuMilliseconds = $cpuMs
                 WorkingSetBytes = $wsBytes
                 PeakWorkingSetBytes = $peakWs
-                SampledAtUtc = [DateTime]::UtcNow.ToString("o")
+                SampledAtUtc = $nowUtc.ToString("o")
             }
 
             if ($wsBytes -gt $script:MAX_COMPANION_WORKING_SET_BYTES) {
@@ -800,7 +1080,23 @@ function Invoke-SuperviseObservationCycle([string]$FixtureRoot) {
         }
     }
 
-    # 5. Cooperative readiness evaluation
+    # 5. Cooperative readiness and revision-binding evaluation (never auto-adopt running script)
+    $readinessCheck = Validate-CooperativeReadinessInternal `
+        -FixtureRoot $canon `
+        -StateObject $state `
+        -Attestation $AdoptionAttestation `
+        -ExplicitReadinessPath $ReadinessRecordPath `
+        -ExplicitReadinessJson $ReadinessJson `
+        -ReferenceUtc $nowUtc
+
+    if ($readinessCheck.IsValid) {
+        $state.AdoptedScriptSha256 = $readinessCheck.AdoptedScriptSha256
+        $state.AdoptedToken = $readinessCheck.AdoptedToken
+    } else {
+        $state.AdoptedScriptSha256 = $null
+        $state.AdoptedToken = $null
+    }
+
     $isReady = $true
     $readinessReason = "Ready"
 
@@ -819,6 +1115,9 @@ function Invoke-SuperviseObservationCycle([string]$FixtureRoot) {
     } elseif ($elapsedSeconds -gt $script:MAX_TRIAL_DURATION_SECONDS) {
         $isReady = $false
         $readinessReason = "Trial duration budget exceeded."
+    } elseif (-not $readinessCheck.IsValid) {
+        $isReady = $false
+        $readinessReason = $readinessCheck.Reason
     }
 
     $state.CurrentReadiness = if ($isReady) { "Ready" } else { "NotReady" }
@@ -866,9 +1165,13 @@ function Test-BatchGuardInternal(
         return @{ CanProceed = $false; Reason = "Execution refused: missing or invalid adoption attestation token." }
     }
 
-    # Duration Guard (Wall clock + Monotonic)
-    $startTime = [DateTime]::Parse($state.BatchStartTimeUtc)
-    $elapsedSeconds = ([DateTime]::UtcNow - $startTime).TotalSeconds
+    $nowUtc = Get-EffectiveReferenceUtc
+
+    # Duration Guard (Monotonic + Wall clock conservative maximum)
+    $startTime = [DateTime]::Parse($state.BatchStartTimeUtc, $null, [System.Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
+    $wallElapsedSeconds = ($nowUtc - $startTime).TotalSeconds
+    $monoElapsedSeconds = ([double]([long]$state.ElapsedMilliseconds)) / 1000.0
+    $elapsedSeconds = [Math]::Max($wallElapsedSeconds, $monoElapsedSeconds)
     if ($elapsedSeconds -gt $script:MAX_TRIAL_DURATION_SECONDS) {
         return @{ CanProceed = $false; Reason = "Batch duration cap ($($script:MAX_TRIAL_DURATION_SECONDS)s) exceeded ($([int]$elapsedSeconds)s)." }
     }
@@ -911,6 +1214,18 @@ function Test-BatchGuardInternal(
         if (Test-Path -LiteralPath $stopMarkerPath) {
             return @{ CanProceed = $false; Reason = "Stop marker already exists: stop-$Slot.request. Startup refused." }
         }
+    }
+
+    # Cooperative Readiness & Revision-Binding Guard (evaluated before Process.Start)
+    $readinessCheck = Validate-CooperativeReadinessInternal `
+        -FixtureRoot $FixtureRoot `
+        -StateObject $state `
+        -Attestation $Attestation `
+        -ExplicitReadinessPath $ReadinessRecordPath `
+        -ExplicitReadinessJson $ReadinessJson `
+        -ReferenceUtc $nowUtc
+    if (-not $readinessCheck.IsValid) {
+        return @{ CanProceed = $false; Reason = $readinessCheck.Reason }
     }
 
     return @{ CanProceed = $true; Reason = "Batch guard passed." }
@@ -1434,11 +1749,137 @@ function Extract-CompanionProvenance(
     }
 }
 
+function Invoke-BoundedChildProcess(
+    [string]$FileName,
+    [string]$Arguments = "",
+    [string]$StdoutLogPath,
+    [string]$StderrLogPath,
+    [int]$TimeoutMs = 30000,
+    [long]$MaxLogBytes = 104857600,
+    [string]$WorkingDirectory = ""
+) {
+    if ([string]::IsNullOrWhiteSpace($FileName)) {
+        throw "Child process FileName is required."
+    }
+    if ([string]::IsNullOrWhiteSpace($StdoutLogPath) -or [string]::IsNullOrWhiteSpace($StderrLogPath)) {
+        throw "Both StdoutLogPath and StderrLogPath are required."
+    }
+
+    foreach ($logFile in @($StdoutLogPath, $StderrLogPath)) {
+        $dir = [System.IO.Path]::GetDirectoryName($logFile)
+        if (-not [string]::IsNullOrEmpty($dir) -and -not (Test-Path -LiteralPath $dir -PathType Container)) {
+            [void][System.IO.Directory]::CreateDirectory($dir)
+        }
+        if (Test-Path -LiteralPath $logFile -PathType Leaf) {
+            [System.IO.File]::WriteAllText($logFile, "", $script:Utf8NoBom)
+        }
+    }
+
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $FileName
+    $psi.Arguments = $Arguments
+    if (-not [string]::IsNullOrWhiteSpace($WorkingDirectory) -and (Test-Path -LiteralPath $WorkingDirectory -PathType Container)) {
+        $psi.WorkingDirectory = $WorkingDirectory
+    }
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.CreateNoWindow = $true
+
+    $proc = New-Object System.Diagnostics.Process
+    $proc.StartInfo = $psi
+
+    if (-not $proc.Start()) {
+        throw "Failed to start bounded child process '$FileName'."
+    }
+
+    $outDrainer = New-Object DXVKCompanion.Validation.SafeProcessStreamDrainer($proc.StandardOutput, $StdoutLogPath, $script:Utf8NoBom, $MaxLogBytes)
+    $errDrainer = New-Object DXVKCompanion.Validation.SafeProcessStreamDrainer($proc.StandardError, $StderrLogPath, $script:Utf8NoBom, $MaxLogBytes)
+    $outDrainer.Start()
+    $errDrainer.Start()
+
+    $exited = $proc.WaitForExit($TimeoutMs)
+    if (-not $exited) {
+        # Zero force-termination: retain process and drainers in script state without calling Kill() or disposing
+        $retainedRecord = [PSCustomObject]@{
+            Process       = $proc
+            Pid           = $proc.Id
+            FileName      = $FileName
+            Arguments     = $Arguments
+            StdoutDrainer = $outDrainer
+            StderrDrainer = $errDrainer
+            StdoutLogPath = $StdoutLogPath
+            StderrLogPath = $StderrLogPath
+            TimedOutAtUtc = [DateTime]::UtcNow.ToString("o")
+        }
+        [void]$script:RetainedTimedOutProcesses.Add($retainedRecord)
+
+        $stdoutText = if (Test-Path -LiteralPath $StdoutLogPath -PathType Leaf) { [System.IO.File]::ReadAllText($StdoutLogPath, $script:Utf8NoBom) } else { "" }
+        $stderrText = if (Test-Path -LiteralPath $StderrLogPath -PathType Leaf) { [System.IO.File]::ReadAllText($StderrLogPath, $script:Utf8NoBom) } else { "" }
+
+        return [PSCustomObject]@{
+            Completed     = $false
+            TimedOut      = $true
+            Retained      = $true
+            Pid           = $proc.Id
+            ExitCode      = $null
+            StdoutDrained = $false
+            StderrDrained = $false
+            HasDrainFault = ($outDrainer.HasFault -or $errDrainer.HasFault)
+            FaultMessage  = if ($outDrainer.HasFault) { $outDrainer.FaultMessage } else { $errDrainer.FaultMessage }
+            StdoutText    = $stdoutText
+            StderrText    = $stderrText
+            StdoutLogPath = $StdoutLogPath
+            StderrLogPath = $StderrLogPath
+        }
+    }
+
+    $outDrained = $outDrainer.WaitForDrain(5000)
+    $errDrained = $errDrainer.WaitForDrain(5000)
+    $hasFault = (-not $outDrained) -or (-not $errDrained) -or $outDrainer.HasFault -or $errDrainer.HasFault
+    $faultMsg = if ($outDrainer.HasFault) {
+        $outDrainer.FaultMessage
+    } elseif ($errDrainer.HasFault) {
+        $errDrainer.FaultMessage
+    } elseif (-not $outDrained -or -not $errDrained) {
+        "Stream drain timed out after process exit."
+    } else {
+        $null
+    }
+
+    $exitCode = $proc.ExitCode
+    $pidVal = $proc.Id
+
+    $outDrainer.Dispose()
+    $errDrainer.Dispose()
+    $proc.Dispose()
+
+    $stdoutText = if (Test-Path -LiteralPath $StdoutLogPath -PathType Leaf) { [System.IO.File]::ReadAllText($StdoutLogPath, $script:Utf8NoBom) } else { "" }
+    $stderrText = if (Test-Path -LiteralPath $StderrLogPath -PathType Leaf) { [System.IO.File]::ReadAllText($StderrLogPath, $script:Utf8NoBom) } else { "" }
+
+    return [PSCustomObject]@{
+        Completed     = $true
+        TimedOut      = $false
+        Retained      = $false
+        Pid           = $pidVal
+        ExitCode      = $exitCode
+        StdoutDrained = [bool]$outDrained
+        StderrDrained = [bool]$errDrained
+        HasDrainFault = [bool]$hasFault
+        FaultMessage  = $faultMsg
+        StdoutText    = $stdoutText
+        StderrText    = $stderrText
+        StdoutLogPath = $StdoutLogPath
+        StderrLogPath = $StderrLogPath
+    }
+}
+
 function Extract-BoundedDxvkTarGz(
     [string]$TarGzPath,
     [string]$Version,
     [string]$DestinationDir,
-    [string]$LogsDir = ""
+    [string]$LogsDir = "",
+    [int]$TimeoutMs = 30000
 ) {
     if (-not (Test-Path -LiteralPath $TarGzPath -PathType Leaf)) {
         throw "DXVK archive not found: $TarGzPath"
@@ -1468,62 +1909,48 @@ function Extract-BoundedDxvkTarGz(
     $inspectErrPath = [System.IO.Path]::Combine($effectiveLogsDir, "dxvk-$Version-inspect-stderr.txt")
 
     $tarExe = "tar.exe"
-    $psi = New-Object System.Diagnostics.ProcessStartInfo
-    $psi.FileName = $tarExe
-    $psi.Arguments = "-ztvf `"$TarGzPath`""
-    $psi.UseShellExecute = $false
-    $psi.RedirectStandardOutput = $true
-    $psi.RedirectStandardError = $true
-    $psi.CreateNoWindow = $true
+    $inspectRes = Invoke-BoundedChildProcess `
+        -FileName $tarExe `
+        -Arguments "-ztvf `"$TarGzPath`"" `
+        -StdoutLogPath $listingPath `
+        -StderrLogPath $inspectErrPath `
+        -TimeoutMs $TimeoutMs
 
-    $p = [System.Diagnostics.Process]::Start($psi)
-    $stdoutTask = $p.StandardOutput.ReadToEndAsync()
-    $stderrTask = $p.StandardError.ReadToEndAsync()
-
-    if (-not $p.WaitForExit(30000)) {
-        try { $p.Kill() } catch {}
-        throw "DXVK tar archive inspection timed out after 30000ms."
+    if ($inspectRes.TimedOut) {
+        throw "DXVK tar archive inspection timed out after ${TimeoutMs}ms (PID $($inspectRes.Pid) retained without force-kill; logs at $listingPath)."
+    }
+    if ($inspectRes.HasDrainFault) {
+        throw "DXVK tar archive inspection stream drain fault: $($inspectRes.FaultMessage)"
+    }
+    if ($inspectRes.ExitCode -ne 0) {
+        throw "Failed to inspect tar archive '$TarGzPath' (exit code $($inspectRes.ExitCode)): $($inspectRes.StderrText)"
     }
 
-    $listingText = $stdoutTask.Result
-    $errText = $stderrTask.Result
-
-    # Retain inspection output and errors permanently in logs directory
-    [System.IO.File]::WriteAllText($listingPath, $listingText, $script:Utf8NoBom)
-    [System.IO.File]::WriteAllText($inspectErrPath, $errText, $script:Utf8NoBom)
-
-    if ($p.ExitCode -ne 0) {
-        throw "Failed to inspect tar archive '$TarGzPath' (exit code $($p.ExitCode)): $errText"
-    }
-
-    $lines = $listingText -split '\r?\n'
+    $lines = $inspectRes.StdoutText -split '\r?\n'
     $parseResult = Parse-TarListingInternal -Lines $lines -MaxEntries 500 -MaxTotalBytes 104857600
 
     [void][System.IO.Directory]::CreateDirectory($DestinationDir)
     $cleanVer = $Version.TrimStart('v')
     $prefix = "dxvk-$cleanVer"
 
-    $extractPsi = New-Object System.Diagnostics.ProcessStartInfo
-    $extractPsi.FileName = $tarExe
-    $extractPsi.Arguments = "-xzf `"$TarGzPath`" -C `"$DestinationDir`" --strip-components 2 `"$prefix/x64/d3d11.dll`" `"$prefix/x64/dxgi.dll`""
-    $extractPsi.UseShellExecute = $false
-    $extractPsi.RedirectStandardOutput = $true
-    $extractPsi.RedirectStandardError = $true
-    $extractPsi.CreateNoWindow = $true
-
-    $ep = [System.Diagnostics.Process]::Start($extractPsi)
-    $extErrTask = $ep.StandardError.ReadToEndAsync()
-
-    if (-not $ep.WaitForExit(30000)) {
-        try { $ep.Kill() } catch {}
-        throw "DXVK tar extraction timed out after 30000ms."
-    }
-    $extErr = $extErrTask.Result
+    $extractOutPath = [System.IO.Path]::Combine($effectiveLogsDir, "dxvk-$Version-extract-stdout.txt")
     $extractLogPath = [System.IO.Path]::Combine($effectiveLogsDir, "dxvk-$Version-extract-stderr.txt")
-    [System.IO.File]::WriteAllText($extractLogPath, $extErr, $script:Utf8NoBom)
 
-    if ($ep.ExitCode -ne 0) {
-        throw "tar.exe extraction failed with exit code $($ep.ExitCode): $extErr"
+    $extractRes = Invoke-BoundedChildProcess `
+        -FileName $tarExe `
+        -Arguments "-xzf `"$TarGzPath`" -C `"$DestinationDir`" --strip-components 2 `"$prefix/x64/d3d11.dll`" `"$prefix/x64/dxgi.dll`"" `
+        -StdoutLogPath $extractOutPath `
+        -StderrLogPath $extractLogPath `
+        -TimeoutMs $TimeoutMs
+
+    if ($extractRes.TimedOut) {
+        throw "DXVK tar extraction timed out after ${TimeoutMs}ms (PID $($extractRes.Pid) retained without force-kill; logs at $extractLogPath)."
+    }
+    if ($extractRes.HasDrainFault) {
+        throw "DXVK tar extraction stream drain fault: $($extractRes.FaultMessage)"
+    }
+    if ($extractRes.ExitCode -ne 0) {
+        throw "tar.exe extraction failed with exit code $($extractRes.ExitCode): $($extractRes.StderrText)"
     }
 
     $extD3d11 = [System.IO.Path]::Combine($DestinationDir, "d3d11.dll")
@@ -1577,7 +2004,10 @@ function Invoke-SetupAction {
     }
 
     # Start monotonic budget and UTC timer BEFORE any setup writes
-    $setupStartUtc = [DateTime]::UtcNow.ToString("o")
+    $setupStartUtcObj = Get-EffectiveReferenceUtc
+    $setupStartUtc = $setupStartUtcObj.ToString("o")
+    $monotonicOriginTick = Get-EffectiveMonotonicTick
+    $monotonicFreq = Get-EffectiveMonotonicFrequency
     $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 
     # Parse TestPins if supplied
@@ -1892,39 +2322,52 @@ function Invoke-SetupAction {
     $legacyGamesJson = ConvertTo-Json -InputObject @($legacyProfile) -Depth 5
     [System.IO.File]::WriteAllText($legacyGamesPath, $legacyGamesJson, $script:Utf8NoBom)
 
-    # Initialize state.json with monotonic timings, start attempts, and cooperative readiness
+    # Initialize state.json with monotonic timings, start attempts, and cooperative readiness (no auto-adoption)
     $scriptSha = if (-not [string]::IsNullOrWhiteSpace($PSCommandPath) -and (Test-Path -LiteralPath $PSCommandPath -PathType Leaf)) {
         Compute-FileSha256 -FilePath $PSCommandPath
     } else {
         $null
     }
     $initialFootprint = Measure-DirectoryFootprintBytes -DirectoryPath $rootFull
+    $afterSetupTick = Get-EffectiveMonotonicTick
+    if ($afterSetupTick -lt $monotonicOriginTick) {
+        $afterSetupTick = $monotonicOriginTick
+    }
+    $setupMonoElapsedMs = [Math]::Max([long]$stopwatch.ElapsedMilliseconds, [long][Math]::Floor((($afterSetupTick - $monotonicOriginTick) * 1000.0) / [double]$monotonicFreq))
+    $afterSetupUtc = (Get-EffectiveReferenceUtc).ToString("o")
 
     $initialState = [PSCustomObject]@{
-        BatchStartTimeUtc        = $setupStartUtc
-        TrialStartUtc            = $setupStartUtc
-        SetupElapsedMilliseconds = $stopwatch.ElapsedMilliseconds
-        ElapsedMilliseconds      = $stopwatch.ElapsedMilliseconds
-        HelperStartAttempts      = 0
-        CompanionStartAttempts   = 0
-        MaxHelperStarts          = $script:MAX_HELPER_STARTS
-        MaxCompanionStarts       = $script:MAX_COMPANION_STARTS
-        MaxDurationSeconds       = $script:MAX_TRIAL_DURATION_SECONDS
-        MaxFootprintBytes        = $script:MAX_FIXTURE_ROOT_BYTES
-        UsedSlots                = @()
-        CurrentCheckpoint        = "Setup"
-        LastCheckpointOutcome    = "Success"
-        LastFailedCheckpoint     = $null
-        LastFailedReason         = $null
-        TerminalHold             = $false
-        TerminalHoldReason       = $null
-        CurrentReadiness         = "Ready"
-        ReadinessReason          = "Initial setup complete"
-        CurrentFootprintBytes    = $initialFootprint
-        ActiveProcesses          = @()
-        AdoptedScriptSha256      = $scriptSha
-        AdoptedToken             = $null
-        IsEnded                  = $false
+        BatchStartTimeUtc          = $setupStartUtc
+        TrialStartUtc              = $setupStartUtc
+        SetupElapsedMilliseconds   = $setupMonoElapsedMs
+        ElapsedMilliseconds        = $setupMonoElapsedMs
+        MonotonicOriginTimestamp   = $monotonicOriginTick
+        MonotonicFrequency         = $monotonicFreq
+        LastMonotonicTimestamp     = $afterSetupTick
+        AccumulatedMonotonicMs     = $setupMonoElapsedMs
+        LastWallClockUtc           = $afterSetupUtc
+        LastMonotonicSessionPid    = $PID
+        HelperStartAttempts        = 0
+        CompanionStartAttempts     = 0
+        MaxHelperStarts            = $script:MAX_HELPER_STARTS
+        MaxCompanionStarts         = $script:MAX_COMPANION_STARTS
+        MaxDurationSeconds         = $script:MAX_TRIAL_DURATION_SECONDS
+        MaxFootprintBytes          = $script:MAX_FIXTURE_ROOT_BYTES
+        UsedSlots                  = @()
+        CurrentCheckpoint          = "Setup"
+        LastCheckpointOutcome      = "Success"
+        LastFailedCheckpoint       = $null
+        LastFailedReason           = $null
+        TerminalHold               = $false
+        TerminalHoldReason         = $null
+        CurrentReadiness           = "NotReady"
+        ReadinessReason            = "Pending explicit owner adoption and readiness confirmation"
+        CurrentFootprintBytes      = $initialFootprint
+        ActiveProcesses            = @()
+        SetupScriptSha256          = $scriptSha
+        AdoptedScriptSha256        = $null
+        AdoptedToken               = $null
+        IsEnded                    = $false
         TestPinsUsed               = $testPinsUsed
         ActiveHelperPid            = $null
         ActiveHelperSlot           = $null
@@ -2446,6 +2889,12 @@ function Supervise-HelperStop([string]$FixtureRoot, [int]$Slot) {
     $canonRoot = Validate-RootBoundPath -RootPath $FixtureRoot -CandidatePath $FixtureRoot
     $state = Get-StateData -FixtureRoot $canonRoot
 
+    # Owner-first Companion exit ordering on holds: if TerminalHold is active while Companion is running, require stop-companion first
+    $companionActive = ($null -ne $script:CompanionProcess -and -not $script:CompanionProcess.HasExited) -or ($null -ne $state.ActiveCompanionPid)
+    if ($state.TerminalHold -and $companionActive) {
+        throw "Terminal hold active: close Companion normally (stop-companion) before stopping helper."
+    }
+
     if ($null -eq $script:HelperProcess) {
         throw "No retained helper process handle in supervisor."
     }
@@ -2659,15 +3108,6 @@ function Invoke-SuperviseAction {
         }
     }
     $state.ActiveSupervisorPid = $PID
-    if (-not [string]::IsNullOrWhiteSpace($AdoptionAttestation)) {
-        $state.AdoptedToken = $AdoptionAttestation
-    }
-    $scriptSha = if (-not [string]::IsNullOrWhiteSpace($PSCommandPath) -and (Test-Path -LiteralPath $PSCommandPath -PathType Leaf)) {
-        Compute-FileSha256 -FilePath $PSCommandPath
-    } else {
-        $null
-    }
-    $state.AdoptedScriptSha256 = $scriptSha
     Save-StateData -FixtureRoot $canonRoot -StateObject $state
 
     Write-Host "======================================================================"
@@ -2783,18 +3223,21 @@ function Invoke-SuperviseAction {
             }
         } else {
             Write-Host "Entering interactive supervisor mode. Type 'help' for commands, 'exit' to quit."
+            $lineReader = New-Object DXVKCompanion.Validation.SafeInteractiveLineReader
             while ($true) {
                 Invoke-SuperviseObservationCycle -FixtureRoot $canonRoot
                 $st = Get-StateData -FixtureRoot $canonRoot
                 $prompt = "Trial [Helper=$($st.HelperStartAttempts)/4, Comp=$($st.CompanionStartAttempts)/8, Readiness=$($st.CurrentReadiness)] > "
                 Write-Host -NoNewline $prompt
 
-                # Bounded asynchronous console read with periodic observation cycle
-                $readTask = [System.Threading.Tasks.Task[string]]::Run([System.Func[string]]{ [Console]::ReadLine() })
-                while (-not $readTask.Wait(500)) {
+                # Bounded asynchronous console read using compiled C# SafeInteractiveLineReader (no PowerShell runspace on worker thread)
+                $inputLine = $null
+                while (-not $lineReader.PollReadLine(200, [ref]$inputLine)) {
                     Invoke-SuperviseObservationCycle -FixtureRoot $canonRoot
                 }
-                $inputLine = $readTask.Result
+                if ($lineReader.HasFault) {
+                    throw "Interactive input reader fault: $($lineReader.FaultMessage)"
+                }
 
                 if ($null -eq $inputLine) {
                     Write-Host "`nEOF detected on supervisor input."
@@ -3069,6 +3512,39 @@ try {
             $result = @{
                 Success = $true
                 Message = "Companion provenance validated successfully."
+            }
+        }
+        "Test-BoundedChild" {
+            if ([string]::IsNullOrWhiteSpace($ChildFileName)) { throw "ChildFileName is required for Test-BoundedChild." }
+            if ([string]::IsNullOrWhiteSpace($LogPath)) { throw "LogPath is required for Test-BoundedChild." }
+            $errLog = if (-not [string]::IsNullOrWhiteSpace($StderrLogPath)) { $StderrLogPath } else { "$LogPath.stderr.log" }
+            $workDir = if (-not [string]::IsNullOrWhiteSpace($TargetPath)) { $TargetPath } else { [System.IO.Path]::GetDirectoryName($LogPath) }
+
+            $childRes = Invoke-BoundedChildProcess `
+                -FileName $ChildFileName `
+                -Arguments $ChildArguments `
+                -WorkingDirectory $workDir `
+                -StdoutLogPath $LogPath `
+                -StderrLogPath $errLog `
+                -WaitTimeoutMs $TimeoutMs `
+                -MaxStreamBytes $MaxBytes
+
+            $result = @{
+                Success              = $true
+                Completed            = [bool]$childRes.Completed
+                TimedOut             = [bool]$childRes.TimedOut
+                ExitCode             = $childRes.ExitCode
+                ProcessId            = $childRes.ProcessId
+                Retained             = [bool]$childRes.Retained
+                RetainedProcessCount = [int]$script:RetainedTimedOutProcesses.Count
+                StdoutDrained        = [bool]$childRes.StdoutDrained
+                StderrDrained        = [bool]$childRes.StderrDrained
+                StdoutFault          = [bool]$childRes.StdoutFault
+                StderrFault          = [bool]$childRes.StderrFault
+                StdoutBytes          = [long]$childRes.StdoutBytes
+                StderrBytes          = [long]$childRes.StderrBytes
+                StdoutLogPath        = $childRes.StdoutLogPath
+                StderrLogPath        = $childRes.StderrLogPath
             }
         }
     }

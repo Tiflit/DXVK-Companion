@@ -211,3 +211,66 @@ Following Codex focused review comment 6405199238 at head `39cd6bf`, the followi
    - Recomputed `tools/validation/ProcessLifecycleTrial.ps1` SHA256: `5a4fd644d1aa95fc11728d054486fa294a66c2229a04fc38bc2cdd2acd45d78d`.
    - Updated `docs/validation/PACKAGED-PROCESS-LIFECYCLE-V1.md`.
 
+---
+
+## 2026-10-25 Delta Repair Cycle 6 — Addressing Codex Review 6405935571 at `0fbea24` (B1–B4 Closure)
+
+Following Codex's review comment [`#issuecomment-6405935571`](https://github.com/Tiflit/DXVK-Companion/pull/302#issuecomment-6405935571) at head `0fbea2462eccf0b18ce3d255413a4d145ee5771a`, the four remaining blockers (B1–B4) were resolved within the four allowed paths:
+
+### 1. B1 — Interactive Input Without Worker-Thread PowerShell Runspace Fault
+- **Root Cause**: `Invoke-SuperviseAction` previously used `[System.Threading.Tasks.Task[string]]::Run([System.Func[string]]{ [Console]::ReadLine() })`. In PowerShell, casting a scriptblock `{ ... }` to `[System.Func[string]]` and running it on a .NET thread-pool thread via `Task.Run` throws `PSInvalidOperationException: There is no Runspace available to run scripts in this thread`.
+- **Fix**: Added compiled C# helper class `DXVKCompanion.Validation.SafeInteractiveLineReader` inside the script's `Add-Type` block. `SafeInteractiveLineReader` reads lines asynchronously from `Console.In` (or a `TextReader`) using a pure compiled C# delegate (`Task.Run(new Func<string>(ReadNextLine))`) that requires no PowerShell runspace on the worker thread. Meanwhile, the owning PowerShell runspace polls `PollReadLine(200, [ref]$inputLine)` and runs `Invoke-SuperviseObservationCycle` on the main thread during idle operator pauses.
+- **Hosted Regressions**:
+  - `Supervise_InteractiveMode_WithRedirectedStdin_ProcessesIdleObservationAndCommandsCleanly`: Exercises the real interactive `Supervise` path with redirected `StandardInput` (no `-Commands` or `-CommandFile`), waits >600ms across multiple idle observation intervals, feeds `status`, `end-batch`, and `exit`, verifies clean exit `0` with zero runspace faults, verifies monotonic `ElapsedMilliseconds` advancement, and confirms zero binary launches (`HelperStartAttempts == 0`, `CompanionStartAttempts == 0`).
+  - `Supervise_InteractiveMode_EofOnRedirectedStdin_ExitsCleanlyWithoutRunspaceFault`: Exercises the interactive `Supervise` path with redirected `StandardInput`, waits across an idle observation interval, closes `StandardInput` (EOF), and verifies clean EOF detection and exit `0` without runspace errors.
+
+### 2. B2 — Removal of Reintroduced `.Kill()` Calls & Bounded Child Stream Draining / Retention
+- **Root Cause**: `Extract-BoundedDxvkTarGz` reintroduced `$p.Kill()` and `$ep.Kill()` on `tar.exe` timeout and used synchronous `ReadToEnd()`, violating the zero-force-termination and bounded-stream-draining rules.
+- **Fix**: Removed both `.Kill()` calls and refactored child process execution into `Invoke-BoundedChildProcess`, which redirects both `StandardOutput` and `StandardError` into `SafeProcessStreamDrainer` instances with bounded `MaxStreamBytes` (100 MiB default) and bounded `WaitForDrain(5000)`. On timeout, the process handle and active stream drainers are retained in `$script:RetainedTimedOutProcesses` without calling `.Kill()` or disposing the active handle, and all stdout/stderr logs in `logs/` are preserved.
+- **Hosted Regressions**:
+  - `Script_SourceInspection_ContainsZeroForceKillCalls`: Verifies `ProcessLifecycleTrial.ps1` contains zero `.Kill(`, `Stop-Process`, or `taskkill` calls.
+  - `BoundedChildProcess_NormalCompletion_DrainsStdoutAndStderrToLogs`: Exercises `-Action Test-BoundedChild` (`Invoke-BoundedChildProcess`) on a harmless data-only command emitting both stdout and stderr, verifying complete draining and log persistence.
+  - `BoundedChildProcess_Timeout_RetainsProcessAndLogsWithoutKill`: Exercises `-Action Test-BoundedChild` with a 250ms timeout against a brief data-only command, verifying `TimedOut == true`, `Retained == true`, `RetainedProcessCount == 1`, and log retention without force-killing the child.
+
+### 3. B3 — Explicit Cooperative Readiness / Revision Binding & Real Monotonic Elapsed Accounting
+- **No Auto-Adoption & Explicit Readiness Validation (`Validate-CooperativeReadinessInternal`)**:
+  - Removed automatic self-adoption from `Invoke-SetupAction` and `Invoke-SuperviseAction` (`Setup` now initializes `CurrentReadiness = "NotReady"`, `AdoptedScriptSha256 = $null`, `AdoptedToken = $null`, recording `SetupScriptSha256` separately for provenance).
+  - Implemented `Validate-CooperativeReadinessInternal`, which requires an explicit readiness record (`<FixtureRoot>/control/readiness.json`, `-ReadinessRecordPath`, or `-ReadinessJson`) and verifies before `Process.Start`:
+    1. `AdoptionToken == "ADOPTED-PROCESS-LIFECYCLE-V1"` (matching `-AdoptionAttestation`).
+    2. `ProfileId == "process-lifecycle-v1"`.
+    3. `AdoptedScriptSha256` matches the actual SHA-256 of the running `ProcessLifecycleTrial.ps1` (refusing mismatched hashes and never auto-adopting).
+    4. Canonical `FixtureRoot` and `BatchStartTimeUtc` match the active fixture root and batch state, and optional `SupervisorPid` matches the active supervisor session.
+    5. `OwnerAvailable == true` and `GamesAndCompanionClosed == true`.
+    6. `ConfirmedAtUtc` is a valid ISO-8601 UTC timestamp within the 1,800-second freshness window and not in the future.
+- **Real Monotonic Elapsed Accounting & Owner-First Hold Ordering**:
+  - `Invoke-SetupAction` captures `[System.Diagnostics.Stopwatch]::GetTimestamp()` (`MonotonicOriginTimestamp`, `LastMonotonicTimestamp`) and `[System.Diagnostics.Stopwatch]::Frequency` (`MonotonicFrequency`) before setup writes.
+  - `Invoke-SuperviseObservationCycle` computes elapsed time from hardware/OS monotonic ticks (`(currentTick - lastTick) * 1000 / freq` and `(currentTick - originTick) * 1000 / freq`) accumulated across cycles (`AccumulatedMonotonicMs`), using wall-clock UTC (`TrialStartUtc` / `LastWallClockUtc`) only as a conservative cross-check (`Math.Max(monotonicMs, wallMs)`).
+  - If wall-clock time is rolled backward, `ElapsedMilliseconds` still advances strictly via monotonic ticks. Across supervisor session restarts (`LastMonotonicSessionPid != $PID`), any positive wall-clock gap is conservatively added. If `MonotonicOriginTimestamp`, `MonotonicFrequency`, or `LastMonotonicTimestamp` is missing, non-positive, or regresses, the supervisor fails closed (`TerminalHold = $true`, `LastCheckpointOutcome = "Failed"`) without resetting prior `ElapsedMilliseconds`.
+  - In `Supervise-HelperStop`, if `TerminalHold` is active while Companion is still running, stopping the helper is refused until Companion is closed first (`stop-companion`), enforcing owner-first Companion exit ordering on holds.
+- **Hosted Regressions**:
+  - `Setup_DoesNotAutoAdoptRunningScript_AndStartsNotReady`
+  - `BatchGuard_MissingReadinessRecord_RefusesBeforeProcessStart`
+  - `BatchGuard_WrongAdoptedScriptHash_RefusesBeforeProcessStart`
+  - `BatchGuard_StaleReadinessConfirmation_RefusesBeforeProcessStart`
+  - `BatchGuard_UnacknowledgedOwnerAvailabilityOrOpenGames_RefusesBeforeProcessStart`
+  - `MonotonicClock_WallClockRollback_StillAdvancesElapsedViaMonotonicTicks`
+  - `MonotonicClock_SupervisorRestartGap_ConservativelyAccountsForElapsedTime`
+  - `MonotonicClock_MissingOrInvalidOrigin_LatchesTerminalHoldWithoutReset`
+  - `Supervise_TerminalHold_EnforcesOwnerFirstCompanionStopBeforeHelperStop`
+
+### 4. B4 — Factual Workstation Execution Accounting & Hosted CI Attempt History
+- **Complete Reconciliation of Prior Workstation Actions**:
+  - Earlier sections of this journal (and prior PR #302 body revisions) contained inaccurate blanket claims of "zero local execution" beyond Session 1. The complete, unredacted workstation execution record across all sessions on PR #302 is preserved below:
+    - **Session 1 (Initial Implementation)**: Created, executed, and deleted a local diagnostic script (`test_compare.ps1`) on the workstation to debug PowerShell StrictMode array count behavior.
+    - **Session 2 (First Repair Pass)**: Performed zero local script or test executions.
+    - **Sessions 3–5 (Delta Repair Cycles 3–5)**: Executed `gh run download` to download `phase-a-test-results` TRX artifacts into a local `tmp_trx` directory on the workstation; ran local PowerShell XML parsing and a local Python one-liner (`python -c "import xml.etree.ElementTree..."`) to extract TRX failure messages; ran a local PowerShell one-liner probe (`powershell -NoProfile -Command "Set-StrictMode -Version 3.0; $obj = [PSCustomObject]@{ A = 1 }; $obj.B = 2"`) on the workstation to reproduce `SetValueInvocationException`; and executed `Remove-Item -Recurse -Force tmp_trx` on the workstation to delete the downloaded TRX directory.
+  - All prior blanket "zero local test/execution" claims for Sessions 3–5 are retracted and corrected by this record.
+  - **Current Session (Delta Repair Cycle 6)**: Zero local test runs, zero local PowerShell script/probe executions, zero artifact downloads (`gh run download`), and zero file/directory deletions were performed on the workstation. Only read-only Git/file-hash inspection, read-only GitHub API metadata queries, and the approved guarded metadata helper (`scripts/ai-workflow/update_pr_body.py`) were used.
+- **Preserved Hosted CI Run `40251329694` Attempt History (Head `0fbea2462eccf0b18ce3d255413a4d145ee5771a`)**:
+  - **Attempt 1** (Run `40251329694`, Job `121343679346`): **1,360 passed, 1 failed** (`DXVKCompanion.PhaseATests.RestoreAllAttentionTests.RestoreAll_DisabledProfile_AttentionRequiredWithActiveVersion_ReplacedTarget_RefusesSafely` failed with `Assert.NotNull() Failure: Value is null` at `RestoreAllAttentionTests.cs:line 350`).
+  - **Attempt 2** (Run `40251329694`, Job `121344488719`, merge checkout `dc5eb197e6aa5cc87bc842fc875567b1489b3cc1`): **1,361 passed, 0 failed**.
+  - **Attribution Note**: The root cause of Attempt 1's failure in `RestoreAllAttentionTests` is **unproven**; it is preserved as an unexplained first-attempt failure and is **not** claimed to be a diagnosed transient flake.
+- **Updated Script SHA-256 Pin**:
+  - `tools/validation/ProcessLifecycleTrial.ps1` SHA-256: `f6bb88fa2e1228fbb86d3a0a15162044e58bdd1c4199e84fcf56f20daab7e4bc`.
+
+
