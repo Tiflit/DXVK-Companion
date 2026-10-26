@@ -1057,7 +1057,7 @@ function Register-ResourceHoldInternal(
     [Parameter(Mandatory = $true)] $ConfiguredLimit,
     [Parameter(Mandatory = $false)] [string]$Unit = "",
     [Parameter(Mandatory = $false)] $Role = $null,
-    [Parameter(Mandatory = $false)] $Pid = $null,
+    [Parameter(Mandatory = $false)] $TargetPid = $null,
     [Parameter(Mandatory = $true)] [string]$Reason,
     [Parameter(Mandatory = $true)] [string]$CheckpointName
 ) {
@@ -1072,7 +1072,7 @@ function Register-ResourceHoldInternal(
             TimestampUtc    = $nowUtc.ToString("o")
             Metric          = $Metric
             Role            = $Role
-            Pid             = $Pid
+            Pid             = $TargetPid
             ObservedValue   = $ObservedValue
             ConfiguredLimit = $ConfiguredLimit
             Unit            = $Unit
@@ -1089,7 +1089,7 @@ function Register-ResourceHoldInternal(
 function Update-ProcessMemoryObservationInternal(
     [Parameter(Mandatory = $true)] $State,
     [Parameter(Mandatory = $true)] [string]$Role,
-    [Parameter(Mandatory = $true)] [int]$Pid,
+    [Parameter(Mandatory = $true)] [int]$TargetPid,
     [Parameter(Mandatory = $false)] $Slot = $null,
     [Parameter(Mandatory = $true)] [long]$WorkingSetBytes,
     [Parameter(Mandatory = $false)] $PeakWorkingSetBytes = $null,
@@ -1107,7 +1107,7 @@ function Update-ProcessMemoryObservationInternal(
             if ($null -ne $item) {
                 $itemPid = Get-SafePropertyValue -Object $item -PropertyName "Pid"
                 $itemRole = Get-SafePropertyValue -Object $item -PropertyName "Role"
-                if ($null -ne $itemPid -and [int]$itemPid -eq $Pid -and "$itemRole" -eq $Role) {
+                if ($null -ne $itemPid -and [int]$itemPid -eq $TargetPid -and "$itemRole" -eq $Role) {
                     $existing = $item
                 }
                 [void]$retainedList.Add($item)
@@ -1139,7 +1139,7 @@ function Update-ProcessMemoryObservationInternal(
         $newRecord = [PSCustomObject]@{
             Role                          = $Role
             Slot                          = $Slot
-            Pid                           = $Pid
+            Pid                           = $TargetPid
             ConfiguredWorkingSetCapBytes  = $cap
             Unit                          = "bytes"
             SampleCount                   = 1
@@ -1163,7 +1163,7 @@ function Update-ProcessMemoryObservationInternal(
 function Evaluate-ProcessResourceThresholdsInternal(
     [Parameter(Mandatory = $true)] $State,
     [Parameter(Mandatory = $true)] [string]$Role,
-    [Parameter(Mandatory = $true)] [int]$Pid,
+    [Parameter(Mandatory = $true)] [int]$TargetPid,
     [Parameter(Mandatory = $true)] [long]$WorkingSetBytes,
     [Parameter(Mandatory = $false)] [long]$CpuMilliseconds = 0L
 ) {
@@ -1176,7 +1176,7 @@ function Evaluate-ProcessResourceThresholdsInternal(
                 -ConfiguredLimit $script:MAX_HELPER_WORKING_SET_BYTES `
                 -Unit "bytes" `
                 -Role "Helper" `
-                -Pid $Pid `
+                -TargetPid $TargetPid `
                 -Reason "Helper working set ($WorkingSetBytes bytes) exceeds limit ($($script:MAX_HELPER_WORKING_SET_BYTES) bytes)." `
                 -CheckpointName "HelperMemoryExhausted"
         }
@@ -1188,7 +1188,7 @@ function Evaluate-ProcessResourceThresholdsInternal(
                 -ConfiguredLimit $script:MAX_HELPER_CPU_MILLISECONDS `
                 -Unit "milliseconds" `
                 -Role "Helper" `
-                -Pid $Pid `
+                -TargetPid $TargetPid `
                 -Reason "Helper CPU time ($CpuMilliseconds ms) exceeds limit ($($script:MAX_HELPER_CPU_MILLISECONDS) ms)." `
                 -CheckpointName "HelperCpuExhausted"
         }
@@ -1201,7 +1201,7 @@ function Evaluate-ProcessResourceThresholdsInternal(
                 -ConfiguredLimit $script:MAX_COMPANION_WORKING_SET_BYTES `
                 -Unit "bytes" `
                 -Role "Companion" `
-                -Pid $Pid `
+                -TargetPid $TargetPid `
                 -Reason "Companion working set ($WorkingSetBytes bytes) exceeds limit ($($script:MAX_COMPANION_WORKING_SET_BYTES) bytes)." `
                 -CheckpointName "CompanionMemoryExhausted"
         }
@@ -1213,7 +1213,7 @@ function Evaluate-ProcessResourceThresholdsInternal(
                 -ConfiguredLimit $script:MAX_COMPANION_CPU_MILLISECONDS `
                 -Unit "milliseconds" `
                 -Role "Companion" `
-                -Pid $Pid `
+                -TargetPid $TargetPid `
                 -Reason "Companion CPU time ($CpuMilliseconds ms) exceeds limit ($($script:MAX_COMPANION_CPU_MILLISECONDS) ms)." `
                 -CheckpointName "CompanionCpuExhausted"
         }
@@ -1397,7 +1397,7 @@ function Invoke-SuperviseObservationCycle([string]$FixtureRoot) {
             Update-ProcessMemoryObservationInternal `
                 -State $state `
                 -Role "Helper" `
-                -Pid $script:HelperProcess.Id `
+                -TargetPid $script:HelperProcess.Id `
                 -Slot $state.ActiveHelperSlot `
                 -WorkingSetBytes $wsBytes `
                 -PeakWorkingSetBytes $peakWs `
@@ -1408,7 +1408,7 @@ function Invoke-SuperviseObservationCycle([string]$FixtureRoot) {
             Evaluate-ProcessResourceThresholdsInternal `
                 -State $state `
                 -Role "Helper" `
-                -Pid $script:HelperProcess.Id `
+                -TargetPid $script:HelperProcess.Id `
                 -WorkingSetBytes $wsBytes `
                 -CpuMilliseconds $cpuMs
         } catch {}
@@ -1440,7 +1440,7 @@ function Invoke-SuperviseObservationCycle([string]$FixtureRoot) {
             Update-ProcessMemoryObservationInternal `
                 -State $state `
                 -Role "Companion" `
-                -Pid $script:CompanionProcess.Id `
+                -TargetPid $script:CompanionProcess.Id `
                 -Slot $null `
                 -WorkingSetBytes $wsBytes `
                 -PeakWorkingSetBytes $peakWs `
@@ -1451,7 +1451,7 @@ function Invoke-SuperviseObservationCycle([string]$FixtureRoot) {
             Evaluate-ProcessResourceThresholdsInternal `
                 -State $state `
                 -Role "Companion" `
-                -Pid $script:CompanionProcess.Id `
+                -TargetPid $script:CompanionProcess.Id `
                 -WorkingSetBytes $wsBytes `
                 -CpuMilliseconds $cpuMs
         } catch {}
@@ -4362,7 +4362,7 @@ try {
                 Update-ProcessMemoryObservationInternal `
                     -State $st `
                     -Role $Role `
-                    -Pid $SamplePid `
+                    -TargetPid $SamplePid `
                     -Slot (if ($Role -eq "Helper") { $Slot } else { $null }) `
                     -WorkingSetBytes $SampleWorkingSetBytes `
                     -PeakWorkingSetBytes $peakWs `
@@ -4373,7 +4373,7 @@ try {
                 Evaluate-ProcessResourceThresholdsInternal `
                     -State $st `
                     -Role $Role `
-                    -Pid $SamplePid `
+                    -TargetPid $SamplePid `
                     -WorkingSetBytes $SampleWorkingSetBytes `
                     -CpuMilliseconds $cpuMs
 

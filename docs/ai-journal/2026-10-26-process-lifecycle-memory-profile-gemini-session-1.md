@@ -76,10 +76,11 @@ Because `Register-ResourceHoldInternal` checks `if ($null -eq $State.FirstResour
 ## Cryptographic and Script Identifiers
 
 - **Amended Script (`tools/validation/ProcessLifecycleTrial.ps1`):**
-  - Size: `212,635 bytes`
-  - LF SHA-256: `220bd7ff0ba930c24351b2b88f5fb30ce0f4d15e5f36ecb422e23d6aa884af87`
+  - Size: `212,755 bytes`
+  - LF SHA-256: `e529a1489e64dc38c0785c4cfcddcc1a81ba840ca491a3697ddb282f7b6a9318`
 - **Updated Candidate Profile (`docs/validation/PACKAGED-PROCESS-LIFECYCLE-V1.md`):**
-  - LF SHA-256: `7bf0baf0e1f7c2bbfd2a2ab8a847f367df3a3fc8725becd4b61389ee4f51b424`
+  - Size: `27,271 bytes`
+  - LF SHA-256: `4733512dbbb514f3cb67ac27545e5a891b4aa09a5d29d7d2207d25f422d2a4ec`
 - **Frozen Artifact Pins (Unchanged):**
   - Helper Zip: `f75ec55738e6ca3c1a0cd0a342aefeaa0fb3addd03538f03f2ac7a43295750de` (Artifact `12609386490`)
   - Helper Exe: `f720cecae0f13eeef6d9b5e2d259b51df97b37bc3347b241071e25e8c1548d70`
@@ -87,6 +88,35 @@ Because `Register-ResourceHoldInternal` checks `if ($null -eq $State.FirstResour
   - Companion Exe: `25012c67ade281e0d4585282bf485e4783a1f7c486018f8d1a038c5f2dc18ca4`
   - DXVK v3.1.1: `40565b4a724aadc4433fa4e010b4b23916d9b1f1baeee64e17186db94f54e608`
   - DXVK v3.1: `30f9cc326874be344285582275446968cfa4c069db31ce56df312d6644179154`
+
+---
+
+## CI Failure, Root Cause, and Repair History
+
+### 1. Build and Test Initial Hosted Run (Run 40371077229, Commit `b5a51a379fc8c40e58f4300fde4a3ec101b2f958`)
+- **Outcome**: 1,379 passed, 8 failed (Total: 1,387 tests).
+- **Failing Tests**:
+  - `ObservationCycle_ExceedingDurationBudget_LatchesTerminalHold`
+  - `MonotonicClock_MissingOrInvalidOrigin_LatchesTerminalHoldWithoutReset`
+  - All 6 new `ResourceObservation_*` regressions.
+- **Root Cause**:
+  In PowerShell, `$PID` is a reserved, read-only automatic variable holding the process ID of the running PowerShell host. In `tools/validation/ProcessLifecycleTrial.ps1`, the new helper functions `Register-ResourceHoldInternal`, `Update-ProcessMemoryObservationInternal`, and `Evaluate-ProcessResourceThresholdsInternal` declared a parameter named `$Pid`. When PowerShell bound parameters on function invocation, it attempted to assign to the read-only automatic variable `$PID`, throwing the runtime exception:
+  `"Cannot overwrite variable Pid because it is read-only or constant."`
+  This exception broke `Test-ResourceObservation` and any code path calling `Register-ResourceHoldInternal`.
+- **Repair**:
+  Renamed the function parameter from `$Pid` to `$TargetPid` in all three functions and updated all internal callers to use `-TargetPid`. Kept the emitted persistent object property name `Pid` unchanged, ensuring 100% schema compliance in `state.json`.
+
+### 2. PR Metadata Hygiene Initial Run (Run 40371077353)
+- **Outcome**: Failed with `Documentation disposition: use documentation paths with specific impacts, or None — a specific reason.`
+- **Root Cause**: PowerShell string interpolation when creating the PR body escaped backticks into backslashes (`\docs/...md\`), which failed the strict regex in `check_pr_hygiene.py`.
+- **Repair**: Updated the PR body using `scripts/ai-workflow/update_pr_body.py` with properly formatted UTF-8 markdown and backticks.
+
+### 3. Scope Check Initial Run (Run 40371077346)
+- **Outcome**: Failed with `Invalid allowed path 'No other repository edits...': paths must not contain whitespace or prose.`
+- **Root Cause**: In Issue #304's body, the prose line `No other repository edits. No production refactor...` was placed immediately under `### Allowed paths` before the next level-2 heading `## Verification and acceptance`. `parse_contract.py` matched everything between `### Allowed paths` and the next `###` heading, treating the prose line as a path.
+- **Remediation**: The repository's allowed path parser requires `### Allowed paths` to be cleanly delimited by another `###` heading (e.g. `### Exclusions`). Communicated in the handoff comment.
+
+---
 
 ---
 
