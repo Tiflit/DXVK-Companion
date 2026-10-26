@@ -110,7 +110,7 @@ All binaries, archives, and tools must match the following frozen identities exa
 
 | Asset / Component | Source Revision / Identity | Artifact / Release ID | Size (Bytes) | SHA-256 Digest |
 |---|---|---|---:|---|
-| Trial Script (`ProcessLifecycleTrial.ps1`) | Current PR (`tools/validation/ProcessLifecycleTrial.ps1`) | N/A (in-repo) | 192,022 | `9d0bfeb39727b7d3136e478739dd6168a7c1cfe7986c33dfeae03aa69a1e5c3a` |
+| Trial Script (`ProcessLifecycleTrial.ps1`) | Current PR (`tools/validation/ProcessLifecycleTrial.ps1`) | N/A (in-repo) | 203,678 | `e36875925828362d5fe4ed13996ae8264f13f8e25baaa66787d51ff9ebfe1a5f` |
 | Helper Archive (`process-lifecycle-helper-x64`) | Checkout `a62356d0acb918aec957463a0b670747763ae544`, Tree `4ebbd76b0f30ca7768d737361ea8b540da5a8a2e` | Run `40220299641`, Artifact `12609386490` | 81,717 | `f75ec55738e6ca3c1a0cd0a342aefeaa0fb3addd03538f03f2ac7a43295750de` |
 | Helper Executable (`QueueFixture.exe`) | Source SHA256 `19229f59a4ab2504634cf9cd1bfff131a89a68e539808ab68c5459451e6ce0cc` | Extracted from `12609386490` | 138,240 | `f720cecae0f13eeef6d9b5e2d259b51df97b37bc3347b241071e25e8c1548d70` |
 | Companion Application Archive | Commit `46e6f22363cddcfa88d805b588b6ac30173bc9dc` | Run `40025768457`, Artifact `12532606945` | 66,410,238 | `32660fd3e3ed87385e47940d490db2e6ab93daad7e993fe4225dd157232b3b14` |
@@ -190,7 +190,7 @@ $Readiness = [PSCustomObject]@{
     AdoptedProfilePath      = "docs/validation/PACKAGED-PROCESS-LIFECYCLE-V1.md"
     AdoptedProfileSha256    = $ProfileSha256
     AdoptionToken           = $AdoptionToken
-    AdoptedScriptSha256     = "9d0bfeb39727b7d3136e478739dd6168a7c1cfe7986c33dfeae03aa69a1e5c3a"
+    AdoptedScriptSha256     = "e36875925828362d5fe4ed13996ae8264f13f8e25baaa66787d51ff9ebfe1a5f"
     FixtureRoot             = $FixtureRoot
     BatchStartTimeUtc       = $State.BatchStartTimeUtc
     SupervisorPid           = [int]$Session.SupervisorPid

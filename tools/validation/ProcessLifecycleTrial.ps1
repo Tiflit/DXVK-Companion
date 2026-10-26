@@ -164,13 +164,16 @@ namespace DXVKCompanion.Validation
     public sealed class SafeProcessStreamDrainer : IDisposable
     {
         private readonly StreamReader _reader;
-        private readonly StreamWriter _writer;
+        private StreamWriter _writer;
         private readonly CancellationTokenSource _cts;
         private Task _drainTask;
 
         public volatile bool ReadyReceived;
         public volatile bool StoppedReceived;
         public int LinesRead;
+        public long BytesRead;
+        public long LostBytes;
+        public int LostLines;
         public volatile bool IsCompleted;
         public volatile bool HasFault;
         public string FaultMessage;
@@ -180,19 +183,36 @@ namespace DXVKCompanion.Validation
         public SafeProcessStreamDrainer(StreamReader reader, string logFilePath, Encoding encoding, long maxBytes)
         {
             if (reader == null) throw new ArgumentNullException("reader");
-            if (string.IsNullOrEmpty(logFilePath)) throw new ArgumentNullException("logFilePath");
 
             _reader = reader;
             MaxBytes = maxBytes > 0 ? maxBytes : 104857600L;
-            var dir = Path.GetDirectoryName(logFilePath);
-            if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+            _cts = new CancellationTokenSource();
+
+            if (string.IsNullOrWhiteSpace(logFilePath))
             {
-                Directory.CreateDirectory(dir);
+                _writer = null;
+                HasFault = true;
+                FaultMessage = "Log file path is null or empty.";
+                return;
             }
 
-            var fs = new FileStream(logFilePath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite);
-            _writer = new StreamWriter(fs, encoding ?? new UTF8Encoding(false)) { AutoFlush = true };
-            _cts = new CancellationTokenSource();
+            try
+            {
+                var dir = Path.GetDirectoryName(logFilePath);
+                if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+                {
+                    Directory.CreateDirectory(dir);
+                }
+
+                var fs = new FileStream(logFilePath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite);
+                _writer = new StreamWriter(fs, encoding ?? new UTF8Encoding(false)) { AutoFlush = true };
+            }
+            catch (Exception ex)
+            {
+                _writer = null;
+                HasFault = true;
+                FaultMessage = "Log writer initialization failed for '" + logFilePath + "': " + ex.Message;
+            }
         }
 
         public SafeProcessStreamDrainer(StreamReader reader, string logFilePath, Encoding encoding)
@@ -218,6 +238,7 @@ namespace DXVKCompanion.Validation
 
         public void Start()
         {
+            if (_drainTask != null) return;
             _drainTask = Task.Run(async () =>
             {
                 try
@@ -228,25 +249,53 @@ namespace DXVKCompanion.Validation
                         if (line == null) break;
 
                         var lineByteCount = (long)Encoding.UTF8.GetByteCount(line) + 2;
-                        if (BytesWritten + lineByteCount > MaxBytes)
-                        {
-                            HasFault = true;
-                            FaultMessage = "Maximum log stream size exceeded (" + MaxBytes + " bytes).";
-                            break;
-                        }
-
-                        await _writer.WriteLineAsync(line).ConfigureAwait(false);
-                        BytesWritten += lineByteCount;
-
+                        Interlocked.Add(ref BytesRead, lineByteCount);
                         Interlocked.Increment(ref LinesRead);
 
-                        if (line.IndexOf("READY", StringComparison.OrdinalIgnoreCase) >= 0)
+                        if (_writer != null && !HasFault)
                         {
-                            ReadyReceived = true;
+                            if (BytesWritten + lineByteCount > MaxBytes)
+                            {
+                                HasFault = true;
+                                FaultMessage = "Maximum log stream size exceeded (" + MaxBytes + " bytes).";
+                                try { _writer.Flush(); _writer.Dispose(); } catch {}
+                                _writer = null;
+                                Interlocked.Add(ref LostBytes, lineByteCount);
+                                Interlocked.Increment(ref LostLines);
+                                continue;
+                            }
+
+                            try
+                            {
+                                await _writer.WriteLineAsync(line).ConfigureAwait(false);
+                                BytesWritten += lineByteCount;
+
+                                if (line.IndexOf("READY", StringComparison.OrdinalIgnoreCase) >= 0)
+                                {
+                                    ReadyReceived = true;
+                                }
+                                if (line.IndexOf("STOPPED", StringComparison.OrdinalIgnoreCase) >= 0)
+                                {
+                                    StoppedReceived = true;
+                                }
+                            }
+                            catch (Exception writeEx)
+                            {
+                                HasFault = true;
+                                if (string.IsNullOrEmpty(FaultMessage))
+                                {
+                                    FaultMessage = "Log write failed: " + writeEx.Message;
+                                }
+                                try { _writer.Dispose(); } catch {}
+                                _writer = null;
+                                Interlocked.Add(ref LostBytes, lineByteCount);
+                                Interlocked.Increment(ref LostLines);
+                            }
                         }
-                        if (line.IndexOf("STOPPED", StringComparison.OrdinalIgnoreCase) >= 0)
+                        else
                         {
-                            StoppedReceived = true;
+                            Interlocked.Add(ref LostBytes, lineByteCount);
+                            Interlocked.Increment(ref LostLines);
                         }
                     }
                     if (!HasFault)
@@ -257,7 +306,10 @@ namespace DXVKCompanion.Validation
                 catch (Exception ex)
                 {
                     HasFault = true;
-                    FaultMessage = ex.Message;
+                    if (string.IsNullOrEmpty(FaultMessage))
+                    {
+                        FaultMessage = ex.Message;
+                    }
                 }
             });
         }
@@ -1883,6 +1935,14 @@ function Write-ResidualChildRecord([object]$RetainedRecord, [string]$FixtureRoot
         StderrDrained   = [bool]$RetainedRecord.StderrDrained
         StdoutBytes     = if ($null -ne $RetainedRecord.StdoutDrainer) { [long]$RetainedRecord.StdoutDrainer.BytesWritten } else { 0L }
         StderrBytes     = if ($null -ne $RetainedRecord.StderrDrainer) { [long]$RetainedRecord.StderrDrainer.BytesWritten } else { 0L }
+        StdoutBytesRead = if ($null -ne $RetainedRecord.StdoutDrainer) { [long]$RetainedRecord.StdoutDrainer.BytesRead } else { 0L }
+        StderrBytesRead = if ($null -ne $RetainedRecord.StderrDrainer) { [long]$RetainedRecord.StderrDrainer.BytesRead } else { 0L }
+        StdoutLostBytes = if ($null -ne $RetainedRecord.StdoutDrainer) { [long]$RetainedRecord.StdoutDrainer.LostBytes } else { 0L }
+        StderrLostBytes = if ($null -ne $RetainedRecord.StderrDrainer) { [long]$RetainedRecord.StderrDrainer.LostBytes } else { 0L }
+        StdoutLinesRead = if ($null -ne $RetainedRecord.StdoutDrainer) { [int]$RetainedRecord.StdoutDrainer.LinesRead } else { 0 }
+        StderrLinesRead = if ($null -ne $RetainedRecord.StderrDrainer) { [int]$RetainedRecord.StderrDrainer.LinesRead } else { 0 }
+        StdoutLostLines = if ($null -ne $RetainedRecord.StdoutDrainer) { [int]$RetainedRecord.StdoutDrainer.LostLines } else { 0 }
+        StderrLostLines = if ($null -ne $RetainedRecord.StderrDrainer) { [int]$RetainedRecord.StderrDrainer.LostLines } else { 0 }
         HasDrainFault   = [bool]$RetainedRecord.HasDrainFault
         FaultMessage    = $RetainedRecord.FaultMessage
         SupervisorPid   = $PID
@@ -1892,6 +1952,12 @@ function Write-ResidualChildRecord([object]$RetainedRecord, [string]$FixtureRoot
     $pathsToWrite = [System.Collections.ArrayList]::new()
     if (-not [string]::IsNullOrWhiteSpace($RetainedRecord.ResidualRecordPath)) {
         [void]$pathsToWrite.Add($RetainedRecord.ResidualRecordPath)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($RetainedRecord.StderrLogPath)) {
+        $stderrResidual = "$($RetainedRecord.StderrLogPath.TrimEnd('\', '/')).residual.json"
+        if ($pathsToWrite -notcontains $stderrResidual) {
+            [void]$pathsToWrite.Add($stderrResidual)
+        }
     }
     if (-not [string]::IsNullOrWhiteSpace($FixtureRoot) -and (Test-Path -LiteralPath $FixtureRoot -PathType Container)) {
         $logsDir = [System.IO.Path]::Combine($FixtureRoot, "logs")
@@ -1921,6 +1987,25 @@ function Wait-AndSettleRetainedBoundedProcesses([string]$FixtureRoot = "") {
 
     foreach ($rec in @($script:RetainedTimedOutProcesses)) {
         if ($null -eq $rec) { continue }
+        # Ensure both redirected streams have an active runspace-free fallback drainer even if initialization faulted
+        if ($null -ne $rec.Process) {
+            if ($null -eq $rec.StdoutDrainer) {
+                try {
+                    $rec.StdoutDrainer = New-Object DXVKCompanion.Validation.SafeProcessStreamDrainer($rec.Process.StandardOutput, "", $script:Utf8NoBom, $script:MAX_PROCESS_LOG_BYTES)
+                } catch {}
+            }
+            if ($null -ne $rec.StdoutDrainer) {
+                try { $rec.StdoutDrainer.Start() } catch {}
+            }
+            if ($null -eq $rec.StderrDrainer) {
+                try {
+                    $rec.StderrDrainer = New-Object DXVKCompanion.Validation.SafeProcessStreamDrainer($rec.Process.StandardError, "", $script:Utf8NoBom, $script:MAX_PROCESS_LOG_BYTES)
+                } catch {}
+            }
+            if ($null -ne $rec.StderrDrainer) {
+                try { $rec.StderrDrainer.Start() } catch {}
+            }
+        }
         Write-ResidualChildRecord -RetainedRecord $rec -FixtureRoot $FixtureRoot
     }
 
@@ -2000,6 +2085,10 @@ function Wait-AndSettleRetainedBoundedProcesses([string]$FixtureRoot = "") {
             FinalExitCode      = $finalExit
             StdoutDrained      = $outDrained
             StderrDrained      = $errDrained
+            StdoutBytesRead    = if ($null -ne $rec.StdoutDrainer) { [long]$rec.StdoutDrainer.BytesRead } else { 0L }
+            StderrBytesRead    = if ($null -ne $rec.StderrDrainer) { [long]$rec.StderrDrainer.BytesRead } else { 0L }
+            StdoutLostBytes    = if ($null -ne $rec.StdoutDrainer) { [long]$rec.StdoutDrainer.LostBytes } else { 0L }
+            StderrLostBytes    = if ($null -ne $rec.StderrDrainer) { [long]$rec.StderrDrainer.LostBytes } else { 0L }
             HasDrainFault      = $hasFault
             ResidualRecordPath = $rec.ResidualRecordPath
         }
@@ -2036,13 +2125,15 @@ function Invoke-BoundedChildProcess(
     }
 
     foreach ($logFile in @($StdoutLogPath, $StderrLogPath)) {
-        $dir = [System.IO.Path]::GetDirectoryName($logFile)
-        if (-not [string]::IsNullOrEmpty($dir) -and -not (Test-Path -LiteralPath $dir -PathType Container)) {
-            [void][System.IO.Directory]::CreateDirectory($dir)
-        }
-        if (Test-Path -LiteralPath $logFile -PathType Leaf) {
-            [System.IO.File]::WriteAllText($logFile, "", $script:Utf8NoBom)
-        }
+        try {
+            $dir = [System.IO.Path]::GetDirectoryName($logFile)
+            if (-not [string]::IsNullOrEmpty($dir) -and -not (Test-Path -LiteralPath $dir -PathType Container)) {
+                [void][System.IO.Directory]::CreateDirectory($dir)
+            }
+            if (Test-Path -LiteralPath $logFile -PathType Leaf) {
+                [System.IO.File]::WriteAllText($logFile, "", $script:Utf8NoBom)
+            }
+        } catch {}
     }
 
     $psi = New-Object System.Diagnostics.ProcessStartInfo
@@ -2065,7 +2156,7 @@ function Invoke-BoundedChildProcess(
 
     # Immediately register the live child in $script:RetainedTimedOutProcesses BEFORE drainer creation/start
     # so any post-start exception or timeout still retains ownership until the child exits naturally.
-    $residualRecordPath = "$StdoutLogPath.residual.json"
+    $residualRecordPath = "$($StdoutLogPath.TrimEnd('\', '/')).residual.json"
     $retainedRecord = [PSCustomObject]@{
         Process            = $proc
         Pid                = $proc.Id
@@ -2101,6 +2192,14 @@ function Invoke-BoundedChildProcess(
         $outDrainer.Start()
         $errDrainer.Start()
 
+        if ($outDrainer.HasFault -or $errDrainer.HasFault) {
+            $initFaultMsg = if ($outDrainer.HasFault) { $outDrainer.FaultMessage } else { $errDrainer.FaultMessage }
+            $retainedRecord.HasDrainFault = $true
+            $retainedRecord.FaultMessage = $initFaultMsg
+            $retainedRecord.PostStartError = $initFaultMsg
+            Write-ResidualChildRecord -RetainedRecord $retainedRecord -FixtureRoot $FixtureRoot
+        }
+
         if ($SimulatePostStartFault) {
             throw "Simulated post-start fault after child process start (PID $($proc.Id))."
         }
@@ -2129,8 +2228,14 @@ function Invoke-BoundedChildProcess(
             ExitCode           = $null
             StdoutDrained      = $false
             StderrDrained      = $false
+            StdoutFault        = [bool]$outDrainer.HasFault
+            StderrFault        = [bool]$errDrainer.HasFault
             HasDrainFault      = ($outDrainer.HasFault -or $errDrainer.HasFault)
             FaultMessage       = if ($outDrainer.HasFault) { $outDrainer.FaultMessage } else { $errDrainer.FaultMessage }
+            StdoutBytesRead    = [long]$outDrainer.BytesRead
+            StderrBytesRead    = [long]$errDrainer.BytesRead
+            StdoutLostBytes    = [long]$outDrainer.LostBytes
+            StderrLostBytes    = [long]$errDrainer.LostBytes
             StdoutText         = $stdoutText
             StderrText         = $stderrText
             StdoutLogPath      = $StdoutLogPath
@@ -2157,6 +2262,36 @@ function Invoke-BoundedChildProcess(
     $exitCode = $proc.ExitCode
     $pidVal = $proc.Id
 
+    if ($hasFault) {
+        $retainedRecord.StdoutDrained = [bool]$outDrained
+        $retainedRecord.StderrDrained = [bool]$errDrained
+        $retainedRecord.HasDrainFault = $true
+        $retainedRecord.FaultMessage  = $faultMsg
+        $retainedRecord.FinalExitCode = $exitCode
+        $retainedRecord.Settled       = $true
+        $retainedRecord.SettledAtUtc  = [DateTime]::UtcNow.ToString("o")
+        Write-ResidualChildRecord -RetainedRecord $retainedRecord -FixtureRoot $FixtureRoot
+
+        $settledSummary = [PSCustomObject]@{
+            Pid                = $pidVal
+            FileName           = $FileName
+            TimedOut           = $false
+            PostStartError     = $retainedRecord.PostStartError
+            Settled            = $true
+            SettledAtUtc       = $retainedRecord.SettledAtUtc
+            FinalExitCode      = $exitCode
+            StdoutDrained      = [bool]$outDrained
+            StderrDrained      = [bool]$errDrained
+            StdoutBytesRead    = [long]$outDrainer.BytesRead
+            StderrBytesRead    = [long]$errDrainer.BytesRead
+            StdoutLostBytes    = [long]$outDrainer.LostBytes
+            StderrLostBytes    = [long]$errDrainer.LostBytes
+            HasDrainFault      = $true
+            ResidualRecordPath = $residualRecordPath
+        }
+        [void]$script:SettledRetainedProcessRecords.Add($settledSummary)
+    }
+
     $outDrainer.Dispose()
     $errDrainer.Dispose()
     $proc.Dispose()
@@ -2172,13 +2307,19 @@ function Invoke-BoundedChildProcess(
         ExitCode           = $exitCode
         StdoutDrained      = [bool]$outDrained
         StderrDrained      = [bool]$errDrained
+        StdoutFault        = [bool]$outDrainer.HasFault
+        StderrFault        = [bool]$errDrainer.HasFault
         HasDrainFault      = [bool]$hasFault
         FaultMessage       = $faultMsg
+        StdoutBytesRead    = [long]$outDrainer.BytesRead
+        StderrBytesRead    = [long]$errDrainer.BytesRead
+        StdoutLostBytes    = [long]$outDrainer.LostBytes
+        StderrLostBytes    = [long]$errDrainer.LostBytes
         StdoutText         = $stdoutText
         StderrText         = $stderrText
         StdoutLogPath      = $StdoutLogPath
         StderrLogPath      = $StderrLogPath
-        ResidualRecordPath = $null
+        ResidualRecordPath = if ($hasFault) { $residualRecordPath } else { $null }
     }
 }
 
@@ -3448,41 +3589,20 @@ function Invoke-SuperviseAction {
     if ([string]::IsNullOrWhiteSpace($FixtureRoot)) { throw "FixtureRoot parameter is required for Supervise." }
     $canonRoot = Validate-RootBoundPath -RootPath $FixtureRoot -CandidatePath $FixtureRoot
 
-    # Prevent duplicate supervisor sessions on the same fixture root and establish mandatory session binding
+    # Prevent duplicate supervisor sessions on the same fixture root and establish mandatory session binding.
+    # Never reuse a prebound session or trust a caller-supplied SupervisorSessionId to bypass PID ownership.
     $state = Get-StateData -FixtureRoot $canonRoot
-    $sessionPid = $PID
-    $sessionId = $null
-    $reusedPreboundSession = $false
-
-    if (-not [string]::IsNullOrWhiteSpace($SupervisorSessionId) -and
-        "$($state.ActiveSupervisorSessionId)" -eq $SupervisorSessionId -and
-        $null -ne $state.ActiveSupervisorPid) {
+    if ($null -ne $state.ActiveSupervisorPid -and "$($state.ActiveSupervisorPid)" -ne "") {
         $existingPid = [int]$state.ActiveSupervisorPid
-        $existingProc = Get-Process -Id $existingPid -ErrorAction SilentlyContinue
-        if ($null -ne $existingProc -and -not $existingProc.HasExited) {
-            $sessionPid = $existingPid
-            $sessionId = $SupervisorSessionId
-            $reusedPreboundSession = $true
-        }
-    }
-
-    if (-not $reusedPreboundSession) {
-        if ($null -ne $state.ActiveSupervisorPid) {
-            $existingPid = [int]$state.ActiveSupervisorPid
-            if ($existingPid -ne $PID) {
-                $existingProc = Get-Process -Id $existingPid -ErrorAction SilentlyContinue
-                if ($null -ne $existingProc -and -not $existingProc.HasExited) {
-                    throw "Another supervisor session is already active on fixture root '$canonRoot' (PID $existingPid)."
-                }
+        if ($existingPid -ne $PID) {
+            $existingProc = Get-Process -Id $existingPid -ErrorAction SilentlyContinue
+            if ($null -ne $existingProc -and -not $existingProc.HasExited) {
+                throw "Another supervisor session is already active on fixture root '$canonRoot' (PID $existingPid)."
             }
         }
-        $sessionPid = $PID
-        $sessionId = if (-not [string]::IsNullOrWhiteSpace($SupervisorSessionId)) {
-            $SupervisorSessionId
-        } else {
-            [Guid]::NewGuid().ToString("N")
-        }
     }
+    $sessionPid = $PID
+    $sessionId = [Guid]::NewGuid().ToString("N")
 
     $state.ActiveSupervisorPid = $sessionPid
     $state.ActiveSupervisorSessionId = $sessionId
@@ -3750,7 +3870,9 @@ function Invoke-SuperviseAction {
                              ($null -ne $script:CompanionProcess -and -not $script:CompanionProcess.HasExited)
         if (-not $hasActiveChildren) {
             $cleanState = Get-StateData -FixtureRoot $canonRoot
-            if ($cleanState.ActiveSupervisorPid -eq $sessionPid -or $cleanState.ActiveSupervisorSessionId -eq $sessionId) {
+            if ($null -ne $cleanState.ActiveSupervisorPid -and "$($cleanState.ActiveSupervisorPid)" -ne "" -and
+                [int]$cleanState.ActiveSupervisorPid -eq $sessionPid -and
+                "$($cleanState.ActiveSupervisorSessionId)" -eq $sessionId) {
                 $cleanState.ActiveSupervisorPid = $null
                 $cleanState.ActiveSupervisorSessionId = $null
                 Save-StateData -FixtureRoot $canonRoot -StateObject $cleanState
@@ -3950,8 +4072,13 @@ try {
                 ResidualRecordPath       = $childRes.ResidualRecordPath
                 StdoutDrained            = [bool]$childRes.StdoutDrained
                 StderrDrained            = [bool]$childRes.StderrDrained
-                StdoutFault              = [bool]$childRes.HasDrainFault
-                StderrFault              = [bool]$childRes.HasDrainFault
+                StdoutFault              = [bool]$childRes.StdoutFault
+                StderrFault              = [bool]$childRes.StderrFault
+                HasDrainFault            = [bool]$childRes.HasDrainFault
+                StdoutBytesRead          = [long]$childRes.StdoutBytesRead
+                StderrBytesRead          = [long]$childRes.StderrBytesRead
+                StdoutLostBytes          = [long]$childRes.StdoutLostBytes
+                StderrLostBytes          = [long]$childRes.StderrLostBytes
                 StdoutLogPath            = $childRes.StdoutLogPath
                 StderrLogPath            = $childRes.StderrLogPath
             }

@@ -2086,6 +2086,68 @@ public sealed class ProcessLifecycleTrialPreparationTests
         }
     }
 
+    [Fact]
+    public void BoundedChildProcess_LogOpenFailure_FallbackDrainsPipeCapacityAndSettlesWithoutKill()
+    {
+        AssertHostedCiEnvironment();
+
+        using var temp = new SyntheticTestDirectory();
+        // Create an existing directory at stdoutLogDir so opening it as a log file fails with UnauthorizedAccessException
+        var stdoutLogDir = temp.GetPath("unopenable_stdout_log_dir");
+        Directory.CreateDirectory(stdoutLogDir);
+        var stderrLog = temp.GetPath("child_stderr.log");
+        var residualPath = stdoutLogDir + ".residual.json";
+
+        // Emit ~176 KiB across 2,200 lines (well above the ~4-64 KiB Windows redirected pipe buffer capacity)
+        var batchPath = temp.CreateFile(
+            "heavy_pipe_child.cmd",
+            "@echo off\r\n" +
+            "for /L %%i in (1,1,2200) do @echo DRAIN_FALLBACK_LINE_0123456789ABCDEF_0123456789ABCDEF_0123456789ABCDEF_%%i\r\n" +
+            "echo STDERR_DIAGNOSTIC_LINE 1>&2\r\n" +
+            "exit /b 0\r\n");
+
+        var result = RunScript(
+            $"-Action Test-BoundedChild -ChildFileName \"cmd.exe\" -ChildArguments \"/c \\\"{batchPath}\\\"\" -LogPath \"{stdoutLogDir}\" -StderrLogPath \"{stderrLog}\" -TargetPath \"{temp.Path}\" -TimeoutMs 15000 -JsonOutput");
+
+        // Must fail closed on the log-open fault without deadlocking the child on a full stdout pipe
+        Assert.NotEqual(0, result.ExitCode);
+        using var doc = JsonDocument.Parse(result.StandardOutput);
+        var root = doc.RootElement;
+        Assert.False(root.GetProperty("Success").GetBoolean());
+        Assert.True(root.GetProperty("Completed").GetBoolean());
+        Assert.False(root.GetProperty("TimedOut").GetBoolean());
+        Assert.Equal(0, root.GetProperty("ExitCode").GetInt32());
+        Assert.True(root.GetProperty("StdoutFault").GetBoolean());
+        Assert.True(root.GetProperty("HasDrainFault").GetBoolean());
+        Assert.True(root.GetProperty("StdoutBytesRead").GetInt64() > 150000L,
+            $"Expected fallback drainer to consume >150 KiB from stdout pipe, got {root.GetProperty("StdoutBytesRead").GetInt64()} bytes.");
+        Assert.True(root.GetProperty("StdoutLostBytes").GetInt64() > 150000L,
+            $"Expected fallback drainer to record >150 KiB of lost stdout bytes, got {root.GetProperty("StdoutLostBytes").GetInt64()} bytes.");
+
+        var childPid = root.GetProperty("ProcessId").GetInt32();
+        try
+        {
+            var childProc = Process.GetProcessById(childPid);
+            Assert.True(childProc.HasExited, $"Expected child PID {childPid} to have exited naturally.");
+        }
+        catch (ArgumentException)
+        {
+            // Child process already exited and was reaped by OS
+        }
+
+        Assert.True(File.Exists(residualPath), $"Expected durable residual record at {residualPath}.");
+        using var settledDoc = JsonDocument.Parse(File.ReadAllText(residualPath));
+        var settled = settledDoc.RootElement;
+        Assert.True(settled.GetProperty("Settled").GetBoolean());
+        Assert.Equal(0, settled.GetProperty("FinalExitCode").GetInt32());
+        Assert.True(settled.GetProperty("HasDrainFault").GetBoolean());
+        Assert.Contains("Log writer initialization failed", settled.GetProperty("FaultMessage").GetString()!);
+        Assert.True(settled.GetProperty("StdoutBytesRead").GetInt64() > 150000L);
+        Assert.True(settled.GetProperty("StdoutLostBytes").GetInt64() > 150000L);
+        Assert.True(settled.GetProperty("StdoutLinesRead").GetInt32() >= 2200);
+        Assert.True(settled.GetProperty("StdoutLostLines").GetInt32() >= 2200);
+    }
+
     // =========================================================================
     // B3 Regressions: Cooperative Readiness/Revision Binding & Monotonic Clock
     // =========================================================================
@@ -2128,7 +2190,8 @@ public sealed class ProcessLifecycleTrialPreparationTests
         Assert.NotEqual(0, guardRes.ExitCode);
         Assert.Contains("missing explicit owner readiness record", guardRes.StandardOutput + guardRes.StandardError);
 
-        var supRes = RunScript($"-Action Supervise -FixtureRoot \"{root}\" -SupervisorSessionId \"test-supervisor-session-1\" -AdoptionAttestation \"ADOPTED-PROCESS-LIFECYCLE-V1\" -Commands \"start-helper 1\" -JsonOutput");
+        ClearActiveSupervisorInState(root);
+        var supRes = RunScript($"-Action Supervise -FixtureRoot \"{root}\" -AdoptionAttestation \"ADOPTED-PROCESS-LIFECYCLE-V1\" -Commands \"start-helper 1\" -JsonOutput");
         Assert.NotEqual(0, supRes.ExitCode);
         Assert.Contains("missing explicit owner readiness record", supRes.StandardOutput + supRes.StandardError);
 
@@ -2148,7 +2211,8 @@ public sealed class ProcessLifecycleTrialPreparationTests
             testPinsUsed: false,
             adoptedScriptShaOverride: "0000000000000000000000000000000000000000000000000000000000000000");
 
-        var supRes = RunScript($"-Action Supervise -FixtureRoot \"{root}\" -SupervisorSessionId \"test-supervisor-session-1\" -AdoptionAttestation \"ADOPTED-PROCESS-LIFECYCLE-V1\" -Commands \"start-helper 1\" -JsonOutput");
+        ClearActiveSupervisorInState(root);
+        var supRes = RunScript($"-Action Supervise -FixtureRoot \"{root}\" -AdoptionAttestation \"ADOPTED-PROCESS-LIFECYCLE-V1\" -Commands \"start-helper 1\" -JsonOutput");
         Assert.NotEqual(0, supRes.ExitCode);
         Assert.Contains("does not match running script SHA256", supRes.StandardOutput + supRes.StandardError);
 
@@ -2174,15 +2238,18 @@ public sealed class ProcessLifecycleTrialPreparationTests
 
         WriteReadinessRecord(
             root,
-            adoptedProfilePathOverride: "docs/validation/OTHER-PROFILE.md");
+            adoptedProfilePathOverride: "docs/validation/OTHER-PROFILE.md",
+            bindSessionInState: false);
         var wrongPathRes = RunScript($"-Action Test-BatchGuard -FixtureRoot \"{root}\" -Slot 1 -AdoptionAttestation \"ADOPTED-PROCESS-LIFECYCLE-V1\" -JsonOutput");
         Assert.NotEqual(0, wrongPathRes.ExitCode);
         Assert.Contains("AdoptedProfilePath", wrongPathRes.StandardOutput + wrongPathRes.StandardError);
 
+        ClearActiveSupervisorInState(root);
         WriteReadinessRecord(
             root,
-            adoptedProfileShaOverride: "0000000000000000000000000000000000000000000000000000000000000000");
-        var wrongHashRes = RunScript($"-Action Supervise -FixtureRoot \"{root}\" -SupervisorSessionId \"test-supervisor-session-1\" -AdoptionAttestation \"ADOPTED-PROCESS-LIFECYCLE-V1\" -Commands \"start-helper 1\" -JsonOutput");
+            adoptedProfileShaOverride: "0000000000000000000000000000000000000000000000000000000000000000",
+            bindSessionInState: false);
+        var wrongHashRes = RunScript($"-Action Supervise -FixtureRoot \"{root}\" -AdoptionAttestation \"ADOPTED-PROCESS-LIFECYCLE-V1\" -Commands \"start-helper 1\" -JsonOutput");
         Assert.NotEqual(0, wrongHashRes.ExitCode);
         Assert.Contains("AdoptedProfileSha256", wrongHashRes.StandardOutput + wrongHashRes.StandardError);
 
@@ -2192,7 +2259,7 @@ public sealed class ProcessLifecycleTrialPreparationTests
     }
 
     [Fact]
-    public void BatchGuard_MissingOrMismatchedSessionBinding_RefusesBeforeProcessStart()
+    public async Task BatchGuard_MissingOrMismatchedSessionBinding_RefusesBeforeProcessStart()
     {
         AssertHostedCiEnvironment();
 
@@ -2216,16 +2283,30 @@ public sealed class ProcessLifecycleTrialPreparationTests
         Assert.NotEqual(0, missingSessionRes.ExitCode);
         Assert.Contains("missing mandatory SupervisorSessionId binding", missingSessionRes.StandardOutput + missingSessionRes.StandardError);
 
-        WriteReadinessRecord(root, supervisorSessionIdOverride: "stale-other-session-id");
-        var wrongSessionRes = RunScript($"-Action Supervise -FixtureRoot \"{root}\" -SupervisorSessionId \"test-supervisor-session-1\" -AdoptionAttestation \"ADOPTED-PROCESS-LIFECYCLE-V1\" -Commands \"start-helper 1\" -JsonOutput");
-        Assert.NotEqual(0, wrongSessionRes.ExitCode);
-        Assert.Contains("stale-other-session-id", wrongSessionRes.StandardOutput + wrongSessionRes.StandardError);
-        Assert.Contains("does not match active supervisor session ID", wrongSessionRes.StandardOutput + wrongSessionRes.StandardError);
+        // Exercise real Supervise handshake with mismatched session ID
+        ClearActiveSupervisorInState(root);
+        var wrongSessionRes = await RunSuperviseWithHandshakeAsync(
+            root,
+            (livePid, _) => WriteReadinessRecord(
+                root,
+                supervisorPidOverride: livePid,
+                supervisorSessionIdOverride: "stale-other-session-id",
+                bindSessionInState: false),
+            "start-helper 1");
+        Assert.Contains("[ERROR]", wrongSessionRes.StandardOutput);
+        Assert.Contains("stale-other-session-id", wrongSessionRes.StandardOutput);
+        Assert.Contains("does not match active supervisor session ID", wrongSessionRes.StandardOutput);
 
-        // Now write a valid readiness record for test-supervisor-session-1, run one Supervise session to completion (which clears ActiveSupervisorPid/ActiveSupervisorSessionId),
-        // and verify a second Supervise session refuses to reuse the prior session's readiness record.
-        WriteReadinessRecord(root);
-        var firstSessionRes = RunScript($"-Action Supervise -FixtureRoot \"{root}\" -SupervisorSessionId \"test-supervisor-session-1\" -AdoptionAttestation \"ADOPTED-PROCESS-LIFECYCLE-V1\" -Commands status -JsonOutput");
+        // Now complete a real Supervise handshake for Session 1, run status and exit normally (which clears ActiveSupervisorPid/ActiveSupervisorSessionId),
+        // and verify a second Supervise session refuses to reuse Session 1's readiness record.
+        var firstSessionRes = await RunSuperviseWithHandshakeAsync(
+            root,
+            (livePid, liveSessionId) => WriteReadinessRecord(
+                root,
+                supervisorPidOverride: livePid,
+                supervisorSessionIdOverride: liveSessionId,
+                bindSessionInState: false),
+            "status");
         Assert.Equal(0, firstSessionRes.ExitCode);
 
         var secondSessionRes = RunScript($"-Action Supervise -FixtureRoot \"{root}\" -AdoptionAttestation \"ADOPTED-PROCESS-LIFECYCLE-V1\" -Commands \"start-helper 1\" -JsonOutput");
@@ -2237,26 +2318,171 @@ public sealed class ProcessLifecycleTrialPreparationTests
     }
 
     [Fact]
-    public void BatchGuard_StaleReadinessConfirmation_RefusesBeforeProcessStart()
+    public async Task Supervise_ConcurrentSessionWithCopiedSessionId_RefusesWithoutModifyingActiveLockOrReadiness()
     {
         AssertHostedCiEnvironment();
 
         using var temp = new SyntheticTestDirectory();
+        var root = SetUpTestFixture(temp);
+        var statePath = Path.Combine(root, "state.json");
+        var sessionPath = Path.Combine(root, "control", "supervisor-session.json");
+        if (File.Exists(sessionPath)) File.Delete(sessionPath);
+
+        var repoRoot = FindRepositoryRoot();
+        var scriptPath = Path.Combine(repoRoot, "tools", "validation", "ProcessLifecycleTrial.ps1");
+        var powershellPath = GetPowerShellExecutablePath();
+
+        var psiA = new ProcessStartInfo
+        {
+            FileName = powershellPath,
+            Arguments = $"-NoProfile -ExecutionPolicy Bypass -File \"{scriptPath}\" -Action Supervise -FixtureRoot \"{root}\" -AdoptionAttestation \"ADOPTED-PROCESS-LIFECYCLE-V1\"",
+            UseShellExecute = false,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+            WorkingDirectory = repoRoot
+        };
+
+        var processA = new Process { StartInfo = psiA };
+        try
+        {
+            processA.Start();
+            var stdoutATask = processA.StandardOutput.ReadToEndAsync();
+            var stderrATask = processA.StandardError.ReadToEndAsync();
+
+            var sw = Stopwatch.StartNew();
+            while (!File.Exists(sessionPath) && sw.ElapsedMilliseconds < 5000)
+            {
+                await Task.Delay(50);
+            }
+            Assert.True(File.Exists(sessionPath), "Expected Supervisor A to write control/supervisor-session.json.");
+
+            int pidA;
+            string sessionIdA;
+            using (var sessionDoc = JsonDocument.Parse(File.ReadAllText(sessionPath)))
+            {
+                pidA = sessionDoc.RootElement.GetProperty("SupervisorPid").GetInt32();
+                sessionIdA = sessionDoc.RootElement.GetProperty("SupervisorSessionId").GetString()!;
+            }
+            Assert.Equal(processA.Id, pidA);
+            Assert.False(string.IsNullOrWhiteSpace(sessionIdA));
+
+            // Complete real handshake for Supervisor A
+            WriteReadinessRecord(
+                root,
+                supervisorPidOverride: pidA,
+                supervisorSessionIdOverride: sessionIdA,
+                bindSessionInState: false);
+
+            await processA.StandardInput.WriteLineAsync("status");
+            await processA.StandardInput.FlushAsync();
+            await Task.Delay(350);
+
+            using (var readyStateDoc = JsonDocument.Parse(File.ReadAllText(statePath)))
+            {
+                var st = readyStateDoc.RootElement;
+                Assert.Equal(pidA, st.GetProperty("ActiveSupervisorPid").GetInt32());
+                Assert.Equal(sessionIdA, st.GetProperty("ActiveSupervisorSessionId").GetString());
+                Assert.Equal("Ready", st.GetProperty("CurrentReadiness").GetString());
+                Assert.Equal(pidA, st.GetProperty("AdoptedSupervisorPid").GetInt32());
+                Assert.Equal(sessionIdA, st.GetProperty("AdoptedSupervisorSessionId").GetString());
+            }
+
+            // While Supervisor A is still open, invoke Supervisor B passing A's copied SupervisorSessionId
+            var resultB = RunScript(
+                $"-Action Supervise -FixtureRoot \"{root}\" -SupervisorSessionId \"{sessionIdA}\" -AdoptionAttestation \"ADOPTED-PROCESS-LIFECYCLE-V1\" -Commands status -JsonOutput");
+            Assert.NotEqual(0, resultB.ExitCode);
+            Assert.Contains("Another supervisor session is already active on fixture root", resultB.StandardOutput + resultB.StandardError);
+            Assert.Contains($"(PID {pidA})", resultB.StandardOutput + resultB.StandardError);
+
+            // Verify Supervisor B did not clobber or clear Supervisor A's active lock, session record, or readiness
+            using (var stateAfterB = JsonDocument.Parse(File.ReadAllText(statePath)))
+            {
+                var st = stateAfterB.RootElement;
+                Assert.Equal(pidA, st.GetProperty("ActiveSupervisorPid").GetInt32());
+                Assert.Equal(sessionIdA, st.GetProperty("ActiveSupervisorSessionId").GetString());
+                Assert.Equal("Ready", st.GetProperty("CurrentReadiness").GetString());
+                Assert.Equal(0, st.GetProperty("HelperStartAttempts").GetInt32());
+                Assert.Equal(0, st.GetProperty("CompanionStartAttempts").GetInt32());
+            }
+            using (var sessionAfterB = JsonDocument.Parse(File.ReadAllText(sessionPath)))
+            {
+                Assert.Equal(pidA, sessionAfterB.RootElement.GetProperty("SupervisorPid").GetInt32());
+                Assert.Equal(sessionIdA, sessionAfterB.RootElement.GetProperty("SupervisorSessionId").GetString());
+            }
+
+            // Now close Supervisor A normally
+            await processA.StandardInput.WriteLineAsync("exit");
+            await processA.StandardInput.FlushAsync();
+            processA.StandardInput.Close();
+
+            if (!processA.WaitForExit(15000))
+            {
+                lock (s_retainedProcesses) { s_retainedProcesses.Add(processA); }
+                throw new TimeoutException($"Supervisor A timed out after 15000ms. Residual process {processA.Id} retained.");
+            }
+
+            var stdoutA = await stdoutATask;
+            var stderrA = await stderrATask;
+            Assert.True(processA.ExitCode == 0, $"Supervisor A failed with exit code {processA.ExitCode}.\nSTDOUT: {stdoutA}\nSTDERR: {stderrA}");
+
+            using (var finalStateDoc = JsonDocument.Parse(File.ReadAllText(statePath)))
+            {
+                var st = finalStateDoc.RootElement;
+                Assert.Equal(JsonValueKind.Null, st.GetProperty("ActiveSupervisorPid").ValueKind);
+                Assert.Equal(JsonValueKind.Null, st.GetProperty("ActiveSupervisorSessionId").ValueKind);
+                Assert.Equal(0, st.GetProperty("HelperStartAttempts").GetInt32());
+                Assert.Equal(0, st.GetProperty("CompanionStartAttempts").GetInt32());
+            }
+        }
+        finally
+        {
+            lock (s_retainedProcesses)
+            {
+                if (!s_retainedProcesses.Contains(processA))
+                {
+                    processA.Dispose();
+                }
+            }
+        }
+    }
+
+    [Fact]
+    public async Task BatchGuard_StaleReadinessConfirmation_RefusesBeforeProcessStart()
+    {
+        AssertHostedCiEnvironment();
+
+        using var temp = new SyntheticTestDirectory();
+        var staleUtc = DateTime.UtcNow.AddHours(-2).ToString("o");
         var root = SetUpIsolatedState(
             temp,
             testPinsUsed: false,
-            confirmedAtUtcOverride: DateTime.UtcNow.AddHours(-2).ToString("o"));
+            confirmedAtUtcOverride: staleUtc);
 
-        var supRes = RunScript($"-Action Supervise -FixtureRoot \"{root}\" -SupervisorSessionId \"test-supervisor-session-1\" -AdoptionAttestation \"ADOPTED-PROCESS-LIFECYCLE-V1\" -Commands \"start-helper 1\" -JsonOutput");
-        Assert.NotEqual(0, supRes.ExitCode);
-        Assert.Contains("stale readiness confirmation", supRes.StandardOutput + supRes.StandardError);
+        var guardRes = RunScript($"-Action Test-BatchGuard -FixtureRoot \"{root}\" -Slot 1 -AdoptionAttestation \"ADOPTED-PROCESS-LIFECYCLE-V1\" -JsonOutput");
+        Assert.NotEqual(0, guardRes.ExitCode);
+        Assert.Contains("stale readiness confirmation", guardRes.StandardOutput + guardRes.StandardError);
+
+        ClearActiveSupervisorInState(root);
+        var supRes = await RunSuperviseWithHandshakeAsync(
+            root,
+            (livePid, liveSessionId) => WriteReadinessRecord(
+                root,
+                supervisorPidOverride: livePid,
+                supervisorSessionIdOverride: liveSessionId,
+                confirmedAtUtcOverride: staleUtc,
+                bindSessionInState: false),
+            "start-helper 1");
+        Assert.Contains("[ERROR]", supRes.StandardOutput);
+        Assert.Contains("stale readiness confirmation", supRes.StandardOutput);
 
         using var stateDoc = JsonDocument.Parse(File.ReadAllText(Path.Combine(root, "state.json")));
         Assert.Equal(0, stateDoc.RootElement.GetProperty("HelperStartAttempts").GetInt32());
     }
 
     [Fact]
-    public void BatchGuard_UnacknowledgedOwnerAvailabilityOrOpenGames_RefusesBeforeProcessStart()
+    public async Task BatchGuard_UnacknowledgedOwnerAvailabilityOrOpenGames_RefusesBeforeProcessStart()
     {
         AssertHostedCiEnvironment();
 
@@ -2267,9 +2493,23 @@ public sealed class ProcessLifecycleTrialPreparationTests
             ownerAvailable: false,
             gamesAndCompanionClosed: false);
 
-        var supRes = RunScript($"-Action Supervise -FixtureRoot \"{root}\" -SupervisorSessionId \"test-supervisor-session-1\" -AdoptionAttestation \"ADOPTED-PROCESS-LIFECYCLE-V1\" -Commands \"start-helper 1\" -JsonOutput");
-        Assert.NotEqual(0, supRes.ExitCode);
-        Assert.Contains("OwnerAvailable = true", supRes.StandardOutput + supRes.StandardError);
+        var guardRes = RunScript($"-Action Test-BatchGuard -FixtureRoot \"{root}\" -Slot 1 -AdoptionAttestation \"ADOPTED-PROCESS-LIFECYCLE-V1\" -JsonOutput");
+        Assert.NotEqual(0, guardRes.ExitCode);
+        Assert.Contains("OwnerAvailable = true", guardRes.StandardOutput + guardRes.StandardError);
+
+        ClearActiveSupervisorInState(root);
+        var supRes = await RunSuperviseWithHandshakeAsync(
+            root,
+            (livePid, liveSessionId) => WriteReadinessRecord(
+                root,
+                supervisorPidOverride: livePid,
+                supervisorSessionIdOverride: liveSessionId,
+                ownerAvailable: false,
+                gamesAndCompanionClosed: false,
+                bindSessionInState: false),
+            "start-helper 1");
+        Assert.Contains("[ERROR]", supRes.StandardOutput);
+        Assert.Contains("OwnerAvailable = true", supRes.StandardOutput);
 
         using var stateDoc = JsonDocument.Parse(File.ReadAllText(Path.Combine(root, "state.json")));
         Assert.Equal(0, stateDoc.RootElement.GetProperty("HelperStartAttempts").GetInt32());
@@ -2282,7 +2522,7 @@ public sealed class ProcessLifecycleTrialPreparationTests
 
         using var temp = new SyntheticTestDirectory();
         var root = SetUpTestFixture(temp);
-        WriteReadinessRecord(root);
+        WriteReadinessRecord(root, bindSessionInState: false);
 
         var statePath = Path.Combine(root, "state.json");
         using var initialDoc = JsonDocument.Parse(File.ReadAllText(statePath));
@@ -2296,7 +2536,7 @@ public sealed class ProcessLifecycleTrialPreparationTests
         var rolledBackUtc = trialStartUtc.AddSeconds(-120).ToString("o");
 
         var result = RunScript(
-            $"-Action Supervise -FixtureRoot \"{root}\" -SupervisorSessionId \"test-supervisor-session-1\" -AdoptionAttestation \"ADOPTED-PROCESS-LIFECYCLE-V1\" -TestMonotonicTick {advancedTick} -TestMonotonicFrequency {freq} -TestCurrentUtc \"{rolledBackUtc}\" -Commands status -JsonOutput");
+            $"-Action Supervise -FixtureRoot \"{root}\" -AdoptionAttestation \"ADOPTED-PROCESS-LIFECYCLE-V1\" -TestMonotonicTick {advancedTick} -TestMonotonicFrequency {freq} -TestCurrentUtc \"{rolledBackUtc}\" -Commands status -JsonOutput");
         Assert.True(result.ExitCode == 0, $"Supervise status failed: {result.StandardOutput}\n{result.StandardError}");
 
         using var afterDoc = JsonDocument.Parse(File.ReadAllText(statePath));
@@ -2329,11 +2569,11 @@ public sealed class ProcessLifecycleTrialPreparationTests
         File.WriteAllText(statePath, JsonSerializer.Serialize(stateObj, new JsonSerializerOptions { WriteIndented = true }));
 
         var futureUtc = trialStartUtc.AddSeconds(45).ToString("o");
-        WriteReadinessRecord(root, confirmedAtUtcOverride: futureUtc);
+        WriteReadinessRecord(root, confirmedAtUtcOverride: futureUtc, bindSessionInState: false);
 
         var nextTick = originTick + (freq * 7L);
         var result = RunScript(
-            $"-Action Supervise -FixtureRoot \"{root}\" -SupervisorSessionId \"test-supervisor-session-1\" -AdoptionAttestation \"ADOPTED-PROCESS-LIFECYCLE-V1\" -TestMonotonicTick {nextTick} -TestMonotonicFrequency {freq} -TestCurrentUtc \"{futureUtc}\" -Commands status -JsonOutput");
+            $"-Action Supervise -FixtureRoot \"{root}\" -AdoptionAttestation \"ADOPTED-PROCESS-LIFECYCLE-V1\" -TestMonotonicTick {nextTick} -TestMonotonicFrequency {freq} -TestCurrentUtc \"{futureUtc}\" -Commands status -JsonOutput");
         Assert.True(result.ExitCode == 0, $"Supervise status failed: {result.StandardOutput}\n{result.StandardError}");
 
         using var afterDoc = JsonDocument.Parse(File.ReadAllText(statePath));
@@ -2350,7 +2590,7 @@ public sealed class ProcessLifecycleTrialPreparationTests
 
         using var temp = new SyntheticTestDirectory();
         var root = SetUpTestFixture(temp);
-        WriteReadinessRecord(root);
+        WriteReadinessRecord(root, bindSessionInState: false);
 
         var statePath = Path.Combine(root, "state.json");
         var stateObj = JsonSerializer.Deserialize<Dictionary<string, object>>(File.ReadAllText(statePath))!;
@@ -2359,7 +2599,7 @@ public sealed class ProcessLifecycleTrialPreparationTests
         stateObj["MonotonicOriginTimestamp"] = 0L; // Invalid non-positive origin
         File.WriteAllText(statePath, JsonSerializer.Serialize(stateObj, new JsonSerializerOptions { WriteIndented = true }));
 
-        var result = RunScript($"-Action Supervise -FixtureRoot \"{root}\" -SupervisorSessionId \"test-supervisor-session-1\" -AdoptionAttestation \"ADOPTED-PROCESS-LIFECYCLE-V1\" -Commands status -JsonOutput");
+        var result = RunScript($"-Action Supervise -FixtureRoot \"{root}\" -AdoptionAttestation \"ADOPTED-PROCESS-LIFECYCLE-V1\" -Commands status -JsonOutput");
         Assert.Equal(0, result.ExitCode);
 
         using var afterDoc = JsonDocument.Parse(File.ReadAllText(statePath));
@@ -2379,7 +2619,7 @@ public sealed class ProcessLifecycleTrialPreparationTests
 
         using var temp = new SyntheticTestDirectory();
         var root = SetUpTestFixture(temp);
-        WriteReadinessRecord(root);
+        WriteReadinessRecord(root, bindSessionInState: false);
 
         var statePath = Path.Combine(root, "state.json");
         var stateObj = JsonSerializer.Deserialize<Dictionary<string, object>>(File.ReadAllText(statePath))!;
@@ -2391,9 +2631,102 @@ public sealed class ProcessLifecycleTrialPreparationTests
         stateObj["ActiveHelperSlot"] = 1;
         File.WriteAllText(statePath, JsonSerializer.Serialize(stateObj, new JsonSerializerOptions { WriteIndented = true }));
 
-        var result = RunScript($"-Action Supervise -FixtureRoot \"{root}\" -SupervisorSessionId \"test-supervisor-session-1\" -AdoptionAttestation \"ADOPTED-PROCESS-LIFECYCLE-V1\" -Commands \"stop-helper 1\" -JsonOutput");
+        var result = RunScript($"-Action Supervise -FixtureRoot \"{root}\" -AdoptionAttestation \"ADOPTED-PROCESS-LIFECYCLE-V1\" -Commands \"stop-helper 1\" -JsonOutput");
         Assert.NotEqual(0, result.ExitCode);
         Assert.Contains("close Companion normally (stop-companion) before stopping helper", result.StandardOutput + result.StandardError);
+    }
+
+    private static void ClearActiveSupervisorInState(string root)
+    {
+        var statePath = Path.Combine(root, "state.json");
+        var stateObj = JsonSerializer.Deserialize<Dictionary<string, object?>>(File.ReadAllText(statePath))!;
+        stateObj["ActiveSupervisorPid"] = null;
+        stateObj["ActiveSupervisorSessionId"] = null;
+        File.WriteAllText(statePath, JsonSerializer.Serialize(stateObj, new JsonSerializerOptions { WriteIndented = true }));
+    }
+
+    private static async Task<ProcessResult> RunSuperviseWithHandshakeAsync(
+        string root,
+        Action<int, string> configureReadiness,
+        params string[] commands)
+    {
+        ClearActiveSupervisorInState(root);
+        var sessionPath = Path.Combine(root, "control", "supervisor-session.json");
+        if (File.Exists(sessionPath))
+        {
+            File.Delete(sessionPath);
+        }
+
+        var repoRoot = FindRepositoryRoot();
+        var scriptPath = Path.Combine(repoRoot, "tools", "validation", "ProcessLifecycleTrial.ps1");
+        var powershellPath = GetPowerShellExecutablePath();
+
+        var psi = new ProcessStartInfo
+        {
+            FileName = powershellPath,
+            Arguments = $"-NoProfile -ExecutionPolicy Bypass -File \"{scriptPath}\" -Action Supervise -FixtureRoot \"{root}\" -AdoptionAttestation \"ADOPTED-PROCESS-LIFECYCLE-V1\"",
+            UseShellExecute = false,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+            WorkingDirectory = repoRoot
+        };
+
+        var process = new Process { StartInfo = psi };
+        try
+        {
+            process.Start();
+            var stdoutTask = process.StandardOutput.ReadToEndAsync();
+            var stderrTask = process.StandardError.ReadToEndAsync();
+
+            var sw = Stopwatch.StartNew();
+            while (!File.Exists(sessionPath) && sw.ElapsedMilliseconds < 5000)
+            {
+                await Task.Delay(50);
+            }
+            Assert.True(File.Exists(sessionPath), "Expected Supervise to create control/supervisor-session.json on startup.");
+
+            using (var sessionDoc = JsonDocument.Parse(File.ReadAllText(sessionPath)))
+            {
+                var livePid = sessionDoc.RootElement.GetProperty("SupervisorPid").GetInt32();
+                var liveSessionId = sessionDoc.RootElement.GetProperty("SupervisorSessionId").GetString()!;
+                Assert.Equal(process.Id, livePid);
+                Assert.False(string.IsNullOrWhiteSpace(liveSessionId));
+                configureReadiness(livePid, liveSessionId);
+            }
+
+            foreach (var cmd in commands)
+            {
+                await process.StandardInput.WriteLineAsync(cmd);
+                await process.StandardInput.FlushAsync();
+                await Task.Delay(200);
+            }
+
+            await process.StandardInput.WriteLineAsync("exit");
+            await process.StandardInput.FlushAsync();
+            process.StandardInput.Close();
+
+            if (!process.WaitForExit(15000))
+            {
+                lock (s_retainedProcesses) { s_retainedProcesses.Add(process); }
+                throw new TimeoutException($"Supervise handshake helper timed out after 15000ms. Residual process {process.Id} retained.");
+            }
+
+            var stdout = await stdoutTask;
+            var stderr = await stderrTask;
+            return new ProcessResult(process.ExitCode, stdout, stderr);
+        }
+        finally
+        {
+            lock (s_retainedProcesses)
+            {
+                if (!s_retainedProcesses.Contains(process))
+                {
+                    process.Dispose();
+                }
+            }
+        }
     }
 
     private static string GetCurrentScriptSha256()
