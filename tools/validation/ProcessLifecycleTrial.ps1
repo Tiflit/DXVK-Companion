@@ -64,6 +64,9 @@ param(
     [string]$ReadinessJson,
 
     [Parameter(Mandatory = $false)]
+    [string]$SupervisorSessionId,
+
+    [Parameter(Mandatory = $false)]
     [string]$ChildFileName,
 
     [Parameter(Mandatory = $false)]
@@ -414,8 +417,9 @@ $script:MAX_COMPANION_WORKING_SET_BYTES = 524288000   # 500 MiB
 $script:MAX_HELPER_CPU_MILLISECONDS     = 600000      # 10 minutes CPU
 $script:MAX_COMPANION_CPU_MILLISECONDS  = 1800000     # 30 minutes CPU
 
-# Required Adoption Attestation Token
+# Required Adoption Attestation Token and Adopted Profile Relative Path
 $script:REQUIRED_ADOPTION_TOKEN       = "ADOPTED-PROCESS-LIFECYCLE-V1"
+$script:ADOPTED_PROFILE_RELATIVE_PATH = "docs/validation/PACKAGED-PROCESS-LIFECYCLE-V1.md"
 
 # Retained Process Handles, Stream Drainers, and Supervisor State
 $script:HelperProcess = $null
@@ -425,6 +429,7 @@ $script:HelperStderrDrainer = $null
 $script:CompanionStdoutDrainer = $null
 $script:CompanionStderrDrainer = $null
 $script:RetainedTimedOutProcesses = [System.Collections.ArrayList]::new()
+$script:SettledRetainedProcessRecords = [System.Collections.ArrayList]::new()
 $script:SupervisorMonotonicTimer = $null
 $script:Utf8NoBom = New-Object System.Text.UTF8Encoding $false
 
@@ -699,6 +704,23 @@ function Measure-DirectoryFootprintBytes([string]$DirectoryPath) {
 # State and Batch Guard Functions
 # ==============================================================================
 
+function Get-ProfileDocumentPath {
+    if (-not [string]::IsNullOrWhiteSpace($PSCommandPath) -and (Test-Path -LiteralPath $PSCommandPath -PathType Leaf)) {
+        $scriptDir = [System.IO.Path]::GetDirectoryName($PSCommandPath)
+        $repoRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($scriptDir, "..", ".."))
+        return [System.IO.Path]::Combine($repoRoot, "docs", "validation", "PACKAGED-PROCESS-LIFECYCLE-V1.md")
+    }
+    return [System.IO.Path]::GetFullPath("docs/validation/PACKAGED-PROCESS-LIFECYCLE-V1.md")
+}
+
+function Get-ProfileDocumentSha256 {
+    $profilePath = Get-ProfileDocumentPath
+    if (Test-Path -LiteralPath $profilePath -PathType Leaf) {
+        return Compute-FileSha256 -FilePath $profilePath
+    }
+    return ""
+}
+
 function Get-StateFilePath([string]$FixtureRoot) {
     $canon = Validate-RootBoundPath -RootPath $FixtureRoot -CandidatePath $FixtureRoot
     return [System.IO.Path]::Combine($canon, "state.json")
@@ -735,8 +757,13 @@ function Get-StateData([string]$FixtureRoot) {
         CurrentFootprintBytes      = 0L
         ActiveProcesses            = @()
         SetupScriptSha256          = $null
+        SetupProfileSha256         = $null
+        AdoptedProfilePath         = $null
+        AdoptedProfileSha256       = $null
         AdoptedScriptSha256        = $null
         AdoptedToken               = $null
+        AdoptedSupervisorPid       = $null
+        AdoptedSupervisorSessionId = $null
         MonotonicOriginTimestamp   = $null
         MonotonicFrequency         = $null
         LastMonotonicTimestamp     = $null
@@ -752,6 +779,7 @@ function Get-StateData([string]$FixtureRoot) {
         NonQualifyingPureDataCheck = $false
         ActiveCompanionPid         = $null
         ActiveSupervisorPid        = $null
+        ActiveSupervisorSessionId  = $null
         Checkpoints                = @()
     }
 
@@ -841,6 +869,21 @@ function Validate-CooperativeReadinessInternal(
         return @{ IsValid = $false; Reason = "Execution refused: readiness record ProfileId '$recProfile' does not match 'process-lifecycle-v1'." }
     }
 
+    $recProfilePath = "$(Get-SafePropertyValue -Object $rec -PropertyName 'AdoptedProfilePath')".Replace('\', '/').Trim()
+    if ([string]::IsNullOrWhiteSpace($recProfilePath) -or $recProfilePath -ne $script:ADOPTED_PROFILE_RELATIVE_PATH) {
+        return @{ IsValid = $false; Reason = "Execution refused: readiness record AdoptedProfilePath ('$recProfilePath') does not match required profile path '$($script:ADOPTED_PROFILE_RELATIVE_PATH)'." }
+    }
+
+    $currentProfileSha = (Get-ProfileDocumentSha256).ToLowerInvariant()
+    $recProfileSha = "$(Get-SafePropertyValue -Object $rec -PropertyName 'AdoptedProfileSha256')".ToLowerInvariant()
+    if ([string]::IsNullOrWhiteSpace($recProfileSha) -or [string]::IsNullOrWhiteSpace($currentProfileSha) -or $recProfileSha -ne $currentProfileSha) {
+        return @{ IsValid = $false; Reason = "Execution refused: readiness record AdoptedProfileSha256 ('$recProfileSha') does not match current profile document SHA256 ('$currentProfileSha')." }
+    }
+    $setupProfileSha = "$(Get-SafePropertyValue -Object $StateObject -PropertyName 'SetupProfileSha256')".ToLowerInvariant()
+    if (-not [string]::IsNullOrWhiteSpace($setupProfileSha) -and $recProfileSha -ne $setupProfileSha) {
+        return @{ IsValid = $false; Reason = "Execution refused: readiness record AdoptedProfileSha256 ('$recProfileSha') does not match batch SetupProfileSha256 ('$setupProfileSha')." }
+    }
+
     $currentScriptSha = if (-not [string]::IsNullOrWhiteSpace($PSCommandPath) -and (Test-Path -LiteralPath $PSCommandPath -PathType Leaf)) {
         Compute-FileSha256 -FilePath $PSCommandPath
     } else {
@@ -849,6 +892,10 @@ function Validate-CooperativeReadinessInternal(
     $recScriptSha = "$(Get-SafePropertyValue -Object $rec -PropertyName 'AdoptedScriptSha256')".ToLowerInvariant()
     if ([string]::IsNullOrWhiteSpace($recScriptSha) -or $recScriptSha -ne $currentScriptSha.ToLowerInvariant()) {
         return @{ IsValid = $false; Reason = "Execution refused: readiness record AdoptedScriptSha256 ('$recScriptSha') does not match running script SHA256 ('$currentScriptSha'). Auto-adoption is prohibited." }
+    }
+    $setupScriptSha = "$(Get-SafePropertyValue -Object $StateObject -PropertyName 'SetupScriptSha256')".ToLowerInvariant()
+    if (-not [string]::IsNullOrWhiteSpace($setupScriptSha) -and $recScriptSha -ne $setupScriptSha) {
+        return @{ IsValid = $false; Reason = "Execution refused: readiness record AdoptedScriptSha256 ('$recScriptSha') does not match batch SetupScriptSha256 ('$setupScriptSha')." }
     }
 
     $recRootRaw = "$(Get-SafePropertyValue -Object $rec -PropertyName 'FixtureRoot')"
@@ -865,12 +912,28 @@ function Validate-CooperativeReadinessInternal(
         return @{ IsValid = $false; Reason = "Execution refused: readiness record BatchStartTimeUtc ('$recBatchUtc') does not match batch state ('$($StateObject.BatchStartTimeUtc)')." }
     }
 
+    $activePidObj = Get-SafePropertyValue -Object $StateObject -PropertyName "ActiveSupervisorPid"
+    $activeSessionId = "$(Get-SafePropertyValue -Object $StateObject -PropertyName 'ActiveSupervisorSessionId')"
+    if ($null -eq $activePidObj -or "$activePidObj" -eq "" -or [int]$activePidObj -le 0 -or [string]::IsNullOrWhiteSpace($activeSessionId)) {
+        return @{ IsValid = $false; Reason = "Execution refused: no active supervisor session is bound in state.json (ActiveSupervisorPid/ActiveSupervisorSessionId missing)." }
+    }
+    $activePid = [int]$activePidObj
+
     $recPid = Get-SafePropertyValue -Object $rec -PropertyName "SupervisorPid"
-    if ($null -ne $recPid -and "$recPid" -ne "" -and [int]$recPid -gt 0) {
-        $expectedPid = if ($null -ne $StateObject.ActiveSupervisorPid) { [int]$StateObject.ActiveSupervisorPid } else { $PID }
-        if ([int]$recPid -ne $expectedPid -and [int]$recPid -ne $PID) {
-            return @{ IsValid = $false; Reason = "Execution refused: readiness record SupervisorPid ($recPid) does not match current supervisor session PID ($PID)." }
-        }
+    $parsedRecPid = 0
+    if ($null -eq $recPid -or "$recPid" -eq "" -or -not [int]::TryParse("$recPid", [ref]$parsedRecPid) -or $parsedRecPid -le 0) {
+        return @{ IsValid = $false; Reason = "Execution refused: readiness record is missing a valid positive SupervisorPid binding." }
+    }
+    if ($parsedRecPid -ne $activePid) {
+        return @{ IsValid = $false; Reason = "Execution refused: readiness record SupervisorPid ($parsedRecPid) does not match active supervisor session PID ($activePid)." }
+    }
+
+    $recSessionId = "$(Get-SafePropertyValue -Object $rec -PropertyName 'SupervisorSessionId')"
+    if ([string]::IsNullOrWhiteSpace($recSessionId)) {
+        return @{ IsValid = $false; Reason = "Execution refused: readiness record is missing mandatory SupervisorSessionId binding." }
+    }
+    if ($recSessionId -ne $activeSessionId) {
+        return @{ IsValid = $false; Reason = "Execution refused: readiness record SupervisorSessionId ('$recSessionId') does not match active supervisor session ID ('$activeSessionId')." }
     }
 
     $ownerAvail = Get-SafePropertyValue -Object $rec -PropertyName "OwnerAvailable"
@@ -903,10 +966,14 @@ function Validate-CooperativeReadinessInternal(
     }
 
     return @{
-        IsValid             = $true
-        Reason              = "Ready"
-        AdoptedScriptSha256 = $recScriptSha
-        AdoptedToken        = $recToken
+        IsValid                    = $true
+        Reason                     = "Ready"
+        AdoptedProfilePath         = $recProfilePath
+        AdoptedProfileSha256       = $recProfileSha
+        AdoptedScriptSha256        = $recScriptSha
+        AdoptedToken               = $recToken
+        AdoptedSupervisorPid       = $parsedRecPid
+        AdoptedSupervisorSessionId = $recSessionId
     }
 }
 
@@ -1113,11 +1180,19 @@ function Invoke-SuperviseObservationCycle([string]$FixtureRoot) {
         -ReferenceUtc $nowUtc
 
     if ($readinessCheck.IsValid) {
+        $state.AdoptedProfilePath = $readinessCheck.AdoptedProfilePath
+        $state.AdoptedProfileSha256 = $readinessCheck.AdoptedProfileSha256
         $state.AdoptedScriptSha256 = $readinessCheck.AdoptedScriptSha256
         $state.AdoptedToken = $readinessCheck.AdoptedToken
+        $state.AdoptedSupervisorPid = $readinessCheck.AdoptedSupervisorPid
+        $state.AdoptedSupervisorSessionId = $readinessCheck.AdoptedSupervisorSessionId
     } else {
+        $state.AdoptedProfilePath = $null
+        $state.AdoptedProfileSha256 = $null
         $state.AdoptedScriptSha256 = $null
         $state.AdoptedToken = $null
+        $state.AdoptedSupervisorPid = $null
+        $state.AdoptedSupervisorSessionId = $null
     }
 
     $isReady = $true
@@ -1789,6 +1864,160 @@ function Read-SharedLogFileText([string]$LogPath) {
     }
 }
 
+function Write-ResidualChildRecord([object]$RetainedRecord, [string]$FixtureRoot = "") {
+    if ($null -eq $RetainedRecord) { return }
+    $recordObj = [PSCustomObject]@{
+        Pid             = $RetainedRecord.Pid
+        FileName        = $RetainedRecord.FileName
+        Arguments       = $RetainedRecord.Arguments
+        StdoutLogPath   = $RetainedRecord.StdoutLogPath
+        StderrLogPath   = $RetainedRecord.StderrLogPath
+        StartedAtUtc    = $RetainedRecord.StartedAtUtc
+        TimedOut        = [bool]$RetainedRecord.TimedOut
+        TimedOutAtUtc   = $RetainedRecord.TimedOutAtUtc
+        PostStartError  = $RetainedRecord.PostStartError
+        Settled         = [bool]$RetainedRecord.Settled
+        SettledAtUtc    = $RetainedRecord.SettledAtUtc
+        FinalExitCode   = $RetainedRecord.FinalExitCode
+        StdoutDrained   = [bool]$RetainedRecord.StdoutDrained
+        StderrDrained   = [bool]$RetainedRecord.StderrDrained
+        StdoutBytes     = if ($null -ne $RetainedRecord.StdoutDrainer) { [long]$RetainedRecord.StdoutDrainer.BytesWritten } else { 0L }
+        StderrBytes     = if ($null -ne $RetainedRecord.StderrDrainer) { [long]$RetainedRecord.StderrDrainer.BytesWritten } else { 0L }
+        HasDrainFault   = [bool]$RetainedRecord.HasDrainFault
+        FaultMessage    = $RetainedRecord.FaultMessage
+        SupervisorPid   = $PID
+    }
+    $json = ConvertTo-Json -InputObject $recordObj -Depth 5
+
+    $pathsToWrite = [System.Collections.ArrayList]::new()
+    if (-not [string]::IsNullOrWhiteSpace($RetainedRecord.ResidualRecordPath)) {
+        [void]$pathsToWrite.Add($RetainedRecord.ResidualRecordPath)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($FixtureRoot) -and (Test-Path -LiteralPath $FixtureRoot -PathType Container)) {
+        $logsDir = [System.IO.Path]::Combine($FixtureRoot, "logs")
+        if (Test-Path -LiteralPath $logsDir -PathType Container) {
+            $rootResidualPath = [System.IO.Path]::Combine($logsDir, "retained-child-$($RetainedRecord.Pid).residual.json")
+            if ($pathsToWrite -notcontains $rootResidualPath) {
+                [void]$pathsToWrite.Add($rootResidualPath)
+            }
+        }
+    }
+
+    foreach ($p in $pathsToWrite) {
+        try {
+            $dir = [System.IO.Path]::GetDirectoryName($p)
+            if (-not [string]::IsNullOrEmpty($dir) -and -not (Test-Path -LiteralPath $dir -PathType Container)) {
+                [void][System.IO.Directory]::CreateDirectory($dir)
+            }
+            [System.IO.File]::WriteAllText($p, $json, $script:Utf8NoBom)
+        } catch {}
+    }
+}
+
+function Wait-AndSettleRetainedBoundedProcesses([string]$FixtureRoot = "") {
+    if ($null -eq $script:RetainedTimedOutProcesses -or $script:RetainedTimedOutProcesses.Count -eq 0) {
+        return
+    }
+
+    foreach ($rec in @($script:RetainedTimedOutProcesses)) {
+        if ($null -eq $rec) { continue }
+        Write-ResidualChildRecord -RetainedRecord $rec -FixtureRoot $FixtureRoot
+    }
+
+    while ($true) {
+        $anyAlive = $false
+        foreach ($rec in @($script:RetainedTimedOutProcesses)) {
+            if ($null -eq $rec -or $null -eq $rec.Process) { continue }
+            try {
+                if (-not $rec.Process.HasExited) {
+                    $anyAlive = $true
+                    [void]$rec.Process.WaitForExit(200)
+                }
+            } catch {}
+        }
+        if (-not $anyAlive) {
+            break
+        }
+        if (-not [string]::IsNullOrWhiteSpace($FixtureRoot)) {
+            try {
+                $stateFile = [System.IO.Path]::Combine($FixtureRoot, "state.json")
+                if (Test-Path -LiteralPath $stateFile -PathType Leaf) {
+                    Invoke-SuperviseObservationCycle -FixtureRoot $FixtureRoot
+                }
+            } catch {}
+        }
+    }
+
+    foreach ($rec in @($script:RetainedTimedOutProcesses)) {
+        if ($null -eq $rec) { continue }
+        $outDrained = $false
+        $errDrained = $false
+        if ($null -ne $rec.StdoutDrainer) {
+            try { $outDrained = [bool]$rec.StdoutDrainer.WaitForDrain(5000) } catch {}
+        }
+        if ($null -ne $rec.StderrDrainer) {
+            try { $errDrained = [bool]$rec.StderrDrainer.WaitForDrain(5000) } catch {}
+        }
+        $outFault = if ($null -ne $rec.StdoutDrainer) { [bool]$rec.StdoutDrainer.HasFault } else { $false }
+        $errFault = if ($null -ne $rec.StderrDrainer) { [bool]$rec.StderrDrainer.HasFault } else { $false }
+        $hasFault = (-not $outDrained) -or (-not $errDrained) -or $outFault -or $errFault
+        $faultMsg = if ($outFault) {
+            $rec.StdoutDrainer.FaultMessage
+        } elseif ($errFault) {
+            $rec.StderrDrainer.FaultMessage
+        } elseif (-not $outDrained -or -not $errDrained) {
+            "Stream drain timed out during retained child settlement."
+        } else {
+            $rec.FaultMessage
+        }
+
+        $finalExit = $null
+        if ($null -ne $rec.Process) {
+            try {
+                if ($rec.Process.HasExited) {
+                    $finalExit = $rec.Process.ExitCode
+                }
+            } catch {}
+        }
+
+        $rec.StdoutDrained = $outDrained
+        $rec.StderrDrained = $errDrained
+        $rec.HasDrainFault = $hasFault
+        $rec.FaultMessage  = $faultMsg
+        $rec.FinalExitCode = $finalExit
+        $rec.Settled       = $true
+        $rec.SettledAtUtc  = [DateTime]::UtcNow.ToString("o")
+
+        Write-ResidualChildRecord -RetainedRecord $rec -FixtureRoot $FixtureRoot
+
+        $settledSummary = [PSCustomObject]@{
+            Pid                = $rec.Pid
+            FileName           = $rec.FileName
+            TimedOut           = [bool]$rec.TimedOut
+            PostStartError     = $rec.PostStartError
+            Settled            = $true
+            SettledAtUtc       = $rec.SettledAtUtc
+            FinalExitCode      = $finalExit
+            StdoutDrained      = $outDrained
+            StderrDrained      = $errDrained
+            HasDrainFault      = $hasFault
+            ResidualRecordPath = $rec.ResidualRecordPath
+        }
+        [void]$script:SettledRetainedProcessRecords.Add($settledSummary)
+
+        if ($null -ne $rec.StdoutDrainer) {
+            try { $rec.StdoutDrainer.Dispose() } catch {}
+        }
+        if ($null -ne $rec.StderrDrainer) {
+            try { $rec.StderrDrainer.Dispose() } catch {}
+        }
+        if ($null -ne $rec.Process) {
+            try { $rec.Process.Dispose() } catch {}
+        }
+        [void]$script:RetainedTimedOutProcesses.Remove($rec)
+    }
+}
+
 function Invoke-BoundedChildProcess(
     [string]$FileName,
     [string]$Arguments = "",
@@ -1796,7 +2025,8 @@ function Invoke-BoundedChildProcess(
     [string]$StderrLogPath,
     [int]$TimeoutMs = 30000,
     [long]$MaxLogBytes = 104857600,
-    [string]$WorkingDirectory = ""
+    [string]$WorkingDirectory = "",
+    [bool]$SimulatePostStartFault = $false
 ) {
     if ([string]::IsNullOrWhiteSpace($FileName)) {
         throw "Child process FileName is required."
@@ -1833,46 +2063,83 @@ function Invoke-BoundedChildProcess(
         throw "Failed to start bounded child process '$FileName'."
     }
 
-    $outDrainer = New-Object DXVKCompanion.Validation.SafeProcessStreamDrainer($proc.StandardOutput, $StdoutLogPath, $script:Utf8NoBom, $MaxLogBytes)
-    $errDrainer = New-Object DXVKCompanion.Validation.SafeProcessStreamDrainer($proc.StandardError, $StderrLogPath, $script:Utf8NoBom, $MaxLogBytes)
-    $outDrainer.Start()
-    $errDrainer.Start()
+    # Immediately register the live child in $script:RetainedTimedOutProcesses BEFORE drainer creation/start
+    # so any post-start exception or timeout still retains ownership until the child exits naturally.
+    $residualRecordPath = "$StdoutLogPath.residual.json"
+    $retainedRecord = [PSCustomObject]@{
+        Process            = $proc
+        Pid                = $proc.Id
+        FileName           = $FileName
+        Arguments          = $Arguments
+        StdoutDrainer      = $null
+        StderrDrainer      = $null
+        StdoutLogPath      = $StdoutLogPath
+        StderrLogPath      = $StderrLogPath
+        ResidualRecordPath = $residualRecordPath
+        StartedAtUtc       = [DateTime]::UtcNow.ToString("o")
+        TimedOut           = $false
+        TimedOutAtUtc      = $null
+        PostStartError     = $null
+        Settled            = $false
+        SettledAtUtc       = $null
+        FinalExitCode      = $null
+        StdoutDrained      = $false
+        StderrDrained      = $false
+        HasDrainFault      = $false
+        FaultMessage       = $null
+    }
+    [void]$script:RetainedTimedOutProcesses.Add($retainedRecord)
 
-    $exited = $proc.WaitForExit($TimeoutMs)
+    $outDrainer = $null
+    $errDrainer = $null
+    $exited = $false
+    try {
+        $outDrainer = New-Object DXVKCompanion.Validation.SafeProcessStreamDrainer($proc.StandardOutput, $StdoutLogPath, $script:Utf8NoBom, $MaxLogBytes)
+        $retainedRecord.StdoutDrainer = $outDrainer
+        $errDrainer = New-Object DXVKCompanion.Validation.SafeProcessStreamDrainer($proc.StandardError, $StderrLogPath, $script:Utf8NoBom, $MaxLogBytes)
+        $retainedRecord.StderrDrainer = $errDrainer
+        $outDrainer.Start()
+        $errDrainer.Start()
+
+        if ($SimulatePostStartFault) {
+            throw "Simulated post-start fault after child process start (PID $($proc.Id))."
+        }
+
+        $exited = $proc.WaitForExit($TimeoutMs)
+    } catch {
+        $retainedRecord.PostStartError = "$_"
+        Write-ResidualChildRecord -RetainedRecord $retainedRecord -FixtureRoot $FixtureRoot
+        throw
+    }
+
     if (-not $exited) {
         # Zero force-termination: retain process and drainers in script state without calling Kill() or disposing
-        $retainedRecord = [PSCustomObject]@{
-            Process       = $proc
-            Pid           = $proc.Id
-            FileName      = $FileName
-            Arguments     = $Arguments
-            StdoutDrainer = $outDrainer
-            StderrDrainer = $errDrainer
-            StdoutLogPath = $StdoutLogPath
-            StderrLogPath = $StderrLogPath
-            TimedOutAtUtc = [DateTime]::UtcNow.ToString("o")
-        }
-        [void]$script:RetainedTimedOutProcesses.Add($retainedRecord)
+        $retainedRecord.TimedOut = $true
+        $retainedRecord.TimedOutAtUtc = [DateTime]::UtcNow.ToString("o")
+        Write-ResidualChildRecord -RetainedRecord $retainedRecord -FixtureRoot $FixtureRoot
 
         $stdoutText = Read-SharedLogFileText -LogPath $StdoutLogPath
         $stderrText = Read-SharedLogFileText -LogPath $StderrLogPath
 
         return [PSCustomObject]@{
-            Completed     = $false
-            TimedOut      = $true
-            Retained      = $true
-            Pid           = $proc.Id
-            ExitCode      = $null
-            StdoutDrained = $false
-            StderrDrained = $false
-            HasDrainFault = ($outDrainer.HasFault -or $errDrainer.HasFault)
-            FaultMessage  = if ($outDrainer.HasFault) { $outDrainer.FaultMessage } else { $errDrainer.FaultMessage }
-            StdoutText    = $stdoutText
-            StderrText    = $stderrText
-            StdoutLogPath = $StdoutLogPath
-            StderrLogPath = $StderrLogPath
+            Completed          = $false
+            TimedOut           = $true
+            Retained           = $true
+            Pid                = $proc.Id
+            ExitCode           = $null
+            StdoutDrained      = $false
+            StderrDrained      = $false
+            HasDrainFault      = ($outDrainer.HasFault -or $errDrainer.HasFault)
+            FaultMessage       = if ($outDrainer.HasFault) { $outDrainer.FaultMessage } else { $errDrainer.FaultMessage }
+            StdoutText         = $stdoutText
+            StderrText         = $stderrText
+            StdoutLogPath      = $StdoutLogPath
+            StderrLogPath      = $StderrLogPath
+            ResidualRecordPath = $residualRecordPath
         }
     }
+
+    [void]$script:RetainedTimedOutProcesses.Remove($retainedRecord)
 
     $outDrained = $outDrainer.WaitForDrain(5000)
     $errDrained = $errDrainer.WaitForDrain(5000)
@@ -1898,19 +2165,20 @@ function Invoke-BoundedChildProcess(
     $stderrText = Read-SharedLogFileText -LogPath $StderrLogPath
 
     return [PSCustomObject]@{
-        Completed     = $true
-        TimedOut      = $false
-        Retained      = $false
-        Pid           = $pidVal
-        ExitCode      = $exitCode
-        StdoutDrained = [bool]$outDrained
-        StderrDrained = [bool]$errDrained
-        HasDrainFault = [bool]$hasFault
-        FaultMessage  = $faultMsg
-        StdoutText    = $stdoutText
-        StderrText    = $stderrText
-        StdoutLogPath = $StdoutLogPath
-        StderrLogPath = $StderrLogPath
+        Completed          = $true
+        TimedOut           = $false
+        Retained           = $false
+        Pid                = $pidVal
+        ExitCode           = $exitCode
+        StdoutDrained      = [bool]$outDrained
+        StderrDrained      = [bool]$errDrained
+        HasDrainFault      = [bool]$hasFault
+        FaultMessage       = $faultMsg
+        StdoutText         = $stdoutText
+        StderrText         = $stderrText
+        StdoutLogPath      = $StdoutLogPath
+        StderrLogPath      = $StderrLogPath
+        ResidualRecordPath = $null
     }
 }
 
@@ -1919,14 +2187,24 @@ function Extract-BoundedDxvkTarGz(
     [string]$Version,
     [string]$DestinationDir,
     [string]$LogsDir = "",
-    [int]$TimeoutMs = 30000
+    [int]$TimeoutMs = 30000,
+    [bool]$TestPinsUsed = $false,
+    [object]$TestPins = $null
 ) {
     if (-not (Test-Path -LiteralPath $TarGzPath -PathType Leaf)) {
         throw "DXVK archive not found: $TarGzPath"
     }
 
-    $expectedSize = if ($Version -eq "v3.1.1") { $script:FROZEN_DXVK_311_SIZE } else { $script:FROZEN_DXVK_31_SIZE }
-    $expectedHash = if ($Version -eq "v3.1.1") { $script:FROZEN_DXVK_311_SHA256 } else { $script:FROZEN_DXVK_31_SHA256 }
+    $expectedSize = if ($Version -eq "v3.1.1") {
+        if ($TestPinsUsed -and $null -ne (Get-SafePropertyValue -Object $TestPins -PropertyName "Dxvk311Size")) { [long]$TestPins.Dxvk311Size } else { $script:FROZEN_DXVK_311_SIZE }
+    } else {
+        if ($TestPinsUsed -and $null -ne (Get-SafePropertyValue -Object $TestPins -PropertyName "Dxvk31Size")) { [long]$TestPins.Dxvk31Size } else { $script:FROZEN_DXVK_31_SIZE }
+    }
+    $expectedHash = if ($Version -eq "v3.1.1") {
+        if ($TestPinsUsed -and $null -ne (Get-SafePropertyValue -Object $TestPins -PropertyName "Dxvk311Sha256")) { "$($TestPins.Dxvk311Sha256)" } else { $script:FROZEN_DXVK_311_SHA256 }
+    } else {
+        if ($TestPinsUsed -and $null -ne (Get-SafePropertyValue -Object $TestPins -PropertyName "Dxvk31Sha256")) { "$($TestPins.Dxvk31Sha256)" } else { $script:FROZEN_DXVK_31_SHA256 }
+    }
 
     $tarItem = Get-Item -LiteralPath $TarGzPath -Force
     if ($tarItem.Length -ne $expectedSize) {
@@ -1948,16 +2226,32 @@ function Extract-BoundedDxvkTarGz(
     $listingPath = [System.IO.Path]::Combine($effectiveLogsDir, "dxvk-$Version-listing.txt")
     $inspectErrPath = [System.IO.Path]::Combine($effectiveLogsDir, "dxvk-$Version-inspect-stderr.txt")
 
-    $tarExe = "tar.exe"
+    $tarExe = if ($TestPinsUsed -and -not [string]::IsNullOrWhiteSpace("$(Get-SafePropertyValue -Object $TestPins -PropertyName 'TarExecutable')")) {
+        "$($TestPins.TarExecutable)"
+    } else {
+        "tar.exe"
+    }
+    $inspectArgs = if ($TestPinsUsed -and -not [string]::IsNullOrWhiteSpace("$(Get-SafePropertyValue -Object $TestPins -PropertyName 'TarInspectArguments')")) {
+        "$($TestPins.TarInspectArguments)"
+    } else {
+        "-ztvf `"$TarGzPath`""
+    }
+    $effectiveTimeoutMs = if ($TestPinsUsed -and $null -ne (Get-SafePropertyValue -Object $TestPins -PropertyName "TarTimeoutMs")) {
+        [int]$TestPins.TarTimeoutMs
+    } else {
+        $TimeoutMs
+    }
+
     $inspectRes = Invoke-BoundedChildProcess `
         -FileName $tarExe `
-        -Arguments "-ztvf `"$TarGzPath`"" `
+        -Arguments $inspectArgs `
         -StdoutLogPath $listingPath `
         -StderrLogPath $inspectErrPath `
-        -TimeoutMs $TimeoutMs
+        -TimeoutMs $effectiveTimeoutMs `
+        -SimulatePostStartFault:([bool]$SimulateFault)
 
     if ($inspectRes.TimedOut) {
-        throw "DXVK tar archive inspection timed out after ${TimeoutMs}ms (PID $($inspectRes.Pid) retained without force-kill; logs at $listingPath)."
+        throw "DXVK tar archive inspection timed out after ${effectiveTimeoutMs}ms (PID $($inspectRes.Pid) retained without force-kill; logs at $listingPath)."
     }
     if ($inspectRes.HasDrainFault) {
         throw "DXVK tar archive inspection stream drain fault: $($inspectRes.FaultMessage)"
@@ -1975,16 +2269,21 @@ function Extract-BoundedDxvkTarGz(
 
     $extractOutPath = [System.IO.Path]::Combine($effectiveLogsDir, "dxvk-$Version-extract-stdout.txt")
     $extractLogPath = [System.IO.Path]::Combine($effectiveLogsDir, "dxvk-$Version-extract-stderr.txt")
+    $extractArgs = if ($TestPinsUsed -and -not [string]::IsNullOrWhiteSpace("$(Get-SafePropertyValue -Object $TestPins -PropertyName 'TarExtractArguments')")) {
+        "$($TestPins.TarExtractArguments)"
+    } else {
+        "-xzf `"$TarGzPath`" -C `"$DestinationDir`" --strip-components 2 `"$prefix/x64/d3d11.dll`" `"$prefix/x64/dxgi.dll`""
+    }
 
     $extractRes = Invoke-BoundedChildProcess `
         -FileName $tarExe `
-        -Arguments "-xzf `"$TarGzPath`" -C `"$DestinationDir`" --strip-components 2 `"$prefix/x64/d3d11.dll`" `"$prefix/x64/dxgi.dll`"" `
+        -Arguments $extractArgs `
         -StdoutLogPath $extractOutPath `
         -StderrLogPath $extractLogPath `
-        -TimeoutMs $TimeoutMs
+        -TimeoutMs $effectiveTimeoutMs
 
     if ($extractRes.TimedOut) {
-        throw "DXVK tar extraction timed out after ${TimeoutMs}ms (PID $($extractRes.Pid) retained without force-kill; logs at $extractLogPath)."
+        throw "DXVK tar extraction timed out after ${effectiveTimeoutMs}ms (PID $($extractRes.Pid) retained without force-kill; logs at $extractLogPath)."
     }
     if ($extractRes.HasDrainFault) {
         throw "DXVK tar extraction stream drain fault: $($extractRes.FaultMessage)"
@@ -2050,6 +2349,7 @@ function Invoke-SetupAction {
     $monotonicFreq = Get-EffectiveMonotonicFrequency
     $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 
+    try {
     # Parse TestPins if supplied
     $testPins = $null
     $testPinsUsed = $false
@@ -2236,11 +2536,11 @@ function Invoke-SetupAction {
     # Official reference tar extraction (if provided)
     if (-not [string]::IsNullOrWhiteSpace($Dxvk311TarGzPath)) {
         $ref311Dir = [System.IO.Path]::Combine($referenceDir, "v3.1.1", "x64")
-        Extract-BoundedDxvkTarGz -TarGzPath $Dxvk311TarGzPath -Version "v3.1.1" -DestinationDir $ref311Dir
+        Extract-BoundedDxvkTarGz -TarGzPath $Dxvk311TarGzPath -Version "v3.1.1" -DestinationDir $ref311Dir -LogsDir $logsDir -TestPinsUsed $testPinsUsed -TestPins $testPins
     }
     if (-not [string]::IsNullOrWhiteSpace($Dxvk31TarGzPath)) {
         $ref31Dir = [System.IO.Path]::Combine($referenceDir, "v3.1", "x64")
-        Extract-BoundedDxvkTarGz -TarGzPath $Dxvk31TarGzPath -Version "v3.1" -DestinationDir $ref31Dir
+        Extract-BoundedDxvkTarGz -TarGzPath $Dxvk31TarGzPath -Version "v3.1" -DestinationDir $ref31Dir -LogsDir $logsDir -TestPinsUsed $testPinsUsed -TestPins $testPins
     }
 
     # Seed baseline files in target
@@ -2368,6 +2668,7 @@ function Invoke-SetupAction {
     } else {
         $null
     }
+    $profileSha = Get-ProfileDocumentSha256
     $initialFootprint = Measure-DirectoryFootprintBytes -DirectoryPath $rootFull
     $afterSetupTick = Get-EffectiveMonotonicTick
     if ($afterSetupTick -lt $monotonicOriginTick) {
@@ -2405,8 +2706,13 @@ function Invoke-SetupAction {
         CurrentFootprintBytes      = $initialFootprint
         ActiveProcesses            = @()
         SetupScriptSha256          = $scriptSha
+        SetupProfileSha256         = $profileSha
+        AdoptedProfilePath         = $null
+        AdoptedProfileSha256       = $null
         AdoptedScriptSha256        = $null
         AdoptedToken               = $null
+        AdoptedSupervisorPid       = $null
+        AdoptedSupervisorSessionId = $null
         IsEnded                    = $false
         TestPinsUsed               = $testPinsUsed
         ActiveHelperPid            = $null
@@ -2416,6 +2722,7 @@ function Invoke-SetupAction {
         NonQualifyingPureDataCheck = $false
         ActiveCompanionPid         = $null
         ActiveSupervisorPid        = $null
+        ActiveSupervisorSessionId  = $null
         Checkpoints                = @("Setup")
     }
     Save-StateData -FixtureRoot $rootFull -StateObject $initialState
@@ -2425,6 +2732,9 @@ function Invoke-SetupAction {
         Message = "Setup completed successfully."
         FixtureRoot = $rootFull
         TestPinsUsed = $testPinsUsed
+    }
+    } finally {
+        Wait-AndSettleRetainedBoundedProcesses -FixtureRoot $rootFull
     }
 }
 
@@ -2887,12 +3197,12 @@ function Supervise-HelperStart([string]$FixtureRoot, [int]$Slot, [string]$Attest
         throw "Failed to start helper process."
     }
 
+    $script:HelperProcess = $proc
+
     $script:HelperStdoutDrainer = New-Object DXVKCompanion.Validation.SafeProcessStreamDrainer($proc.StandardOutput, $stdoutLogPath, $script:Utf8NoBom)
     $script:HelperStderrDrainer = New-Object DXVKCompanion.Validation.SafeProcessStreamDrainer($proc.StandardError, $stderrLogPath, $script:Utf8NoBom)
     $script:HelperStdoutDrainer.Start()
     $script:HelperStderrDrainer.Start()
-
-    $script:HelperProcess = $proc
 
     # Bounded wait for READY signal on standard output (no kill on timeout)
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
@@ -3070,13 +3380,13 @@ function Supervise-CompanionStart([string]$FixtureRoot, [bool]$NoAutoDiscovery, 
         throw "Failed to start Companion process."
     }
 
+    # Retain process handle in supervisor state immediately after start
+    $script:CompanionProcess = $proc
+
     $script:CompanionStdoutDrainer = New-Object DXVKCompanion.Validation.SafeProcessStreamDrainer($proc.StandardOutput, $compStdoutLog, $script:Utf8NoBom)
     $script:CompanionStderrDrainer = New-Object DXVKCompanion.Validation.SafeProcessStreamDrainer($proc.StandardError, $compStderrLog, $script:Utf8NoBom)
     $script:CompanionStdoutDrainer.Start()
     $script:CompanionStderrDrainer.Start()
-
-    # Retain process handle in supervisor state
-    $script:CompanionProcess = $proc
 
     $state = Get-StateData -FixtureRoot $canonRoot
     $state.ActiveCompanionPid = $proc.Id
@@ -3138,22 +3448,63 @@ function Invoke-SuperviseAction {
     if ([string]::IsNullOrWhiteSpace($FixtureRoot)) { throw "FixtureRoot parameter is required for Supervise." }
     $canonRoot = Validate-RootBoundPath -RootPath $FixtureRoot -CandidatePath $FixtureRoot
 
-    # Prevent duplicate supervisor sessions on the same fixture root
+    # Prevent duplicate supervisor sessions on the same fixture root and establish mandatory session binding
     $state = Get-StateData -FixtureRoot $canonRoot
-    if ($null -ne $state.ActiveSupervisorPid) {
+    $sessionPid = $PID
+    $sessionId = $null
+    $reusedPreboundSession = $false
+
+    if (-not [string]::IsNullOrWhiteSpace($SupervisorSessionId) -and
+        "$($state.ActiveSupervisorSessionId)" -eq $SupervisorSessionId -and
+        $null -ne $state.ActiveSupervisorPid) {
         $existingPid = [int]$state.ActiveSupervisorPid
         $existingProc = Get-Process -Id $existingPid -ErrorAction SilentlyContinue
         if ($null -ne $existingProc -and -not $existingProc.HasExited) {
-            throw "Another supervisor session is already active on fixture root '$canonRoot' (PID $existingPid)."
+            $sessionPid = $existingPid
+            $sessionId = $SupervisorSessionId
+            $reusedPreboundSession = $true
         }
     }
-    $state.ActiveSupervisorPid = $PID
+
+    if (-not $reusedPreboundSession) {
+        if ($null -ne $state.ActiveSupervisorPid) {
+            $existingPid = [int]$state.ActiveSupervisorPid
+            if ($existingPid -ne $PID) {
+                $existingProc = Get-Process -Id $existingPid -ErrorAction SilentlyContinue
+                if ($null -ne $existingProc -and -not $existingProc.HasExited) {
+                    throw "Another supervisor session is already active on fixture root '$canonRoot' (PID $existingPid)."
+                }
+            }
+        }
+        $sessionPid = $PID
+        $sessionId = if (-not [string]::IsNullOrWhiteSpace($SupervisorSessionId)) {
+            $SupervisorSessionId
+        } else {
+            [Guid]::NewGuid().ToString("N")
+        }
+    }
+
+    $state.ActiveSupervisorPid = $sessionPid
+    $state.ActiveSupervisorSessionId = $sessionId
     Save-StateData -FixtureRoot $canonRoot -StateObject $state
+
+    $controlDir = Validate-RootBoundPath -RootPath $canonRoot -CandidatePath ([System.IO.Path]::Combine($canonRoot, "control"))
+    [void][System.IO.Directory]::CreateDirectory($controlDir)
+    $sessionRecordPath = [System.IO.Path]::Combine($controlDir, "supervisor-session.json")
+    $sessionRecord = [PSCustomObject]@{
+        SupervisorPid       = $sessionPid
+        SupervisorSessionId = $sessionId
+        FixtureRoot         = $canonRoot
+        BatchStartTimeUtc   = $state.BatchStartTimeUtc
+        RecordedAtUtc       = (Get-EffectiveReferenceUtc).ToString("o")
+    }
+    [System.IO.File]::WriteAllText($sessionRecordPath, (ConvertTo-Json -InputObject $sessionRecord -Depth 5), $script:Utf8NoBom)
 
     Write-Host "======================================================================"
     Write-Host "DXVK Companion Process-Lifecycle Supervisor (Retained Session)"
     Write-Host "Fixture Root: $canonRoot"
-    Write-Host "Supervisor PID: $PID"
+    Write-Host "Supervisor PID: $sessionPid"
+    Write-Host "Supervisor Session ID: $sessionId"
     Write-Host "======================================================================"
 
     $commandList = @()
@@ -3394,12 +3745,14 @@ function Invoke-SuperviseAction {
         }
         throw
     } finally {
+        Wait-AndSettleRetainedBoundedProcesses -FixtureRoot $canonRoot
         $hasActiveChildren = ($null -ne $script:HelperProcess -and -not $script:HelperProcess.HasExited) -or
                              ($null -ne $script:CompanionProcess -and -not $script:CompanionProcess.HasExited)
         if (-not $hasActiveChildren) {
             $cleanState = Get-StateData -FixtureRoot $canonRoot
-            if ($cleanState.ActiveSupervisorPid -eq $PID) {
+            if ($cleanState.ActiveSupervisorPid -eq $sessionPid -or $cleanState.ActiveSupervisorSessionId -eq $sessionId) {
                 $cleanState.ActiveSupervisorPid = $null
+                $cleanState.ActiveSupervisorSessionId = $null
                 Save-StateData -FixtureRoot $canonRoot -StateObject $cleanState
             }
         }
@@ -3567,22 +3920,40 @@ try {
                 -StdoutLogPath $LogPath `
                 -StderrLogPath $errLog `
                 -TimeoutMs $TimeoutMs `
-                -MaxLogBytes $MaxBytes
+                -MaxLogBytes $MaxBytes `
+                -SimulatePostStartFault:([bool]$SimulateFault)
+
+            $retainedAtTimeoutCount = [int]$script:RetainedTimedOutProcesses.Count
+            if ($childRes.TimedOut -or $retainedAtTimeoutCount -gt 0) {
+                Wait-AndSettleRetainedBoundedProcesses -FixtureRoot $FixtureRoot
+            }
+
+            $isChildSuccess = ([bool]$childRes.Completed) -and (-not [bool]$childRes.TimedOut) -and (-not [bool]$childRes.HasDrainFault) -and ($childRes.ExitCode -eq 0)
+            $msg = if ($childRes.TimedOut) {
+                "Bounded child process timed out after ${TimeoutMs}ms (PID $($childRes.Pid) retained without force-kill until natural exit)."
+            } elseif ($childRes.HasDrainFault) {
+                "Bounded child stream drain fault: $($childRes.FaultMessage)"
+            } else {
+                "Bounded child process completed with exit code $($childRes.ExitCode)."
+            }
 
             $result = @{
-                Success              = $true
-                Completed            = [bool]$childRes.Completed
-                TimedOut             = [bool]$childRes.TimedOut
-                ExitCode             = $childRes.ExitCode
-                ProcessId            = $childRes.Pid
-                Retained             = [bool]$childRes.Retained
-                RetainedProcessCount = [int]$script:RetainedTimedOutProcesses.Count
-                StdoutDrained        = [bool]$childRes.StdoutDrained
-                StderrDrained        = [bool]$childRes.StderrDrained
-                StdoutFault          = [bool]$childRes.HasDrainFault
-                StderrFault          = [bool]$childRes.HasDrainFault
-                StdoutLogPath        = $childRes.StdoutLogPath
-                StderrLogPath        = $childRes.StderrLogPath
+                Success                  = $isChildSuccess
+                Message                  = $msg
+                Completed                = [bool]$childRes.Completed
+                TimedOut                 = [bool]$childRes.TimedOut
+                ExitCode                 = $childRes.ExitCode
+                ProcessId                = $childRes.Pid
+                Retained                 = [bool]$childRes.Retained
+                RetainedProcessCount     = $retainedAtTimeoutCount
+                SettledRetainedProcesses = @($script:SettledRetainedProcessRecords)
+                ResidualRecordPath       = $childRes.ResidualRecordPath
+                StdoutDrained            = [bool]$childRes.StdoutDrained
+                StderrDrained            = [bool]$childRes.StderrDrained
+                StdoutFault              = [bool]$childRes.HasDrainFault
+                StderrFault              = [bool]$childRes.HasDrainFault
+                StdoutLogPath            = $childRes.StdoutLogPath
+                StderrLogPath            = $childRes.StderrLogPath
             }
         }
     }
@@ -3590,6 +3961,13 @@ try {
     $result = @{
         Success = $false
         Message = "$_"
+    }
+} finally {
+    Wait-AndSettleRetainedBoundedProcesses -FixtureRoot $FixtureRoot
+    if ($null -ne $result -and $null -ne $script:SettledRetainedProcessRecords -and $script:SettledRetainedProcessRecords.Count -gt 0) {
+        if ($result -is [hashtable]) {
+            $result["SettledRetainedProcesses"] = @($script:SettledRetainedProcessRecords)
+        }
     }
 }
 

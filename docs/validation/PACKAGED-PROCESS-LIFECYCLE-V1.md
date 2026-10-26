@@ -110,7 +110,7 @@ All binaries, archives, and tools must match the following frozen identities exa
 
 | Asset / Component | Source Revision / Identity | Artifact / Release ID | Size (Bytes) | SHA-256 Digest |
 |---|---|---|---:|---|
-| Trial Script (`ProcessLifecycleTrial.ps1`) | Current PR (`tools/validation/ProcessLifecycleTrial.ps1`) | N/A (in-repo) | - | `4629002ee2c3d142b1d729bdf873021b28afeb7c252e0f129e8dbcf52499123c` |
+| Trial Script (`ProcessLifecycleTrial.ps1`) | Current PR (`tools/validation/ProcessLifecycleTrial.ps1`) | N/A (in-repo) | 192,022 | `9d0bfeb39727b7d3136e478739dd6168a7c1cfe7986c33dfeae03aa69a1e5c3a` |
 | Helper Archive (`process-lifecycle-helper-x64`) | Checkout `a62356d0acb918aec957463a0b670747763ae544`, Tree `4ebbd76b0f30ca7768d737361ea8b540da5a8a2e` | Run `40220299641`, Artifact `12609386490` | 81,717 | `f75ec55738e6ca3c1a0cd0a342aefeaa0fb3addd03538f03f2ac7a43295750de` |
 | Helper Executable (`QueueFixture.exe`) | Source SHA256 `19229f59a4ab2504634cf9cd1bfff131a89a68e539808ab68c5459451e6ce0cc` | Extracted from `12609386490` | 138,240 | `f720cecae0f13eeef6d9b5e2d259b51df97b37bc3347b241071e25e8c1548d70` |
 | Companion Application Archive | Commit `46e6f22363cddcfa88d805b588b6ac30173bc9dc` | Run `40025768457`, Artifact `12532606945` | 66,410,238 | `32660fd3e3ed87385e47940d490db2e6ab93daad7e993fe4225dd157232b3b14` |
@@ -124,7 +124,7 @@ All binaries, archives, and tools must match the following frozen identities exa
 - **Dedicated Root**: Fresh directory `<FIXTURE_ROOT>` beneath the local development storage (e.g. `D:\dev\validation\process-lifecycle-v1-20261025`). Must not exist prior to setup. All writes strictly confined within `<FIXTURE_ROOT>`.
 - **Directory Layout**:
   - `<FIXTURE_ROOT>/target/`: Contains `QueueFixture.exe`, inert baseline `d3d11.dll`, noncanonical `dxvk.conf`, `sentinel.txt`, and later dispatched DXVK DLLs.
-  - `<FIXTURE_ROOT>/control/`: Supervisor stop-marker directory (`stop-N.request`).
+  - `<FIXTURE_ROOT>/control/`: Supervisor control directory containing stop markers (`stop-N.request`), normal helper exit records (`helper-slot-N.exit.json`), active supervisor session handshake (`supervisor-session.json`), and explicit owner readiness record (`readiness.json`).
   - `<FIXTURE_ROOT>/baseline/`: Immutable copies of original baseline files and `baseline_manifest.json`.
   - `<FIXTURE_ROOT>/companion/`: Extracted DXVK Companion application, settings, and profile store.
   - `<FIXTURE_ROOT>/companion/Profiles/`: Contains `game-library.json` and `Backups/`.
@@ -169,33 +169,39 @@ Execute setup to initialize directory structure, extract binaries safely (create
     -Dxvk31TarGzPath "path\to\dxvk-3.1.tar.gz" `
     -Dxvk311TarGzPath "path\to\dxvk-3.1.1.tar.gz"
 ```
-Verify exit code is 0 and output confirms successful initialization (`state.json` initializes with `CurrentReadiness = "NotReady"`, `AdoptedScriptSha256 = $null`, and monotonic origin timestamps).
+Verify exit code is 0 and output confirms successful initialization (`state.json` initializes with `CurrentReadiness = "NotReady"`, `SetupScriptSha256`, `SetupProfileSha256`, `AdoptedScriptSha256 = $null`, `AdoptedProfileSha256 = $null`, and monotonic origin timestamps).
 
-#### Step 2b: Write Explicit Owner Readiness & Revision-Binding Record
-Before starting the supervisor or launching any binary, record the owner's explicit readiness confirmation and adopted script SHA-256 in `<FixtureRoot>\control\readiness.json` (the script never auto-adopts its own hash):
+#### Step 3: Start Retained Supervisor Session
+Start the interactive retained supervisor session. On startup, the supervisor binds its active session (`ActiveSupervisorPid` and `ActiveSupervisorSessionId` in `state.json`), writes `<FixtureRoot>\control\supervisor-session.json`, and prints both the `Supervisor PID` and `Supervisor Session ID` while remaining in `NotReady` state until the owner writes the session-bound `control\readiness.json`:
+```powershell
+& powershell -NoProfile -ExecutionPolicy Bypass -File $Script -Action Supervise `
+    -FixtureRoot $FixtureRoot `
+    -AdoptionAttestation $AdoptionToken
+```
+
+#### Step 3b: Write Explicit Owner Readiness, Profile, Revision & Session-Binding Record
+Before issuing `start-companion` or `start-helper`, in a separate PowerShell terminal in the repository root, record the owner's explicit readiness confirmation bound to the adopted profile document (`docs/validation/PACKAGED-PROCESS-LIFECYCLE-V1.md` and its exact SHA-256), the adopted script SHA-256, the fixture root, the batch start time, and the active supervisor session (`SupervisorPid` and `SupervisorSessionId` from `control\supervisor-session.json`):
 ```powershell
 $State = Get-Content -LiteralPath "$FixtureRoot\state.json" -Raw | ConvertFrom-Json
+$Session = Get-Content -LiteralPath "$FixtureRoot\control\supervisor-session.json" -Raw | ConvertFrom-Json
+$ProfileSha256 = (Get-FileHash -LiteralPath "docs\validation\PACKAGED-PROCESS-LIFECYCLE-V1.md" -Algorithm SHA256).Hash.ToLowerInvariant()
 $Readiness = [PSCustomObject]@{
     ProfileId               = "process-lifecycle-v1"
+    AdoptedProfilePath      = "docs/validation/PACKAGED-PROCESS-LIFECYCLE-V1.md"
+    AdoptedProfileSha256    = $ProfileSha256
     AdoptionToken           = $AdoptionToken
-    AdoptedScriptSha256     = "4629002ee2c3d142b1d729bdf873021b28afeb7c252e0f129e8dbcf52499123c"
+    AdoptedScriptSha256     = "9d0bfeb39727b7d3136e478739dd6168a7c1cfe7986c33dfeae03aa69a1e5c3a"
     FixtureRoot             = $FixtureRoot
     BatchStartTimeUtc       = $State.BatchStartTimeUtc
+    SupervisorPid           = [int]$Session.SupervisorPid
+    SupervisorSessionId     = "$($Session.SupervisorSessionId)"
     OwnerAvailable          = $true
     GamesAndCompanionClosed = $true
     ConfirmedAtUtc          = [DateTime]::UtcNow.ToString("o")
 }
 $Readiness | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath "$FixtureRoot\control\readiness.json" -Encoding UTF8
 ```
-
-#### Step 3: Start Retained Supervisor Session
-Start the interactive retained supervisor session. The supervisor process validates `control/readiness.json` against the running script SHA-256, root, batch, and freshness window, and holds real process handles and stream drains across all subsequent manual steps:
-```powershell
-& powershell -NoProfile -ExecutionPolicy Bypass -File $Script -Action Supervise `
-    -FixtureRoot $FixtureRoot `
-    -AdoptionAttestation $AdoptionToken
-```
-Inside the supervisor session, the operator issues the sequential trial commands:
+Within 200ms of writing `control\readiness.json`, the interactive supervisor's observation cycle validates the profile path/SHA-256, script SHA-256, root, batch timestamp, active session PID/ID, and freshness window, transitioning the prompt to `Readiness=Ready`. Inside the supervisor session, the operator then issues the sequential trial commands:
 
 #### Step 4: Checkpoint 0 — Initial Baseline Snapshot
 Capture immutable baseline snapshot:
