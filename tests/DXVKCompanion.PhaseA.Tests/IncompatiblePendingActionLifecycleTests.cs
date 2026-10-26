@@ -39,6 +39,62 @@ namespace DXVKCompanion.PhaseA.Tests
             return (manager, installer, store, profileStore, sourceDir.RootPath);
         }
 
+        private static string SanitizeDiagnostic(string? text, params (string? search, string replacement)[] replacements)
+        {
+            if (string.IsNullOrEmpty(text)) return "<null>";
+            string sanitized = text;
+            if (replacements != null)
+            {
+                foreach (var (search, replacement) in replacements)
+                {
+                    if (!string.IsNullOrEmpty(search))
+                    {
+                        sanitized = sanitized.Replace(search, replacement, StringComparison.OrdinalIgnoreCase);
+                    }
+                }
+            }
+            var userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            if (!string.IsNullOrEmpty(userProfile))
+            {
+                sanitized = sanitized.Replace(userProfile, "<userProfile>", StringComparison.OrdinalIgnoreCase);
+            }
+            var tempPath = Path.GetTempPath().TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            if (!string.IsNullOrEmpty(tempPath))
+            {
+                sanitized = sanitized.Replace(tempPath, "<temp>", StringComparison.OrdinalIgnoreCase);
+            }
+            return sanitized;
+        }
+
+        private static string BuildApplyPendingDiagnostic(
+            string stage,
+            bool result,
+            DxvkManager manager,
+            GameLibraryStore store,
+            string gameRoot,
+            string storageRoot,
+            int notificationCount)
+        {
+            var inst = store.FindByInstallationPath(gameRoot);
+            var leaseCoord = manager.LeaseCoordinator as OperationLeaseCoordinator;
+            var replacements = new (string?, string)[]
+            {
+                (gameRoot, "<gameRoot>"),
+                (storageRoot, "<storageRoot>")
+            };
+
+            return $"[{stage}] result={result}; " +
+                $"manager.LastRefusal='{SanitizeDiagnostic(manager.LastRefusalReason, replacements)}'; " +
+                $"LeaseCoord.Error='{SanitizeDiagnostic(manager.LeaseCoordinator?.LastAcquisitionError, replacements)}'; " +
+                $"LeaseCoord.Diag='{SanitizeDiagnostic(leaseCoord?.LastAcquisitionDiagnostic, replacements)}'; " +
+                $"inst.Pending={(inst?.PendingAction != null ? inst.PendingAction.Type.ToString() : "<null>")}; " +
+                $"inst.Cancelled={(inst?.LastCancelledAction != null ? inst.LastCancelledAction.Type.ToString() : "<null>")}; " +
+                $"inst.CancelReason='{SanitizeDiagnostic(inst?.LastCancellationReason, replacements)}'; " +
+                $"inst.RefusalReason='{SanitizeDiagnostic(inst?.LastRefusalReason, replacements)}'; " +
+                $"inst.RestorationState={(inst != null ? inst.RestorationState.ToString() : "<null>")}; " +
+                $"notifications={notificationCount}";
+        }
+
         [Fact]
         public async Task ExitTrigger_IncompatiblePendingAction_TerminallyCancelled_ReasonRetained_NotRetriedOnSubsequentExit()
         {
@@ -62,25 +118,29 @@ namespace DXVKCompanion.PhaseA.Tests
 
             // Act 1: Game exits and triggers ApplyPendingAsync
             bool result1 = await manager.ApplyPendingAsync(exePath);
+            string diag1 = BuildApplyPendingDiagnostic("Act1", result1, manager, store, gameDir.RootPath, storageDir.RootPath, 0);
 
             // Assert 1: Deployment refused, files untouched, pending action terminally cancelled
-            Assert.False(result1);
+            Assert.False(result1, $"Act 1 ApplyPendingAsync returned true unexpectedly. Diagnostics: {diag1}");
             Assert.False(File.Exists(Path.Combine(gameDir.RootPath, "d3d11.dll")));
 
             var instAfter1 = store.FindByInstallationPath(gameDir.RootPath);
             Assert.NotNull(instAfter1);
+            Assert.True(instAfter1.PendingAction == null, $"PendingAction was not cancelled after Act 1. Diagnostics: {diag1}");
             Assert.Null(instAfter1.PendingAction); // Must be terminally cancelled (null)
             Assert.NotNull(instAfter1.LastRefusalReason);
             Assert.Contains("DX12", instAfter1.LastRefusalReason);
 
             // Act 2: Subsequent game exit triggers ApplyPendingAsync again
             bool result2 = await manager.ApplyPendingAsync(exePath);
+            string diag2 = BuildApplyPendingDiagnostic("Act2", result2, manager, store, gameDir.RootPath, storageDir.RootPath, 0);
 
             // Assert 2: No-op, remains cancelled, reason retained, no files written
-            Assert.False(result2);
+            Assert.False(result2, $"Act 2 ApplyPendingAsync returned true unexpectedly. Diagnostics: {diag2}");
             Assert.False(File.Exists(Path.Combine(gameDir.RootPath, "d3d11.dll")));
             var instAfter2 = store.FindByInstallationPath(gameDir.RootPath);
             Assert.NotNull(instAfter2);
+            Assert.True(instAfter2.PendingAction == null, $"PendingAction was revived after Act 2. Diagnostics: {diag2}");
             Assert.Null(instAfter2.PendingAction);
             Assert.NotNull(instAfter2.LastRefusalReason);
             Assert.Contains("DX12", instAfter2.LastRefusalReason);
@@ -109,27 +169,40 @@ namespace DXVKCompanion.PhaseA.Tests
 
             // Act 1: Startup processes pending actions
             int processed1 = await manager.ProcessAllPendingActionsAsync();
+            var instAfter1 = store.FindByInstallationPath(gameDir.RootPath);
+            string diag1 = $"[Act1] processed={processed1}; " +
+                $"manager.LastRefusal='{SanitizeDiagnostic(manager.LastRefusalReason, (gameDir.RootPath, "<gameRoot>"), (storageDir.RootPath, "<storageRoot>"))}'; " +
+                $"inst.Pending={(instAfter1?.PendingAction != null ? instAfter1.PendingAction.Type.ToString() : "<null>")}; " +
+                $"inst.RefusalReason='{SanitizeDiagnostic(instAfter1?.LastRefusalReason, (gameDir.RootPath, "<gameRoot>"), (storageDir.RootPath, "<storageRoot>"))}'";
 
             // Assert 1: 0 processed, action terminally cancelled
+            Assert.True(processed1 == 0, $"Act 1 ProcessAllPendingActionsAsync processed {processed1} unexpectedly. Diagnostics: {diag1}");
             Assert.Equal(0, processed1);
             Assert.False(File.Exists(Path.Combine(gameDir.RootPath, "d3d11.dll")));
 
-            var instAfter1 = store.FindByInstallationPath(gameDir.RootPath);
             Assert.NotNull(instAfter1);
+            Assert.True(instAfter1.PendingAction == null, $"PendingAction was not cancelled after Act 1 startup processing. Diagnostics: {diag1}");
             Assert.Null(instAfter1.PendingAction); // Terminally cancelled
             Assert.NotNull(instAfter1.LastRefusalReason);
             Assert.Contains("Vulkan", instAfter1.LastRefusalReason);
 
             // Act 2: Subsequent startup
             int processed2 = await manager.ProcessAllPendingActionsAsync();
+            var instAfter2 = store.FindByInstallationPath(gameDir.RootPath);
+            string diag2 = $"[Act2] processed={processed2}; " +
+                $"manager.LastRefusal='{SanitizeDiagnostic(manager.LastRefusalReason, (gameDir.RootPath, "<gameRoot>"), (storageDir.RootPath, "<storageRoot>"))}'; " +
+                $"inst.Pending={(instAfter2?.PendingAction != null ? instAfter2.PendingAction.Type.ToString() : "<null>")}; " +
+                $"inst.RefusalReason='{SanitizeDiagnostic(instAfter2?.LastRefusalReason, (gameDir.RootPath, "<gameRoot>"), (storageDir.RootPath, "<storageRoot>"))}'";
 
             // Assert 2: Still 0 processed, remains cancelled
+            Assert.True(processed2 == 0, $"Act 2 ProcessAllPendingActionsAsync processed {processed2} unexpectedly. Diagnostics: {diag2}");
             Assert.Equal(0, processed2);
-            var instAfter2 = store.FindByInstallationPath(gameDir.RootPath);
-            Assert.NotNull(instAfter2);
-            Assert.Null(instAfter2.PendingAction);
-            Assert.NotNull(instAfter2.LastRefusalReason);
-            Assert.Contains("Vulkan", instAfter2.LastRefusalReason);
+            var instAfter2Check = store.FindByInstallationPath(gameDir.RootPath);
+            Assert.NotNull(instAfter2Check);
+            Assert.True(instAfter2Check.PendingAction == null, $"PendingAction was revived after Act 2 startup processing. Diagnostics: {diag2}");
+            Assert.Null(instAfter2Check.PendingAction);
+            Assert.NotNull(instAfter2Check.LastRefusalReason);
+            Assert.Contains("Vulkan", instAfter2Check.LastRefusalReason);
         }
 
         [Fact]
@@ -151,7 +224,7 @@ namespace DXVKCompanion.PhaseA.Tests
 
             // Step 1: Deploy DXVK under DX11 to establish real managed state and backups
             bool deployed = await manager.EnableDxvkAsync(profile, "2.5");
-            Assert.True(deployed);
+            Assert.True(deployed, $"Initial DXVK deployment under DX11 failed before reaching cancellation test: LastRefusal='{SanitizeDiagnostic(manager.LastRefusalReason, (gameDir.RootPath, "<gameRoot>"), (storageDir.RootPath, "<storageRoot>"))}'");
 
             var inst = store.FindByInstallationPath(gameDir.RootPath);
             Assert.NotNull(inst);
@@ -173,7 +246,8 @@ namespace DXVKCompanion.PhaseA.Tests
 
             // Step 3: Trigger exit cancellation
             bool applyResult = await manager.ApplyPendingAsync(exePath);
-            Assert.False(applyResult);
+            string applyDiag = BuildApplyPendingDiagnostic("Step3", applyResult, manager, store, gameDir.RootPath, storageDir.RootPath, 0);
+            Assert.False(applyResult, $"Step 3 ApplyPendingAsync returned true unexpectedly. Diagnostics: {applyDiag}");
 
             // Step 4: Reload store from disk (simulate application restart)
             var reloadedStore = new GameLibraryStore(
@@ -182,6 +256,7 @@ namespace DXVKCompanion.PhaseA.Tests
             var reloadedInst = reloadedStore.FindByInstallationPath(gameDir.RootPath);
 
             Assert.NotNull(reloadedInst);
+            Assert.True(reloadedInst.PendingAction == null, $"PendingAction was not cancelled after reload. Diagnostics: {applyDiag}");
             Assert.Null(reloadedInst.PendingAction); // Terminally cancelled
             Assert.NotNull(reloadedInst.LastCancelledAction);
             Assert.Equal(PendingActionType.Update, reloadedInst.LastCancelledAction.Type);
@@ -229,9 +304,12 @@ namespace DXVKCompanion.PhaseA.Tests
 
             // Act 1: First trigger (ApplyPendingAsync) cancels the action
             bool result1 = await manager.ApplyPendingAsync(exePath);
-            Assert.False(result1);
+            string diag1 = BuildApplyPendingDiagnostic("Act1", result1, manager, store, gameDir.RootPath, storageDir.RootPath, receivedNotifications.Count);
+            Assert.False(result1, $"Act 1 ApplyPendingAsync returned true unexpectedly. Diagnostics: {diag1}");
 
             // Assert 1: Exactly one notification raised with the actual cancelled action details
+            Assert.True(receivedNotifications.Count == 1,
+                $"Initial cancellation transition failed to raise exactly 1 notification (count={receivedNotifications.Count}). Earliest failed stage diagnostics: {diag1}");
             Assert.Single(receivedNotifications);
             Assert.Equal("NotifyGame", receivedNotifications[0].inst.DisplayName);
             Assert.Equal(PendingActionType.Install, receivedNotifications[0].action.Type);
@@ -239,13 +317,20 @@ namespace DXVKCompanion.PhaseA.Tests
 
             // Act 2: Subsequent game exit
             bool result2 = await manager.ApplyPendingAsync(exePath);
-            Assert.False(result2);
+            string diag2 = BuildApplyPendingDiagnostic("Act2", result2, manager, store, gameDir.RootPath, storageDir.RootPath, receivedNotifications.Count);
+            Assert.False(result2, $"Act 2 ApplyPendingAsync returned true unexpectedly. Diagnostics: {diag2}");
 
             // Act 3: Subsequent startup batch processing
             int processed = await manager.ProcessAllPendingActionsAsync();
+            string diag3 = $"[Act3] processed={processed}; " +
+                $"manager.LastRefusal='{SanitizeDiagnostic(manager.LastRefusalReason, (gameDir.RootPath, "<gameRoot>"), (storageDir.RootPath, "<storageRoot>"))}'; " +
+                $"notifications={receivedNotifications.Count}";
+            Assert.True(processed == 0, $"Act 3 ProcessAllPendingActionsAsync processed {processed} actions unexpectedly. Diagnostics: {diag3}");
             Assert.Equal(0, processed);
 
             // Assert 2 & 3: No duplicate notification raised
+            Assert.True(receivedNotifications.Count == 1,
+                $"Expected notification count to remain 1 after repeated exit/startup triggers, but count={receivedNotifications.Count}. Diagnostics: {diag3}");
             Assert.Single(receivedNotifications);
         }
 
@@ -271,9 +356,11 @@ namespace DXVKCompanion.PhaseA.Tests
             store.Save(installation);
 
             // Cancel the action due to DX12
-            await manager.ApplyPendingAsync(exePath);
+            bool cancelResult = await manager.ApplyPendingAsync(exePath);
+            string cancelDiag = BuildApplyPendingDiagnostic("InitialCancel", cancelResult, manager, store, gameDir.RootPath, storageDir.RootPath, 0);
             var instAfterCancel = store.FindByInstallationPath(gameDir.RootPath);
             Assert.NotNull(instAfterCancel);
+            Assert.True(instAfterCancel.PendingAction == null, $"PendingAction was not cancelled during setup. Diagnostics: {cancelDiag}");
             Assert.Null(instAfterCancel.PendingAction);
             Assert.NotNull(instAfterCancel.LastCancelledAction);
 
@@ -333,9 +420,11 @@ namespace DXVKCompanion.PhaseA.Tests
             store.Save(installation);
 
             // Cancel action
-            await manager.ApplyPendingAsync(exePath);
+            bool cancelResult = await manager.ApplyPendingAsync(exePath);
+            string cancelDiag = BuildApplyPendingDiagnostic("InitialCancel", cancelResult, manager, store, gameDir.RootPath, storageDir.RootPath, 0);
             var instCancelled = store.FindByInstallationPath(gameDir.RootPath);
             Assert.NotNull(instCancelled);
+            Assert.True(instCancelled.PendingAction == null, $"PendingAction was not cancelled during setup. Diagnostics: {cancelDiag}");
             Assert.Null(instCancelled.PendingAction);
             Assert.NotNull(instCancelled.LastCancelledAction);
             Assert.False(manager.CanAutomaticallyDeploy(instCancelled));
@@ -413,10 +502,12 @@ namespace DXVKCompanion.PhaseA.Tests
 
             // Act 1: Trigger exit for Game 1 -> should cancel Game 1's action
             bool result1 = await manager.ApplyPendingAsync(exe1);
-            Assert.False(result1);
+            string diag1 = BuildApplyPendingDiagnostic("Act1", result1, manager, store, gameDir1.RootPath, storageDir.RootPath, 0);
+            Assert.False(result1, $"Act 1 ApplyPendingAsync returned true unexpectedly. Diagnostics: {diag1}");
 
             var reloadedInst1 = store.FindByInstallationPath(gameDir1.RootPath);
             Assert.NotNull(reloadedInst1);
+            Assert.True(reloadedInst1.PendingAction == null, $"PendingAction for Game 1 was not cancelled after Act 1. Diagnostics: {diag1}");
             Assert.Null(reloadedInst1.PendingAction); // Cancelled
             Assert.NotNull(reloadedInst1.LastCancelledAction);
             Assert.False(manager.HasTransientPendingAction(exe1)); // Removed from transient queue
@@ -533,7 +624,7 @@ namespace DXVKCompanion.PhaseA.Tests
 
             // Step 1: Deploy DXVK under DX11
             bool deployed = await manager.EnableDxvkAsync(profile, "2.5");
-            Assert.True(deployed);
+            Assert.True(deployed, $"Initial DXVK deployment under DX11 failed before reaching restore invariant test: LastRefusal='{SanitizeDiagnostic(manager.LastRefusalReason, (gameDir.RootPath, "<gameRoot>"), (storageDir.RootPath, "<storageRoot>"))}'");
 
             // Step 2: Reclassify to DX12
             profile.Api = GraphicsApi.DX12;
@@ -547,9 +638,10 @@ namespace DXVKCompanion.PhaseA.Tests
 
             // Act: ApplyPendingAsync runs for Restore on DX12 game
             bool restoreResult = await manager.ApplyPendingAsync(exePath);
+            string restoreDiag = BuildApplyPendingDiagnostic("Restore", restoreResult, manager, store, gameDir.RootPath, storageDir.RootPath, 0);
 
             // Assert: Restore invariant: MUST NOT be cancelled; MUST execute and restore baseline
-            Assert.True(restoreResult);
+            Assert.True(restoreResult, $"Restore failed to execute: {restoreDiag}");
             Assert.False(profile.DxvkEnabled);
             Assert.Equal("original-native-d3d11", File.ReadAllText(nativeD3D11));
             Assert.False(File.Exists(Path.Combine(gameDir.RootPath, "dxgi.dll")));
