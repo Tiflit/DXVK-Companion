@@ -170,5 +170,27 @@ Following Codex focused review comment 6405199238 at head `39cd6bf`, the followi
 - `Extract-BoundedDxvkTarGz`: executes bounded `tar.exe` inspection and extraction (30s timeouts), writes listing and error output directly into `$canonRoot/logs/` (`dxvk-$Version-listing.txt`, `dxvk-$Version-inspect-stderr.txt`, `dxvk-$Version-extract-stderr.txt`), and preserves all logs permanently without cleanup.
 - Added regression tests for accepted listing, malformed sizes, forbidden types, duplicate entries, and size caps.
 
+---
+
+## 2026-10-25 Delta Repair Cycle 4 (CI Failure Resolution)
+
+### Root Cause Analysis & Fixes
+1. **PowerShell `Set-StrictMode -Version 3.0` & `$MyInvocation.MyCommand.Path`**:
+   - Calling `$MyInvocation.MyCommand.Path` inside functions (`Invoke-SetupAction`, `Invoke-SuperviseAction`) threw `PropertyNotFoundException: The property 'Path' cannot be found on this object` under strict mode 3.0 because `$MyInvocation.MyCommand` is a `FunctionInfo`, which has no `Path` property.
+   - Replaced with `$PSCommandPath` automatic variable checking existence before hashing.
+   - Guarded all property reads on `$testPins` with `Get-SafePropertyValue` to ensure missing optional properties do not trigger strict-mode property lookup failures.
+2. **`SafeProcessStreamDrainer` Test Execution & Stream Sharing**:
+   - In `Test-Drainer`, reading `$LogPath` via `[System.IO.File]::ReadAllText` occurred while `$drainer` was still active in the try block holding an exclusive write handle, causing an `IOException` (sharing violation). Moved `$drainer.Dispose()` to the `finally` block before reading `$LogPath`.
+   - In `SafeProcessStreamDrainer_ShippedDrainer_DetectsAndExposesFault`, passing a disposed `MemoryStream` caused `StreamReader` constructor to throw `ArgumentException` before draining could even start. Implemented embedded `DXVKCompanion.Validation.FaultingStream` which is readable upon construction but throws an `IOException` during asynchronous read.
+   - Added `-TestInputPath` parameter to avoid command-line newline parsing issues on Windows when piping multiline text to PowerShell.
+3. **`Parse-TarListingInternal` Path Token Extraction & Normalization**:
+   - Corrected bsdtar column indexing for 9+ token rows: index 4 is size, indices 5-7 are date/time tokens (`Month Day Year/Time`), and index 8+ is the member path.
+   - Normalization explicitly strips leading `./` and `.\` tokens in a while-loop to reliably catch duplicate collisions across relative prefix variations.
+   - Decoded JSON message in `ParseTarListing_RejectsForbiddenEntryType` test to handle PowerShell's `ConvertTo-Json` HTML-safe `\u0027` escaping for single quotes.
+4. **PowerShell 5.1 Literal Compatibility**:
+   - Removed trailing `L` suffixes from integer literals and parameters across `ProcessLifecycleTrial.ps1` for clean cross-version compatibility between Windows PowerShell 5.1 and PowerShell 7+.
+   - Updated script SHA256 pin in `docs/validation/PACKAGED-PROCESS-LIFECYCLE-V1.md`: `9024bb2a2d9f38b1ef32bfc7bdccd97a06a1b46f4931dc177ff1c67a8c201592`.
+
+
 
 

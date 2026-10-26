@@ -914,9 +914,10 @@ public sealed class ProcessLifecycleTrialPreparationTests
 
         using var temp = new SyntheticTestDirectory();
         var logFile = temp.GetPath("test_output.log");
-        var text = "Initializing QueueFixture`nREADY slot 1`nProcessing payload`nSTOPPED slot 1`n";
+        var text = $"Initializing QueueFixture{Environment.NewLine}READY slot 1{Environment.NewLine}Processing payload{Environment.NewLine}STOPPED slot 1{Environment.NewLine}";
+        var inputFile = temp.CreateFile("input.txt", text);
 
-        var result = RunScript($"-Action Test-Drainer -TestInputText \"{text}\" -LogPath \"{logFile}\" -JsonOutput");
+        var result = RunScript($"-Action Test-Drainer -TestInputPath \"{inputFile}\" -LogPath \"{logFile}\" -JsonOutput");
         Assert.Equal(0, result.ExitCode);
         AssertScriptSuccess(result, true);
 
@@ -961,8 +962,9 @@ public sealed class ProcessLifecycleTrialPreparationTests
         using var temp = new SyntheticTestDirectory();
         var logFile = temp.GetPath("test_output.log");
         var longLine = new string('A', 500);
+        var inputFile = temp.CreateFile("input.txt", longLine);
 
-        var result = RunScript($"-Action Test-Drainer -TestInputText \"{longLine}\" -LogPath \"{logFile}\" -MaxBytes 100 -JsonOutput");
+        var result = RunScript($"-Action Test-Drainer -TestInputPath \"{inputFile}\" -LogPath \"{logFile}\" -MaxBytes 100 -JsonOutput");
         Assert.Equal(0, result.ExitCode);
 
         using var doc = JsonDocument.Parse(result.StandardOutput);
@@ -1028,7 +1030,10 @@ public sealed class ProcessLifecycleTrialPreparationTests
         var result = RunScript($"-Action Test-ParseTarListing -ListingFilePath \"{listFile}\" -JsonOutput");
         Assert.NotEqual(0, result.ExitCode);
         AssertScriptSuccess(result, false);
-        Assert.Contains("forbidden entry type 'l'", result.StandardOutput + result.StandardError);
+        Assert.Contains("forbidden entry type", result.StandardOutput + result.StandardError);
+
+        using var doc = JsonDocument.Parse(result.StandardOutput);
+        Assert.Contains("forbidden entry type 'l'", doc.RootElement.GetProperty("Message").GetString()!);
     }
 
     [Fact]
@@ -1513,7 +1518,7 @@ public sealed class ProcessLifecycleTrialPreparationTests
 
         var escapedJson = testPinsJson.Replace("\"", "\\\"");
         var result = RunScript($"-Action Setup -FixtureRoot \"{root}\" -HelperZipPath \"{helperZip}\" -CompanionZipPath \"{compZip}\" -TestPinsJson \"{escapedJson}\" -JsonOutput");
-        Assert.Equal(0, result.ExitCode);
+        Assert.True(result.ExitCode == 0, $"Setup failed with exit code {result.ExitCode}.\nSTDOUT: {result.StandardOutput}\nSTDERR: {result.StandardError}");
 
         return root;
     }

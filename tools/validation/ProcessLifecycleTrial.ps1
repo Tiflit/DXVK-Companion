@@ -84,13 +84,16 @@ param(
     [string]$TestInputText,
 
     [Parameter(Mandatory = $false)]
+    [string]$TestInputPath,
+
+    [Parameter(Mandatory = $false)]
     [string]$LogPath,
 
     [Parameter(Mandatory = $false)]
     [int]$TimeoutMs = 5000,
 
     [Parameter(Mandatory = $false)]
-    [long]$MaxBytes = 104857600L,
+    [long]$MaxBytes = 104857600,
 
     [Parameter(Mandatory = $false)]
     [string[]]$Lines,
@@ -102,7 +105,7 @@ param(
     [long]$MaxEntries = 500,
 
     [Parameter(Mandatory = $false)]
-    [long]$MaxTotalBytes = 104857600L,
+    [long]$MaxTotalBytes = 104857600,
 
     [Parameter(Mandatory = $false)]
     [switch]$SimulateFault,
@@ -256,6 +259,20 @@ namespace DXVKCompanion.Validation
             try { if (_cts != null) _cts.Dispose(); } catch {}
         }
     }
+
+    public sealed class FaultingStream : Stream
+    {
+        public override bool CanRead { get { return true; } }
+        public override bool CanSeek { get { return false; } }
+        public override bool CanWrite { get { return false; } }
+        public override long Length { get { throw new NotSupportedException(); } }
+        public override long Position { get { throw new NotSupportedException(); } set { throw new NotSupportedException(); } }
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) { throw new NotSupportedException(); }
+        public override void SetLength(long value) { throw new NotSupportedException(); }
+        public override void Write(byte[] buffer, int offset, int count) { throw new NotSupportedException(); }
+        public override int Read(byte[] buffer, int offset, int count) { throw new IOException("Simulated stream fault during read."); }
+    }
 }
 "@ -Language CSharp
 }
@@ -302,12 +319,12 @@ $script:FROZEN_DXVK_31_SHA256         = "30f9cc326874be344285582275446968cfa4c06
 $script:MAX_TRIAL_DURATION_SECONDS      = 7200    # 120 minutes total
 $script:MAX_HELPER_STARTS               = 4
 $script:MAX_COMPANION_STARTS            = 8
-$script:MAX_FIXTURE_ROOT_BYTES          = 2147483648L  # 2 GiB
+$script:MAX_FIXTURE_ROOT_BYTES          = 2147483648   # 2 GiB
 $script:HELPER_WATCHDOG_SECONDS         = 1500        # 25 minutes
-$script:MAX_HELPER_WORKING_SET_BYTES    = 52428800L   # 50 MiB
-$script:MAX_COMPANION_WORKING_SET_BYTES = 524288000L  # 500 MiB
-$script:MAX_HELPER_CPU_MILLISECONDS     = 600000L     # 10 minutes CPU
-$script:MAX_COMPANION_CPU_MILLISECONDS  = 1800000L    # 30 minutes CPU
+$script:MAX_HELPER_WORKING_SET_BYTES    = 52428800    # 50 MiB
+$script:MAX_COMPANION_WORKING_SET_BYTES = 524288000   # 500 MiB
+$script:MAX_HELPER_CPU_MILLISECONDS     = 600000      # 10 minutes CPU
+$script:MAX_COMPANION_CPU_MILLISECONDS  = 1800000     # 30 minutes CPU
 
 # Required Adoption Attestation Token
 $script:REQUIRED_ADOPTION_TOKEN       = "ADOPTED-PROCESS-LIFECYCLE-V1"
@@ -430,14 +447,14 @@ function Test-PathEscape([string]$BasePath, [string]$CandidatePath) {
 function Test-SafeZipArchiveInternal(
     [string]$ZipFilePath,
     [int]$MaxEntries = 1024,
-    [long]$MaxTotalBytes = 524288000L
+    [long]$MaxTotalBytes = 524288000
 ) {
     if (-not (Test-Path -LiteralPath $ZipFilePath -PathType Leaf)) {
         return @{ IsValid = $false; Reason = "Zip archive not found: $ZipFilePath" }
     }
 
     $seenEntries = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
-    $totalUncompressedBytes = 0L
+    [long]$totalUncompressedBytes = 0
     $entryCount = 0
 
     try {
@@ -516,7 +533,7 @@ function Expand-SafeZipArchiveInternal(
     [string]$ZipFilePath,
     [string]$DestinationDirectory,
     [int]$MaxEntries = 1024,
-    [long]$MaxTotalBytes = 524288000L
+    [long]$MaxTotalBytes = 524288000
 ) {
     $inspection = Test-SafeZipArchiveInternal -ZipFilePath $ZipFilePath -MaxEntries $MaxEntries -MaxTotalBytes $MaxTotalBytes
     if (-not $inspection.IsValid) {
@@ -570,9 +587,9 @@ function Expand-SafeZipArchiveInternal(
 
 function Measure-DirectoryFootprintBytes([string]$DirectoryPath) {
     if (-not (Test-Path -LiteralPath $DirectoryPath -PathType Container)) {
-        return 0L
+        return [long]0
     }
-    $total = 0L
+    [long]$total = 0
     $items = Get-ChildItem -LiteralPath $DirectoryPath -Recurse -File -Force -ErrorAction SilentlyContinue
     foreach ($item in $items) {
         $total += $item.Length
@@ -1166,7 +1183,7 @@ function Compare-SemanticLibraryJsonInternal([string]$JsonA, [string]$JsonB) {
 function Parse-TarListingInternal(
     [string[]]$Lines,
     [long]$MaxEntries = 500,
-    [long]$MaxTotalBytes = 104857600L
+    [long]$MaxTotalBytes = 104857600
 ) {
     if ($null -eq $Lines) { throw "Lines array cannot be null." }
 
@@ -1191,19 +1208,23 @@ function Parse-TarListingInternal(
             throw "Malformed tar listing row (insufficient tokens): $line"
         }
 
-        [long]$entryBytes = 0L
+        [long]$entryBytes = 0
         $pathToken = $null
 
         if ($typeChar -eq '-') {
             $parsedSize = $false
-            if ($tokens.Length -ge 8 -and [long]::TryParse($tokens[4], [ref]$entryBytes)) {
+            if ($tokens.Length -ge 9 -and [long]::TryParse($tokens[4], [ref]$entryBytes)) {
                 if ($entryBytes -lt 0) { throw "Negative entry size in tar listing: $tokens[4]" }
                 $parsedSize = $true
-                $pathToken = ($tokens[7..($tokens.Length - 1)] -join " ")
+                $pathToken = ($tokens[8..($tokens.Length - 1)] -join " ")
             } elseif ($tokens.Length -ge 6 -and $tokens[1].Contains("/") -and [long]::TryParse($tokens[2], [ref]$entryBytes)) {
                 if ($entryBytes -lt 0) { throw "Negative entry size in tar listing: $tokens[2]" }
                 $parsedSize = $true
                 $pathToken = ($tokens[5..($tokens.Length - 1)] -join " ")
+            } elseif ($tokens.Length -ge 8 -and [long]::TryParse($tokens[4], [ref]$entryBytes)) {
+                if ($entryBytes -lt 0) { throw "Negative entry size in tar listing: $tokens[4]" }
+                $parsedSize = $true
+                $pathToken = ($tokens[7..($tokens.Length - 1)] -join " ")
             } elseif ([long]::TryParse($tokens[4], [ref]$entryBytes)) {
                 if ($entryBytes -lt 0) { throw "Negative entry size in tar listing: $tokens[4]" }
                 $parsedSize = $true
@@ -1215,8 +1236,12 @@ function Parse-TarListingInternal(
             }
         } else {
             # Directory entry
-            $entryBytes = 0L
-            $pathToken = $tokens[-1]
+            $entryBytes = 0
+            if ($tokens.Length -ge 9) {
+                $pathToken = ($tokens[8..($tokens.Length - 1)] -join " ")
+            } else {
+                $pathToken = $tokens[-1]
+            }
         }
 
         if ([string]::IsNullOrWhiteSpace($pathToken)) {
@@ -1227,7 +1252,11 @@ function Parse-TarListingInternal(
             throw "DXVK tar archive contains illegal traversal path: $pathToken"
         }
 
-        $normalizedPath = $pathToken.Replace('\', '/').TrimStart('/').TrimEnd('/')
+        $cleanPath = $pathToken.Trim()
+        while ($cleanPath.StartsWith("./") -or $cleanPath.StartsWith(".\")) {
+            $cleanPath = $cleanPath.Substring(2)
+        }
+        $normalizedPath = $cleanPath.Replace('\', '/').TrimStart('/').TrimEnd('/')
         if ($seenPaths.Contains($normalizedPath)) {
             throw "DXVK tar archive contains duplicate or colliding entry: $pathToken"
         }
@@ -1299,7 +1328,7 @@ function Extract-CompanionProvenance(
     $provObj = $null
     if ($isZip) {
         [void][System.IO.Directory]::CreateDirectory($DestinationDir)
-        Expand-SafeZipArchiveInternal -ZipFilePath $ProvenancePath -DestinationDirectory $DestinationDir -MaxEntries 10 -MaxTotalBytes 1048576L
+        Expand-SafeZipArchiveInternal -ZipFilePath $ProvenancePath -DestinationDirectory $DestinationDir -MaxEntries 10 -MaxTotalBytes 1048576
         $provJsonPath = [System.IO.Path]::Combine($DestinationDir, "build-provenance.json")
         if (-not (Test-Path -LiteralPath $provJsonPath -PathType Leaf)) {
             $provJsonPath = [System.IO.Path]::Combine($DestinationDir, "provenance.json")
@@ -1333,19 +1362,21 @@ function Extract-CompanionProvenance(
         throw "Companion provenance manifest does not contain a head_sha, sha, or commit property."
     }
 
+    $actualRunId = if ($null -ne $provObj.PSObject.Properties['run_id']) { "$($provObj.run_id)" } else { "" }
+
     if (-not $TestPinsUsed) {
         if ($actualCommit -ne $script:FROZEN_COMPANION_SRC_COMMIT) {
             throw "Companion provenance commit mismatch: expected $($script:FROZEN_COMPANION_SRC_COMMIT), got '$actualCommit'"
         }
-        if ("$($provObj.run_id)" -ne $script:FROZEN_COMPANION_RUN_ID) {
-            throw "Companion provenance run_id mismatch: expected $($script:FROZEN_COMPANION_RUN_ID), got '$($provObj.run_id)'"
+        if ($actualRunId -ne $script:FROZEN_COMPANION_RUN_ID) {
+            throw "Companion provenance run_id mismatch: expected $($script:FROZEN_COMPANION_RUN_ID), got '$actualRunId'"
         }
     } else {
         if ($null -ne $TestPins -and $null -ne (Get-SafePropertyValue -Object $TestPins -PropertyName "CompanionCommit") -and $actualCommit -ne $TestPins.CompanionCommit) {
             throw "Companion provenance commit mismatch: expected $($TestPins.CompanionCommit), got '$actualCommit'"
         }
-        if ($null -ne $TestPins -and $null -ne (Get-SafePropertyValue -Object $TestPins -PropertyName "CompanionRunId") -and "$($provObj.run_id)" -ne "$($TestPins.CompanionRunId)") {
-            throw "Companion provenance run_id mismatch: expected $($TestPins.CompanionRunId), got '$($provObj.run_id)'"
+        if ($null -ne $TestPins -and $null -ne (Get-SafePropertyValue -Object $TestPins -PropertyName "CompanionRunId") -and $actualRunId -ne "$($TestPins.CompanionRunId)") {
+            throw "Companion provenance run_id mismatch: expected $($TestPins.CompanionRunId), got '$actualRunId'"
         }
     }
 }
@@ -1413,7 +1444,7 @@ function Extract-BoundedDxvkTarGz(
     }
 
     $lines = $listingText -split '\r?\n'
-    $parseResult = Parse-TarListingInternal -Lines $lines -MaxEntries 500 -MaxTotalBytes 104857600L
+    $parseResult = Parse-TarListingInternal -Lines $lines -MaxEntries 500 -MaxTotalBytes 104857600
 
     [void][System.IO.Directory]::CreateDirectory($DestinationDir)
     $cleanVer = $Version.TrimStart('v')
@@ -1506,11 +1537,11 @@ function Invoke-SetupAction {
 
     # F4: Validate archive size AND hash for Helper
     $helperZipItem = Get-Item -LiteralPath $HelperZipPath -Force
-    $expectedHelperZipSize = if ($testPinsUsed -and $testPins.HelperZipSize) { [long]$testPins.HelperZipSize } else { $script:FROZEN_HELPER_ZIP_SIZE }
+    $expectedHelperZipSize = if ($testPinsUsed -and $null -ne (Get-SafePropertyValue -Object $testPins -PropertyName "HelperZipSize")) { [long]$testPins.HelperZipSize } else { $script:FROZEN_HELPER_ZIP_SIZE }
     if ($helperZipItem.Length -ne $expectedHelperZipSize) {
         throw "Helper archive size mismatch: expected $expectedHelperZipSize bytes, got $($helperZipItem.Length)"
     }
-    $expectedHelperZipHash = if ($testPinsUsed -and $testPins.HelperZipSha256) { $testPins.HelperZipSha256 } else { $script:FROZEN_HELPER_ZIP_SHA256 }
+    $expectedHelperZipHash = if ($testPinsUsed -and $null -ne (Get-SafePropertyValue -Object $testPins -PropertyName "HelperZipSha256")) { $testPins.HelperZipSha256 } else { $script:FROZEN_HELPER_ZIP_SHA256 }
     $actualHelperZipHash = Compute-FileSha256 -FilePath $HelperZipPath
     if ($actualHelperZipHash -ne $expectedHelperZipHash) {
         throw "Helper archive SHA256 mismatch: expected $expectedHelperZipHash, got $actualHelperZipHash"
@@ -1518,11 +1549,11 @@ function Invoke-SetupAction {
 
     # F4: Validate archive size AND hash for Companion
     $companionZipItem = Get-Item -LiteralPath $CompanionZipPath -Force
-    $expectedCompanionZipSize = if ($testPinsUsed -and $testPins.CompanionZipSize) { [long]$testPins.CompanionZipSize } else { $script:FROZEN_COMPANION_ZIP_SIZE }
+    $expectedCompanionZipSize = if ($testPinsUsed -and $null -ne (Get-SafePropertyValue -Object $testPins -PropertyName "CompanionZipSize")) { [long]$testPins.CompanionZipSize } else { $script:FROZEN_COMPANION_ZIP_SIZE }
     if ($companionZipItem.Length -ne $expectedCompanionZipSize) {
         throw "Companion archive size mismatch: expected $expectedCompanionZipSize bytes, got $($companionZipItem.Length)"
     }
-    $expectedCompanionZipHash = if ($testPinsUsed -and $testPins.CompanionZipSha256) { $testPins.CompanionZipSha256 } else { $script:FROZEN_COMPANION_ZIP_SHA256 }
+    $expectedCompanionZipHash = if ($testPinsUsed -and $null -ne (Get-SafePropertyValue -Object $testPins -PropertyName "CompanionZipSha256")) { $testPins.CompanionZipSha256 } else { $script:FROZEN_COMPANION_ZIP_SHA256 }
     $actualCompanionZipHash = Compute-FileSha256 -FilePath $CompanionZipPath
     if ($actualCompanionZipHash -ne $expectedCompanionZipHash) {
         throw "Companion archive SHA256 mismatch: expected $expectedCompanionZipHash, got $actualCompanionZipHash"
@@ -1614,14 +1645,20 @@ function Invoke-SetupAction {
         } else {
             if ($null -ne $testPins -and $null -ne (Get-SafePropertyValue -Object $testPins -PropertyName "HelperProvenance")) {
                 $hp = $testPins.HelperProvenance
-                if ($hp.SourceSha256 -and $helperProvObj.SourceSha256 -ne $hp.SourceSha256) {
-                    throw "Helper provenance SourceSha256 mismatch: expected $($hp.SourceSha256), got '$($helperProvObj.SourceSha256)'"
+                $hpSrc = Get-SafePropertyValue -Object $hp -PropertyName "SourceSha256"
+                $actSrc = Get-SafePropertyValue -Object $helperProvObj -PropertyName "SourceSha256"
+                if ($hpSrc -and $actSrc -ne $hpSrc) {
+                    throw "Helper provenance SourceSha256 mismatch: expected $hpSrc, got '$actSrc'"
                 }
-                if ($hp.CheckoutCommit -and $helperProvObj.CheckoutCommit -ne $hp.CheckoutCommit) {
-                    throw "Helper provenance CheckoutCommit mismatch: expected $($hp.CheckoutCommit), got '$($helperProvObj.CheckoutCommit)'"
+                $hpCommit = Get-SafePropertyValue -Object $hp -PropertyName "CheckoutCommit"
+                $actCommit = Get-SafePropertyValue -Object $helperProvObj -PropertyName "CheckoutCommit"
+                if ($hpCommit -and $actCommit -ne $hpCommit) {
+                    throw "Helper provenance CheckoutCommit mismatch: expected $hpCommit, got '$actCommit'"
                 }
-                if ($hp.CheckoutTree -and $helperProvObj.CheckoutTree -ne $hp.CheckoutTree) {
-                    throw "Helper provenance CheckoutTree mismatch: expected $($hp.CheckoutTree), got '$($helperProvObj.CheckoutTree)'"
+                $hpTree = Get-SafePropertyValue -Object $hp -PropertyName "CheckoutTree"
+                $actTree = Get-SafePropertyValue -Object $helperProvObj -PropertyName "CheckoutTree"
+                if ($hpTree -and $actTree -ne $hpTree) {
+                    throw "Helper provenance CheckoutTree mismatch: expected $hpTree, got '$actTree'"
                 }
             }
         }
@@ -1640,11 +1677,11 @@ function Invoke-SetupAction {
 
     # Validate extracted helper executable size and hash
     $helperExeItem = Get-Item -LiteralPath $extractedHelperExe -Force
-    $expectedHelperExeSize = if ($testPinsUsed -and $testPins.HelperExeSize) { [long]$testPins.HelperExeSize } else { $script:FROZEN_HELPER_EXE_SIZE }
+    $expectedHelperExeSize = if ($testPinsUsed -and $null -ne (Get-SafePropertyValue -Object $testPins -PropertyName "HelperExeSize")) { [long]$testPins.HelperExeSize } else { $script:FROZEN_HELPER_EXE_SIZE }
     if ($helperExeItem.Length -ne $expectedHelperExeSize) {
         throw "Extracted QueueFixture.exe size mismatch: expected $expectedHelperExeSize, got $($helperExeItem.Length)"
     }
-    $expectedHelperExeHash = if ($testPinsUsed -and $testPins.HelperExeSha256) { $testPins.HelperExeSha256 } else { $script:FROZEN_HELPER_EXE_SHA256 }
+    $expectedHelperExeHash = if ($testPinsUsed -and $null -ne (Get-SafePropertyValue -Object $testPins -PropertyName "HelperExeSha256")) { $testPins.HelperExeSha256 } else { $script:FROZEN_HELPER_EXE_SHA256 }
     $actualHelperExeHash = Compute-FileSha256 -FilePath $extractedHelperExe
     if ($actualHelperExeHash -ne $expectedHelperExeHash) {
         throw "Extracted QueueFixture.exe SHA256 mismatch: expected $expectedHelperExeHash, got $actualHelperExeHash"
@@ -1663,11 +1700,11 @@ function Invoke-SetupAction {
 
     # Validate extracted companion executable size and hash
     $compExeItem = Get-Item -LiteralPath $companionExe -Force
-    $expectedCompExeSize = if ($testPinsUsed -and $testPins.CompanionExeSize) { [long]$testPins.CompanionExeSize } else { $script:FROZEN_COMPANION_EXE_SIZE }
+    $expectedCompExeSize = if ($testPinsUsed -and $null -ne (Get-SafePropertyValue -Object $testPins -PropertyName "CompanionExeSize")) { [long]$testPins.CompanionExeSize } else { $script:FROZEN_COMPANION_EXE_SIZE }
     if ($compExeItem.Length -ne $expectedCompExeSize) {
         throw "Extracted DXVK-Companion.exe size mismatch: expected $expectedCompExeSize, got $($compExeItem.Length)"
     }
-    $expectedCompExeHash = if ($testPinsUsed -and $testPins.CompanionExeSha256) { $testPins.CompanionExeSha256 } else { $script:FROZEN_COMPANION_EXE_SHA256 }
+    $expectedCompExeHash = if ($testPinsUsed -and $null -ne (Get-SafePropertyValue -Object $testPins -PropertyName "CompanionExeSha256")) { $testPins.CompanionExeSha256 } else { $script:FROZEN_COMPANION_EXE_SHA256 }
     $actualCompExeHash = Compute-FileSha256 -FilePath $companionExe
     if ($actualCompExeHash -ne $expectedCompExeHash) {
         throw "Extracted DXVK-Companion.exe SHA256 mismatch: expected $expectedCompExeHash, got $actualCompExeHash"
@@ -1803,8 +1840,8 @@ function Invoke-SetupAction {
     [System.IO.File]::WriteAllText($legacyGamesPath, $legacyGamesJson, $script:Utf8NoBom)
 
     # Initialize state.json with monotonic timings, start attempts, and cooperative readiness
-    $scriptSha = if ($null -ne $MyInvocation.MyCommand.Path -and (Test-Path -LiteralPath $MyInvocation.MyCommand.Path -PathType Leaf)) {
-        Compute-FileSha256 -FilePath $MyInvocation.MyCommand.Path
+    $scriptSha = if (-not [string]::IsNullOrWhiteSpace($PSCommandPath) -and (Test-Path -LiteralPath $PSCommandPath -PathType Leaf)) {
+        Compute-FileSha256 -FilePath $PSCommandPath
     } else {
         $null
     }
@@ -2568,8 +2605,8 @@ function Invoke-SuperviseAction {
     if (-not [string]::IsNullOrWhiteSpace($AdoptionAttestation)) {
         $state.AdoptedToken = $AdoptionAttestation
     }
-    $scriptSha = if ($null -ne $MyInvocation.MyCommand.Path -and (Test-Path -LiteralPath $MyInvocation.MyCommand.Path -PathType Leaf)) {
-        Compute-FileSha256 -FilePath $MyInvocation.MyCommand.Path
+    $scriptSha = if (-not [string]::IsNullOrWhiteSpace($PSCommandPath) -and (Test-Path -LiteralPath $PSCommandPath -PathType Leaf)) {
+        Compute-FileSha256 -FilePath $PSCommandPath
     } else {
         $null
     }
@@ -2889,8 +2926,9 @@ try {
             }
             $stream = $null
             if ($SimulateFault) {
-                $stream = New-Object System.IO.MemoryStream
-                $stream.Dispose()
+                $stream = New-Object DXVKCompanion.Validation.FaultingStream
+            } elseif (-not [string]::IsNullOrWhiteSpace($TestInputPath)) {
+                $stream = [System.IO.File]::OpenRead($TestInputPath)
             } elseif (-not [string]::IsNullOrWhiteSpace($TestInputText)) {
                 $bytes = [System.Text.Encoding]::UTF8.GetBytes($TestInputText)
                 $stream = New-Object System.IO.MemoryStream($bytes, $false)
@@ -2900,30 +2938,33 @@ try {
             }
 
             $drainer = New-Object DXVKCompanion.Validation.SafeProcessStreamDrainer($stream, $LogPath, $script:Utf8NoBom, $MaxBytes)
+            $drained = $false
             try {
                 $drainer.Start()
                 $drained = $drainer.WaitForDrain($TimeoutMs)
-                $logContent = ""
-                if (Test-Path -LiteralPath $LogPath -PathType Leaf) {
-                    $logContent = [System.IO.File]::ReadAllText($LogPath, $script:Utf8NoBom)
-                }
-                $result = @{
-                    Success             = $true
-                    LinesRead           = $drainer.LinesRead
-                    ReadyReceived       = [bool]$drainer.ReadyReceived
-                    StoppedReceived     = [bool]$drainer.StoppedReceived
-                    IsCompleted         = [bool]$drainer.IsCompleted
-                    HasFault            = [bool]$drainer.HasFault
-                    FaultMessage        = $drainer.FaultMessage
-                    BytesWritten        = $drainer.BytesWritten
-                    DrainedSuccessfully = [bool]$drained
-                    LogContent          = $logContent
-                }
             } finally {
                 $drainer.Dispose()
                 if ($null -ne $stream) {
                     try { $stream.Dispose() } catch {}
                 }
+            }
+
+            $logContent = ""
+            if (Test-Path -LiteralPath $LogPath -PathType Leaf) {
+                $logContent = [System.IO.File]::ReadAllText($LogPath, $script:Utf8NoBom)
+            }
+
+            $result = @{
+                Success             = $true
+                LinesRead           = $drainer.LinesRead
+                ReadyReceived       = [bool]$drainer.ReadyReceived
+                StoppedReceived     = [bool]$drainer.StoppedReceived
+                IsCompleted         = [bool]$drainer.IsCompleted
+                HasFault            = [bool]$drainer.HasFault
+                FaultMessage        = $drainer.FaultMessage
+                BytesWritten        = $drainer.BytesWritten
+                DrainedSuccessfully = [bool]$drained
+                LogContent          = $logContent
             }
         }
         "Test-ParseTarListing" {
