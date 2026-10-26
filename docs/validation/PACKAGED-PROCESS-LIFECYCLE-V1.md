@@ -95,3 +95,300 @@ The following requirements and disclosures govern any subsequent host trial prof
    - A queued Enable action on an already enabled target may currently be represented in state models as pending `Install`; verification must evaluate requested version and final behavior rather than inventing an artificial enum requirement.
 4. **Execution Authority**:
    - No host execution or desktop bridging is authorized by Stage A.
+
+## Stage B Candidate Execution Profile (Preparation Only — #301)
+
+> [!IMPORTANT]
+> **CANDIDATE ONLY — PENDING SEPARATE HUMAN ADOPTION AND CURRENT READINESS**
+> This candidate profile is prepared under Issue [#301](https://github.com/Tiflit/DXVK-Companion/issues/301). It is **NOT adopted** by this task.
+> Execution on the owner's workstation or laptop remains **NOT RUN (pending human authorization)**.
+> Only a subsequent separately adopted FINAL execution profile plus current laptop readiness can activate the actual trial. Human alone merges.
+
+### 1. Cryptographic and Artifact Bindings
+
+All binaries, archives, and tools must match the following frozen identities exactly before execution:
+
+| Asset / Component | Source Revision / Identity | Artifact / Release ID | Size (Bytes) | SHA-256 Digest |
+|---|---|---|---:|---|
+| Trial Script (`ProcessLifecycleTrial.ps1`) | Current PR (`tools/validation/ProcessLifecycleTrial.ps1`) | N/A (in-repo) | 199,564 | `4205b809ba5b0851e098e72e48e4dceffd3bb19fb3ed1cf25bf38c4eca8a8b62` |
+| Helper Archive (`process-lifecycle-helper-x64`) | Checkout `a62356d0acb918aec957463a0b670747763ae544`, Tree `4ebbd76b0f30ca7768d737361ea8b540da5a8a2e` | Run `40220299641`, Artifact `12609386490` | 81,717 | `f75ec55738e6ca3c1a0cd0a342aefeaa0fb3addd03538f03f2ac7a43295750de` |
+| Helper Executable (`QueueFixture.exe`) | Source SHA256 `19229f59a4ab2504634cf9cd1bfff131a89a68e539808ab68c5459451e6ce0cc` | Extracted from `12609386490` | 138,240 | `f720cecae0f13eeef6d9b5e2d259b51df97b37bc3347b241071e25e8c1548d70` |
+| Companion Application Archive | Commit `46e6f22363cddcfa88d805b588b6ac30173bc9dc` | Run `40025768457`, Artifact `12532606945` | 66,410,238 | `32660fd3e3ed87385e47940d490db2e6ab93daad7e993fe4225dd157232b3b14` |
+| Companion Executable (`DXVK-Companion.exe`) | Built from `46e6f22363cddcfa88d805b588b6ac30173bc9dc` | Extracted from `12532606945` | 71,772,524 | `25012c67ade281e0d4585282bf485e4783a1f7c486018f8d1a038c5f2dc18ca4` |
+| Companion Provenance Manifest | Run `40025768457` provenance JSON | Artifact `12531339870` | 323 | `c9b46817bc60e89b3848ecf2705cb929b718cf950689a15071c65933d2a0537d` |
+| Official DXVK v3.1.1 Archive | Upstream `doitsujin/dxvk` tag `v3.1.1` | Release `381956359`, Asset `566164743` | 18,041,512 | `40565b4a724aadc4433fa4e010b4b23916d9b1f1baeee64e17186db94f54e608` |
+| Official DXVK v3.1 Archive | Upstream `doitsujin/dxvk` tag `v3.1` | Release `357524779`, Asset `534051057` | 18,056,721 | `30f9cc326874be344285582275446968cfa4c069db31ce56df312d6644179154` |
+
+### 2. Host, Resources, and Isolation Constraints
+- **Host Alias**: `DEVELOPMENT_LAPTOP` (normal, standard non-admin Windows desktop session).
+- **Dedicated Root**: Fresh directory `<FIXTURE_ROOT>` beneath the local development storage (e.g. `D:\dev\validation\process-lifecycle-v1-20261025`). Must not exist prior to setup. All writes strictly confined within `<FIXTURE_ROOT>`.
+- **Directory Layout**:
+  - `<FIXTURE_ROOT>/target/`: Contains `QueueFixture.exe`, inert baseline `d3d11.dll`, noncanonical `dxvk.conf`, `sentinel.txt`, and later dispatched DXVK DLLs.
+  - `<FIXTURE_ROOT>/control/`: Supervisor control directory containing stop markers (`stop-N.request`), normal helper exit records (`helper-slot-N.exit.json`), active supervisor session handshake (`supervisor-session.json`), and explicit owner readiness record (`readiness.json`).
+  - `<FIXTURE_ROOT>/baseline/`: Immutable copies of original baseline files and `baseline_manifest.json`.
+  - `<FIXTURE_ROOT>/companion/`: Extracted DXVK Companion application, settings, and profile store.
+  - `<FIXTURE_ROOT>/companion/Profiles/`: Contains `game-library.json` and `Backups/`.
+  - `<FIXTURE_ROOT>/runtime/`: Child single-file extraction target (`DOTNET_BUNDLE_EXTRACT_BASE_DIR`).
+  - `<FIXTURE_ROOT>/snapshots/`: Immutable checkpoint snapshots with cryptographic manifests.
+  - `<FIXTURE_ROOT>/logs/`: Supervised process execution and verification logs.
+  - `<FIXTURE_ROOT>/state.json`: Batch lifecycle state and execution accounting.
+- **Resource Limits and Caps**:
+  - Maximum Total Trial Duration: `120 minutes` (from first setup action, including operator pauses).
+  - Maximum Helper Starts: `4 starts`.
+  - Maximum Companion Starts: `8 starts`.
+  - Maximum Root Storage Footprint: `2 GiB`.
+  - Helper Execution Watchdog: `25 minutes` finite cap per helper instance.
+- **Process Supervision**:
+  - Permits at most one Companion and one QueueFixture process running simultaneously.
+  - `UseShellExecute = false`, non-admin session, fixed working directories, redirected standard I/O drains.
+  - Zero force-kill: process exits must occur normally via stop-markers or user GUI exit.
+
+### 3. Sequential Manual Operator Instructions
+
+All commands must be executed sequentially from PowerShell in the repository root:
+
+```powershell
+$FixtureRoot = "D:\dev\validation\process-lifecycle-v1-20261025"
+$Script = "tools\validation\ProcessLifecycleTrial.ps1"
+$AdoptionToken = "ADOPTED-PROCESS-LIFECYCLE-V1"
+```
+
+#### Step 1: Verification of Prerequisites and Readiness
+1. Confirm the human owner has adopted this profile and verified that no games or other Companion instances are running.
+2. Confirm downloaded helper archive `process-lifecycle-helper-x64.zip`, companion archive `DXVK-Companion-win-x64.zip`, and provenance match frozen pins.
+3. Confirm `<FIXTURE_ROOT>` does not exist (fresh absent destination).
+
+#### Step 2: Bounded Fixture Setup
+Execute setup to initialize directory structure, extract binaries safely (create-new writes), extract official reference DLLs, and seed baseline:
+```powershell
+& powershell -NoProfile -ExecutionPolicy Bypass -File $Script -Action Setup `
+    -FixtureRoot $FixtureRoot `
+    -HelperZipPath "path\to\process-lifecycle-helper-x64.zip" `
+    -CompanionZipPath "path\to\DXVK-Companion-win-x64.zip" `
+    -CompanionProvenancePath "path\to\provenance.json" `
+    -Dxvk31TarGzPath "path\to\dxvk-3.1.tar.gz" `
+    -Dxvk311TarGzPath "path\to\dxvk-3.1.1.tar.gz"
+```
+Verify exit code is 0 and output confirms successful initialization (`state.json` initializes with `CurrentReadiness = "NotReady"`, `SetupScriptSha256`, `SetupProfileSha256`, `AdoptedScriptSha256 = $null`, `AdoptedProfileSha256 = $null`, and monotonic origin timestamps).
+
+#### Step 3: Start Retained Supervisor Session
+Start the interactive retained supervisor session. On startup, the supervisor binds its active session (`ActiveSupervisorPid` and `ActiveSupervisorSessionId` in `state.json`), writes `<FixtureRoot>\control\supervisor-session.json`, and prints both the `Supervisor PID` and `Supervisor Session ID` while remaining in `NotReady` state until the owner writes the session-bound `control\readiness.json`:
+```powershell
+& powershell -NoProfile -ExecutionPolicy Bypass -File $Script -Action Supervise `
+    -FixtureRoot $FixtureRoot `
+    -AdoptionAttestation $AdoptionToken
+```
+
+#### Step 3b: Write Explicit Owner Readiness, Profile, Revision & Session-Binding Record
+Before issuing `start-companion` or `start-helper`, in a separate PowerShell terminal in the repository root, record the owner's explicit readiness confirmation bound to the adopted profile document (`docs/validation/PACKAGED-PROCESS-LIFECYCLE-V1.md` and its exact SHA-256), the adopted script SHA-256, the fixture root, the batch start time, and the active supervisor session (`SupervisorPid` and `SupervisorSessionId` from `control\supervisor-session.json`):
+```powershell
+$State = Get-Content -LiteralPath "$FixtureRoot\state.json" -Raw | ConvertFrom-Json
+$Session = Get-Content -LiteralPath "$FixtureRoot\control\supervisor-session.json" -Raw | ConvertFrom-Json
+$ProfileSha256 = (Get-FileHash -LiteralPath "docs\validation\PACKAGED-PROCESS-LIFECYCLE-V1.md" -Algorithm SHA256).Hash.ToLowerInvariant()
+$Readiness = [PSCustomObject]@{
+    ProfileId               = "process-lifecycle-v1"
+    AdoptedProfilePath      = "docs/validation/PACKAGED-PROCESS-LIFECYCLE-V1.md"
+    AdoptedProfileSha256    = $ProfileSha256
+    AdoptionToken           = $AdoptionToken
+    AdoptedScriptSha256     = "4205b809ba5b0851e098e72e48e4dceffd3bb19fb3ed1cf25bf38c4eca8a8b62"
+    FixtureRoot             = $FixtureRoot
+    BatchStartTimeUtc       = $State.BatchStartTimeUtc
+    SupervisorPid           = [int]$Session.SupervisorPid
+    SupervisorSessionId     = "$($Session.SupervisorSessionId)"
+    OwnerAvailable          = $true
+    GamesAndCompanionClosed = $true
+    ConfirmedAtUtc          = [DateTime]::UtcNow.ToString("o")
+}
+$Readiness | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath "$FixtureRoot\control\readiness.json" -Encoding UTF8
+```
+Within 200ms of writing `control\readiness.json`, the interactive supervisor's observation cycle validates the profile path/SHA-256, script SHA-256, root, batch timestamp, active session PID/ID, and freshness window, transitioning the prompt to `Readiness=Ready`. Inside the supervisor session, the operator then issues the sequential trial commands:
+
+#### Step 4: Checkpoint 0 — Initial Baseline Snapshot
+Capture immutable baseline snapshot:
+```text
+Trial > snapshot Checkpoint0-Baseline
+```
+
+#### Step 5: Companion Acquisition Run (v3.1 and v3.1.1)
+Launch Companion with discovery disabled:
+```text
+Trial > start-companion --no-auto-discovery
+```
+1. In GUI, download official DXVK v3.1 and v3.1.1 into the local release library.
+2. Verify target `QueueFixture Trial Target` remains disabled with no pending actions.
+3. Close Companion normally from GUI.
+4. In supervisor terminal:
+```text
+Trial > stop-companion
+```
+
+#### Step 6: Start Helper Slot 1
+Launch helper instance 1:
+```text
+Trial > start-helper 1
+```
+Verify helper outputs `READY` and supervisor retains active process handle.
+
+#### Step 7: Queue Enable v3.1 in Companion
+Launch Companion:
+```text
+Trial > start-companion
+```
+1. In GUI, navigate to `QueueFixture Trial Target` and queue **Enable** with DXVK v3.1.
+2. Observe queue status: action is deferred due to active `QueueFixture.exe` process.
+
+#### Step 8: Checkpoint 1 — Verify Durable Deferral
+Capture snapshot and verify target files remain strictly unmutated:
+```text
+Trial > snapshot Checkpoint1-Pending-Slot1
+Trial > verify Checkpoint1-Pending-Slot1 Pending v3.1
+```
+
+#### Step 9: Companion Restart Check
+1. Close Companion normally via GUI (helper slot 1 remains running).
+2. Confirm stop in supervisor:
+```text
+Trial > stop-companion
+```
+3. Restart Companion while helper slot 1 is still running:
+```text
+Trial > start-companion
+```
+4. Observe that pending intent is durably preserved across restart.
+
+#### Step 10: Checkpoint 2 — Pending Across Restart Snapshot
+```text
+Trial > snapshot Checkpoint2-Pending-Restart
+Trial > verify Checkpoint2-Pending-Restart Pending v3.1
+```
+
+#### Step 11: Stop Helper Slot 1 and Observe Exit Dispatch
+Normally stop helper slot 1:
+```text
+Trial > stop-helper 1
+```
+1. Confirm helper exits normally with exit code 0 (`STOPPED`).
+2. Observe Companion ProcessMonitor exit watcher triggering automatic dispatch.
+3. Observe GUI reporting successful installation of DXVK v3.1.
+4. Close Companion normally via GUI, then:
+```text
+Trial > stop-companion
+```
+
+#### Step 12: Checkpoint 3 — Verify Applied v3.1
+Capture snapshot and verify deployed files match official reference and native backup exists:
+```text
+Trial > snapshot Checkpoint3-Applied-Slot1
+Trial > verify Checkpoint3-Applied-Slot1 Applied v3.1
+```
+
+#### Step 13: Helper Slot 2 and Version Change to v3.1.1
+1. Start helper slot 2:
+```text
+Trial > start-helper 2
+```
+2. Start Companion:
+```text
+Trial > start-companion
+```
+3. In GUI, select DXVK version `v3.1.1` and queue version change. Observe deferral.
+4. Capture and verify snapshot `Checkpoint4-Pending-Slot2`:
+```text
+Trial > snapshot Checkpoint4-Pending-Slot2
+Trial > verify Checkpoint4-Pending-Slot2 Pending v3.1.1
+```
+5. Normally stop helper slot 2:
+```text
+Trial > stop-helper 2
+```
+6. Observe exit-dispatched version change to v3.1.1 in Companion. Close Companion GUI.
+7. Stop companion in supervisor:
+```text
+Trial > stop-companion
+```
+8. Capture and verify `Checkpoint5-Applied-Slot2`:
+```text
+Trial > snapshot Checkpoint5-Applied-Slot2
+Trial > verify Checkpoint5-Applied-Slot2 Applied v3.1.1
+```
+
+#### Step 14: Helper Slot 3 and Reapply Action
+1. Start helper slot 3:
+```text
+Trial > start-helper 3
+```
+2. Start Companion:
+```text
+Trial > start-companion
+```
+3. In GUI, queue **Reapply**. Observe deferral while helper slot 3 is running.
+4. Normally stop helper slot 3:
+```text
+Trial > stop-helper 3
+```
+5. Observe exit-dispatched reapplication. Close Companion GUI.
+6. Stop companion in supervisor:
+```text
+Trial > stop-companion
+```
+7. Capture and verify `Checkpoint6-Applied-Slot3`:
+```text
+Trial > snapshot Checkpoint6-Applied-Slot3
+Trial > verify Checkpoint6-Applied-Slot3 Applied v3.1.1
+```
+
+#### Step 15: Helper Slot 4 and Disable / Restore Action
+1. Start helper slot 4:
+```text
+Trial > start-helper 4
+```
+2. Start Companion:
+```text
+Trial > start-companion
+```
+3. In GUI, select **Disable / Restore**. Observe deferral while helper slot 4 is running.
+4. Normally stop helper slot 4:
+```text
+Trial > stop-helper 4
+```
+5. Observe exit-dispatched restoration. Close Companion GUI.
+6. Stop companion in supervisor:
+```text
+Trial > stop-companion
+```
+7. Capture and verify `Checkpoint7-Restored-Slot4`:
+```text
+Trial > snapshot Checkpoint7-Restored-Slot4
+Trial > verify Checkpoint7-Restored-Slot4 Restored
+```
+Verify target files bit-for-bit match the initial baseline (`d3d11.dll`, `dxvk.conf`, `sentinel.txt`), `dxgi.dll` is strictly absent, and backup history is preserved.
+
+#### Step 16: Final Restart and Replay Verification
+1. Start Companion with no new intent:
+```text
+Trial > start-companion
+```
+2. Confirm target remains clean and restored with no unintended replay of prior actions.
+3. Close Companion GUI and stop in supervisor:
+```text
+Trial > stop-companion
+```
+
+#### Step 17: End Batch and Exit Supervisor
+End the batch and exit supervisor session:
+```text
+Trial > end-batch
+Trial > exit
+```
+
+### 4. Stop and Hold Rules
+1. **Helper Watchdog or Abnormal Exit**:
+   - If helper exits with code `8` (`WATCHDOG`) or code `2..7`, the trial must pause immediately.
+   - The operator must close Companion normally before taking any recovery action.
+2. **Nonfixture Detection or Unexpected Game Discovery**:
+   - If Companion detects an unrelated running application or game on the host, close Companion immediately.
+   - Do not continue or whitelist the detected application.
+3. **Budget Exhaustion**:
+   - If total duration reaches `120 minutes`, helper starts reach `4`, or companion starts reach `8`, the script refuses further starts.
+   - Retain all evidence, snapshots, and logs in `<FIXTURE_ROOT>` for audit. No automatic deletion or cleanup.
+
