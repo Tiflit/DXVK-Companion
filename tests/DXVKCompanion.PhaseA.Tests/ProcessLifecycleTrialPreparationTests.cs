@@ -2601,7 +2601,7 @@ public sealed class ProcessLifecycleTrialPreparationTests
         File.WriteAllText(statePath, JsonSerializer.Serialize(stateObj, new JsonSerializerOptions { WriteIndented = true }));
 
         var result = RunScript($"-Action Supervise -FixtureRoot \"{root}\" -AdoptionAttestation \"ADOPTED-PROCESS-LIFECYCLE-V1\" -Commands status -JsonOutput");
-        Assert.Equal(0, result.ExitCode);
+        Assert.True(result.ExitCode == 0, $"Action failed with exit code {result.ExitCode}.\nSTDOUT: {result.StandardOutput}\nSTDERR: {result.StandardError}");
 
         using var afterDoc = JsonDocument.Parse(File.ReadAllText(statePath));
         var afterState = afterDoc.RootElement;
@@ -2650,7 +2650,7 @@ public sealed class ProcessLifecycleTrialPreparationTests
 
         // 1. Below 1 GiB (1,073,741,823 bytes)
         var resBelow = RunScript($"-Action Test-ResourceObservation -FixtureRoot \"{root}\" -Role Companion -SamplePid 5001 -SampleWorkingSetBytes 1073741823 -JsonOutput");
-        Assert.Equal(0, resBelow.ExitCode);
+        Assert.True(resBelow.ExitCode == 0, $"Action failed with exit code {resBelow.ExitCode}.\nSTDOUT: {resBelow.StandardOutput}\nSTDERR: {resBelow.StandardError}");
         using (var doc = JsonDocument.Parse(File.ReadAllText(statePath)))
         {
             Assert.False(doc.RootElement.GetProperty("TerminalHold").GetBoolean());
@@ -2667,7 +2667,7 @@ public sealed class ProcessLifecycleTrialPreparationTests
 
         // 2. Exactly equal to 1 GiB (1,073,741,824 bytes) - strictly greater-than semantics preserved (no hold)
         var resEqual = RunScript($"-Action Test-ResourceObservation -FixtureRoot \"{root}\" -Role Companion -SamplePid 5001 -SampleWorkingSetBytes 1073741824 -JsonOutput");
-        Assert.Equal(0, resEqual.ExitCode);
+        Assert.True(resEqual.ExitCode == 0, $"Action failed with exit code {resEqual.ExitCode}.\nSTDOUT: {resEqual.StandardOutput}\nSTDERR: {resEqual.StandardError}");
         using (var doc = JsonDocument.Parse(File.ReadAllText(statePath)))
         {
             Assert.False(doc.RootElement.GetProperty("TerminalHold").GetBoolean());
@@ -2682,7 +2682,7 @@ public sealed class ProcessLifecycleTrialPreparationTests
 
         // 3. Above 1 GiB (1,073,741,825 bytes) - latches terminal hold
         var resAbove = RunScript($"-Action Test-ResourceObservation -FixtureRoot \"{root}\" -Role Companion -SamplePid 5001 -SampleWorkingSetBytes 1073741825 -JsonOutput");
-        Assert.Equal(0, resAbove.ExitCode);
+        Assert.True(resAbove.ExitCode == 0, $"Action failed with exit code {resAbove.ExitCode}.\nSTDOUT: {resAbove.StandardOutput}\nSTDERR: {resAbove.StandardError}");
         using (var doc = JsonDocument.Parse(File.ReadAllText(statePath)))
         {
             Assert.True(doc.RootElement.GetProperty("TerminalHold").GetBoolean());
@@ -2716,7 +2716,7 @@ public sealed class ProcessLifecycleTrialPreparationTests
 
         // 1. Helper at exactly 50 MiB (52,428,800 bytes) and 10 minutes CPU (600,000 ms) - no hold
         var resEqual = RunScript($"-Action Test-ResourceObservation -FixtureRoot \"{root}\" -Role Helper -SamplePid 6001 -Slot 1 -SampleWorkingSetBytes 52428800 -SampleCpuMilliseconds 600000 -JsonOutput");
-        Assert.Equal(0, resEqual.ExitCode);
+        Assert.True(resEqual.ExitCode == 0, $"Action failed with exit code {resEqual.ExitCode}.\nSTDOUT: {resEqual.StandardOutput}\nSTDERR: {resEqual.StandardError}");
         using (var doc = JsonDocument.Parse(File.ReadAllText(statePath)))
         {
             Assert.False(doc.RootElement.GetProperty("TerminalHold").GetBoolean());
@@ -2728,7 +2728,7 @@ public sealed class ProcessLifecycleTrialPreparationTests
 
         // 2. Helper above 50 MiB (52,428,801 bytes) - latches terminal hold
         var resAbove = RunScript($"-Action Test-ResourceObservation -FixtureRoot \"{root}\" -Role Helper -SamplePid 6001 -Slot 1 -SampleWorkingSetBytes 52428801 -SampleCpuMilliseconds 600000 -JsonOutput");
-        Assert.Equal(0, resAbove.ExitCode);
+        Assert.True(resAbove.ExitCode == 0, $"Action failed with exit code {resAbove.ExitCode}.\nSTDOUT: {resAbove.StandardOutput}\nSTDERR: {resAbove.StandardError}");
         using (var doc = JsonDocument.Parse(File.ReadAllText(statePath)))
         {
             Assert.True(doc.RootElement.GetProperty("TerminalHold").GetBoolean());
@@ -2756,7 +2756,7 @@ public sealed class ProcessLifecycleTrialPreparationTests
 
         // 1. Sample 1 with available OS peak
         var s1 = RunScript($"-Action Test-ResourceObservation -FixtureRoot \"{root}\" -Role Companion -SamplePid 7001 -SampleWorkingSetBytes 200000000 -SamplePeakWorkingSetBytes 250000000 -JsonOutput");
-        Assert.Equal(0, s1.ExitCode);
+        Assert.True(s1.ExitCode == 0, $"Action failed with exit code {s1.ExitCode}.\nSTDOUT: {s1.StandardOutput}\nSTDERR: {s1.StandardError}");
         using (var doc = JsonDocument.Parse(File.ReadAllText(statePath)))
         {
             var obs = doc.RootElement.GetProperty("ProcessMemoryObservations")[0];
@@ -2769,7 +2769,7 @@ public sealed class ProcessLifecycleTrialPreparationTests
 
         // 2. Sample 2 with higher working set and higher peak
         var s2 = RunScript($"-Action Test-ResourceObservation -FixtureRoot \"{root}\" -Role Companion -SamplePid 7001 -SampleWorkingSetBytes 400000000 -SamplePeakWorkingSetBytes 450000000 -JsonOutput");
-        Assert.Equal(0, s2.ExitCode);
+        Assert.True(s2.ExitCode == 0, $"Action failed with exit code {s2.ExitCode}.\nSTDOUT: {s2.StandardOutput}\nSTDERR: {s2.StandardError}");
         using (var doc = JsonDocument.Parse(File.ReadAllText(statePath)))
         {
             var obs = doc.RootElement.GetProperty("ProcessMemoryObservations")[0];
@@ -2782,7 +2782,7 @@ public sealed class ProcessLifecycleTrialPreparationTests
 
         // 3. Sample 3: working set drops, and OS peak is unavailable (-1)
         var s3 = RunScript($"-Action Test-ResourceObservation -FixtureRoot \"{root}\" -Role Companion -SamplePid 7001 -SampleWorkingSetBytes 150000000 -SamplePeakWorkingSetBytes -1 -JsonOutput");
-        Assert.Equal(0, s3.ExitCode);
+        Assert.True(s3.ExitCode == 0, $"Action failed with exit code {s3.ExitCode}.\nSTDOUT: {s3.StandardOutput}\nSTDERR: {s3.StandardError}");
         using (var doc = JsonDocument.Parse(File.ReadAllText(statePath)))
         {
             var obs = doc.RootElement.GetProperty("ProcessMemoryObservations")[0];
@@ -2794,7 +2794,7 @@ public sealed class ProcessLifecycleTrialPreparationTests
 
         // 4. Distinct process invocation where OS peak is never available from start
         var s4 = RunScript($"-Action Test-ResourceObservation -FixtureRoot \"{root}\" -Role Companion -SamplePid 7002 -SampleWorkingSetBytes 300000000 -SamplePeakWorkingSetBytes -1 -JsonOutput");
-        Assert.Equal(0, s4.ExitCode);
+        Assert.True(s4.ExitCode == 0, $"Action failed with exit code {s4.ExitCode}.\nSTDOUT: {s4.StandardOutput}\nSTDERR: {s4.StandardError}");
         using (var doc = JsonDocument.Parse(File.ReadAllText(statePath)))
         {
             var obs = doc.RootElement.GetProperty("ProcessMemoryObservations")[1];
@@ -2817,8 +2817,10 @@ public sealed class ProcessLifecycleTrialPreparationTests
         var statePath = Path.Combine(root, "state.json");
 
         // 1. Sample Helper and Companion while live
-        RunScript($"-Action Test-ResourceObservation -FixtureRoot \"{root}\" -Role Helper -SamplePid 8001 -Slot 1 -SampleWorkingSetBytes 30000000 -SamplePeakWorkingSetBytes 35000000 -JsonOutput");
-        RunScript($"-Action Test-ResourceObservation -FixtureRoot \"{root}\" -Role Companion -SamplePid 8002 -SampleWorkingSetBytes 600000000 -SamplePeakWorkingSetBytes 650000000 -JsonOutput");
+        var r1 = RunScript($"-Action Test-ResourceObservation -FixtureRoot \"{root}\" -Role Helper -SamplePid 8001 -Slot 1 -SampleWorkingSetBytes 30000000 -SamplePeakWorkingSetBytes 35000000 -JsonOutput");
+        Assert.True(r1.ExitCode == 0, $"Action failed with exit code {r1.ExitCode}.\nSTDOUT: {r1.StandardOutput}\nSTDERR: {r1.StandardError}");
+        var r2 = RunScript($"-Action Test-ResourceObservation -FixtureRoot \"{root}\" -Role Companion -SamplePid 8002 -SampleWorkingSetBytes 600000000 -SamplePeakWorkingSetBytes 650000000 -JsonOutput");
+        Assert.True(r2.ExitCode == 0, $"Action failed with exit code {r2.ExitCode}.\nSTDOUT: {r2.StandardOutput}\nSTDERR: {r2.StandardError}");
 
         using (var doc = JsonDocument.Parse(File.ReadAllText(statePath)))
         {
@@ -2829,7 +2831,7 @@ public sealed class ProcessLifecycleTrialPreparationTests
 
         // 2. Processes exit normally; ActiveProcesses becomes empty
         var resExit = RunScript($"-Action Test-ResourceObservation -FixtureRoot \"{root}\" -ProcessExited -JsonOutput");
-        Assert.Equal(0, resExit.ExitCode);
+        Assert.True(resExit.ExitCode == 0, $"Action failed with exit code {resExit.ExitCode}.\nSTDOUT: {resExit.StandardOutput}\nSTDERR: {resExit.StandardError}");
 
         using (var doc = JsonDocument.Parse(File.ReadAllText(statePath)))
         {
@@ -2870,7 +2872,8 @@ public sealed class ProcessLifecycleTrialPreparationTests
         var statePath = Path.Combine(root, "state.json");
 
         // 1. Initial over-limit sample (1.1 GiB)
-        RunScript($"-Action Test-ResourceObservation -FixtureRoot \"{root}\" -Role Companion -SamplePid 9001 -SampleWorkingSetBytes 1100000000 -JsonOutput");
+        var r1 = RunScript($"-Action Test-ResourceObservation -FixtureRoot \"{root}\" -Role Companion -SamplePid 9001 -SampleWorkingSetBytes 1100000000 -JsonOutput");
+        Assert.True(r1.ExitCode == 0, $"Action failed with exit code {r1.ExitCode}.\nSTDOUT: {r1.StandardOutput}\nSTDERR: {r1.StandardError}");
 
         string firstHoldTime;
         using (var doc = JsonDocument.Parse(File.ReadAllText(statePath)))
@@ -2884,7 +2887,8 @@ public sealed class ProcessLifecycleTrialPreparationTests
         }
 
         // 2. Subsequent higher sample (1.5 GiB) - observation updates maxima, but FirstResourceHold is immutable
-        RunScript($"-Action Test-ResourceObservation -FixtureRoot \"{root}\" -Role Companion -SamplePid 9001 -SampleWorkingSetBytes 1500000000 -JsonOutput");
+        var r2 = RunScript($"-Action Test-ResourceObservation -FixtureRoot \"{root}\" -Role Companion -SamplePid 9001 -SampleWorkingSetBytes 1500000000 -JsonOutput");
+        Assert.True(r2.ExitCode == 0, $"Action failed with exit code {r2.ExitCode}.\nSTDOUT: {r2.StandardOutput}\nSTDERR: {r2.StandardError}");
 
         using (var doc = JsonDocument.Parse(File.ReadAllText(statePath)))
         {
@@ -2897,7 +2901,8 @@ public sealed class ProcessLifecycleTrialPreparationTests
         }
 
         // 3. Subsequent CPU limit violation (2,000,000 ms > 1,800,000 ms) - FirstResourceHold remains WorkingSet
-        RunScript($"-Action Test-ResourceObservation -FixtureRoot \"{root}\" -Role Companion -SamplePid 9001 -SampleWorkingSetBytes 1500000000 -SampleCpuMilliseconds 2000000 -JsonOutput");
+        var r3 = RunScript($"-Action Test-ResourceObservation -FixtureRoot \"{root}\" -Role Companion -SamplePid 9001 -SampleWorkingSetBytes 1500000000 -SampleCpuMilliseconds 2000000 -JsonOutput");
+        Assert.True(r3.ExitCode == 0, $"Action failed with exit code {r3.ExitCode}.\nSTDOUT: {r3.StandardOutput}\nSTDERR: {r3.StandardError}");
 
         using (var doc = JsonDocument.Parse(File.ReadAllText(statePath)))
         {
@@ -2908,7 +2913,8 @@ public sealed class ProcessLifecycleTrialPreparationTests
         }
 
         // 4. Process exits; FirstResourceHold remains preserved
-        RunScript($"-Action Test-ResourceObservation -FixtureRoot \"{root}\" -ProcessExited -JsonOutput");
+        var r4 = RunScript($"-Action Test-ResourceObservation -FixtureRoot \"{root}\" -ProcessExited -JsonOutput");
+        Assert.True(r4.ExitCode == 0, $"Action failed with exit code {r4.ExitCode}.\nSTDOUT: {r4.StandardOutput}\nSTDERR: {r4.StandardError}");
 
         using (var doc = JsonDocument.Parse(File.ReadAllText(statePath)))
         {
@@ -2937,12 +2943,16 @@ public sealed class ProcessLifecycleTrialPreparationTests
         }
 
         // Invocation 1: Companion PID 9101, sampled twice, then exits
-        RunScript($"-Action Test-ResourceObservation -FixtureRoot \"{root}\" -Role Companion -SamplePid 9101 -SampleWorkingSetBytes 300000000 -JsonOutput");
-        RunScript($"-Action Test-ResourceObservation -FixtureRoot \"{root}\" -Role Companion -SamplePid 9101 -SampleWorkingSetBytes 400000000 -JsonOutput");
-        RunScript($"-Action Test-ResourceObservation -FixtureRoot \"{root}\" -ProcessExited -JsonOutput");
+        var r1 = RunScript($"-Action Test-ResourceObservation -FixtureRoot \"{root}\" -Role Companion -SamplePid 9101 -SampleWorkingSetBytes 300000000 -JsonOutput");
+        Assert.True(r1.ExitCode == 0, $"Action failed with exit code {r1.ExitCode}.\nSTDOUT: {r1.StandardOutput}\nSTDERR: {r1.StandardError}");
+        var r2 = RunScript($"-Action Test-ResourceObservation -FixtureRoot \"{root}\" -Role Companion -SamplePid 9101 -SampleWorkingSetBytes 400000000 -JsonOutput");
+        Assert.True(r2.ExitCode == 0, $"Action failed with exit code {r2.ExitCode}.\nSTDOUT: {r2.StandardOutput}\nSTDERR: {r2.StandardError}");
+        var r3 = RunScript($"-Action Test-ResourceObservation -FixtureRoot \"{root}\" -ProcessExited -JsonOutput");
+        Assert.True(r3.ExitCode == 0, $"Action failed with exit code {r3.ExitCode}.\nSTDOUT: {r3.StandardOutput}\nSTDERR: {r3.StandardError}");
 
         // Invocation 2: Companion PID 9102, sampled once
-        RunScript($"-Action Test-ResourceObservation -FixtureRoot \"{root}\" -Role Companion -SamplePid 9102 -SampleWorkingSetBytes 500000000 -JsonOutput");
+        var r4 = RunScript($"-Action Test-ResourceObservation -FixtureRoot \"{root}\" -Role Companion -SamplePid 9102 -SampleWorkingSetBytes 500000000 -JsonOutput");
+        Assert.True(r4.ExitCode == 0, $"Action failed with exit code {r4.ExitCode}.\nSTDOUT: {r4.StandardOutput}\nSTDERR: {r4.StandardError}");
 
         using (var doc = JsonDocument.Parse(File.ReadAllText(statePath)))
         {

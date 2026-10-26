@@ -1053,13 +1053,13 @@ function Validate-CooperativeReadinessInternal(
 function Register-ResourceHoldInternal(
     [Parameter(Mandatory = $true)] $State,
     [Parameter(Mandatory = $true)] [string]$Metric,
-    [Parameter(Mandatory = $true)] $ObservedValue,
-    [Parameter(Mandatory = $true)] $ConfiguredLimit,
+    [Parameter(Mandatory = $false)] $ObservedValue = $null,
+    [Parameter(Mandatory = $false)] $ConfiguredLimit = $null,
     [Parameter(Mandatory = $false)] [string]$Unit = "",
     [Parameter(Mandatory = $false)] $Role = $null,
     [Parameter(Mandatory = $false)] $TargetPid = $null,
-    [Parameter(Mandatory = $true)] [string]$Reason,
-    [Parameter(Mandatory = $true)] [string]$CheckpointName
+    [Parameter(Mandatory = $true)] [string]$Reason = "",
+    [Parameter(Mandatory = $true)] [string]$CheckpointName = ""
 ) {
     $State.TerminalHold = $true
     if ($null -eq $State.TerminalHoldReason -or [string]::IsNullOrWhiteSpace("$($State.TerminalHoldReason)")) {
@@ -1095,10 +1095,11 @@ function Update-ProcessMemoryObservationInternal(
     [Parameter(Mandatory = $false)] $PeakWorkingSetBytes = $null,
     [Parameter(Mandatory = $false)] [bool]$OsPeakAvailable = $false,
     [Parameter(Mandatory = $false)] [long]$CpuMilliseconds = 0L,
-    [Parameter(Mandatory = $false)] [DateTime]$SampledAtUtc = ([DateTime]::UtcNow)
+    [Parameter(Mandatory = $false)] $SampledAtUtc = $null
 ) {
     $cap = if ($Role -eq "Companion") { $script:MAX_COMPANION_WORKING_SET_BYTES } else { $script:MAX_HELPER_WORKING_SET_BYTES }
-    $timeStr = $SampledAtUtc.ToString("o")
+    $effectiveTime = if ($null -ne $SampledAtUtc -and ($SampledAtUtc -is [DateTime])) { $SampledAtUtc } else { [DateTime]::UtcNow }
+    $timeStr = $effectiveTime.ToString("o")
 
     $retainedList = [System.Collections.ArrayList]::new()
     $existing = $null
@@ -3713,6 +3714,18 @@ function Supervise-HelperStop([string]$FixtureRoot, [int]$Slot) {
     $state.ActiveHelperPid = $null
     $state.ActiveHelperSlot = $null
     $state.LastStoppedHelperSlot = $Slot
+    $retainedActive = [System.Collections.ArrayList]::new()
+    if ($null -ne $state.ActiveProcesses) {
+        foreach ($ap in (Get-SafeEnumerable $state.ActiveProcesses)) {
+            if ($null -ne $ap) {
+                $apRole = Get-SafePropertyValue -Object $ap -PropertyName "Role"
+                if ("$apRole" -ne "Helper") {
+                    [void]$retainedActive.Add($ap)
+                }
+            }
+        }
+    }
+    $state.ActiveProcesses = @($retainedActive)
     Settle-ProcessMemoryObservationsInternal -State $state -ActiveProcesses $state.ActiveProcesses
     Save-StateData -FixtureRoot $canonRoot -StateObject $state
 
@@ -3833,6 +3846,18 @@ function Supervise-CompanionStop([string]$FixtureRoot) {
 
     $state = Get-StateData -FixtureRoot $canonRoot
     $state.ActiveCompanionPid = $null
+    $retainedActive = [System.Collections.ArrayList]::new()
+    if ($null -ne $state.ActiveProcesses) {
+        foreach ($ap in (Get-SafeEnumerable $state.ActiveProcesses)) {
+            if ($null -ne $ap) {
+                $apRole = Get-SafePropertyValue -Object $ap -PropertyName "Role"
+                if ("$apRole" -ne "Companion") {
+                    [void]$retainedActive.Add($ap)
+                }
+            }
+        }
+    }
+    $state.ActiveProcesses = @($retainedActive)
     Settle-ProcessMemoryObservationsInternal -State $state -ActiveProcesses $state.ActiveProcesses
     Save-StateData -FixtureRoot $canonRoot -StateObject $state
 
@@ -4354,6 +4379,7 @@ try {
                 if ($SamplePid -le 0) { throw "SamplePid parameter must be positive for Test-ResourceObservation." }
                 if ($SampleWorkingSetBytes -lt 0) { throw "SampleWorkingSetBytes must be non-negative for Test-ResourceObservation." }
 
+                $effectiveSlot = if ($Role -eq "Helper") { $Slot } else { $null }
                 $osPeakOk = ($SamplePeakWorkingSetBytes -ge 0)
                 $peakWs = if ($osPeakOk) { $SamplePeakWorkingSetBytes } else { $null }
                 $cpuMs = if ($SampleCpuMilliseconds -ge 0) { $SampleCpuMilliseconds } else { 0L }
@@ -4363,7 +4389,7 @@ try {
                     -State $st `
                     -Role $Role `
                     -TargetPid $SamplePid `
-                    -Slot (if ($Role -eq "Helper") { $Slot } else { $null }) `
+                    -Slot $effectiveSlot `
                     -WorkingSetBytes $SampleWorkingSetBytes `
                     -PeakWorkingSetBytes $peakWs `
                     -OsPeakAvailable $osPeakOk `
@@ -4377,17 +4403,27 @@ try {
                     -WorkingSetBytes $SampleWorkingSetBytes `
                     -CpuMilliseconds $cpuMs
 
-                $st.ActiveProcesses = @(
-                    [PSCustomObject]@{
-                        Role = $Role
-                        Slot = if ($Role -eq "Helper") { $Slot } else { $null }
-                        Pid = $SamplePid
-                        TotalCpuMilliseconds = $cpuMs
-                        WorkingSetBytes = $SampleWorkingSetBytes
-                        PeakWorkingSetBytes = $peakWs
-                        SampledAtUtc = $refUtc.ToString("o")
+                $retainedActive = [System.Collections.ArrayList]::new()
+                if ($null -ne $st.ActiveProcesses) {
+                    foreach ($ap in (Get-SafeEnumerable $st.ActiveProcesses)) {
+                        if ($null -ne $ap) {
+                            $apPid = Get-SafePropertyValue -Object $ap -PropertyName "Pid"
+                            if ($null -ne $apPid -and [int]$apPid -ne $SamplePid) {
+                                [void]$retainedActive.Add($ap)
+                            }
+                        }
                     }
-                )
+                }
+                [void]$retainedActive.Add([PSCustomObject]@{
+                    Role                 = $Role
+                    Slot                 = $effectiveSlot
+                    Pid                  = $SamplePid
+                    TotalCpuMilliseconds = $cpuMs
+                    WorkingSetBytes      = $SampleWorkingSetBytes
+                    PeakWorkingSetBytes  = $peakWs
+                    SampledAtUtc         = $refUtc.ToString("o")
+                })
+                $st.ActiveProcesses = @($retainedActive)
             }
 
             Save-StateData -FixtureRoot $canonRoot -StateObject $st

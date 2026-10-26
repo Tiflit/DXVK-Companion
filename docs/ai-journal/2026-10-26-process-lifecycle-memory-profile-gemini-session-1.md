@@ -76,11 +76,11 @@ Because `Register-ResourceHoldInternal` checks `if ($null -eq $State.FirstResour
 ## Cryptographic and Script Identifiers
 
 - **Amended Script (`tools/validation/ProcessLifecycleTrial.ps1`):**
-  - Size: `212,755 bytes`
-  - LF SHA-256: `e529a1489e64dc38c0785c4cfcddcc1a81ba840ca491a3697ddb282f7b6a9318`
+  - Size: `214,506 bytes`
+  - LF SHA-256: `15c8bb4f304df6bf7f1a0b8b33c3ed539b3b57a05bd659ecaff90f0d29d370c7`
 - **Updated Candidate Profile (`docs/validation/PACKAGED-PROCESS-LIFECYCLE-V1.md`):**
   - Size: `27,271 bytes`
-  - LF SHA-256: `4733512dbbb514f3cb67ac27545e5a891b4aa09a5d29d7d2207d25f422d2a4ec`
+  - LF SHA-256: `6d9790957f96deddd4f5ab435465d466df97704e3f346412d07a25a3f97f50b1`
 - **Frozen Artifact Pins (Unchanged):**
   - Helper Zip: `f75ec55738e6ca3c1a0cd0a342aefeaa0fb3addd03538f03f2ac7a43295750de` (Artifact `12609386490`)
   - Helper Exe: `f720cecae0f13eeef6d9b5e2d259b51df97b37bc3347b241071e25e8c1548d70`
@@ -115,6 +115,19 @@ Because `Register-ResourceHoldInternal` checks `if ($null -eq $State.FirstResour
 - **Outcome**: Failed with `Invalid allowed path 'No other repository edits...': paths must not contain whitespace or prose.`
 - **Root Cause**: In Issue #304's body, the prose line `No other repository edits. No production refactor...` was placed immediately under `### Allowed paths` before the next level-2 heading `## Verification and acceptance`. `parse_contract.py` matched everything between `### Allowed paths` and the next `###` heading, treating the prose line as a path.
 - **Remediation**: The repository's allowed path parser requires `### Allowed paths` to be cleanly delimited by another `###` heading (e.g. `### Exclusions`). Communicated in the handoff comment.
+
+### 4. Build and Test Phase A Regressions (Run 40373144613)
+- **Outcome**: 1,380 passed, 7 failed (`MonotonicClock_MissingOrInvalidOrigin_LatchesTerminalHoldWithoutReset` and the 6 `ResourceObservation_*` tests).
+- **Root Cause Analysis**:
+  1. `MonotonicClock_MissingOrInvalidOrigin_LatchesTerminalHoldWithoutReset`: `Register-ResourceHoldInternal` had `[Parameter(Mandatory = $true)] $ObservedValue` and `$ConfiguredLimit`. When `Invoke-SuperviseObservationCycle` encountered an invalid monotonic origin, it invoked `Register-ResourceHoldInternal` with `-ObservedValue $null -ConfiguredLimit $null`, causing PowerShell non-interactive parameter binding to throw `Cannot bind argument to parameter 'ObservedValue' because it is null.`
+  2. `ResourceObservation_*`: The `Test-ResourceObservation` dispatch action evaluated `-Slot (if ($Role -eq "Helper") { $Slot } else { $null })` directly as a parameter argument and in hashtable construction. In Windows PowerShell 5.1 (`powershell.exe`), nested `if` statements inside expression parentheses `(...)` are not supported. Additionally, `Update-ProcessMemoryObservationInternal` had typed `[DateTime]$SampledAtUtc = ([DateTime]::UtcNow)`, which could fail default value binding.
+  3. `Supervise-HelperStop` / `Supervise-CompanionStop`: When processes stopped, `$state.ActiveProcesses` retained the stopped process entry until the next supervisor sample, rather than filtering stopped processes prior to `Settle-ProcessMemoryObservationsInternal`.
+  4. Test diagnostics: `Assert.Equal(0, res.ExitCode)` masked PowerShell stdout and stderr output on failure.
+- **Repair**:
+  1. Made `$ObservedValue` and `$ConfiguredLimit` non-mandatory (`Mandatory = $false`) with `$null` defaults in `Register-ResourceHoldInternal`.
+  2. Extracted `$effectiveSlot = if ($Role -eq "Helper") { $Slot } else { $null }` and relaxed `$SampledAtUtc` to `$null` with internal fallback to `[DateTime]::UtcNow`.
+  3. Filtered stopped processes out of `$state.ActiveProcesses` in `Supervise-HelperStop` and `Supervise-CompanionStop` before settling observations.
+  4. Updated test assertions across all 6 `ResourceObservation_*` tests and `MonotonicClock_MissingOrInvalidOrigin_LatchesTerminalHoldWithoutReset` to assert `Assert.True(res.ExitCode == 0, $"Action failed with exit code {res.ExitCode}.\nSTDOUT: {res.StandardOutput}\nSTDERR: {res.StandardError}")`.
 
 ---
 
