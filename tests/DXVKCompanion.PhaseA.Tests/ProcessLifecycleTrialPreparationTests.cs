@@ -2106,8 +2106,9 @@ public sealed class ProcessLifecycleTrialPreparationTests
             "echo STDERR_DIAGNOSTIC_LINE 1>&2\r\n" +
             "exit /b 0\r\n");
 
+        var cmdPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "cmd.exe");
         var result = RunScript(
-            $"-Action Test-BoundedChild -ChildFileName \"cmd.exe\" -ChildArguments \"/c \\\"{batchPath}\\\"\" -LogPath \"{stdoutLogDir}\" -StderrLogPath \"{stderrLog}\" -TargetPath \"{temp.Path}\" -TimeoutMs 15000 -JsonOutput");
+            $"-Action Test-BoundedChild -ChildFileName \"{cmdPath}\" -ChildArguments \"/c {batchPath}\" -LogPath \"{stdoutLogDir}\" -StderrLogPath \"{stderrLog}\" -TargetPath \"{temp.RootPath}\" -TimeoutMs 15000 -JsonOutput");
 
         // Must fail closed on the log-open fault without deadlocking the child on a full stdout pipe
         Assert.NotEqual(0, result.ExitCode);
