@@ -14,6 +14,12 @@ using Xunit;
 
 namespace DXVKCompanion.PhaseATests;
 
+[CollectionDefinition("ProcessLifecycleTrialSerialCollection", DisableParallelization = true)]
+public sealed class ProcessLifecycleTrialSerialCollectionDefinition
+{
+}
+
+[Collection("ProcessLifecycleTrialSerialCollection")]
 public sealed class ProcessLifecycleTrialPreparationTests
 {
     private sealed record ProcessResult(int ExitCode, string StandardOutput, string StandardError);
@@ -1681,12 +1687,13 @@ public sealed class ProcessLifecycleTrialPreparationTests
         using var temp = new SyntheticTestDirectory();
         var stdoutLog = temp.GetPath("timeout_stdout.log");
         var stderrLog = temp.GetPath("timeout_stderr.log");
-        var powershellPath = GetPowerShellExecutablePath();
+        var cmdPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "cmd.exe");
+        var sysDir = Environment.GetFolderPath(Environment.SpecialFolder.System);
 
-        // Data-only command that emits output, sleeps briefly (~1.5s), and exits naturally on its own while Test-BoundedChild times out at 250ms
+        // Lightweight data-only command that emits output, pauses ~1s via ping, and exits naturally on its own while Test-BoundedChild times out at 150ms
         var result = RunScript(
-            $"-Action Test-BoundedChild -ChildFileName \"{powershellPath}\" -ChildArguments \"-NoProfile -NonInteractive -Command Write-Output 'BEFORE_TIMEOUT_OUT'; [Console]::Error.WriteLine('BEFORE_TIMEOUT_ERR'); Start-Sleep -Milliseconds 1500\" -LogPath \"{stdoutLog}\" -StderrLogPath \"{stderrLog}\" -TimeoutMs 250 -JsonOutput");
-        Assert.Equal(0, result.ExitCode);
+            $"-Action Test-BoundedChild -ChildFileName \"{cmdPath}\" -ChildArguments \"/c echo BEFORE_TIMEOUT_OUT & echo BEFORE_TIMEOUT_ERR 1>&2 & ping 127.0.0.1 -n 2 > nul\" -TargetPath \"{sysDir}\" -LogPath \"{stdoutLog}\" -StderrLogPath \"{stderrLog}\" -TimeoutMs 150 -JsonOutput");
+        Assert.True(result.ExitCode == 0, $"Expected ExitCode 0, got {result.ExitCode}.\nSTDOUT:\n{result.StandardOutput}\nSTDERR:\n{result.StandardError}");
         AssertScriptSuccess(result, true);
 
         using var doc = JsonDocument.Parse(result.StandardOutput);

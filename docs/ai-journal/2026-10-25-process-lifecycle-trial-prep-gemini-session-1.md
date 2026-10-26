@@ -226,11 +226,12 @@ Following Codex's review comment [`#issuecomment-6405935571`](https://github.com
 
 ### 2. B2 — Removal of Reintroduced `.Kill()` Calls & Bounded Child Stream Draining / Retention
 - **Root Cause**: `Extract-BoundedDxvkTarGz` reintroduced `$p.Kill()` and `$ep.Kill()` on `tar.exe` timeout and used synchronous `ReadToEnd()`, violating the zero-force-termination and bounded-stream-draining rules.
-- **Fix**: Removed both `.Kill()` calls and refactored child process execution into `Invoke-BoundedChildProcess`, which redirects both `StandardOutput` and `StandardError` into `SafeProcessStreamDrainer` instances with bounded `MaxStreamBytes` (100 MiB default) and bounded `WaitForDrain(5000)`. On timeout, the process handle and active stream drainers are retained in `$script:RetainedTimedOutProcesses` without calling `.Kill()` or disposing the active handle, and all stdout/stderr logs in `logs/` are preserved.
+- **Fix**: Removed both `.Kill()` calls and refactored child process execution into `Invoke-BoundedChildProcess`, which redirects both `StandardOutput` and `StandardError` into `SafeProcessStreamDrainer` instances with bounded `MaxStreamBytes` (100 MiB default) and bounded `WaitForDrain(5000)`. On timeout, the process handle and active stream drainers are retained in `$script:RetainedTimedOutProcesses` without calling `.Kill()` or disposing the active handle, and all stdout/stderr logs in `logs/` are read via `Read-SharedLogFileText` (`FileShare.ReadWrite`) and preserved.
 - **Hosted Regressions**:
   - `Script_SourceInspection_ContainsZeroForceKillCalls`: Verifies `ProcessLifecycleTrial.ps1` contains zero `.Kill(`, `Stop-Process`, or `taskkill` calls.
   - `BoundedChildProcess_NormalCompletion_DrainsStdoutAndStderrToLogs`: Exercises `-Action Test-BoundedChild` (`Invoke-BoundedChildProcess`) on a harmless data-only command emitting both stdout and stderr, verifying complete draining and log persistence.
-  - `BoundedChildProcess_Timeout_RetainsProcessAndLogsWithoutKill`: Exercises `-Action Test-BoundedChild` with a 250ms timeout against a brief data-only command, verifying `TimedOut == true`, `Retained == true`, `RetainedProcessCount == 1`, and log retention without force-killing the child.
+  - `BoundedChildProcess_Timeout_RetainsProcessAndLogsWithoutKill`: Exercises `-Action Test-BoundedChild` with a 150ms timeout against a brief data-only command, verifying `TimedOut == true`, `Retained == true`, `RetainedProcessCount == 1`, and log retention without force-killing the child.
+  - Added `[CollectionDefinition("ProcessLifecycleTrialSerialCollection", DisableParallelization = true)]` so subprocess-spawning `ProcessLifecycleTrialPreparationTests` runs in a non-parallel xUnit collection without starving concurrent in-memory lease timing tests on hosted runners.
 
 ### 3. B3 — Explicit Cooperative Readiness / Revision Binding & Real Monotonic Elapsed Accounting
 - **No Auto-Adoption & Explicit Readiness Validation (`Validate-CooperativeReadinessInternal`)**:
@@ -271,6 +272,6 @@ Following Codex's review comment [`#issuecomment-6405935571`](https://github.com
   - **Attempt 2** (Run `40251329694`, Job `121344488719`, merge checkout `dc5eb197e6aa5cc87bc842fc875567b1489b3cc1`): **1,361 passed, 0 failed**.
   - **Attribution Note**: The root cause of Attempt 1's failure in `RestoreAllAttentionTests` is **unproven**; it is preserved as an unexplained first-attempt failure and is **not** claimed to be a diagnosed transient flake.
 - **Updated Script SHA-256 Pin**:
-  - `tools/validation/ProcessLifecycleTrial.ps1` SHA-256: `9868cbfa0504cfaf3d63d15abed84d9fa2d79e9ed76688d7d78911442fbe842e`.
+  - `tools/validation/ProcessLifecycleTrial.ps1` SHA-256: `4629002ee2c3d142b1d729bdf873021b28afeb7c252e0f129e8dbcf52499123c`.
 
 

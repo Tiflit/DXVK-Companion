@@ -1772,6 +1772,23 @@ function Extract-CompanionProvenance(
     }
 }
 
+function Read-SharedLogFileText([string]$LogPath) {
+    if ([string]::IsNullOrWhiteSpace($LogPath) -or -not (Test-Path -LiteralPath $LogPath -PathType Leaf)) {
+        return ""
+    }
+    try {
+        $fs = New-Object System.IO.FileStream($LogPath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+        try {
+            $sr = New-Object System.IO.StreamReader($fs, $script:Utf8NoBom)
+            return $sr.ReadToEnd()
+        } finally {
+            $fs.Dispose()
+        }
+    } catch {
+        return ""
+    }
+}
+
 function Invoke-BoundedChildProcess(
     [string]$FileName,
     [string]$Arguments = "",
@@ -1837,8 +1854,8 @@ function Invoke-BoundedChildProcess(
         }
         [void]$script:RetainedTimedOutProcesses.Add($retainedRecord)
 
-        $stdoutText = if (Test-Path -LiteralPath $StdoutLogPath -PathType Leaf) { [System.IO.File]::ReadAllText($StdoutLogPath, $script:Utf8NoBom) } else { "" }
-        $stderrText = if (Test-Path -LiteralPath $StderrLogPath -PathType Leaf) { [System.IO.File]::ReadAllText($StderrLogPath, $script:Utf8NoBom) } else { "" }
+        $stdoutText = Read-SharedLogFileText -LogPath $StdoutLogPath
+        $stderrText = Read-SharedLogFileText -LogPath $StderrLogPath
 
         return [PSCustomObject]@{
             Completed     = $false
@@ -1877,8 +1894,8 @@ function Invoke-BoundedChildProcess(
     $errDrainer.Dispose()
     $proc.Dispose()
 
-    $stdoutText = if (Test-Path -LiteralPath $StdoutLogPath -PathType Leaf) { [System.IO.File]::ReadAllText($StdoutLogPath, $script:Utf8NoBom) } else { "" }
-    $stderrText = if (Test-Path -LiteralPath $StderrLogPath -PathType Leaf) { [System.IO.File]::ReadAllText($StderrLogPath, $script:Utf8NoBom) } else { "" }
+    $stdoutText = Read-SharedLogFileText -LogPath $StdoutLogPath
+    $stderrText = Read-SharedLogFileText -LogPath $StderrLogPath
 
     return [PSCustomObject]@{
         Completed     = $true
