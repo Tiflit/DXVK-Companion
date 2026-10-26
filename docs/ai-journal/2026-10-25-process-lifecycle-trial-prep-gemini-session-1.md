@@ -314,6 +314,12 @@ Following Codex's focused review [`#issuecomment-6406552896`](https://github.com
     - Attempt 2 (job `121356887105`): 1,374 passed, 1 failed (`DXVKCompanion.PhaseATests.DxvkModernApiCompatibilityTests.DxvkInstaller_ReapplyAsync_RefusesReapplyOnManagedGameWhenApiUnsupported_AndPreservesGameFiles(unsupportedApi: Unknown)` with `OperationBusy`; all 39/39 `ProcessLifecycleTrialPreparationTests` passed).
     - Attempt 3 (job `121358135046`): **1,375 passed, 0 failed**.
     - Attribution note: Subprocess contention on the shared hosted runner during Attempts 1 and 2 of Run `40255284425` is an **unproven hypothesis**, not an established root cause.
+- **Session 7 Intermediate Commit & Run `40258583158` History**:
+  - `d8398435f4d9d10ebc97b0a99ac60803573d926c` (tree `8ec576582a76a6d3cdb2d54052fe6c674d37867a`): Run `40258583158` (job `121365722554`) — 1,374 passed, 5 failed (all 5 in `ProcessLifecycleTrialPreparationTests`: `BoundedChildProcess_Timeout_RetainsProcessAndLogsWithoutKill`, `Setup_ArchiveTimeout_RetainsOwningSupervisorUntilChildExits_DrainsLateOutputAndFailsClosed`, `BoundedChildProcess_PostStartFault_RetainsOwningScriptUntilChildExitsAndRecordsFailure`, `BatchGuard_MissingOrMismatchedSessionBinding_RefusesBeforeProcessStart`, and `Supervise_InteractiveMode_EofOnRedirectedStdin_ExitsCleanlyWithoutRunspaceFault`).
+    - Root causes resolved in `ProcessLifecycleTrialPreparationTests.cs`:
+      1. Embedded the release signal file path directly inside `gated_child.cmd`, `gated_tar.cmd`, and `gated_fault_child.cmd` with `ping 127.0.0.1 -n 2 > nul` (~1s wait per iteration) and passed a single unquoted script path to `cmd.exe /c`, preventing `cmd.exe /c` from stripping quotes across two quoted paths and exiting before the timeout.
+      2. Updated `Supervise_InteractiveMode_EofOnRedirectedStdin_ExitsCleanlyWithoutRunspaceFault` to wait for `control/supervisor-session.json` after `process.Start()` and write `control/readiness.json` with `bindSessionInState: false` instead of pre-binding `Environment.ProcessId` in `state.json` before interactive `Supervise` started.
+      3. Updated `BatchGuard_MissingOrMismatchedSessionBinding_RefusesBeforeProcessStart` assertion to avoid matching raw single quotes `'` that Windows PowerShell 5.1 `ConvertTo-Json` serializes as `\u0027`.
 - **Updated Script SHA-256 Pin**:
   - `tools/validation/ProcessLifecycleTrial.ps1` SHA-256: `9d0bfeb39727b7d3136e478739dd6168a7c1cfe7986c33dfeae03aa69a1e5c3a` (size `192,022` bytes).
 

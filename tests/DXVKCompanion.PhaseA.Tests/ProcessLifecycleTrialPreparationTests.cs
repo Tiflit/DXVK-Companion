@@ -1592,7 +1592,6 @@ public sealed class ProcessLifecycleTrialPreparationTests
 
         using var temp = new SyntheticTestDirectory();
         var root = SetUpTestFixture(temp);
-        WriteReadinessRecord(root);
 
         var repoRoot = FindRepositoryRoot();
         var scriptPath = Path.Combine(repoRoot, "tools", "validation", "ProcessLifecycleTrial.ps1");
@@ -1610,12 +1609,31 @@ public sealed class ProcessLifecycleTrialPreparationTests
             WorkingDirectory = repoRoot
         };
 
+        var sessionFilePath = Path.Combine(root, "control", "supervisor-session.json");
         var process = new Process { StartInfo = psi };
         try
         {
             process.Start();
             var stdoutTask = process.StandardOutput.ReadToEndAsync();
             var stderrTask = process.StandardError.ReadToEndAsync();
+
+            var sw = Stopwatch.StartNew();
+            while (!File.Exists(sessionFilePath) && sw.ElapsedMilliseconds < 10000)
+            {
+                await Task.Delay(50);
+            }
+            Assert.True(File.Exists(sessionFilePath), "Expected Supervise to write control/supervisor-session.json on startup.");
+
+            using (var sessionDoc = JsonDocument.Parse(File.ReadAllText(sessionFilePath)))
+            {
+                var livePid = sessionDoc.RootElement.GetProperty("SupervisorPid").GetInt32();
+                var liveSessionId = sessionDoc.RootElement.GetProperty("SupervisorSessionId").GetString()!;
+                WriteReadinessRecord(
+                    root,
+                    supervisorPidOverride: livePid,
+                    supervisorSessionIdOverride: liveSessionId,
+                    bindSessionInState: false);
+            }
 
             // Wait for at least one idle PollReadLine observation interval, then close stdin (EOF)
             await Task.Delay(450);
@@ -1721,8 +1739,8 @@ public sealed class ProcessLifecycleTrialPreparationTests
             "echo BEFORE_TIMEOUT_OUT\r\n" +
             "echo BEFORE_TIMEOUT_ERR 1>&2\r\n" +
             ":waitloop\r\n" +
-            "if exist \"%~1\" goto done\r\n" +
-            "ping 127.0.0.1 -n 1 > nul\r\n" +
+            $"if exist \"{releaseSignal}\" goto done\r\n" +
+            "ping 127.0.0.1 -n 2 > nul\r\n" +
             "goto waitloop\r\n" +
             ":done\r\n" +
             "echo AFTER_TIMEOUT_OUT\r\n" +
@@ -1737,7 +1755,7 @@ public sealed class ProcessLifecycleTrialPreparationTests
         var psi = new ProcessStartInfo
         {
             FileName = powershellPath,
-            Arguments = $"-NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"{scriptPath}\" -Action Test-BoundedChild -ChildFileName \"{cmdPath}\" -ChildArguments \"/c \\\"{batchScript}\\\" \\\"{releaseSignal}\\\"\" -TargetPath \"{temp.RootPath}\" -LogPath \"{stdoutLog}\" -StderrLogPath \"{stderrLog}\" -TimeoutMs 200 -JsonOutput",
+            Arguments = $"-NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"{scriptPath}\" -Action Test-BoundedChild -ChildFileName \"{cmdPath}\" -ChildArguments \"/c {batchScript}\" -TargetPath \"{temp.RootPath}\" -LogPath \"{stdoutLog}\" -StderrLogPath \"{stderrLog}\" -TimeoutMs 200 -JsonOutput",
             UseShellExecute = false,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
@@ -1837,8 +1855,8 @@ public sealed class ProcessLifecycleTrialPreparationTests
             "echo TAR_STARTED_OUT\r\n" +
             "echo TAR_STARTED_ERR 1>&2\r\n" +
             ":waitloop\r\n" +
-            "if exist \"%~1\" goto done\r\n" +
-            "ping 127.0.0.1 -n 1 > nul\r\n" +
+            $"if exist \"{releaseSignal}\" goto done\r\n" +
+            "ping 127.0.0.1 -n 2 > nul\r\n" +
             "goto waitloop\r\n" +
             ":done\r\n" +
             "echo TAR_LATE_AFTER_TIMEOUT_OUT\r\n" +
@@ -1891,7 +1909,7 @@ public sealed class ProcessLifecycleTrialPreparationTests
             Dxvk311Size = (long)fakeTarBytes.Length,
             Dxvk311Sha256 = fakeTarHash,
             TarExecutable = cmdPath,
-            TarInspectArguments = $"/c \"{batchScript}\" \"{releaseSignal}\"",
+            TarInspectArguments = $"/c {batchScript}",
             TarTimeoutMs = 200
         });
         var escapedJson = testPinsJson.Replace("\"", "\\\"");
@@ -1988,8 +2006,8 @@ public sealed class ProcessLifecycleTrialPreparationTests
             "echo BEFORE_FAULT_OUT\r\n" +
             "echo BEFORE_FAULT_ERR 1>&2\r\n" +
             ":waitloop\r\n" +
-            "if exist \"%~1\" goto done\r\n" +
-            "ping 127.0.0.1 -n 1 > nul\r\n" +
+            $"if exist \"{releaseSignal}\" goto done\r\n" +
+            "ping 127.0.0.1 -n 2 > nul\r\n" +
             "goto waitloop\r\n" +
             ":done\r\n" +
             "echo AFTER_FAULT_OUT\r\n" +
@@ -2004,7 +2022,7 @@ public sealed class ProcessLifecycleTrialPreparationTests
         var psi = new ProcessStartInfo
         {
             FileName = powershellPath,
-            Arguments = $"-NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"{scriptPath}\" -Action Test-BoundedChild -ChildFileName \"{cmdPath}\" -ChildArguments \"/c \\\"{batchScript}\\\" \\\"{releaseSignal}\\\"\" -TargetPath \"{temp.RootPath}\" -LogPath \"{stdoutLog}\" -StderrLogPath \"{stderrLog}\" -TimeoutMs 5000 -SimulateFault -JsonOutput",
+            Arguments = $"-NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"{scriptPath}\" -Action Test-BoundedChild -ChildFileName \"{cmdPath}\" -ChildArguments \"/c {batchScript}\" -TargetPath \"{temp.RootPath}\" -LogPath \"{stdoutLog}\" -StderrLogPath \"{stderrLog}\" -TimeoutMs 5000 -SimulateFault -JsonOutput",
             UseShellExecute = false,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
@@ -2201,7 +2219,8 @@ public sealed class ProcessLifecycleTrialPreparationTests
         WriteReadinessRecord(root, supervisorSessionIdOverride: "stale-other-session-id");
         var wrongSessionRes = RunScript($"-Action Supervise -FixtureRoot \"{root}\" -SupervisorSessionId \"test-supervisor-session-1\" -AdoptionAttestation \"ADOPTED-PROCESS-LIFECYCLE-V1\" -Commands \"start-helper 1\" -JsonOutput");
         Assert.NotEqual(0, wrongSessionRes.ExitCode);
-        Assert.Contains("SupervisorSessionId ('stale-other-session-id') does not match active supervisor session ID", wrongSessionRes.StandardOutput + wrongSessionRes.StandardError);
+        Assert.Contains("stale-other-session-id", wrongSessionRes.StandardOutput + wrongSessionRes.StandardError);
+        Assert.Contains("does not match active supervisor session ID", wrongSessionRes.StandardOutput + wrongSessionRes.StandardError);
 
         // Now write a valid readiness record for test-supervisor-session-1, run one Supervise session to completion (which clears ActiveSupervisorPid/ActiveSupervisorSessionId),
         // and verify a second Supervise session refuses to reuse the prior session's readiness record.
