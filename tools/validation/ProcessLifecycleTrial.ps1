@@ -304,6 +304,9 @@ namespace DXVKCompanion.Validation
         private readonly TextReader _reader;
         private Task<string> _activeReadTask;
 
+        public volatile bool HasFault;
+        public string FaultMessage;
+
         public SafeInteractiveLineReader()
             : this(Console.In)
         {
@@ -328,14 +331,34 @@ namespace DXVKCompanion.Validation
                 return false;
             }
 
-            line = _activeReadTask.GetAwaiter().GetResult();
-            _activeReadTask = null;
+            try
+            {
+                line = _activeReadTask.GetAwaiter().GetResult();
+            }
+            catch (Exception ex)
+            {
+                HasFault = true;
+                FaultMessage = ex.Message;
+            }
+            finally
+            {
+                _activeReadTask = null;
+            }
             return true;
         }
 
         private string ReadNextLine()
         {
-            return _reader.ReadLine();
+            try
+            {
+                return _reader.ReadLine();
+            }
+            catch (Exception ex)
+            {
+                HasFault = true;
+                FaultMessage = ex.Message;
+                return null;
+            }
         }
     }
 }
@@ -3526,23 +3549,21 @@ try {
                 -WorkingDirectory $workDir `
                 -StdoutLogPath $LogPath `
                 -StderrLogPath $errLog `
-                -WaitTimeoutMs $TimeoutMs `
-                -MaxStreamBytes $MaxBytes
+                -TimeoutMs $TimeoutMs `
+                -MaxLogBytes $MaxBytes
 
             $result = @{
                 Success              = $true
                 Completed            = [bool]$childRes.Completed
                 TimedOut             = [bool]$childRes.TimedOut
                 ExitCode             = $childRes.ExitCode
-                ProcessId            = $childRes.ProcessId
+                ProcessId            = $childRes.Pid
                 Retained             = [bool]$childRes.Retained
                 RetainedProcessCount = [int]$script:RetainedTimedOutProcesses.Count
                 StdoutDrained        = [bool]$childRes.StdoutDrained
                 StderrDrained        = [bool]$childRes.StderrDrained
-                StdoutFault          = [bool]$childRes.StdoutFault
-                StderrFault          = [bool]$childRes.StderrFault
-                StdoutBytes          = [long]$childRes.StdoutBytes
-                StderrBytes          = [long]$childRes.StderrBytes
+                StdoutFault          = [bool]$childRes.HasDrainFault
+                StderrFault          = [bool]$childRes.HasDrainFault
                 StdoutLogPath        = $childRes.StdoutLogPath
                 StderrLogPath        = $childRes.StderrLogPath
             }

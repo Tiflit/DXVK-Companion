@@ -271,6 +271,6 @@ Following Codex's review comment [`#issuecomment-6405935571`](https://github.com
   - **Attempt 2** (Run `40251329694`, Job `121344488719`, merge checkout `dc5eb197e6aa5cc87bc842fc875567b1489b3cc1`): **1,361 passed, 0 failed**.
   - **Attribution Note**: The root cause of Attempt 1's failure in `RestoreAllAttentionTests` is **unproven**; it is preserved as an unexplained first-attempt failure and is **not** claimed to be a diagnosed transient flake.
 - **Updated Script SHA-256 Pin**:
-  - `tools/validation/ProcessLifecycleTrial.ps1` SHA-256: `f6bb88fa2e1228fbb86d3a0a15162044e58bdd1c4199e84fcf56f20daab7e4bc`.
+  - `tools/validation/ProcessLifecycleTrial.ps1` SHA-256: `9868cbfa0504cfaf3d63d15abed84d9fa2d79e9ed76688d7d78911442fbe842e`.
 
 
