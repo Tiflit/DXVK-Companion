@@ -2637,6 +2637,337 @@ public sealed class ProcessLifecycleTrialPreparationTests
         Assert.Contains("close Companion normally (stop-companion) before stopping helper", result.StandardOutput + result.StandardError);
     }
 
+    [Fact]
+    public void ResourceObservation_CompanionWorkingSet_BelowAndEqualAndAboveOneGiB_RetainsGreaterThanSemantics()
+    {
+        AssertHostedCiEnvironment();
+
+        using var temp = new SyntheticTestDirectory();
+        var root = SetUpTestFixture(temp);
+        WriteReadinessRecord(root, bindSessionInState: false);
+
+        var statePath = Path.Combine(root, "state.json");
+
+        // 1. Below 1 GiB (1,073,741,823 bytes)
+        var resBelow = RunScript($"-Action Test-ResourceObservation -FixtureRoot \"{root}\" -Role Companion -SamplePid 5001 -SampleWorkingSetBytes 1073741823 -JsonOutput");
+        Assert.Equal(0, resBelow.ExitCode);
+        using (var doc = JsonDocument.Parse(File.ReadAllText(statePath)))
+        {
+            Assert.False(doc.RootElement.GetProperty("TerminalHold").GetBoolean());
+            Assert.Equal(JsonValueKind.Null, doc.RootElement.GetProperty("FirstResourceHold").ValueKind);
+            var obs = doc.RootElement.GetProperty("ProcessMemoryObservations");
+            Assert.Equal(1, obs.GetArrayLength());
+            var entry = obs[0];
+            Assert.Equal(1073741824L, entry.GetProperty("ConfiguredWorkingSetCapBytes").GetInt64());
+            Assert.Equal(1073741823L, entry.GetProperty("CurrentWorkingSetBytes").GetInt64());
+            Assert.Equal(1073741823L, entry.GetProperty("MaxSampledWorkingSetBytes").GetInt64());
+            Assert.Equal(1, entry.GetProperty("SampleCount").GetInt32());
+            Assert.True(entry.GetProperty("IsLive").GetBoolean());
+        }
+
+        // 2. Exactly equal to 1 GiB (1,073,741,824 bytes) - strictly greater-than semantics preserved (no hold)
+        var resEqual = RunScript($"-Action Test-ResourceObservation -FixtureRoot \"{root}\" -Role Companion -SamplePid 5001 -SampleWorkingSetBytes 1073741824 -JsonOutput");
+        Assert.Equal(0, resEqual.ExitCode);
+        using (var doc = JsonDocument.Parse(File.ReadAllText(statePath)))
+        {
+            Assert.False(doc.RootElement.GetProperty("TerminalHold").GetBoolean());
+            Assert.Equal(JsonValueKind.Null, doc.RootElement.GetProperty("FirstResourceHold").ValueKind);
+            var obs = doc.RootElement.GetProperty("ProcessMemoryObservations");
+            Assert.Equal(1, obs.GetArrayLength());
+            var entry = obs[0];
+            Assert.Equal(1073741824L, entry.GetProperty("CurrentWorkingSetBytes").GetInt64());
+            Assert.Equal(1073741824L, entry.GetProperty("MaxSampledWorkingSetBytes").GetInt64());
+            Assert.Equal(2, entry.GetProperty("SampleCount").GetInt32());
+        }
+
+        // 3. Above 1 GiB (1,073,741,825 bytes) - latches terminal hold
+        var resAbove = RunScript($"-Action Test-ResourceObservation -FixtureRoot \"{root}\" -Role Companion -SamplePid 5001 -SampleWorkingSetBytes 1073741825 -JsonOutput");
+        Assert.Equal(0, resAbove.ExitCode);
+        using (var doc = JsonDocument.Parse(File.ReadAllText(statePath)))
+        {
+            Assert.True(doc.RootElement.GetProperty("TerminalHold").GetBoolean());
+            var hold = doc.RootElement.GetProperty("FirstResourceHold");
+            Assert.NotEqual(JsonValueKind.Null, hold.ValueKind);
+            Assert.Equal("WorkingSet", hold.GetProperty("Metric").GetString());
+            Assert.Equal("Companion", hold.GetProperty("Role").GetString());
+            Assert.Equal(5001, hold.GetProperty("Pid").GetInt32());
+            Assert.Equal(1073741825L, hold.GetProperty("ObservedValue").GetInt64());
+            Assert.Equal(1073741824L, hold.GetProperty("ConfiguredLimit").GetInt64());
+            Assert.Equal("bytes", hold.GetProperty("Unit").GetString());
+            Assert.Equal("CompanionMemoryExhausted", hold.GetProperty("Checkpoint").GetString());
+        }
+
+        // 4. Batch guard refuses further starts while on terminal hold
+        var guardRes = RunScript($"-Action Test-BatchGuard -FixtureRoot \"{root}\" -NoAutoDiscovery -AdoptionAttestation \"ADOPTED-PROCESS-LIFECYCLE-V1\" -JsonOutput");
+        Assert.NotEqual(0, guardRes.ExitCode);
+        Assert.Contains("Terminal hold active", guardRes.StandardOutput + guardRes.StandardError);
+    }
+
+    [Fact]
+    public void ResourceObservation_HelperWorkingSetAndCpuLimits_RemainUnchangedAndGuarded()
+    {
+        AssertHostedCiEnvironment();
+
+        using var temp = new SyntheticTestDirectory();
+        var root = SetUpTestFixture(temp);
+        WriteReadinessRecord(root, bindSessionInState: false);
+
+        var statePath = Path.Combine(root, "state.json");
+
+        // 1. Helper at exactly 50 MiB (52,428,800 bytes) and 10 minutes CPU (600,000 ms) - no hold
+        var resEqual = RunScript($"-Action Test-ResourceObservation -FixtureRoot \"{root}\" -Role Helper -SamplePid 6001 -Slot 1 -SampleWorkingSetBytes 52428800 -SampleCpuMilliseconds 600000 -JsonOutput");
+        Assert.Equal(0, resEqual.ExitCode);
+        using (var doc = JsonDocument.Parse(File.ReadAllText(statePath)))
+        {
+            Assert.False(doc.RootElement.GetProperty("TerminalHold").GetBoolean());
+            Assert.Equal(JsonValueKind.Null, doc.RootElement.GetProperty("FirstResourceHold").ValueKind);
+            var obs = doc.RootElement.GetProperty("ProcessMemoryObservations");
+            Assert.Equal(1, obs.GetArrayLength());
+            Assert.Equal(52428800L, obs[0].GetProperty("ConfiguredWorkingSetCapBytes").GetInt64());
+        }
+
+        // 2. Helper above 50 MiB (52,428,801 bytes) - latches terminal hold
+        var resAbove = RunScript($"-Action Test-ResourceObservation -FixtureRoot \"{root}\" -Role Helper -SamplePid 6001 -Slot 1 -SampleWorkingSetBytes 52428801 -SampleCpuMilliseconds 600000 -JsonOutput");
+        Assert.Equal(0, resAbove.ExitCode);
+        using (var doc = JsonDocument.Parse(File.ReadAllText(statePath)))
+        {
+            Assert.True(doc.RootElement.GetProperty("TerminalHold").GetBoolean());
+            var hold = doc.RootElement.GetProperty("FirstResourceHold");
+            Assert.NotEqual(JsonValueKind.Null, hold.ValueKind);
+            Assert.Equal("WorkingSet", hold.GetProperty("Metric").GetString());
+            Assert.Equal("Helper", hold.GetProperty("Role").GetString());
+            Assert.Equal(6001, hold.GetProperty("Pid").GetInt32());
+            Assert.Equal(52428801L, hold.GetProperty("ObservedValue").GetInt64());
+            Assert.Equal(52428800L, hold.GetProperty("ConfiguredLimit").GetInt64());
+            Assert.Equal("HelperMemoryExhausted", hold.GetProperty("Checkpoint").GetString());
+        }
+    }
+
+    [Fact]
+    public void ResourceObservation_MaximaAndOsReportedPeakSemantics_PreservesUnavailableMetricsHonestly()
+    {
+        AssertHostedCiEnvironment();
+
+        using var temp = new SyntheticTestDirectory();
+        var root = SetUpTestFixture(temp);
+        WriteReadinessRecord(root, bindSessionInState: false);
+
+        var statePath = Path.Combine(root, "state.json");
+
+        // 1. Sample 1 with available OS peak
+        var s1 = RunScript($"-Action Test-ResourceObservation -FixtureRoot \"{root}\" -Role Companion -SamplePid 7001 -SampleWorkingSetBytes 200000000 -SamplePeakWorkingSetBytes 250000000 -JsonOutput");
+        Assert.Equal(0, s1.ExitCode);
+        using (var doc = JsonDocument.Parse(File.ReadAllText(statePath)))
+        {
+            var obs = doc.RootElement.GetProperty("ProcessMemoryObservations")[0];
+            Assert.Equal(200000000L, obs.GetProperty("MaxSampledWorkingSetBytes").GetInt64());
+            Assert.Equal(200000000L, obs.GetProperty("CurrentWorkingSetBytes").GetInt64());
+            Assert.Equal(250000000L, obs.GetProperty("OsReportedPeakWorkingSetBytes").GetInt64());
+            Assert.True(obs.GetProperty("OsPeakAvailable").GetBoolean());
+            Assert.Equal(1, obs.GetProperty("SampleCount").GetInt32());
+        }
+
+        // 2. Sample 2 with higher working set and higher peak
+        var s2 = RunScript($"-Action Test-ResourceObservation -FixtureRoot \"{root}\" -Role Companion -SamplePid 7001 -SampleWorkingSetBytes 400000000 -SamplePeakWorkingSetBytes 450000000 -JsonOutput");
+        Assert.Equal(0, s2.ExitCode);
+        using (var doc = JsonDocument.Parse(File.ReadAllText(statePath)))
+        {
+            var obs = doc.RootElement.GetProperty("ProcessMemoryObservations")[0];
+            Assert.Equal(400000000L, obs.GetProperty("MaxSampledWorkingSetBytes").GetInt64());
+            Assert.Equal(400000000L, obs.GetProperty("CurrentWorkingSetBytes").GetInt64());
+            Assert.Equal(450000000L, obs.GetProperty("OsReportedPeakWorkingSetBytes").GetInt64());
+            Assert.True(obs.GetProperty("OsPeakAvailable").GetBoolean());
+            Assert.Equal(2, obs.GetProperty("SampleCount").GetInt32());
+        }
+
+        // 3. Sample 3: working set drops, and OS peak is unavailable (-1)
+        var s3 = RunScript($"-Action Test-ResourceObservation -FixtureRoot \"{root}\" -Role Companion -SamplePid 7001 -SampleWorkingSetBytes 150000000 -SamplePeakWorkingSetBytes -1 -JsonOutput");
+        Assert.Equal(0, s3.ExitCode);
+        using (var doc = JsonDocument.Parse(File.ReadAllText(statePath)))
+        {
+            var obs = doc.RootElement.GetProperty("ProcessMemoryObservations")[0];
+            Assert.Equal(150000000L, obs.GetProperty("CurrentWorkingSetBytes").GetInt64());
+            Assert.Equal(400000000L, obs.GetProperty("MaxSampledWorkingSetBytes").GetInt64());
+            Assert.Equal(450000000L, obs.GetProperty("OsReportedPeakWorkingSetBytes").GetInt64());
+            Assert.Equal(3, obs.GetProperty("SampleCount").GetInt32());
+        }
+
+        // 4. Distinct process invocation where OS peak is never available from start
+        var s4 = RunScript($"-Action Test-ResourceObservation -FixtureRoot \"{root}\" -Role Companion -SamplePid 7002 -SampleWorkingSetBytes 300000000 -SamplePeakWorkingSetBytes -1 -JsonOutput");
+        Assert.Equal(0, s4.ExitCode);
+        using (var doc = JsonDocument.Parse(File.ReadAllText(statePath)))
+        {
+            var obs = doc.RootElement.GetProperty("ProcessMemoryObservations")[1];
+            Assert.Equal(7002, obs.GetProperty("Pid").GetInt32());
+            Assert.Equal(300000000L, obs.GetProperty("MaxSampledWorkingSetBytes").GetInt64());
+            Assert.Equal(JsonValueKind.Null, obs.GetProperty("OsReportedPeakWorkingSetBytes").ValueKind);
+            Assert.False(obs.GetProperty("OsPeakAvailable").GetBoolean());
+        }
+    }
+
+    [Fact]
+    public void ResourceObservation_PostExitRetention_PreservesSummariesWhenActiveProcessesEmpty()
+    {
+        AssertHostedCiEnvironment();
+
+        using var temp = new SyntheticTestDirectory();
+        var root = SetUpTestFixture(temp);
+        WriteReadinessRecord(root, bindSessionInState: false);
+
+        var statePath = Path.Combine(root, "state.json");
+
+        // 1. Sample Helper and Companion while live
+        RunScript($"-Action Test-ResourceObservation -FixtureRoot \"{root}\" -Role Helper -SamplePid 8001 -Slot 1 -SampleWorkingSetBytes 30000000 -SamplePeakWorkingSetBytes 35000000 -JsonOutput");
+        RunScript($"-Action Test-ResourceObservation -FixtureRoot \"{root}\" -Role Companion -SamplePid 8002 -SampleWorkingSetBytes 600000000 -SamplePeakWorkingSetBytes 650000000 -JsonOutput");
+
+        using (var doc = JsonDocument.Parse(File.ReadAllText(statePath)))
+        {
+            Assert.True(doc.RootElement.GetProperty("ActiveProcesses").GetArrayLength() > 0);
+            var obs = doc.RootElement.GetProperty("ProcessMemoryObservations");
+            Assert.Equal(2, obs.GetArrayLength());
+        }
+
+        // 2. Processes exit normally; ActiveProcesses becomes empty
+        var resExit = RunScript($"-Action Test-ResourceObservation -FixtureRoot \"{root}\" -ProcessExited -JsonOutput");
+        Assert.Equal(0, resExit.ExitCode);
+
+        using (var doc = JsonDocument.Parse(File.ReadAllText(statePath)))
+        {
+            Assert.Equal(0, doc.RootElement.GetProperty("ActiveProcesses").GetArrayLength());
+
+            var obs = doc.RootElement.GetProperty("ProcessMemoryObservations");
+            Assert.Equal(2, obs.GetArrayLength());
+
+            var helperObs = obs[0];
+            Assert.Equal("Helper", helperObs.GetProperty("Role").GetString());
+            Assert.Equal(8001, helperObs.GetProperty("Pid").GetInt32());
+            Assert.False(helperObs.GetProperty("IsLive").GetBoolean());
+            Assert.Equal(JsonValueKind.Null, helperObs.GetProperty("CurrentWorkingSetBytes").ValueKind);
+            Assert.Equal(30000000L, helperObs.GetProperty("LastSampledWorkingSetBytes").GetInt64());
+            Assert.Equal(30000000L, helperObs.GetProperty("MaxSampledWorkingSetBytes").GetInt64());
+            Assert.Equal(35000000L, helperObs.GetProperty("OsReportedPeakWorkingSetBytes").GetInt64());
+
+            var compObs = obs[1];
+            Assert.Equal("Companion", compObs.GetProperty("Role").GetString());
+            Assert.Equal(8002, compObs.GetProperty("Pid").GetInt32());
+            Assert.False(compObs.GetProperty("IsLive").GetBoolean());
+            Assert.Equal(JsonValueKind.Null, compObs.GetProperty("CurrentWorkingSetBytes").ValueKind);
+            Assert.Equal(600000000L, compObs.GetProperty("LastSampledWorkingSetBytes").GetInt64());
+            Assert.Equal(600000000L, compObs.GetProperty("MaxSampledWorkingSetBytes").GetInt64());
+            Assert.Equal(650000000L, compObs.GetProperty("OsReportedPeakWorkingSetBytes").GetInt64());
+        }
+    }
+
+    [Fact]
+    public void ResourceObservation_FirstResourceHold_IsImmutableAcrossSubsequentSamplesAndExit()
+    {
+        AssertHostedCiEnvironment();
+
+        using var temp = new SyntheticTestDirectory();
+        var root = SetUpTestFixture(temp);
+        WriteReadinessRecord(root, bindSessionInState: false);
+
+        var statePath = Path.Combine(root, "state.json");
+
+        // 1. Initial over-limit sample (1.1 GiB)
+        RunScript($"-Action Test-ResourceObservation -FixtureRoot \"{root}\" -Role Companion -SamplePid 9001 -SampleWorkingSetBytes 1100000000 -JsonOutput");
+
+        string firstHoldTime;
+        using (var doc = JsonDocument.Parse(File.ReadAllText(statePath)))
+        {
+            Assert.True(doc.RootElement.GetProperty("TerminalHold").GetBoolean());
+            var hold = doc.RootElement.GetProperty("FirstResourceHold");
+            Assert.Equal(1100000000L, hold.GetProperty("ObservedValue").GetInt64());
+            Assert.Equal(1073741824L, hold.GetProperty("ConfiguredLimit").GetInt64());
+            Assert.Equal("WorkingSet", hold.GetProperty("Metric").GetString());
+            firstHoldTime = hold.GetProperty("TimestampUtc").GetString()!;
+        }
+
+        // 2. Subsequent higher sample (1.5 GiB) - observation updates maxima, but FirstResourceHold is immutable
+        RunScript($"-Action Test-ResourceObservation -FixtureRoot \"{root}\" -Role Companion -SamplePid 9001 -SampleWorkingSetBytes 1500000000 -JsonOutput");
+
+        using (var doc = JsonDocument.Parse(File.ReadAllText(statePath)))
+        {
+            var obs = doc.RootElement.GetProperty("ProcessMemoryObservations")[0];
+            Assert.Equal(1500000000L, obs.GetProperty("MaxSampledWorkingSetBytes").GetInt64());
+
+            var hold = doc.RootElement.GetProperty("FirstResourceHold");
+            Assert.Equal(1100000000L, hold.GetProperty("ObservedValue").GetInt64());
+            Assert.Equal(firstHoldTime, hold.GetProperty("TimestampUtc").GetString());
+        }
+
+        // 3. Subsequent CPU limit violation (2,000,000 ms > 1,800,000 ms) - FirstResourceHold remains WorkingSet
+        RunScript($"-Action Test-ResourceObservation -FixtureRoot \"{root}\" -Role Companion -SamplePid 9001 -SampleWorkingSetBytes 1500000000 -SampleCpuMilliseconds 2000000 -JsonOutput");
+
+        using (var doc = JsonDocument.Parse(File.ReadAllText(statePath)))
+        {
+            var hold = doc.RootElement.GetProperty("FirstResourceHold");
+            Assert.Equal("WorkingSet", hold.GetProperty("Metric").GetString());
+            Assert.Equal(1100000000L, hold.GetProperty("ObservedValue").GetInt64());
+            Assert.Equal(firstHoldTime, hold.GetProperty("TimestampUtc").GetString());
+        }
+
+        // 4. Process exits; FirstResourceHold remains preserved
+        RunScript($"-Action Test-ResourceObservation -FixtureRoot \"{root}\" -ProcessExited -JsonOutput");
+
+        using (var doc = JsonDocument.Parse(File.ReadAllText(statePath)))
+        {
+            Assert.True(doc.RootElement.GetProperty("TerminalHold").GetBoolean());
+            var hold = doc.RootElement.GetProperty("FirstResourceHold");
+            Assert.Equal("WorkingSet", hold.GetProperty("Metric").GetString());
+            Assert.Equal(1100000000L, hold.GetProperty("ObservedValue").GetInt64());
+            Assert.Equal(firstHoldTime, hold.GetProperty("TimestampUtc").GetString());
+        }
+    }
+
+    [Fact]
+    public void ResourceObservation_SeparateProcessInvocations_DistinctSummariesWithoutStateReset()
+    {
+        AssertHostedCiEnvironment();
+
+        using var temp = new SyntheticTestDirectory();
+        var root = SetUpTestFixture(temp);
+        WriteReadinessRecord(root, bindSessionInState: false);
+
+        var statePath = Path.Combine(root, "state.json");
+        long initialOriginTimestamp;
+        using (var doc = JsonDocument.Parse(File.ReadAllText(statePath)))
+        {
+            initialOriginTimestamp = doc.RootElement.GetProperty("MonotonicOriginTimestamp").GetInt64();
+        }
+
+        // Invocation 1: Companion PID 9101, sampled twice, then exits
+        RunScript($"-Action Test-ResourceObservation -FixtureRoot \"{root}\" -Role Companion -SamplePid 9101 -SampleWorkingSetBytes 300000000 -JsonOutput");
+        RunScript($"-Action Test-ResourceObservation -FixtureRoot \"{root}\" -Role Companion -SamplePid 9101 -SampleWorkingSetBytes 400000000 -JsonOutput");
+        RunScript($"-Action Test-ResourceObservation -FixtureRoot \"{root}\" -ProcessExited -JsonOutput");
+
+        // Invocation 2: Companion PID 9102, sampled once
+        RunScript($"-Action Test-ResourceObservation -FixtureRoot \"{root}\" -Role Companion -SamplePid 9102 -SampleWorkingSetBytes 500000000 -JsonOutput");
+
+        using (var doc = JsonDocument.Parse(File.ReadAllText(statePath)))
+        {
+            var obs = doc.RootElement.GetProperty("ProcessMemoryObservations");
+            Assert.Equal(2, obs.GetArrayLength());
+
+            var inv1 = obs[0];
+            Assert.Equal(9101, inv1.GetProperty("Pid").GetInt32());
+            Assert.Equal("Companion", inv1.GetProperty("Role").GetString());
+            Assert.False(inv1.GetProperty("IsLive").GetBoolean());
+            Assert.Equal(2, inv1.GetProperty("SampleCount").GetInt32());
+            Assert.Equal(400000000L, inv1.GetProperty("MaxSampledWorkingSetBytes").GetInt64());
+
+            var inv2 = obs[1];
+            Assert.Equal(9102, inv2.GetProperty("Pid").GetInt32());
+            Assert.Equal("Companion", inv2.GetProperty("Role").GetString());
+            Assert.True(inv2.GetProperty("IsLive").GetBoolean());
+            Assert.Equal(1, inv2.GetProperty("SampleCount").GetInt32());
+            Assert.Equal(500000000L, inv2.GetProperty("MaxSampledWorkingSetBytes").GetInt64());
+
+            // Monotonic state preserved without reset
+            Assert.Equal(initialOriginTimestamp, doc.RootElement.GetProperty("MonotonicOriginTimestamp").GetInt64());
+        }
+    }
+
     private static void ClearActiveSupervisorInState(string root)
     {
         var statePath = Path.Combine(root, "state.json");
@@ -2912,6 +3243,8 @@ public sealed class ProcessLifecycleTrialPreparationTests
             ReadinessReason = "Pending explicit owner adoption and readiness confirmation",
             CurrentFootprintBytes = 1000L,
             ActiveProcesses = Array.Empty<object>(),
+            ProcessMemoryObservations = Array.Empty<object>(),
+            FirstResourceHold = (object?)null,
             SetupScriptSha256 = GetCurrentScriptSha256(),
             SetupProfileSha256 = GetCurrentProfileSha256(),
             AdoptedProfilePath = (string?)null,
