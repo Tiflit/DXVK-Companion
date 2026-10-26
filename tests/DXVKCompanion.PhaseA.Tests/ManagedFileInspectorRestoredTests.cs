@@ -22,6 +22,82 @@ public sealed class ManagedFileInspectorRestoredTests
         return Convert.ToHexString(hash).ToLowerInvariant();
     }
 
+    private static string SanitizeDiagnostic(string? text, params (string? search, string replacement)[] replacements)
+    {
+        if (string.IsNullOrEmpty(text)) return "<null>";
+        string sanitized = text;
+        if (replacements != null)
+        {
+            foreach (var (search, replacement) in replacements)
+            {
+                if (!string.IsNullOrEmpty(search))
+                {
+                    sanitized = sanitized.Replace(search, replacement, StringComparison.OrdinalIgnoreCase);
+                }
+            }
+        }
+        var userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        if (!string.IsNullOrEmpty(userProfile))
+        {
+            sanitized = sanitized.Replace(userProfile, "<userProfile>", StringComparison.OrdinalIgnoreCase);
+        }
+        var tempPath = Path.GetTempPath().TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        if (!string.IsNullOrEmpty(tempPath))
+        {
+            sanitized = sanitized.Replace(tempPath, "<temp>", StringComparison.OrdinalIgnoreCase);
+        }
+        return sanitized;
+    }
+
+    private static string BuildInstallerDiagnostic(
+        DxvkInstaller installer,
+        GameProfile profile,
+        ReleaseInfo release,
+        GameLibraryStore store,
+        string gameRoot,
+        string storageRoot)
+    {
+        var inst = store.FindByInstallationPath(gameRoot);
+        var leaseCoord = installer.LeaseCoordinator as OperationLeaseCoordinator;
+        var replacements = new (string?, string)[]
+        {
+            (gameRoot, "<gameRoot>"),
+            (storageRoot, "<storageRoot>")
+        };
+
+        return $"installer.LastRefusal='{SanitizeDiagnostic(installer.LastRefusalReason, replacements)}'; " +
+            $"LeaseCoord.Error='{SanitizeDiagnostic(installer.LeaseCoordinator?.LastAcquisitionError, replacements)}'; " +
+            $"LeaseCoord.Diag='{SanitizeDiagnostic(leaseCoord?.LastAcquisitionDiagnostic, replacements)}'; " +
+            $"Profile.Api={profile.Api}; Profile.Arch={profile.Architecture}; TargetVersion='{release.Version}'; " +
+            $"inst.RestorationState={(inst != null ? inst.RestorationState.ToString() : "<null>")}; " +
+            $"inst.ConflictFlags={(inst != null ? inst.ConflictFlags.ToString() : "<null>")}; " +
+            $"inst.LastRefusal='{SanitizeDiagnostic(inst?.LastRefusalReason, replacements)}'; " +
+            $"exeExists={File.Exists(profile.ExePath)}";
+    }
+
+    private static string BuildRollbackDiagnostic(
+        DxvkRollback rollback,
+        GameProfile profile,
+        GameLibraryStore store,
+        string gameRoot,
+        string storageRoot)
+    {
+        var inst = store.FindByInstallationPath(gameRoot);
+        var leaseCoord = rollback.LeaseCoordinator as OperationLeaseCoordinator;
+        var replacements = new (string?, string)[]
+        {
+            (gameRoot, "<gameRoot>"),
+            (storageRoot, "<storageRoot>")
+        };
+
+        return $"rollback.LastRefusal='{SanitizeDiagnostic(rollback.LastRefusalReason, replacements)}'; " +
+            $"LeaseCoord.Error='{SanitizeDiagnostic(rollback.LeaseCoordinator?.LastAcquisitionError, replacements)}'; " +
+            $"LeaseCoord.Diag='{SanitizeDiagnostic(leaseCoord?.LastAcquisitionDiagnostic, replacements)}'; " +
+            $"inst.RestorationState={(inst != null ? inst.RestorationState.ToString() : "<null>")}; " +
+            $"inst.ConflictFlags={(inst != null ? inst.ConflictFlags.ToString() : "<null>")}; " +
+            $"inst.LastRefusal='{SanitizeDiagnostic(inst?.LastRefusalReason, replacements)}'";
+    }
+
     [Fact]
     public async Task Install_Restore_Inspect_MaintainsRestoredAndConsistent_WithoutNewExternalChange()
     {
@@ -60,14 +136,16 @@ public sealed class ManagedFileInspectorRestoredTests
 
         // 1. Install DXVK 2.5
         var installOk = await installer.ApplyToGameAsync(profile, release);
-        Assert.True(installOk);
+        Assert.True(installOk,
+            $"Initial installation stage failed before reaching restore/inspection feature test. Diagnostics: {BuildInstallerDiagnostic(installer, profile, release, store, gameDir.RootPath, storageDir.RootPath)}");
         Assert.Equal("dxvk-2.5-d3d11-payload", File.ReadAllText(d3d11Path));
         Assert.True(File.Exists(dxgiPath));
         Assert.Equal("dxvk-2.5-dxgi-payload", File.ReadAllText(dxgiPath));
 
         // 2. Restore original DLLs
         var rollbackOk = await rollback.RestoreOriginalDllsAsync(profile);
-        Assert.True(rollbackOk);
+        Assert.True(rollbackOk,
+            $"Initial rollback stage failed before reaching inspection feature test. Diagnostics: {BuildRollbackDiagnostic(rollback, profile, store, gameDir.RootPath, storageDir.RootPath)}");
 
         // Verification after restore: original content restored, created DLL deleted
         Assert.Equal(originalD3D11, File.ReadAllText(d3d11Path));
@@ -147,8 +225,13 @@ public sealed class ManagedFileInspectorRestoredTests
         var profile = new GameProfile(exePath) { Api = GraphicsApi.DX11, Architecture = "x64" };
         var release = new ReleaseInfo { Version = "2.5", DownloadUrl = "" };
 
-        Assert.True(await installer.ApplyToGameAsync(profile, release));
-        Assert.True(await rollback.RestoreOriginalDllsAsync(profile));
+        bool installOk = await installer.ApplyToGameAsync(profile, release);
+        Assert.True(installOk,
+            $"Initial installation stage failed before reaching restore/inspection feature test. Diagnostics: {BuildInstallerDiagnostic(installer, profile, release, store, gameDir.RootPath, storageDir.RootPath)}");
+
+        bool rollbackOk = await rollback.RestoreOriginalDllsAsync(profile);
+        Assert.True(rollbackOk,
+            $"Initial rollback stage failed before reaching inspection feature test. Diagnostics: {BuildRollbackDiagnostic(rollback, profile, store, gameDir.RootPath, storageDir.RootPath)}");
 
         var installation = store.FindByInstallationPath(gameDir.RootPath)!;
         Assert.Equal(RestorationState.Restored, installation.RestorationState);
@@ -218,8 +301,13 @@ public sealed class ManagedFileInspectorRestoredTests
         var profile = new GameProfile(exePath) { Api = GraphicsApi.DX11, Architecture = "x64" };
         var release = new ReleaseInfo { Version = "2.5", DownloadUrl = "" };
 
-        Assert.True(await installer.ApplyToGameAsync(profile, release));
-        Assert.True(await rollback.RestoreOriginalDllsAsync(profile));
+        bool installOk = await installer.ApplyToGameAsync(profile, release);
+        Assert.True(installOk,
+            $"Initial installation stage failed before reaching restore/inspection feature test. Diagnostics: {BuildInstallerDiagnostic(installer, profile, release, store, gameDir.RootPath, storageDir.RootPath)}");
+
+        bool rollbackOk = await rollback.RestoreOriginalDllsAsync(profile);
+        Assert.True(rollbackOk,
+            $"Initial rollback stage failed before reaching inspection feature test. Diagnostics: {BuildRollbackDiagnostic(rollback, profile, store, gameDir.RootPath, storageDir.RootPath)}");
 
         var installation = store.FindByInstallationPath(gameDir.RootPath)!;
         Assert.Equal(RestorationState.Restored, installation.RestorationState);
@@ -231,13 +319,21 @@ public sealed class ManagedFileInspectorRestoredTests
 
         // Scan 1: Flags new change and AttentionRequired
         bool scan1Changed = inspector.InspectInstallation(installation);
-        Assert.True(scan1Changed);
+        string scan1Diag = $"Scan1 changed={scan1Changed}; " +
+            $"RestorationState={installation.RestorationState}; " +
+            $"d3d11State={installation.FindManagedFile("d3d11.dll")?.CurrentState}; " +
+            $"d3d11Exists={File.Exists(d3d11Path)}";
+        Assert.True(scan1Changed, $"Expected Scan 1 to detect change after file deletion. Diagnostics: {scan1Diag}");
         Assert.Equal(RestorationState.AttentionRequired, installation.RestorationState);
         Assert.Equal(ManagedFileState.ExternallyChanged, installation.FindManagedFile("d3d11.dll")!.CurrentState);
 
         // Scan 2: Retains AttentionRequired, returns false
         bool scan2Changed = inspector.InspectInstallation(installation);
-        Assert.False(scan2Changed);
+        string scan2Diag = $"Scan2 changed={scan2Changed}; " +
+            $"RestorationState={installation.RestorationState}; " +
+            $"d3d11State={installation.FindManagedFile("d3d11.dll")?.CurrentState}; " +
+            $"d3d11Exists={File.Exists(d3d11Path)}";
+        Assert.False(scan2Changed, $"Expected Scan 2 to return false for unchanged AttentionRequired state. Diagnostics: {scan2Diag}");
         Assert.Equal(RestorationState.AttentionRequired, installation.RestorationState);
         Assert.Equal(ManagedFileState.ExternallyChanged, installation.FindManagedFile("d3d11.dll")!.CurrentState);
     }
@@ -271,8 +367,13 @@ public sealed class ManagedFileInspectorRestoredTests
         var profile = new GameProfile(exePath) { Api = GraphicsApi.DX11, Architecture = "x64" };
         var release = new ReleaseInfo { Version = "2.5", DownloadUrl = "" };
 
-        Assert.True(await installer.ApplyToGameAsync(profile, release));
-        Assert.True(await rollback.RestoreOriginalDllsAsync(profile));
+        bool installOk = await installer.ApplyToGameAsync(profile, release);
+        Assert.True(installOk,
+            $"Initial installation stage failed before reaching restore/inspection feature test. Diagnostics: {BuildInstallerDiagnostic(installer, profile, release, store, gameDir.RootPath, storageDir.RootPath)}");
+
+        bool rollbackOk = await rollback.RestoreOriginalDllsAsync(profile);
+        Assert.True(rollbackOk,
+            $"Initial rollback stage failed before reaching inspection feature test. Diagnostics: {BuildRollbackDiagnostic(rollback, profile, store, gameDir.RootPath, storageDir.RootPath)}");
 
         var installation = store.FindByInstallationPath(gameDir.RootPath)!;
         Assert.Equal(RestorationState.Restored, installation.RestorationState);
@@ -284,13 +385,21 @@ public sealed class ManagedFileInspectorRestoredTests
 
         // Scan 1: Flags new change and AttentionRequired
         bool scan1Changed = inspector.InspectInstallation(installation);
-        Assert.True(scan1Changed);
+        string scan1Diag = $"Scan1 changed={scan1Changed}; " +
+            $"RestorationState={installation.RestorationState}; " +
+            $"d3d11State={installation.FindManagedFile("d3d11.dll")?.CurrentState}; " +
+            $"d3d11Exists={File.Exists(d3d11Path)}";
+        Assert.True(scan1Changed, $"Expected Scan 1 to detect change after file deletion. Diagnostics: {scan1Diag}");
         Assert.Equal(RestorationState.AttentionRequired, installation.RestorationState);
         Assert.Equal(ManagedFileState.ExternallyChanged, installation.FindManagedFile("d3d11.dll")!.CurrentState);
 
         // Scan 2: Retains AttentionRequired, returns false
         bool scan2Changed = inspector.InspectInstallation(installation);
-        Assert.False(scan2Changed);
+        string scan2Diag = $"Scan2 changed={scan2Changed}; " +
+            $"RestorationState={installation.RestorationState}; " +
+            $"d3d11State={installation.FindManagedFile("d3d11.dll")?.CurrentState}; " +
+            $"d3d11Exists={File.Exists(d3d11Path)}";
+        Assert.False(scan2Changed, $"Expected Scan 2 to return false for unchanged AttentionRequired state. Diagnostics: {scan2Diag}");
         Assert.Equal(RestorationState.AttentionRequired, installation.RestorationState);
         Assert.Equal(ManagedFileState.ExternallyChanged, installation.FindManagedFile("d3d11.dll")!.CurrentState);
     }
@@ -327,8 +436,13 @@ public sealed class ManagedFileInspectorRestoredTests
         var profile = new GameProfile(exePath) { Api = GraphicsApi.DX11, Architecture = "x64" };
         var release = new ReleaseInfo { Version = "2.5", DownloadUrl = "" };
 
-        Assert.True(await installer.ApplyToGameAsync(profile, release));
-        Assert.True(await rollback.RestoreOriginalDllsAsync(profile));
+        bool installOk = await installer.ApplyToGameAsync(profile, release);
+        Assert.True(installOk,
+            $"Initial installation stage failed before reaching restore/inspection feature test. Diagnostics: {BuildInstallerDiagnostic(installer, profile, release, store, gameDir.RootPath, storageDir.RootPath)}");
+
+        bool rollbackOk = await rollback.RestoreOriginalDllsAsync(profile);
+        Assert.True(rollbackOk,
+            $"Initial rollback stage failed before reaching inspection feature test. Diagnostics: {BuildRollbackDiagnostic(rollback, profile, store, gameDir.RootPath, storageDir.RootPath)}");
 
         var installation = store.FindByInstallationPath(gameDir.RootPath)!;
         Assert.Equal(RestorationState.Restored, installation.RestorationState);
@@ -397,8 +511,13 @@ public sealed class ManagedFileInspectorRestoredTests
         var profile = new GameProfile(exePath) { Api = GraphicsApi.DX11, Architecture = "x64" };
         var release = new ReleaseInfo { Version = "2.5", DownloadUrl = "" };
 
-        Assert.True(await installer.ApplyToGameAsync(profile, release));
-        Assert.True(await rollback.RestoreOriginalDllsAsync(profile));
+        bool installOk = await installer.ApplyToGameAsync(profile, release);
+        Assert.True(installOk,
+            $"Initial installation stage failed before reaching restore/inspection feature test. Diagnostics: {BuildInstallerDiagnostic(installer, profile, release, store, gameDir.RootPath, storageDir.RootPath)}");
+
+        bool rollbackOk = await rollback.RestoreOriginalDllsAsync(profile);
+        Assert.True(rollbackOk,
+            $"Initial rollback stage failed before reaching inspection feature test. Diagnostics: {BuildRollbackDiagnostic(rollback, profile, store, gameDir.RootPath, storageDir.RootPath)}");
 
         var installation = store.FindByInstallationPath(gameDir.RootPath)!;
 
@@ -526,7 +645,9 @@ public sealed class ManagedFileInspectorRestoredTests
         var release = new ReleaseInfo { Version = "2.5", DownloadUrl = "" };
 
         // Install DXVK
-        Assert.True(await installer.ApplyToGameAsync(profile, release));
+        bool installOk = await installer.ApplyToGameAsync(profile, release);
+        Assert.True(installOk,
+            $"Initial installation stage failed before reaching active management feature test. Diagnostics: {BuildInstallerDiagnostic(installer, profile, release, store, gameDir.RootPath, storageDir.RootPath)}");
 
         var installation = store.FindByInstallationPath(gameDir.RootPath)!;
         Assert.Equal(RestorationState.Managed, installation.RestorationState);
