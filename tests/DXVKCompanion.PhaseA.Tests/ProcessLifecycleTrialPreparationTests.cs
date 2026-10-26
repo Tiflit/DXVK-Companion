@@ -1250,8 +1250,8 @@ public sealed class ProcessLifecycleTrialPreparationTests
         stateObj["TrialStartUtc"] = DateTime.UtcNow.AddSeconds(-8000).ToString("o");
         File.WriteAllText(statePath, JsonSerializer.Serialize(stateObj, new JsonSerializerOptions { WriteIndented = true }));
 
-        var result = RunScript($"-Action Supervise -FixtureRoot \"{root}\" -Commands @(\"status\") -JsonOutput");
-        Assert.Equal(0, result.ExitCode);
+        var result = RunScript($"-Action Supervise -FixtureRoot \"{root}\" -Commands status -JsonOutput");
+        Assert.True(result.ExitCode == 0, $"Supervise status failed with exit code {result.ExitCode}.\nSTDOUT: {result.StandardOutput}\nSTDERR: {result.StandardError}");
 
         var stateAfter = JsonSerializer.Deserialize<Dictionary<string, object>>(File.ReadAllText(statePath))!;
         Assert.True(bool.Parse(stateAfter["TerminalHold"].ToString()!));
@@ -1274,7 +1274,7 @@ public sealed class ProcessLifecycleTrialPreparationTests
         stateObj["LastCheckpointOutcome"] = "Failed";
         File.WriteAllText(statePath, JsonSerializer.Serialize(stateObj, new JsonSerializerOptions { WriteIndented = true }));
 
-        var result = RunScript($"-Action Supervise -FixtureRoot \"{root}\" -Commands @(\"start-helper 1\") -JsonOutput");
+        var result = RunScript($"-Action Supervise -FixtureRoot \"{root}\" -Commands \"start-helper 1\" -JsonOutput");
         Assert.NotEqual(0, result.ExitCode);
         Assert.Contains("Supervisor is in terminal hold state", result.StandardOutput + result.StandardError);
     }
@@ -1314,7 +1314,7 @@ public sealed class ProcessLifecycleTrialPreparationTests
 
         // Run Verify-Checkpoint with PureDataCheck
         var result = RunScript($"-Action Verify-Checkpoint -FixtureRoot \"{root}\" -CheckpointName \"PendingUpdate\" -ExpectedType \"Pending\" -ExpectedVersion \"v3.1.1\" -PureDataCheck -JsonOutput");
-        Assert.Equal(0, result.ExitCode);
+        Assert.True(result.ExitCode == 0, $"Verify-Checkpoint Pending failed with exit code {result.ExitCode}.\nSTDOUT: {result.StandardOutput}\nSTDERR: {result.StandardError}");
         AssertScriptSuccess(result, true);
     }
 
@@ -1412,7 +1412,7 @@ public sealed class ProcessLifecycleTrialPreparationTests
 
         // Run Verify-Checkpoint
         var result = RunScript($"-Action Verify-Checkpoint -FixtureRoot \"{root}\" -CheckpointName \"Applied1\" -ExpectedType \"Applied\" -ExpectedVersion \"v3.1\" -Slot 1 -PureDataCheck -JsonOutput");
-        Assert.Equal(0, result.ExitCode);
+        Assert.True(result.ExitCode == 0, $"Verify-Checkpoint Applied failed with exit code {result.ExitCode}.\nSTDOUT: {result.StandardOutput}\nSTDERR: {result.StandardError}");
         AssertScriptSuccess(result, true);
     }
 
@@ -1565,6 +1565,9 @@ public sealed class ProcessLifecycleTrialPreparationTests
             TestPinsUsed = testPinsUsed,
             ActiveHelperPid = (int?)null,
             ActiveHelperSlot = (int?)null,
+            ActiveHelperStartTimeUtc = (string?)null,
+            LastStoppedHelperSlot = (int?)null,
+            NonQualifyingPureDataCheck = false,
             ActiveCompanionPid = (int?)null,
             ActiveSupervisorPid = (int?)null,
             Checkpoints = new[] { "Setup" }

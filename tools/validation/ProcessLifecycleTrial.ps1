@@ -346,6 +346,15 @@ function Get-SafePropertyValue($Object, [string]$PropertyName) {
     return $p.Value
 }
 
+function Set-SafePropertyValue($Object, [string]$PropertyName, $Value) {
+    if ($null -eq $Object) { return }
+    if ($null -ne $Object.PSObject.Properties[$PropertyName]) {
+        $Object.$PropertyName = $Value
+    } else {
+        $Object.PSObject.Properties.Add((New-Object System.Management.Automation.PSNoteProperty($PropertyName, $Value)))
+    }
+}
+
 function Get-SafeCount($Value) {
     if ($null -eq $Value) { return 0 }
     if ($Value -is [System.Array]) { return $Value.Length }
@@ -612,7 +621,51 @@ function Get-StateData([string]$FixtureRoot) {
         throw "Batch state file not found: $statePath"
     }
     $raw = [System.IO.File]::ReadAllText($statePath, $script:Utf8NoBom)
-    return ConvertFrom-Json -InputObject $raw
+    $obj = ConvertFrom-Json -InputObject $raw
+
+    $defaults = @{
+        BatchStartTimeUtc          = ""
+        TrialStartUtc              = ""
+        SetupElapsedMilliseconds   = 0L
+        ElapsedMilliseconds        = 0L
+        HelperStartAttempts        = 0
+        CompanionStartAttempts     = 0
+        MaxHelperStarts            = $script:MAX_HELPER_STARTS
+        MaxCompanionStarts         = $script:MAX_COMPANION_STARTS
+        MaxDurationSeconds         = $script:MAX_TRIAL_DURATION_SECONDS
+        MaxFootprintBytes          = $script:MAX_FIXTURE_ROOT_BYTES
+        UsedSlots                  = @()
+        CurrentCheckpoint          = ""
+        LastCheckpointOutcome      = "None"
+        LastFailedCheckpoint       = $null
+        LastFailedReason           = $null
+        TerminalHold               = $false
+        TerminalHoldReason         = $null
+        CurrentReadiness           = "NotReady"
+        ReadinessReason            = ""
+        CurrentFootprintBytes      = 0L
+        ActiveProcesses            = @()
+        AdoptedScriptSha256        = $null
+        AdoptedToken               = $null
+        IsEnded                    = $false
+        TestPinsUsed               = $false
+        ActiveHelperPid            = $null
+        ActiveHelperSlot           = $null
+        ActiveHelperStartTimeUtc   = $null
+        LastStoppedHelperSlot      = $null
+        NonQualifyingPureDataCheck = $false
+        ActiveCompanionPid         = $null
+        ActiveSupervisorPid        = $null
+        Checkpoints                = @()
+    }
+
+    foreach ($key in $defaults.Keys) {
+        if ($null -eq $obj.PSObject.Properties[$key]) {
+            $obj.PSObject.Properties.Add((New-Object System.Management.Automation.PSNoteProperty($key, $defaults[$key])))
+        }
+    }
+
+    return $obj
 }
 
 function Save-StateData([string]$FixtureRoot, $StateObject) {
@@ -1872,12 +1925,15 @@ function Invoke-SetupAction {
         AdoptedScriptSha256      = $scriptSha
         AdoptedToken             = $null
         IsEnded                  = $false
-        TestPinsUsed             = $testPinsUsed
-        ActiveHelperPid          = $null
-        ActiveHelperSlot         = $null
-        ActiveCompanionPid       = $null
-        ActiveSupervisorPid      = $null
-        Checkpoints              = @("Setup")
+        TestPinsUsed               = $testPinsUsed
+        ActiveHelperPid            = $null
+        ActiveHelperSlot           = $null
+        ActiveHelperStartTimeUtc   = $null
+        LastStoppedHelperSlot      = $null
+        NonQualifyingPureDataCheck = $false
+        ActiveCompanionPid         = $null
+        ActiveSupervisorPid        = $null
+        Checkpoints                = @("Setup")
     }
     Save-StateData -FixtureRoot $rootFull -StateObject $initialState
 
@@ -2021,36 +2077,36 @@ function Verify-CheckpointInternal(
 
         switch ($ExpectedType) {
             "Pending" {
-                if ($null -eq $inst.PendingAction) {
+                $pendingAction = Get-SafePropertyValue -Object $inst -PropertyName "PendingAction"
+                if ($null -eq $pendingAction) {
                     throw "Pending checkpoint verification failed: no PendingAction recorded."
                 }
-                $pendingType = $inst.PendingAction.Type
+                $pendingType = Get-SafePropertyValue -Object $pendingAction -PropertyName "Type"
                 $validTypes = @("Install", "Update", "Reapply", "Restore")
                 if ($validTypes -notcontains $pendingType) {
                     throw "Pending checkpoint verification failed: unexpected pending action type '$pendingType'."
                 }
 
+                $instManagedVer = Get-SafePropertyValue -Object $inst -PropertyName "ManagedDxvkVersion"
                 if ($pendingType -eq "Install") {
-                    if ([string]::IsNullOrWhiteSpace($inst.ManagedDxvkVersion)) {
+                    if ([string]::IsNullOrWhiteSpace($instManagedVer)) {
                         $baseCheck = Compare-TargetBaselineInternal -FixtureRoot $canonRoot
                         if (-not $baseCheck.IsMatch) {
                             throw "Pending Install checkpoint verification failed: target was mutated ($($baseCheck.Reason))"
                         }
                     } else {
-                        $currentManagedVer = $inst.ManagedDxvkVersion
-                        $managedCheck = Compare-TargetManagedReferenceInternal -FixtureRoot $canonRoot -ManagedVersion $currentManagedVer
+                        $managedCheck = Compare-TargetManagedReferenceInternal -FixtureRoot $canonRoot -ManagedVersion "$instManagedVer"
                         if (-not $managedCheck.IsMatch) {
-                            throw "Pending Install checkpoint verification failed: target does not match currently managed $currentManagedVer state ($($managedCheck.Reason))"
+                            throw "Pending Install checkpoint verification failed: target does not match currently managed $instManagedVer state ($($managedCheck.Reason))"
                         }
                     }
                 } else {
-                    $currentManagedVer = $inst.ManagedDxvkVersion
-                    if ([string]::IsNullOrWhiteSpace($currentManagedVer)) {
+                    if ([string]::IsNullOrWhiteSpace($instManagedVer)) {
                         throw "Pending $pendingType checkpoint verification failed: installation has no ManagedDxvkVersion."
                     }
-                    $managedCheck = Compare-TargetManagedReferenceInternal -FixtureRoot $canonRoot -ManagedVersion $currentManagedVer
+                    $managedCheck = Compare-TargetManagedReferenceInternal -FixtureRoot $canonRoot -ManagedVersion "$instManagedVer"
                     if (-not $managedCheck.IsMatch) {
-                        throw "Pending $pendingType checkpoint verification failed: target does not match currently managed $currentManagedVer state ($($managedCheck.Reason))"
+                        throw "Pending $pendingType checkpoint verification failed: target does not match currently managed $instManagedVer state ($($managedCheck.Reason))"
                     }
                 }
 
@@ -2063,8 +2119,9 @@ function Verify-CheckpointInternal(
 
                 if (-not [string]::IsNullOrEmpty($ExpectedVersion)) {
                     if ($pendingType -ne "Restore") {
-                        if ($inst.PendingAction.TargetDxvkVersion -ne $ExpectedVersion) {
-                            throw "Pending checkpoint verification failed: expected target version '$ExpectedVersion', got '$($inst.PendingAction.TargetDxvkVersion)'."
+                        $targetDxvkVer = Get-SafePropertyValue -Object $pendingAction -PropertyName "TargetDxvkVersion"
+                        if ($targetDxvkVer -ne $ExpectedVersion) {
+                            throw "Pending checkpoint verification failed: expected target version '$ExpectedVersion', got '$targetDxvkVer'."
                         }
                     }
                 }
@@ -2636,6 +2693,16 @@ function Invoke-SuperviseAction {
             Invoke-SuperviseObservationCycle -FixtureRoot $canonRoot
             foreach ($line in $commandList) {
                 $trimmed = $line.Trim()
+                if ([string]::IsNullOrWhiteSpace($trimmed) -or $trimmed.StartsWith("#")) { continue }
+
+                # Normalize potential @(...) array wrapping and quotes passed from CLI
+                if ($trimmed.StartsWith("@(") -and $trimmed.EndsWith(")")) {
+                    $trimmed = $trimmed.Substring(2, $trimmed.Length - 3).Trim()
+                }
+                while (($trimmed.StartsWith('"') -and $trimmed.EndsWith('"')) -or ($trimmed.StartsWith("'") -and $trimmed.EndsWith("'"))) {
+                    if ($trimmed.Length -le 2) { $trimmed = ""; break }
+                    $trimmed = $trimmed.Substring(1, $trimmed.Length - 2).Trim()
+                }
                 if ([string]::IsNullOrWhiteSpace($trimmed) -or $trimmed.StartsWith("#")) { continue }
 
                 Invoke-SuperviseObservationCycle -FixtureRoot $canonRoot

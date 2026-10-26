@@ -191,6 +191,23 @@ Following Codex focused review comment 6405199238 at head `39cd6bf`, the followi
    - Removed trailing `L` suffixes from integer literals and parameters across `ProcessLifecycleTrial.ps1` for clean cross-version compatibility between Windows PowerShell 5.1 and PowerShell 7+.
    - Updated script SHA256 pin in `docs/validation/PACKAGED-PROCESS-LIFECYCLE-V1.md`: `9024bb2a2d9f38b1ef32bfc7bdccd97a06a1b46f4931dc177ff1c67a8c201592`.
 
+---
 
+## 2026-10-25 Delta Repair Cycle 5 (Final Strict Mode Schema & Command Invocation Resolution)
 
+### Root Cause Analysis & Fixes
+1. **PowerShell Strict Mode 3.0 Dynamic Property Assignment (`SetValueInvocationException`)**:
+   - Under `Set-StrictMode -Version 3.0`, assigning to an undeclared property on a `PSCustomObject` (`$state.NonQualifyingPureDataCheck = $true`, `$state.LastStoppedHelperSlot = $Slot`, `$state.ActiveHelperStartTimeUtc = ...`) throws `SetValueInvocationException: The property cannot be found on this object. Verify that the property exists and can be set.`
+   - In `initialState` (inside `Invoke-SetupAction`), declared all required lifecycle properties explicitly: `ActiveHelperStartTimeUtc = $null`, `LastStoppedHelperSlot = $null`, `NonQualifyingPureDataCheck = $false`.
+   - In `Get-StateData`, added schema property defaults injection so that any state deserialized from disk (including synthetic test fixtures) always contains all declared properties as `PSNoteProperty` members before being returned to callers.
+   - Introduced `Set-SafePropertyValue` helper to safely assign or dynamically add `PSNoteProperty` entries without throwing under StrictMode 3.0.
+2. **PowerShell CLI `-File` Parameter Parsing for `-Commands`**:
+   - When invoking `powershell.exe -File script.ps1 -Commands @("status")` from C# `ProcessStartInfo`, the argument is parsed as literal string tokens `@("status")` or `@("start-helper 1")`, which caused `$cmd = $parts[0].ToLowerInvariant()` to evaluate to `@("status")` and fail matching `Default { throw "Unrecognized supervisor command: $trimmed" }`.
+   - In `Invoke-SuperviseAction`, added normalization to strip leading/trailing `@(...)` wrapping and quotes before tokenization.
+   - In `ProcessLifecycleTrialPreparationTests.cs`, updated tests to pass clean command arguments (`-Commands status` and `-Commands "start-helper 1"`).
+3. **Test Assertion Diagnostics**:
+   - Upgraded `Assert.Equal(0, result.ExitCode)` in `ObservationCycle_ExceedingDurationBudget_LatchesTerminalHold`, `VerifyCheckpoint_PendingInstall_WithManagedTarget_AcceptsQueuedVersionUpdate`, and `VerifyCheckpoint_Applied_ResolvesBackupRelativeToBackupsRoot` to `Assert.True(result.ExitCode == 0, ...)` with detailed STDOUT/STDERR output.
+4. **Script SHA-256 Pin Update**:
+   - Recomputed `tools/validation/ProcessLifecycleTrial.ps1` SHA256: `5a4fd644d1aa95fc11728d054486fa294a66c2229a04fc38bc2cdd2acd45d78d`.
+   - Updated `docs/validation/PACKAGED-PROCESS-LIFECYCLE-V1.md`.
 
