@@ -20,7 +20,8 @@ param(
         "Test-Drainer",
         "Test-ParseTarListing",
         "Test-Provenance",
-        "Test-BoundedChild"
+        "Test-BoundedChild",
+        "Test-ResourceObservation"
     )]
     [string]$Action,
 
@@ -140,6 +141,27 @@ param(
 
     [Parameter(Mandatory = $false)]
     [switch]$PureDataCheck,
+
+    [Parameter(Mandatory = $false)]
+    [string]$Role,
+
+    [Parameter(Mandatory = $false)]
+    [int]$SamplePid = -1,
+
+    [Parameter(Mandatory = $false)]
+    [long]$SampleWorkingSetBytes = -1,
+
+    [Parameter(Mandatory = $false)]
+    [long]$SamplePeakWorkingSetBytes = -1,
+
+    [Parameter(Mandatory = $false)]
+    [long]$SampleCpuMilliseconds = -1,
+
+    [Parameter(Mandatory = $false)]
+    [string]$InvocationId,
+
+    [Parameter(Mandatory = $false)]
+    [switch]$ProcessExited,
 
     [Parameter(Mandatory = $false)]
     [switch]$JsonOutput
@@ -465,7 +487,7 @@ $script:MAX_COMPANION_STARTS            = 8
 $script:MAX_FIXTURE_ROOT_BYTES          = 2147483648   # 2 GiB
 $script:HELPER_WATCHDOG_SECONDS         = 1500        # 25 minutes
 $script:MAX_HELPER_WORKING_SET_BYTES    = 52428800    # 50 MiB
-$script:MAX_COMPANION_WORKING_SET_BYTES = 524288000   # 500 MiB
+$script:MAX_COMPANION_WORKING_SET_BYTES = 1073741824   # 1 GiB (Issue #304 profile amendment)
 $script:MAX_HELPER_CPU_MILLISECONDS     = 600000      # 10 minutes CPU
 $script:MAX_COMPANION_CPU_MILLISECONDS  = 1800000     # 30 minutes CPU
 
@@ -808,6 +830,8 @@ function Get-StateData([string]$FixtureRoot) {
         ReadinessReason            = ""
         CurrentFootprintBytes      = 0L
         ActiveProcesses            = @()
+        ProcessMemoryObservations  = @()
+        FirstResourceHold          = $null
         SetupScriptSha256          = $null
         SetupProfileSha256         = $null
         AdoptedProfilePath         = $null
@@ -824,14 +848,16 @@ function Get-StateData([string]$FixtureRoot) {
         LastMonotonicSessionPid    = $null
         IsEnded                    = $false
         TestPinsUsed               = $false
-        ActiveHelperPid            = $null
-        ActiveHelperSlot           = $null
-        ActiveHelperStartTimeUtc   = $null
-        LastStoppedHelperSlot      = $null
-        NonQualifyingPureDataCheck = $false
-        ActiveCompanionPid         = $null
-        ActiveSupervisorPid        = $null
-        ActiveSupervisorSessionId  = $null
+        ActiveHelperPid             = $null
+        ActiveHelperSlot            = $null
+        ActiveHelperInvocationId    = $null
+        ActiveHelperStartTimeUtc    = $null
+        LastStoppedHelperSlot       = $null
+        NonQualifyingPureDataCheck  = $false
+        ActiveCompanionPid          = $null
+        ActiveCompanionInvocationId = $null
+        ActiveSupervisorPid         = $null
+        ActiveSupervisorSessionId   = $null
         Checkpoints                = @()
     }
 
@@ -1029,6 +1055,271 @@ function Validate-CooperativeReadinessInternal(
     }
 }
 
+function Register-ResourceHoldInternal(
+    [Parameter(Mandatory = $true)] $State,
+    [Parameter(Mandatory = $true)] [string]$Metric,
+    [Parameter(Mandatory = $false)] $ObservedValue = $null,
+    [Parameter(Mandatory = $false)] $ConfiguredLimit = $null,
+    [Parameter(Mandatory = $false)] [string]$Unit = "",
+    [Parameter(Mandatory = $false)] $Role = $null,
+    [Parameter(Mandatory = $false)] $TargetPid = $null,
+    [Parameter(Mandatory = $true)] [string]$Reason = "",
+    [Parameter(Mandatory = $true)] [string]$CheckpointName = "",
+    [Parameter(Mandatory = $false)] [string]$InvocationId = $null
+) {
+    $State.TerminalHold = $true
+    if ($null -eq $State.TerminalHoldReason -or [string]::IsNullOrWhiteSpace("$($State.TerminalHoldReason)")) {
+        $State.TerminalHoldReason = $Reason
+    }
+
+    if ($null -eq $State.FirstResourceHold) {
+        $nowUtc = Get-EffectiveReferenceUtc
+        $effectiveInvId = if (-not [string]::IsNullOrWhiteSpace($InvocationId)) { $InvocationId } else { $null }
+        $State.FirstResourceHold = [PSCustomObject]@{
+            TimestampUtc    = $nowUtc.ToString("o")
+            Metric          = $Metric
+            Role            = $Role
+            Pid             = $TargetPid
+            InvocationId    = $effectiveInvId
+            ObservedValue   = $ObservedValue
+            ConfiguredLimit = $ConfiguredLimit
+            Unit            = $Unit
+            Reason          = $Reason
+            Checkpoint      = $CheckpointName
+        }
+    }
+
+    $State.LastCheckpointOutcome = "Failed"
+    $State.LastFailedCheckpoint = $CheckpointName
+    $State.LastFailedReason = $Reason
+}
+
+function Update-ProcessMemoryObservationInternal(
+    [Parameter(Mandatory = $true)] $State,
+    [Parameter(Mandatory = $true)] [string]$Role,
+    [Parameter(Mandatory = $true)] [int]$TargetPid,
+    [Parameter(Mandatory = $false)] $Slot = $null,
+    [Parameter(Mandatory = $true)] [long]$WorkingSetBytes,
+    [Parameter(Mandatory = $false)] $PeakWorkingSetBytes = $null,
+    [Parameter(Mandatory = $false)] [bool]$OsPeakAvailable = $false,
+    [Parameter(Mandatory = $false)] [long]$CpuMilliseconds = 0L,
+    [Parameter(Mandatory = $false)] $SampledAtUtc = $null,
+    [Parameter(Mandatory = $false)] [string]$InvocationId = $null
+) {
+    $cap = if ($Role -eq "Companion") { $script:MAX_COMPANION_WORKING_SET_BYTES } else { $script:MAX_HELPER_WORKING_SET_BYTES }
+    $effectiveTime = if ($null -ne $SampledAtUtc -and ($SampledAtUtc -is [DateTime])) { $SampledAtUtc } else { [DateTime]::UtcNow }
+    $timeStr = $effectiveTime.ToString("o")
+
+    # Determine caller or state invocation identity
+    $effectiveInvId = $InvocationId
+    if ([string]::IsNullOrWhiteSpace($effectiveInvId)) {
+        if ($Role -eq "Helper") {
+            $stateHelperInvId = Get-SafePropertyValue -Object $State -PropertyName "ActiveHelperInvocationId"
+            if (-not [string]::IsNullOrWhiteSpace("$stateHelperInvId")) {
+                $effectiveInvId = "$stateHelperInvId"
+            }
+        } elseif ($Role -eq "Companion") {
+            $stateCompInvId = Get-SafePropertyValue -Object $State -PropertyName "ActiveCompanionInvocationId"
+            if (-not [string]::IsNullOrWhiteSpace("$stateCompInvId")) {
+                $effectiveInvId = "$stateCompInvId"
+            }
+        }
+    }
+
+    $retainedList = [System.Collections.ArrayList]::new()
+    $existing = $null
+    $matchingRolePidCount = 0
+    if ($null -ne $State.ProcessMemoryObservations) {
+        foreach ($item in (Get-SafeEnumerable $State.ProcessMemoryObservations)) {
+            if ($null -ne $item) {
+                $itemPid = Get-SafePropertyValue -Object $item -PropertyName "Pid"
+                $itemRole = Get-SafePropertyValue -Object $item -PropertyName "Role"
+                $itemLive = Get-SafePropertyValue -Object $item -PropertyName "IsLive"
+                $itemInvId = Get-SafePropertyValue -Object $item -PropertyName "InvocationId"
+
+                if ($null -ne $itemPid -and [int]$itemPid -eq $TargetPid -and "$itemRole" -eq $Role) {
+                    $matchingRolePidCount++
+                    # Match existing only if it is currently live (never revive an exited/settled record)
+                    $isLiveBool = ($null -ne $itemLive -and [bool]$itemLive -eq $true)
+                    if ($isLiveBool) {
+                        if (-not [string]::IsNullOrWhiteSpace($effectiveInvId)) {
+                            if ("$itemInvId" -eq "$effectiveInvId") {
+                                $existing = $item
+                            }
+                        } else {
+                            $existing = $item
+                        }
+                    }
+                }
+                [void]$retainedList.Add($item)
+            }
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($effectiveInvId)) {
+        if ($null -ne $existing -and -not [string]::IsNullOrWhiteSpace("$(Get-SafePropertyValue -Object $existing -PropertyName 'InvocationId')")) {
+            $effectiveInvId = "$(Get-SafePropertyValue -Object $existing -PropertyName 'InvocationId')"
+        } else {
+            $effectiveInvId = "$Role-$TargetPid-inv-$($matchingRolePidCount + 1)"
+        }
+    }
+
+    if ($null -ne $existing) {
+        $existing.SampleCount = [int]$existing.SampleCount + 1
+        $existing.LastSampledAtUtc = $timeStr
+        $existing.LastSampledWorkingSetBytes = $WorkingSetBytes
+        $existing.CurrentWorkingSetBytes = $WorkingSetBytes
+        if ($WorkingSetBytes -gt [long]$existing.MaxSampledWorkingSetBytes) {
+            $existing.MaxSampledWorkingSetBytes = $WorkingSetBytes
+        }
+        if ($OsPeakAvailable -and $null -ne $PeakWorkingSetBytes) {
+            $existing.OsPeakAvailable = $true
+            if ($null -eq $existing.OsReportedPeakWorkingSetBytes -or [long]$PeakWorkingSetBytes -gt [long]$existing.OsReportedPeakWorkingSetBytes) {
+                $existing.OsReportedPeakWorkingSetBytes = [long]$PeakWorkingSetBytes
+            }
+        }
+        $existing.TotalCpuMilliseconds = $CpuMilliseconds
+        if ($CpuMilliseconds -gt [long]$existing.MaxCpuMilliseconds) {
+            $existing.MaxCpuMilliseconds = $CpuMilliseconds
+        }
+        $existing.IsLive = $true
+        if ([string]::IsNullOrWhiteSpace("$(Get-SafePropertyValue -Object $existing -PropertyName 'InvocationId')")) {
+            Set-SafePropertyValue -Object $existing -PropertyName "InvocationId" -Value $effectiveInvId
+        }
+    } else {
+        $peakVal = if ($OsPeakAvailable -and $null -ne $PeakWorkingSetBytes) { [long]$PeakWorkingSetBytes } else { $null }
+        $newRecord = [PSCustomObject]@{
+            InvocationId                  = $effectiveInvId
+            Role                          = $Role
+            Slot                          = $Slot
+            Pid                           = $TargetPid
+            ConfiguredWorkingSetCapBytes  = $cap
+            Unit                          = "bytes"
+            SampleCount                   = 1
+            FirstSampledAtUtc             = $timeStr
+            LastSampledAtUtc              = $timeStr
+            LastSampledWorkingSetBytes    = $WorkingSetBytes
+            CurrentWorkingSetBytes        = $WorkingSetBytes
+            MaxSampledWorkingSetBytes     = $WorkingSetBytes
+            OsReportedPeakWorkingSetBytes = $peakVal
+            OsPeakAvailable               = $OsPeakAvailable
+            TotalCpuMilliseconds         = $CpuMilliseconds
+            MaxCpuMilliseconds            = $CpuMilliseconds
+            IsLive                        = $true
+        }
+        [void]$retainedList.Add($newRecord)
+    }
+
+    $State.ProcessMemoryObservations = @($retainedList)
+}
+
+function Evaluate-ProcessResourceThresholdsInternal(
+    [Parameter(Mandatory = $true)] $State,
+    [Parameter(Mandatory = $true)] [string]$Role,
+    [Parameter(Mandatory = $true)] [int]$TargetPid,
+    [Parameter(Mandatory = $true)] [long]$WorkingSetBytes,
+    [Parameter(Mandatory = $false)] [long]$CpuMilliseconds = 0L,
+    [Parameter(Mandatory = $false)] [string]$InvocationId = $null
+) {
+    if ($Role -eq "Helper") {
+        if ($WorkingSetBytes -gt $script:MAX_HELPER_WORKING_SET_BYTES) {
+            Register-ResourceHoldInternal `
+                -State $State `
+                -Metric "WorkingSet" `
+                -ObservedValue $WorkingSetBytes `
+                -ConfiguredLimit $script:MAX_HELPER_WORKING_SET_BYTES `
+                -Unit "bytes" `
+                -Role "Helper" `
+                -TargetPid $TargetPid `
+                -Reason "Helper working set ($WorkingSetBytes bytes) exceeds limit ($($script:MAX_HELPER_WORKING_SET_BYTES) bytes)." `
+                -CheckpointName "HelperMemoryExhausted" `
+                -InvocationId $InvocationId
+        }
+        if ($CpuMilliseconds -gt $script:MAX_HELPER_CPU_MILLISECONDS) {
+            Register-ResourceHoldInternal `
+                -State $State `
+                -Metric "CpuTime" `
+                -ObservedValue $CpuMilliseconds `
+                -ConfiguredLimit $script:MAX_HELPER_CPU_MILLISECONDS `
+                -Unit "milliseconds" `
+                -Role "Helper" `
+                -TargetPid $TargetPid `
+                -Reason "Helper CPU time ($CpuMilliseconds ms) exceeds limit ($($script:MAX_HELPER_CPU_MILLISECONDS) ms)." `
+                -CheckpointName "HelperCpuExhausted" `
+                -InvocationId $InvocationId
+        }
+    } elseif ($Role -eq "Companion") {
+        if ($WorkingSetBytes -gt $script:MAX_COMPANION_WORKING_SET_BYTES) {
+            Register-ResourceHoldInternal `
+                -State $State `
+                -Metric "WorkingSet" `
+                -ObservedValue $WorkingSetBytes `
+                -ConfiguredLimit $script:MAX_COMPANION_WORKING_SET_BYTES `
+                -Unit "bytes" `
+                -Role "Companion" `
+                -TargetPid $TargetPid `
+                -Reason "Companion working set ($WorkingSetBytes bytes) exceeds limit ($($script:MAX_COMPANION_WORKING_SET_BYTES) bytes)." `
+                -CheckpointName "CompanionMemoryExhausted" `
+                -InvocationId $InvocationId
+        }
+        if ($CpuMilliseconds -gt $script:MAX_COMPANION_CPU_MILLISECONDS) {
+            Register-ResourceHoldInternal `
+                -State $State `
+                -Metric "CpuTime" `
+                -ObservedValue $CpuMilliseconds `
+                -ConfiguredLimit $script:MAX_COMPANION_CPU_MILLISECONDS `
+                -Unit "milliseconds" `
+                -Role "Companion" `
+                -TargetPid $TargetPid `
+                -Reason "Companion CPU time ($CpuMilliseconds ms) exceeds limit ($($script:MAX_COMPANION_CPU_MILLISECONDS) ms)." `
+                -CheckpointName "CompanionCpuExhausted" `
+                -InvocationId $InvocationId
+        }
+    }
+}
+
+function Settle-ProcessMemoryObservationsInternal(
+    [Parameter(Mandatory = $true)] $State,
+    [Parameter(Mandatory = $false)] $ActiveProcesses = @()
+) {
+    if ($null -eq $State.ProcessMemoryObservations) { return }
+    $activePids = [System.Collections.ArrayList]::new()
+    $activeInvIds = [System.Collections.ArrayList]::new()
+    if ($null -ne $ActiveProcesses) {
+        foreach ($ap in (Get-SafeEnumerable $ActiveProcesses)) {
+            if ($null -ne $ap) {
+                $pidVal = Get-SafePropertyValue -Object $ap -PropertyName "Pid"
+                if ($null -ne $pidVal) { [void]$activePids.Add([int]$pidVal) }
+                $invVal = Get-SafePropertyValue -Object $ap -PropertyName "InvocationId"
+                if ($null -ne $invVal -and -not [string]::IsNullOrWhiteSpace("$invVal")) {
+                    [void]$activeInvIds.Add("$invVal")
+                }
+            }
+        }
+    }
+
+    foreach ($obs in (Get-SafeEnumerable $State.ProcessMemoryObservations)) {
+        if ($null -ne $obs) {
+            $obsPid = Get-SafePropertyValue -Object $obs -PropertyName "Pid"
+            $obsInvId = Get-SafePropertyValue -Object $obs -PropertyName "InvocationId"
+            $isStillActive = $false
+            if ($null -ne $obsInvId -and -not [string]::IsNullOrWhiteSpace("$obsInvId") -and $activeInvIds.Count -gt 0) {
+                if ($activeInvIds.Contains("$obsInvId")) {
+                    $isStillActive = $true
+                }
+            } elseif ($null -ne $obsPid) {
+                if ($activePids.Contains([int]$obsPid)) {
+                    $isStillActive = $true
+                }
+            }
+            if (-not $isStillActive) {
+                $obs.IsLive = $false
+                $obs.CurrentWorkingSetBytes = $null
+            }
+        }
+    }
+}
+
 function Invoke-SuperviseObservationCycle([string]$FixtureRoot) {
     $canon = Validate-RootBoundPath -RootPath $FixtureRoot -CandidatePath $FixtureRoot
     $state = Get-StateData -FixtureRoot $canon
@@ -1089,11 +1380,14 @@ function Invoke-SuperviseObservationCycle([string]$FixtureRoot) {
         $conservativeElapsed = [Math]::Max($conservativeElapsed, $wallTotalMs)
         $state.ElapsedMilliseconds = $conservativeElapsed
         $state.AccumulatedMonotonicMs = $conservativeElapsed
-        $state.TerminalHold = $true
-        $state.TerminalHoldReason = "Monotonic clock integrity failure: $monoInvalidReason"
-        $state.LastCheckpointOutcome = "Failed"
-        $state.LastFailedCheckpoint = "MonotonicClockIntegrity"
-        $state.LastFailedReason = $state.TerminalHoldReason
+        Register-ResourceHoldInternal `
+            -State $state `
+            -Metric "MonotonicClock" `
+            -ObservedValue $null `
+            -ConfiguredLimit $null `
+            -Unit "" `
+            -Reason "Monotonic clock integrity failure: $monoInvalidReason" `
+            -CheckpointName "MonotonicClockIntegrity"
     } else {
         $freq = [double]([long]$state.MonotonicFrequency)
         $originTick = [long]$state.MonotonicOriginTimestamp
@@ -1122,22 +1416,28 @@ function Invoke-SuperviseObservationCycle([string]$FixtureRoot) {
 
     # Check trial duration limit
     if ($elapsedSeconds -gt $script:MAX_TRIAL_DURATION_SECONDS) {
-        $state.TerminalHold = $true
-        $state.TerminalHoldReason = "Trial duration budget ($($script:MAX_TRIAL_DURATION_SECONDS)s) exceeded ($($elapsedSeconds)s)."
-        $state.LastCheckpointOutcome = "Failed"
-        $state.LastFailedCheckpoint = "TrialDurationExhausted"
-        $state.LastFailedReason = $state.TerminalHoldReason
+        Register-ResourceHoldInternal `
+            -State $state `
+            -Metric "Duration" `
+            -ObservedValue $elapsedSeconds `
+            -ConfiguredLimit $script:MAX_TRIAL_DURATION_SECONDS `
+            -Unit "seconds" `
+            -Reason "Trial duration budget ($($script:MAX_TRIAL_DURATION_SECONDS)s) exceeded ($($elapsedSeconds)s)." `
+            -CheckpointName "TrialDurationExhausted"
     }
 
     # 2. Check root storage footprint
     $currentFootprint = Measure-DirectoryFootprintBytes -DirectoryPath $canon
     $state.CurrentFootprintBytes = $currentFootprint
     if ($currentFootprint -gt $script:MAX_FIXTURE_ROOT_BYTES) {
-        $state.TerminalHold = $true
-        $state.TerminalHoldReason = "Fixture root footprint ($currentFootprint bytes) exceeds 2 GiB limit ($($script:MAX_FIXTURE_ROOT_BYTES) bytes)."
-        $state.LastCheckpointOutcome = "Failed"
-        $state.LastFailedCheckpoint = "FootprintExhausted"
-        $state.LastFailedReason = $state.TerminalHoldReason
+        Register-ResourceHoldInternal `
+            -State $state `
+            -Metric "Footprint" `
+            -ObservedValue $currentFootprint `
+            -ConfiguredLimit $script:MAX_FIXTURE_ROOT_BYTES `
+            -Unit "bytes" `
+            -Reason "Fixture root footprint ($currentFootprint bytes) exceeds 2 GiB limit ($($script:MAX_FIXTURE_ROOT_BYTES) bytes)." `
+            -CheckpointName "FootprintExhausted"
     }
 
     # 3. Sample active child processes (CPU time & working set) and evaluate thresholds
@@ -1147,31 +1447,51 @@ function Invoke-SuperviseObservationCycle([string]$FixtureRoot) {
             $script:HelperProcess.Refresh()
             $cpuMs = [long]$script:HelperProcess.TotalProcessorTime.TotalMilliseconds
             $wsBytes = [long]$script:HelperProcess.WorkingSet64
-            $peakWs = [long]$script:HelperProcess.PeakWorkingSet64
+            $peakWs = $null
+            $peakWsOk = $false
+            try {
+                $peakWs = [long]$script:HelperProcess.PeakWorkingSet64
+                $peakWsOk = $true
+            } catch {
+                $peakWs = $null
+                $peakWsOk = $false
+            }
+            $stateHelperInvId = Get-SafePropertyValue -Object $state -PropertyName "ActiveHelperInvocationId"
+            $helperInvId = if (-not [string]::IsNullOrWhiteSpace("$stateHelperInvId")) {
+                "$stateHelperInvId"
+            } else {
+                "Helper-slot-$($state.ActiveHelperSlot)-start-$($state.HelperStartAttempts)"
+            }
             $activeProcesses += [PSCustomObject]@{
-                Role = "Helper"
-                Slot = $state.ActiveHelperSlot
-                Pid = $script:HelperProcess.Id
+                Role                 = "Helper"
+                Slot                 = $state.ActiveHelperSlot
+                Pid                  = $script:HelperProcess.Id
+                InvocationId         = $helperInvId
                 TotalCpuMilliseconds = $cpuMs
-                WorkingSetBytes = $wsBytes
-                PeakWorkingSetBytes = $peakWs
-                SampledAtUtc = $nowUtc.ToString("o")
+                WorkingSetBytes      = $wsBytes
+                PeakWorkingSetBytes  = $peakWs
+                SampledAtUtc         = $nowUtc.ToString("o")
             }
 
-            if ($wsBytes -gt $script:MAX_HELPER_WORKING_SET_BYTES) {
-                $state.TerminalHold = $true
-                $state.TerminalHoldReason = "Helper working set ($wsBytes bytes) exceeds limit ($($script:MAX_HELPER_WORKING_SET_BYTES) bytes)."
-                $state.LastCheckpointOutcome = "Failed"
-                $state.LastFailedCheckpoint = "HelperMemoryExhausted"
-                $state.LastFailedReason = $state.TerminalHoldReason
-            }
-            if ($cpuMs -gt $script:MAX_HELPER_CPU_MILLISECONDS) {
-                $state.TerminalHold = $true
-                $state.TerminalHoldReason = "Helper CPU time ($cpuMs ms) exceeds limit ($($script:MAX_HELPER_CPU_MILLISECONDS) ms)."
-                $state.LastCheckpointOutcome = "Failed"
-                $state.LastFailedCheckpoint = "HelperCpuExhausted"
-                $state.LastFailedReason = $state.TerminalHoldReason
-            }
+            Update-ProcessMemoryObservationInternal `
+                -State $state `
+                -Role "Helper" `
+                -TargetPid $script:HelperProcess.Id `
+                -Slot $state.ActiveHelperSlot `
+                -WorkingSetBytes $wsBytes `
+                -PeakWorkingSetBytes $peakWs `
+                -OsPeakAvailable $peakWsOk `
+                -CpuMilliseconds $cpuMs `
+                -SampledAtUtc $nowUtc `
+                -InvocationId $helperInvId
+
+            Evaluate-ProcessResourceThresholdsInternal `
+                -State $state `
+                -Role "Helper" `
+                -TargetPid $script:HelperProcess.Id `
+                -WorkingSetBytes $wsBytes `
+                -CpuMilliseconds $cpuMs `
+                -InvocationId $helperInvId
         } catch {}
     }
 
@@ -1180,33 +1500,54 @@ function Invoke-SuperviseObservationCycle([string]$FixtureRoot) {
             $script:CompanionProcess.Refresh()
             $cpuMs = [long]$script:CompanionProcess.TotalProcessorTime.TotalMilliseconds
             $wsBytes = [long]$script:CompanionProcess.WorkingSet64
-            $peakWs = [long]$script:CompanionProcess.PeakWorkingSet64
+            $peakWs = $null
+            $peakWsOk = $false
+            try {
+                $peakWs = [long]$script:CompanionProcess.PeakWorkingSet64
+                $peakWsOk = $true
+            } catch {
+                $peakWs = $null
+                $peakWsOk = $false
+            }
+            $stateCompInvId = Get-SafePropertyValue -Object $state -PropertyName "ActiveCompanionInvocationId"
+            $compInvId = if (-not [string]::IsNullOrWhiteSpace("$stateCompInvId")) {
+                "$stateCompInvId"
+            } else {
+                "Companion-start-$($state.CompanionStartAttempts)"
+            }
             $activeProcesses += [PSCustomObject]@{
-                Role = "Companion"
-                Pid = $script:CompanionProcess.Id
+                Role                 = "Companion"
+                Pid                  = $script:CompanionProcess.Id
+                InvocationId         = $compInvId
                 TotalCpuMilliseconds = $cpuMs
-                WorkingSetBytes = $wsBytes
-                PeakWorkingSetBytes = $peakWs
-                SampledAtUtc = $nowUtc.ToString("o")
+                WorkingSetBytes      = $wsBytes
+                PeakWorkingSetBytes  = $peakWs
+                SampledAtUtc         = $nowUtc.ToString("o")
             }
 
-            if ($wsBytes -gt $script:MAX_COMPANION_WORKING_SET_BYTES) {
-                $state.TerminalHold = $true
-                $state.TerminalHoldReason = "Companion working set ($wsBytes bytes) exceeds limit ($($script:MAX_COMPANION_WORKING_SET_BYTES) bytes)."
-                $state.LastCheckpointOutcome = "Failed"
-                $state.LastFailedCheckpoint = "CompanionMemoryExhausted"
-                $state.LastFailedReason = $state.TerminalHoldReason
-            }
-            if ($cpuMs -gt $script:MAX_COMPANION_CPU_MILLISECONDS) {
-                $state.TerminalHold = $true
-                $state.TerminalHoldReason = "Companion CPU time ($cpuMs ms) exceeds limit ($($script:MAX_COMPANION_CPU_MILLISECONDS) ms)."
-                $state.LastCheckpointOutcome = "Failed"
-                $state.LastFailedCheckpoint = "CompanionCpuExhausted"
-                $state.LastFailedReason = $state.TerminalHoldReason
-            }
+            Update-ProcessMemoryObservationInternal `
+                -State $state `
+                -Role "Companion" `
+                -TargetPid $script:CompanionProcess.Id `
+                -Slot $null `
+                -WorkingSetBytes $wsBytes `
+                -PeakWorkingSetBytes $peakWs `
+                -OsPeakAvailable $peakWsOk `
+                -CpuMilliseconds $cpuMs `
+                -SampledAtUtc $nowUtc `
+                -InvocationId $compInvId
+
+            Evaluate-ProcessResourceThresholdsInternal `
+                -State $state `
+                -Role "Companion" `
+                -TargetPid $script:CompanionProcess.Id `
+                -WorkingSetBytes $wsBytes `
+                -CpuMilliseconds $cpuMs `
+                -InvocationId $compInvId
         } catch {}
     }
     $state.ActiveProcesses = $activeProcesses
+    Settle-ProcessMemoryObservationsInternal -State $state -ActiveProcesses $activeProcesses
 
     # 4. Fail-closed target & settings validation
     $companionSettingsPath = [System.IO.Path]::Combine($canon, "companion", "settings.json")
@@ -1214,11 +1555,14 @@ function Invoke-SuperviseObservationCycle([string]$FixtureRoot) {
         $settingsRaw = [System.IO.File]::ReadAllText($companionSettingsPath, $script:Utf8NoBom)
         $settingsObj = ConvertFrom-Json -InputObject $settingsRaw
         if ("$($settingsObj.GlobalPolicy)" -ne "Manual") {
-            $state.TerminalHold = $true
-            $state.TerminalHoldReason = "Settings GlobalPolicy altered from Manual to $($settingsObj.GlobalPolicy)."
-            $state.LastCheckpointOutcome = "Failed"
-            $state.LastFailedCheckpoint = "SettingsTampered"
-            $state.LastFailedReason = $state.TerminalHoldReason
+            Register-ResourceHoldInternal `
+                -State $state `
+                -Metric "Settings" `
+                -ObservedValue "$($settingsObj.GlobalPolicy)" `
+                -ConfiguredLimit "Manual" `
+                -Unit "" `
+                -Reason "Settings GlobalPolicy altered from Manual to $($settingsObj.GlobalPolicy)." `
+                -CheckpointName "SettingsTampered"
         }
     }
 
@@ -2846,6 +3190,8 @@ function Invoke-SetupAction {
         ReadinessReason            = "Pending explicit owner adoption and readiness confirmation"
         CurrentFootprintBytes      = $initialFootprint
         ActiveProcesses            = @()
+        ProcessMemoryObservations  = @()
+        FirstResourceHold          = $null
         SetupScriptSha256          = $scriptSha
         SetupProfileSha256         = $profileSha
         AdoptedProfilePath         = $null
@@ -2856,14 +3202,16 @@ function Invoke-SetupAction {
         AdoptedSupervisorSessionId = $null
         IsEnded                    = $false
         TestPinsUsed               = $testPinsUsed
-        ActiveHelperPid            = $null
-        ActiveHelperSlot           = $null
-        ActiveHelperStartTimeUtc   = $null
-        LastStoppedHelperSlot      = $null
-        NonQualifyingPureDataCheck = $false
-        ActiveCompanionPid         = $null
-        ActiveSupervisorPid        = $null
-        ActiveSupervisorSessionId  = $null
+        ActiveHelperPid             = $null
+        ActiveHelperSlot            = $null
+        ActiveHelperInvocationId    = $null
+        ActiveHelperStartTimeUtc    = $null
+        LastStoppedHelperSlot       = $null
+        NonQualifyingPureDataCheck  = $false
+        ActiveCompanionPid          = $null
+        ActiveCompanionInvocationId = $null
+        ActiveSupervisorPid         = $null
+        ActiveSupervisorSessionId   = $null
         Checkpoints                = @("Setup")
     }
     Save-StateData -FixtureRoot $rootFull -StateObject $initialState
@@ -3365,6 +3713,8 @@ function Supervise-HelperStart([string]$FixtureRoot, [int]$Slot, [string]$Attest
     $state.UsedSlots = $usedSlots
     $state.ActiveHelperPid = $proc.Id
     $state.ActiveHelperSlot = $Slot
+    $helperStartAttempts = [int]$state.HelperStartAttempts
+    Set-SafePropertyValue -Object $state -PropertyName "ActiveHelperInvocationId" -Value "Helper-slot-$Slot-start-$helperStartAttempts"
     $state.ActiveHelperStartTimeUtc = [DateTime]::UtcNow.ToString("o")
     Save-StateData -FixtureRoot $canonRoot -StateObject $state
 
@@ -3438,9 +3788,11 @@ function Supervise-HelperStop([string]$FixtureRoot, [int]$Slot) {
     }
 
     # Record confirmed normal exit record in control/helper-slot-$Slot.exit.json
+    $activeHelperInvId = Get-SafePropertyValue -Object $state -PropertyName "ActiveHelperInvocationId"
     $exitRecord = [PSCustomObject]@{
         Slot         = $Slot
         Pid          = $script:HelperProcess.Id
+        InvocationId = $activeHelperInvId
         ExitCode     = $exitCode
         NormalStop   = $isNormalStop
         StoppedAtUtc = [DateTime]::UtcNow.ToString("o")
@@ -3456,7 +3808,21 @@ function Supervise-HelperStop([string]$FixtureRoot, [int]$Slot) {
     $state = Get-StateData -FixtureRoot $canonRoot
     $state.ActiveHelperPid = $null
     $state.ActiveHelperSlot = $null
+    Set-SafePropertyValue -Object $state -PropertyName "ActiveHelperInvocationId" -Value $null
     $state.LastStoppedHelperSlot = $Slot
+    $retainedActive = [System.Collections.ArrayList]::new()
+    if ($null -ne $state.ActiveProcesses) {
+        foreach ($ap in (Get-SafeEnumerable $state.ActiveProcesses)) {
+            if ($null -ne $ap) {
+                $apRole = Get-SafePropertyValue -Object $ap -PropertyName "Role"
+                if ("$apRole" -ne "Helper") {
+                    [void]$retainedActive.Add($ap)
+                }
+            }
+        }
+    }
+    $state.ActiveProcesses = @($retainedActive)
+    Settle-ProcessMemoryObservationsInternal -State $state -ActiveProcesses $state.ActiveProcesses
     Save-StateData -FixtureRoot $canonRoot -StateObject $state
 
     return @{
@@ -3530,7 +3896,9 @@ function Supervise-CompanionStart([string]$FixtureRoot, [bool]$NoAutoDiscovery, 
     $script:CompanionStderrDrainer.Start()
 
     $state = Get-StateData -FixtureRoot $canonRoot
+    $compStartAttempts = [int]$state.CompanionStartAttempts
     $state.ActiveCompanionPid = $proc.Id
+    Set-SafePropertyValue -Object $state -PropertyName "ActiveCompanionInvocationId" -Value "Companion-start-$compStartAttempts"
     Save-StateData -FixtureRoot $canonRoot -StateObject $state
 
     return @{
@@ -3576,6 +3944,20 @@ function Supervise-CompanionStop([string]$FixtureRoot) {
 
     $state = Get-StateData -FixtureRoot $canonRoot
     $state.ActiveCompanionPid = $null
+    Set-SafePropertyValue -Object $state -PropertyName "ActiveCompanionInvocationId" -Value $null
+    $retainedActive = [System.Collections.ArrayList]::new()
+    if ($null -ne $state.ActiveProcesses) {
+        foreach ($ap in (Get-SafeEnumerable $state.ActiveProcesses)) {
+            if ($null -ne $ap) {
+                $apRole = Get-SafePropertyValue -Object $ap -PropertyName "Role"
+                if ("$apRole" -ne "Companion") {
+                    [void]$retainedActive.Add($ap)
+                }
+            }
+        }
+    }
+    $state.ActiveProcesses = @($retainedActive)
+    Settle-ProcessMemoryObservationsInternal -State $state -ActiveProcesses $state.ActiveProcesses
     Save-StateData -FixtureRoot $canonRoot -StateObject $state
 
     return @{
@@ -4081,6 +4463,95 @@ try {
                 StderrLostBytes          = [long]$childRes.StderrLostBytes
                 StdoutLogPath            = $childRes.StdoutLogPath
                 StderrLogPath            = $childRes.StderrLogPath
+            }
+        }
+        "Test-ResourceObservation" {
+            if ([string]::IsNullOrWhiteSpace($FixtureRoot)) { throw "FixtureRoot parameter is required for Test-ResourceObservation." }
+            $canonRoot = Validate-RootBoundPath -RootPath $FixtureRoot -CandidatePath $FixtureRoot
+            $st = Get-StateData -FixtureRoot $canonRoot
+
+            if ($ProcessExited) {
+                $st.ActiveProcesses = @()
+                Settle-ProcessMemoryObservationsInternal -State $st -ActiveProcesses @()
+            } else {
+                if ([string]::IsNullOrWhiteSpace($Role)) { throw "Role parameter ('Helper' or 'Companion') is required for Test-ResourceObservation." }
+                if ($SamplePid -le 0) { throw "SamplePid parameter must be positive for Test-ResourceObservation." }
+                if ($SampleWorkingSetBytes -lt 0) { throw "SampleWorkingSetBytes must be non-negative for Test-ResourceObservation." }
+
+                $effectiveSlot = if ($Role -eq "Helper") { $Slot } else { $null }
+                $effectiveInvId = if (-not [string]::IsNullOrWhiteSpace($InvocationId)) { $InvocationId } else { $null }
+                $osPeakOk = ($SamplePeakWorkingSetBytes -ge 0)
+                $peakWs = if ($osPeakOk) { $SamplePeakWorkingSetBytes } else { $null }
+                $cpuMs = if ($SampleCpuMilliseconds -ge 0) { $SampleCpuMilliseconds } else { 0L }
+                $refUtc = Get-EffectiveReferenceUtc
+
+                Update-ProcessMemoryObservationInternal `
+                    -State $st `
+                    -Role $Role `
+                    -TargetPid $SamplePid `
+                    -Slot $effectiveSlot `
+                    -WorkingSetBytes $SampleWorkingSetBytes `
+                    -PeakWorkingSetBytes $peakWs `
+                    -OsPeakAvailable $osPeakOk `
+                    -CpuMilliseconds $cpuMs `
+                    -SampledAtUtc $refUtc `
+                    -InvocationId $effectiveInvId
+
+                Evaluate-ProcessResourceThresholdsInternal `
+                    -State $st `
+                    -Role $Role `
+                    -TargetPid $SamplePid `
+                    -WorkingSetBytes $SampleWorkingSetBytes `
+                    -CpuMilliseconds $cpuMs `
+                    -InvocationId $effectiveInvId
+
+                # Find the assigned invocation ID on the active observation record
+                $assignedInvId = $effectiveInvId
+                if ([string]::IsNullOrWhiteSpace($assignedInvId) -and $null -ne $st.ProcessMemoryObservations) {
+                    foreach ($obs in (Get-SafeEnumerable $st.ProcessMemoryObservations)) {
+                        if ($null -ne $obs) {
+                            $obsPid = Get-SafePropertyValue -Object $obs -PropertyName "Pid"
+                            $obsLive = Get-SafePropertyValue -Object $obs -PropertyName "IsLive"
+                            if ($null -ne $obsPid -and [int]$obsPid -eq $SamplePid -and [bool]$obsLive -eq $true) {
+                                $assignedInvId = "$(Get-SafePropertyValue -Object $obs -PropertyName 'InvocationId')"
+                            }
+                        }
+                    }
+                }
+
+                $retainedActive = [System.Collections.ArrayList]::new()
+                if ($null -ne $st.ActiveProcesses) {
+                    foreach ($ap in (Get-SafeEnumerable $st.ActiveProcesses)) {
+                        if ($null -ne $ap) {
+                            $apPid = Get-SafePropertyValue -Object $ap -PropertyName "Pid"
+                            if ($null -ne $apPid -and [int]$apPid -ne $SamplePid) {
+                                [void]$retainedActive.Add($ap)
+                            }
+                        }
+                    }
+                }
+                [void]$retainedActive.Add([PSCustomObject]@{
+                    Role                 = $Role
+                    Slot                 = $effectiveSlot
+                    Pid                  = $SamplePid
+                    InvocationId         = $assignedInvId
+                    TotalCpuMilliseconds = $cpuMs
+                    WorkingSetBytes      = $SampleWorkingSetBytes
+                    PeakWorkingSetBytes  = $peakWs
+                    SampledAtUtc         = $refUtc.ToString("o")
+                })
+                $st.ActiveProcesses = @($retainedActive)
+            }
+
+            Save-StateData -FixtureRoot $canonRoot -StateObject $st
+            $result = @{
+                Success                   = $true
+                Message                   = "Resource observation evaluated."
+                TerminalHold              = [bool]$st.TerminalHold
+                TerminalHoldReason        = $st.TerminalHoldReason
+                FirstResourceHold         = $st.FirstResourceHold
+                ProcessMemoryObservations = $st.ProcessMemoryObservations
+                ActiveProcesses           = $st.ActiveProcesses
             }
         }
     }

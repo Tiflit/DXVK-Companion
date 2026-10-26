@@ -96,11 +96,11 @@ The following requirements and disclosures govern any subsequent host trial prof
 4. **Execution Authority**:
    - No host execution or desktop bridging is authorized by Stage A.
 
-## Stage B Candidate Execution Profile (Preparation Only — #301)
+## Stage B Candidate Execution Profile (Preparation Only — #301 / #304)
 
 > [!IMPORTANT]
 > **CANDIDATE ONLY — PENDING SEPARATE HUMAN ADOPTION AND CURRENT READINESS**
-> This candidate profile is prepared under Issue [#301](https://github.com/Tiflit/DXVK-Companion/issues/301). It is **NOT adopted** by this task.
+> This candidate profile is prepared under Issue [#301](https://github.com/Tiflit/DXVK-Companion/issues/301) and amended under Issue [#304](https://github.com/Tiflit/DXVK-Companion/issues/304). It is **NOT adopted** by this task.
 > Execution on the owner's workstation or laptop remains **NOT RUN (pending human authorization)**.
 > Only a subsequent separately adopted FINAL execution profile plus current laptop readiness can activate the actual trial. Human alone merges.
 
@@ -110,7 +110,7 @@ All binaries, archives, and tools must match the following frozen identities exa
 
 | Asset / Component | Source Revision / Identity | Artifact / Release ID | Size (Bytes) | SHA-256 Digest |
 |---|---|---|---:|---|
-| Trial Script (`ProcessLifecycleTrial.ps1`) | Current PR (`tools/validation/ProcessLifecycleTrial.ps1`) | N/A (in-repo) | 199,564 | `4205b809ba5b0851e098e72e48e4dceffd3bb19fb3ed1cf25bf38c4eca8a8b62` |
+| Trial Script (`ProcessLifecycleTrial.ps1`) | Current PR (`tools/validation/ProcessLifecycleTrial.ps1`) | N/A (in-repo) | 221,331 | `40745c1d8fd759c7d1ff4bcabdf5c719eb01d4e100de5c1b2b2cf196427d5c13` |
 | Helper Archive (`process-lifecycle-helper-x64`) | Checkout `a62356d0acb918aec957463a0b670747763ae544`, Tree `4ebbd76b0f30ca7768d737361ea8b540da5a8a2e` | Run `40220299641`, Artifact `12609386490` | 81,717 | `f75ec55738e6ca3c1a0cd0a342aefeaa0fb3addd03538f03f2ac7a43295750de` |
 | Helper Executable (`QueueFixture.exe`) | Source SHA256 `19229f59a4ab2504634cf9cd1bfff131a89a68e539808ab68c5459451e6ce0cc` | Extracted from `12609386490` | 138,240 | `f720cecae0f13eeef6d9b5e2d259b51df97b37bc3347b241071e25e8c1548d70` |
 | Companion Application Archive | Commit `46e6f22363cddcfa88d805b588b6ac30173bc9dc` | Run `40025768457`, Artifact `12532606945` | 66,410,238 | `32660fd3e3ed87385e47940d490db2e6ab93daad7e993fe4225dd157232b3b14` |
@@ -133,11 +133,22 @@ All binaries, archives, and tools must match the following frozen identities exa
   - `<FIXTURE_ROOT>/logs/`: Supervised process execution and verification logs.
   - `<FIXTURE_ROOT>/state.json`: Batch lifecycle state and execution accounting.
 - **Resource Limits and Caps**:
-  - Maximum Total Trial Duration: `120 minutes` (from first setup action, including operator pauses).
+  - Maximum Total Trial Duration: `120 minutes` (`7,200 seconds`, from first setup action, including operator pauses).
   - Maximum Helper Starts: `4 starts`.
   - Maximum Companion Starts: `8 starts`.
-  - Maximum Root Storage Footprint: `2 GiB`.
-  - Helper Execution Watchdog: `25 minutes` finite cap per helper instance.
+  - Maximum Root Storage Footprint: `2 GiB` (`2,147,483,648 bytes`).
+  - Helper Execution Watchdog: `25 minutes` (`1,500 seconds`) finite cap per helper instance.
+  - Helper Working-Set Ceiling: `50 MiB` (`52,428,800 bytes`).
+  - Companion Working-Set Ceiling: `1 GiB` (`1,073,741,824 bytes`, amended under Issue #304 owner approval from 500 MiB; strictly greater-than `>` evaluation).
+  - Helper CPU Time Ceiling: `10 minutes` (`600,000 milliseconds`).
+  - Companion CPU Time Ceiling: `30 minutes` (`1,800,000 milliseconds`).
+- **Memory Telemetry and Leak Diagnosis Boundaries**:
+  - The 1 GiB Companion working-set ceiling is an amended bounded validation allowance above the 769 MiB sample observed during Issue #303's first acquisition run, accommodating unstreamed compressed/TAR buffers and managed memory copies.
+  - It does **not** constitute a diagnosed memory leak fix, a measured safe maximum for all platforms, or an unconstrained allowance.
+  - Process memory observations track both live sampled working set and OS-reported peaks (`PeakWorkingSet64`) while handles are live, recording sample counts, timestamps, and truthful reporting when OS metrics are unavailable.
+  - Observations persist durably in `state.json` (`ProcessMemoryObservations`) across process stop, EOF, and normal exit, even when active process lists empty.
+  - Separate process invocations are bound to distinct invocation identities (`InvocationId`), ensuring that operating system PID reuse does not revive settled records or misattribute historical sample counts and maxima.
+  - First resource-hold evidence (`FirstResourceHold`) is latched immutably upon first limit crossing and preserved across subsequent higher samples, separate process invocations, or exit.
 - **Process Supervision**:
   - Permits at most one Companion and one QueueFixture process running simultaneously.
   - `UseShellExecute = false`, non-admin session, fixed working directories, redirected standard I/O drains.
@@ -190,7 +201,7 @@ $Readiness = [PSCustomObject]@{
     AdoptedProfilePath      = "docs/validation/PACKAGED-PROCESS-LIFECYCLE-V1.md"
     AdoptedProfileSha256    = $ProfileSha256
     AdoptionToken           = $AdoptionToken
-    AdoptedScriptSha256     = "4205b809ba5b0851e098e72e48e4dceffd3bb19fb3ed1cf25bf38c4eca8a8b62"
+    AdoptedScriptSha256     = "40745c1d8fd759c7d1ff4bcabdf5c719eb01d4e100de5c1b2b2cf196427d5c13"
     FixtureRoot             = $FixtureRoot
     BatchStartTimeUtc       = $State.BatchStartTimeUtc
     SupervisorPid           = [int]$Session.SupervisorPid
