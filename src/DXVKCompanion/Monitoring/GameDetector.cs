@@ -17,6 +17,10 @@ namespace DXVKCompanion.Monitoring
             "shellexperiencehost", "searchhost", "startmenuexperiencehost", "sihost",
             "ctfmon", "conhost", "dllhost", "wudfhost", "spoolsv", "audiodg", "explorer",
             "applicationframehost", "systemsettings", "securityhealthservice",
+            "textinputhost",
+
+            // Known non-game desktop and audio utility processes
+            "nahimic3",
 
             // Game launchers and store clients
             "steam", "steamwebhelper", "epicgameslauncher", "epicwebhelper", "origin",
@@ -37,6 +41,25 @@ namespace DXVKCompanion.Monitoring
             "easyanticheat", "battleye", "easyanticheat_setup.exe", "beservice.exe"
         };
 
+        internal Func<Process, string>? ProcessNameResolver { get; set; }
+
+        /// <summary>
+        /// Pure name-based game candidate predicate. Returns false if the process name
+        /// is an excluded system, utility, or launcher process; true otherwise.
+        /// Performs case-insensitive matching and strips optional trailing .exe.
+        /// </summary>
+        internal static bool IsGameProcessName(string? processName)
+        {
+            if (string.IsNullOrWhiteSpace(processName))
+                return false;
+
+            string name = processName.Trim();
+            if (name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+                name = Path.GetFileNameWithoutExtension(name);
+
+            return !ExcludedProcessNames.Contains(name);
+        }
+
         /// <summary>
         /// Permanent exclusion filter (system processes, launchers).
         /// </summary>
@@ -45,11 +68,8 @@ namespace DXVKCompanion.Monitoring
         {
             try
             {
-                string name = process.ProcessName.ToLowerInvariant();
-                if (name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
-                    name = Path.GetFileNameWithoutExtension(name);
-
-                return !ExcludedProcessNames.Contains(name);
+                string name = ProcessNameResolver?.Invoke(process) ?? process.ProcessName;
+                return IsGameProcessName(name);
             }
             catch
             {
