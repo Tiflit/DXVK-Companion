@@ -110,7 +110,7 @@ All binaries, archives, and tools must match the following frozen identities exa
 
 | Asset / Component | Source Revision / Identity | Artifact / Release ID | Size (Bytes) | SHA-256 Digest |
 |---|---|---|---:|---|
-| Trial Script (`ProcessLifecycleTrial.ps1`) | Current PR (`tools/validation/ProcessLifecycleTrial.ps1`) | N/A (in-repo) | 214,506 | `15c8bb4f304df6bf7f1a0b8b33c3ed539b3b57a05bd659ecaff90f0d29d370c7` |
+| Trial Script (`ProcessLifecycleTrial.ps1`) | Current PR (`tools/validation/ProcessLifecycleTrial.ps1`) | N/A (in-repo) | 221,331 | `40745c1d8fd759c7d1ff4bcabdf5c719eb01d4e100de5c1b2b2cf196427d5c13` |
 | Helper Archive (`process-lifecycle-helper-x64`) | Checkout `a62356d0acb918aec957463a0b670747763ae544`, Tree `4ebbd76b0f30ca7768d737361ea8b540da5a8a2e` | Run `40220299641`, Artifact `12609386490` | 81,717 | `f75ec55738e6ca3c1a0cd0a342aefeaa0fb3addd03538f03f2ac7a43295750de` |
 | Helper Executable (`QueueFixture.exe`) | Source SHA256 `19229f59a4ab2504634cf9cd1bfff131a89a68e539808ab68c5459451e6ce0cc` | Extracted from `12609386490` | 138,240 | `f720cecae0f13eeef6d9b5e2d259b51df97b37bc3347b241071e25e8c1548d70` |
 | Companion Application Archive | Commit `46e6f22363cddcfa88d805b588b6ac30173bc9dc` | Run `40025768457`, Artifact `12532606945` | 66,410,238 | `32660fd3e3ed87385e47940d490db2e6ab93daad7e993fe4225dd157232b3b14` |
@@ -147,6 +147,7 @@ All binaries, archives, and tools must match the following frozen identities exa
   - It does **not** constitute a diagnosed memory leak fix, a measured safe maximum for all platforms, or an unconstrained allowance.
   - Process memory observations track both live sampled working set and OS-reported peaks (`PeakWorkingSet64`) while handles are live, recording sample counts, timestamps, and truthful reporting when OS metrics are unavailable.
   - Observations persist durably in `state.json` (`ProcessMemoryObservations`) across process stop, EOF, and normal exit, even when active process lists empty.
+  - Separate process invocations are bound to distinct invocation identities (`InvocationId`), ensuring that operating system PID reuse does not revive settled records or misattribute historical sample counts and maxima.
   - First resource-hold evidence (`FirstResourceHold`) is latched immutably upon first limit crossing and preserved across subsequent higher samples, separate process invocations, or exit.
 - **Process Supervision**:
   - Permits at most one Companion and one QueueFixture process running simultaneously.
@@ -200,7 +201,7 @@ $Readiness = [PSCustomObject]@{
     AdoptedProfilePath      = "docs/validation/PACKAGED-PROCESS-LIFECYCLE-V1.md"
     AdoptedProfileSha256    = $ProfileSha256
     AdoptionToken           = $AdoptionToken
-    AdoptedScriptSha256     = "15c8bb4f304df6bf7f1a0b8b33c3ed539b3b57a05bd659ecaff90f0d29d370c7"
+    AdoptedScriptSha256     = "40745c1d8fd759c7d1ff4bcabdf5c719eb01d4e100de5c1b2b2cf196427d5c13"
     FixtureRoot             = $FixtureRoot
     BatchStartTimeUtc       = $State.BatchStartTimeUtc
     SupervisorPid           = [int]$Session.SupervisorPid

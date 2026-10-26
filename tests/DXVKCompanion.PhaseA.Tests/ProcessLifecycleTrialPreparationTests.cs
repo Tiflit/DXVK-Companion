@@ -2978,6 +2978,66 @@ public sealed class ProcessLifecycleTrialPreparationTests
         }
     }
 
+    [Fact]
+    public void ResourceObservation_ReusedPidAcrossInvocations_MaintainsIndependentSummariesWithoutRevival()
+    {
+        AssertHostedCiEnvironment();
+
+        using var temp = new SyntheticTestDirectory();
+        var root = SetUpTestFixture(temp);
+        WriteReadinessRecord(root, bindSessionInState: false);
+
+        var statePath = Path.Combine(root, "state.json");
+        long initialOriginTimestamp;
+        using (var doc = JsonDocument.Parse(File.ReadAllText(statePath)))
+        {
+            initialOriginTimestamp = doc.RootElement.GetProperty("MonotonicOriginTimestamp").GetInt64();
+        }
+
+        const int reusedPid = 9301;
+
+        // Invocation 1: Companion PID 9301, sample 1 at 300 MiB, sample 2 at 400 MiB, then exits
+        var r1 = RunScript($"-Action Test-ResourceObservation -FixtureRoot \"{root}\" -Role Companion -SamplePid {reusedPid} -InvocationId \"comp-inv-1\" -SampleWorkingSetBytes 300000000 -JsonOutput");
+        Assert.True(r1.ExitCode == 0, $"Action failed with exit code {r1.ExitCode}.\nSTDOUT: {r1.StandardOutput}\nSTDERR: {r1.StandardError}");
+        var r2 = RunScript($"-Action Test-ResourceObservation -FixtureRoot \"{root}\" -Role Companion -SamplePid {reusedPid} -InvocationId \"comp-inv-1\" -SampleWorkingSetBytes 400000000 -JsonOutput");
+        Assert.True(r2.ExitCode == 0, $"Action failed with exit code {r2.ExitCode}.\nSTDOUT: {r2.StandardOutput}\nSTDERR: {r2.StandardError}");
+        var r3 = RunScript($"-Action Test-ResourceObservation -FixtureRoot \"{root}\" -ProcessExited -JsonOutput");
+        Assert.True(r3.ExitCode == 0, $"Action failed with exit code {r3.ExitCode}.\nSTDOUT: {r3.StandardOutput}\nSTDERR: {r3.StandardError}");
+
+        // Invocation 2: Windows reuses SAME PID 9301 for new invocation, sampled once at 250 MiB
+        var r4 = RunScript($"-Action Test-ResourceObservation -FixtureRoot \"{root}\" -Role Companion -SamplePid {reusedPid} -InvocationId \"comp-inv-2\" -SampleWorkingSetBytes 250000000 -JsonOutput");
+        Assert.True(r4.ExitCode == 0, $"Action failed with exit code {r4.ExitCode}.\nSTDOUT: {r4.StandardOutput}\nSTDERR: {r4.StandardError}");
+
+        using (var doc = JsonDocument.Parse(File.ReadAllText(statePath)))
+        {
+            var obs = doc.RootElement.GetProperty("ProcessMemoryObservations");
+            Assert.Equal(2, obs.GetArrayLength());
+
+            // Prior settled invocation 1 remains preserved and was NOT revived
+            var inv1 = obs[0];
+            Assert.Equal(reusedPid, inv1.GetProperty("Pid").GetInt32());
+            Assert.Equal("Companion", inv1.GetProperty("Role").GetString());
+            Assert.Equal("comp-inv-1", inv1.GetProperty("InvocationId").GetString());
+            Assert.False(inv1.GetProperty("IsLive").GetBoolean());
+            Assert.Equal(2, inv1.GetProperty("SampleCount").GetInt32());
+            Assert.Equal(400000000L, inv1.GetProperty("MaxSampledWorkingSetBytes").GetInt64());
+            Assert.Equal(JsonValueKind.Null, inv1.GetProperty("CurrentWorkingSetBytes").ValueKind);
+
+            // New invocation 2 has independent live summary with its own counts and maxima
+            var inv2 = obs[1];
+            Assert.Equal(reusedPid, inv2.GetProperty("Pid").GetInt32());
+            Assert.Equal("Companion", inv2.GetProperty("Role").GetString());
+            Assert.Equal("comp-inv-2", inv2.GetProperty("InvocationId").GetString());
+            Assert.True(inv2.GetProperty("IsLive").GetBoolean());
+            Assert.Equal(1, inv2.GetProperty("SampleCount").GetInt32());
+            Assert.Equal(250000000L, inv2.GetProperty("MaxSampledWorkingSetBytes").GetInt64());
+            Assert.Equal(250000000L, inv2.GetProperty("CurrentWorkingSetBytes").GetInt64());
+
+            // Monotonic clock continuity preserved without reset
+            Assert.Equal(initialOriginTimestamp, doc.RootElement.GetProperty("MonotonicOriginTimestamp").GetInt64());
+        }
+    }
+
     private static void ClearActiveSupervisorInState(string root)
     {
         var statePath = Path.Combine(root, "state.json");
@@ -3267,10 +3327,12 @@ public sealed class ProcessLifecycleTrialPreparationTests
             TestPinsUsed = testPinsUsed,
             ActiveHelperPid = (int?)null,
             ActiveHelperSlot = (int?)null,
+            ActiveHelperInvocationId = (string?)null,
             ActiveHelperStartTimeUtc = (string?)null,
             LastStoppedHelperSlot = (int?)null,
             NonQualifyingPureDataCheck = false,
             ActiveCompanionPid = (int?)null,
+            ActiveCompanionInvocationId = (string?)null,
             ActiveSupervisorPid = sessionPid,
             ActiveSupervisorSessionId = sessionId,
             Checkpoints = new[] { "Setup" }
