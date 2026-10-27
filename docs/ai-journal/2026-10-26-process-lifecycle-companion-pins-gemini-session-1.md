@@ -5,7 +5,7 @@
 - **Reviewer:** Codex
 - **Merge Authority:** Human Owner Alone
 - **Primary Issue:** [#311](https://github.com/Tiflit/DXVK-Companion/issues/311)
-- **Relay Reference:** `D:/dev/companion-coordination/process-lifecycle-v1-preparation-20261025/ISSUE-311-GEMINI-RELAY.md`
+- **Relay Reference:** [Issue #311](https://github.com/Tiflit/DXVK-Companion/issues/311) / `ISSUE-311-GEMINI-RELAY.md`
 - **Policy Identity:** `c40eb13d0d89cb4860b4ed50fd81561acf2fb0d9` (Kernel v0.4)
 - **Base Commit:** `1bc6eab56f678c44159a39a5327b5b5329580fa3` (remote `origin/main`, merged PR #310)
 - **Base Tree:** `df9ce28bfa5e83d31c5dd1b18843c905b4167aa1`
@@ -42,23 +42,23 @@ In accordance with Issue #311, edits are strictly confined to the four declared 
 - Candidate profile remains strictly **CANDIDATE ONLY — PENDING SEPARATE HUMAN ADOPTION AND CURRENT READINESS**.
 - No runtime activation, trial execution, or old-root reset.
 - Zero workstation builds, local test runs, PowerShell script dot-sourcing, or binary downloads/probes.
-- Existing hosted CI is the sole verification authority.
+- Existing hosted CI is the sole verification authority for code and synthetic tests; artifact/profile identity is independently validated by direct data and file-byte inspection.
 
 ---
 
 ## 3. Acceptance and Verification Matrix
 
-| Requirement | Shipped Function / Implementation | Verification Test(s) | Status |
+| Requirement | Shipped Function / Implementation | Verification Method(s) | Status |
 |---|---|---|---|
-| **1. Exact Companion Frozen Pin Replacement** | Updated `$script:FROZEN_COMPANION_*` in `ProcessLifecycleTrial.ps1`: `SRC_COMMIT = "1bc6eab56f678c44159a39a5327b5b5329580fa3"`, `ARTIFACT_ID = "12699816316"`, `ZIP_SIZE = 66410332`, `ZIP_SHA256 = "a824946d6ed68850b8fae29e34596d82f8115057aa26e0071c66708bd0ae39c9"`, `PROVENANCE_ARTIFACT_ID = "12699801248"`, `PROVENANCE_SIZE = 324`, `PROVENANCE_SHA256 = "3d60d599740dbfcefb9b06fd824385bae5e8de2d520520cd9488309c636f74a4"`, `EXE_SIZE = 71772767`, `EXE_SHA256 = "f600b07d2d09c1300054db8beea8e1930582c3fbdd0a85aff92cf3d31b52ae2b"`, `RUN_ID = "40425446883"`. | `ProcessLifecycleTrialPreparationTests.Script_FrozenPins_MatchPublishedConstants` | Verified by hosted CI |
-| **2. Distinction Between Provenance Archive and Payload** | Preserved distinction between provenance archive ZIP (324 bytes, SHA-256 `3d60d599740dbfcefb9b06fd824385bae5e8de2d520520cd9488309c636f74a4`) and inner `build-provenance.json` (276 bytes, SHA-256 `7150ddfe5d260ffcbb092c00ae5b286d92e0507629db35529734faecba369e28`). Corrected setup example filename from `provenance.json` to `build-provenance.zip`. | Profile documentation inspection & `ExtractCompanionProvenance` validation tests | Verified by hosted CI |
-| **3. Refresh Candidate Profile Table and Script Hash** | Updated table in `PACKAGED-PROCESS-LIFECYCLE-V1.md` with new Companion commit, run ID, artifact IDs, sizes, and SHA-256 digests. Refreshed trial script entry to actual final saved byte length (221,331 bytes) and SHA-256 (`1b0fc609fc80637168616f4c92f0544fbd58879d6401b6a25df70a65a1aec0fc`, LF, no BOM). | `docs/validation/PACKAGED-PROCESS-LIFECYCLE-V1.md` | Verified by hosted CI |
+| **1. Exact Companion Frozen Pin Replacement** | Updated `$script:FROZEN_COMPANION_*` in `ProcessLifecycleTrial.ps1`: `SRC_COMMIT = "1bc6eab56f678c44159a39a5327b5b5329580fa3"`, `ARTIFACT_ID = "12699816316"`, `ZIP_SIZE = 66410332`, `ZIP_SHA256 = "a824946d6ed68850b8fae29e34596d82f8115057aa26e0071c66708bd0ae39c9"`, `PROVENANCE_ARTIFACT_ID = "12699801248"`, `PROVENANCE_SIZE = 324`, `PROVENANCE_SHA256 = "3d60d599740dbfcefb9b06fd824385bae5e8de2d520520cd9488309c636f74a4"`, `EXE_SIZE = 71772767`, `EXE_SHA256 = "f600b07d2d09c1300054db8beea8e1930582c3fbdd0a85aff92cf3d31b52ae2b"`, `RUN_ID = "40425446883"`. | `ProcessLifecycleTrialPreparationTests.Script_FrozenPins_MatchPublishedConstants` (synthetic constant assertion) & Codex streamed archive/binary data verification (actual artifact identities). | Verified by hosted CI (constant string assertion) and Codex data inspection (actual archive identities) |
+| **2. Distinction Between Provenance Archive and Payload** | Preserved distinction between provenance archive ZIP (324 bytes, SHA-256 `3d60d599740dbfcefb9b06fd824385bae5e8de2d520520cd9488309c636f74a4`) and inner `build-provenance.json` (276 bytes, SHA-256 `7150ddfe5d260ffcbb092c00ae5b286d92e0507629db35529734faecba369e28`). Corrected setup example filename from `provenance.json` to `build-provenance.zip`. | Profile documentation inspection, Codex archive inspection, and `ExtractCompanionProvenance` validation tests. | Verified by manual inspection and hosted CI synthetic tests |
+| **3. Refresh Candidate Profile Table and Script Hash** | Updated table in `PACKAGED-PROCESS-LIFECYCLE-V1.md` with new Companion commit, run ID, artifact IDs, sizes, and SHA-256 digests. Refreshed trial script entry to actual final saved byte length (221,331 bytes) and SHA-256 (`1b0fc609fc80637168616f4c92f0544fbd58879d6401b6a25df70a65a1aec0fc`, LF, no BOM). | Direct manual file hash inspection (`Get-FileHash` on actual saved bytes) and `PACKAGED-PROCESS-LIFECYCLE-V1.md` review. (Note: Hosted CI does not assert the profile's final script hash). | Verified by manual file inspection |
 | **4. Update Preparation Test Assertions** | Updated `Script_FrozenPins_MatchPublishedConstants` in `ProcessLifecycleTrialPreparationTests.cs` to assert the new Companion ZIP, Provenance ZIP, and EXE SHA-256 digests. Kept all helper, DXVK, and synthetic test-pin assertions unchanged. | `ProcessLifecycleTrialPreparationTests.Script_FrozenPins_MatchPublishedConstants` | Verified by hosted CI |
-| **5. Unchanged Guard Limits & Invariants** | Companion working set ceiling (1 GiB / 1,073,741,824 bytes), helper working set (50 MiB), root storage footprint (2 GiB), 120-minute trial duration, 4 helper / 8 companion start limits, and zero force-kill policy remain completely intact. | Existing preparation test suite (34 tests) | Verified by hosted CI |
+| **5. Unchanged Guard Limits & Invariants** | Companion working set ceiling (1 GiB / 1,073,741,824 bytes), helper working set (50 MiB), root storage footprint (2 GiB), 120-minute trial duration, 4 helper / 8 companion start limits, and zero force-kill policy remain completely intact. | `ProcessLifecycleTrialPreparationTests` (79 passing test entries). | Verified by hosted CI |
 
 ---
 
-## 4. Inspection History and Non-Execution Policy Assertion
+## 4. Inspection History and Workstation Execution Ledgers
 
 ### Codex Streamed Data-Inspection Record
 In the preceding coordinator phase, Codex streamed and hashed both the executable and PDB directly from the retained archive as data to verify archive contents, PE/x64 header (`MZ` header, machine `0x8664`, PE32+ optional header), and actual provenance manifest (`head_sha`, `sha`, `run_id`, `run_attempt`, `ref`).
@@ -66,9 +66,9 @@ In the preceding coordinator phase, Codex streamed and hashed both the executabl
 - The human owner explicitly authorized continuation of the data-only inspection in the coordinating channel.
 - No binary was extracted to disk or executed.
 
-### Gemini Workstation Execution Ledger
+### Gemini Workstation Execution Ledgers
 In strict compliance with the kernel operating rules:
-- **Zero local test runs:** Neither `dotnet test` nor any PowerShell test harness was invoked on the local workstation.
+- **Zero local test runs:** Neither `dotnet test` nor any PowerShell test harness was invoked on the local workstation across these sessions.
 - **Zero process launches or probes:** No binaries, helpers, or synthetic fixtures were executed locally.
 - **Zero downloads:** No artifacts or packages were downloaded to the workstation.
 - **Hosted CI Authority:** All compilation, test execution, regression analysis, and scope verification are deferred entirely to the hosted GitHub Actions CI runners.
@@ -95,20 +95,26 @@ In strict compliance with the kernel operating rules:
   - **Acquire Facts and Render Snapshot** (Run 40427971077, Jobs 121938392310, 121938467932): **Passed**.
   - **helper-cpu** (Run 40427970925, Job 121938390194): **Passed**.
 - **Build and Test** (Run 40427971019, Job 121938390263):
-  - Outcome: **1,447 passed, 3 failed** (Total: 1,450 tests, 2.25 min).
-  - **Target Preparation Tests:** All 34 tests in `ProcessLifecycleTrialPreparationTests` **PASSED**, including `Script_FrozenPins_MatchPublishedConstants`.
+  - Outcome: **1,447 passed, 3 failed** (Total: 1,450 tests; Test Runner execution time: 2.25 min).
+  - **Target Preparation Tests:** All **79 passing test entries** in `ProcessLifecycleTrialPreparationTests` **PASSED**, including `Script_FrozenPins_MatchPublishedConstants`.
   - **Failed Tests (3):**
     1. `DXVKCompanion.PhaseATests.OperationLeaseCoordinatorTests.ProfileStore_BrokenLoad_DxvkManagerPreflightRefusal`:
        - Expected: `"corrupted or unreadable"`
-       - Actual: `"Operation in progress for installation: C:\Users\RUNNER~1\AppData\Local\Temp\..."` at line 619.
-       - Cause: Operation lease timeout (500ms) under parallel runner load on hosted VM, returning lease refusal before preflight broken load check could be asserted.
+       - Actual observed string: `"Operation in progress for installation: C:\Users\RUNNER~1\AppData\Local\Temp\..."` at line 619.
+       - Observed symptom: Preflight broken load check was not asserted because lease acquisition returned an operation-in-progress refusal.
     2. `DXVKCompanion.PhaseA.Tests.ConfigurationDisableLifecycleTests.BothDisabled_DoNotTakeOverUnownedOrCreateAbsentConfig(existing: True)`:
-       - `Assert.True() Failure: Expected: True, Actual: False` at line 118.
+       - Observed symptom: `Assert.True() Failure: Expected: True, Actual: False` at line 118 on initial Apply operation.
     3. `DXVKCompanion.PhaseA.Tests.AdoptedDxvkLifecycleAcceptanceTests.AdoptedDxvkLifecycle_PersistedManual_AdoptsUpdatesDisablesCleanly(api: DX9, architecture: "x64", preexistingConfig: False)`:
-       - `Assert.Equal() Failure: Expected: Applied, Actual: Failed` at line 518.
-- **Triage and Policy Compliance:**
-  - All 3 failures occurred in tests outside the 4 allowed paths of Issue #311 and represent known lease contention / timeout under parallel test runner load.
-  - Per the explicit instructions of Issue #311 ("Preserve all failed hosted attempts without unchanged-head blind reruns" and "Keep every failed CI attempt and truthful execution evidence"), this attempt failure is preserved without blind reruns, assertion weakening, timeout inflation, or test serialization.
+       - Observed symptom: `Assert.Equal() Failure: Expected: Applied, Actual: Failed` at line 518 on reapply operation.
+- **Triage and Status of Hypotheses:**
+  - All 3 failures occurred in existing tests outside the 4 allowed paths of Issue #311.
+  - Parallel runner load and operation lease timeout remain an **UNPROVEN hypothesis**, not an established root cause. The test logs confirm the specific failure assertions above, but a shared contention diagnosis has not been proven with negative controls or reproducible traces.
+  - Per the explicit instructions of Issue #311 ("Preserve all failed hosted attempts without unchanged-head blind reruns" and "Keep every failed CI attempt and truthful execution evidence"), this initial attempt failure is preserved without blind reruns, assertion weakening, timeout inflation, or test serialization.
+
+### Subsequent Hosted CI Run (Run 40428557061, Attempt 1, Commit `5205ab03f0c12a230dab7f0efe8350c366248662`)
+- **Outcome:** **1,450 passed, 0 failed** (Total: 1,450 tests; Test Runner execution time: 2.8082 min; GitHub Actions Job duration: 4.65 min / 4m 39s).
+- **All 7 Workflows Passed:** `AI task scope`, `PR hygiene`, `Run Python workflow tests`, `Acquire Facts and Render Snapshot`, `Publish Dashboard`, `helper-cpu`, and `Build and Test`.
+- **Important Qualification:** Commit `5205ab03f0c12a230dab7f0efe8350c366248662` modified **only** the documentation journal (`docs/ai-journal/2026-10-26-process-lifecycle-companion-pins-gemini-session-1.md`). The passing run confirmed that the test suite passed on that checkout, but does **not** establish a code repair, flake resolution, or proven diagnosis of the earlier run's 3 failures.
 
 ---
 
