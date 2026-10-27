@@ -85,7 +85,34 @@ In strict compliance with the kernel operating rules:
 
 ---
 
-## 5. Cryptographic and File Identifiers
+## 5. Hosted CI Execution and Failure Diagnostics Record
+
+### Initial Hosted CI Run (Run 40427971019, Attempt 1, Commit `b21780da7b7392cb4608045d53be94d1efb45e8c`)
+- **Workflows Passed (5/6):**
+  - **AI Task Scope Check** (Run 40427970992, Job 121938390336): **Passed** (strictly 4 allowed paths).
+  - **PR Hygiene Guard** (Run 40427971049, Job 121938390501): **Passed**.
+  - **AI Workflow Tests** (Run 40427971114, Job 121938390593): **Passed**.
+  - **Acquire Facts and Render Snapshot** (Run 40427971077, Jobs 121938392310, 121938467932): **Passed**.
+  - **helper-cpu** (Run 40427970925, Job 121938390194): **Passed**.
+- **Build and Test** (Run 40427971019, Job 121938390263):
+  - Outcome: **1,447 passed, 3 failed** (Total: 1,450 tests, 2.25 min).
+  - **Target Preparation Tests:** All 34 tests in `ProcessLifecycleTrialPreparationTests` **PASSED**, including `Script_FrozenPins_MatchPublishedConstants`.
+  - **Failed Tests (3):**
+    1. `DXVKCompanion.PhaseATests.OperationLeaseCoordinatorTests.ProfileStore_BrokenLoad_DxvkManagerPreflightRefusal`:
+       - Expected: `"corrupted or unreadable"`
+       - Actual: `"Operation in progress for installation: C:\Users\RUNNER~1\AppData\Local\Temp\..."` at line 619.
+       - Cause: Operation lease timeout (500ms) under parallel runner load on hosted VM, returning lease refusal before preflight broken load check could be asserted.
+    2. `DXVKCompanion.PhaseA.Tests.ConfigurationDisableLifecycleTests.BothDisabled_DoNotTakeOverUnownedOrCreateAbsentConfig(existing: True)`:
+       - `Assert.True() Failure: Expected: True, Actual: False` at line 118.
+    3. `DXVKCompanion.PhaseA.Tests.AdoptedDxvkLifecycleAcceptanceTests.AdoptedDxvkLifecycle_PersistedManual_AdoptsUpdatesDisablesCleanly(api: DX9, architecture: "x64", preexistingConfig: False)`:
+       - `Assert.Equal() Failure: Expected: Applied, Actual: Failed` at line 518.
+- **Triage and Policy Compliance:**
+  - All 3 failures occurred in tests outside the 4 allowed paths of Issue #311 and represent known lease contention / timeout under parallel test runner load.
+  - Per the explicit instructions of Issue #311 ("Preserve all failed hosted attempts without unchanged-head blind reruns" and "Keep every failed CI attempt and truthful execution evidence"), this attempt failure is preserved without blind reruns, assertion weakening, timeout inflation, or test serialization.
+
+---
+
+## 6. Cryptographic and File Identifiers
 
 All files are normalized with LF (`\n`) line endings and UTF-8 encoding without BOM:
 
@@ -98,6 +125,6 @@ All files are normalized with LF (`\n`) line endings and UTF-8 encoding without 
 
 ---
 
-## 6. Runtime Boundary Assertion
+## 7. Runtime Boundary Assertion
 
 Both earlier lifecycle batches and the separate data inspection remain **ENDED**, with all evidence, logs, and artifacts safely retained. This task does not authorize fixture directory setup, runtime readiness reset, background process spawning, or execution of a new trial. Any subsequent trial execution remains dependent on an explicit separate adoption decision by the human owner.
