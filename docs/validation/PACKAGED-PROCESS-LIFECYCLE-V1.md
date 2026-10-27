@@ -100,7 +100,7 @@ The following requirements and disclosures govern any subsequent host trial prof
 
 > [!IMPORTANT]
 > **CANDIDATE ONLY — PENDING SEPARATE HUMAN ADOPTION AND CURRENT READINESS**
-> This candidate profile is prepared under Issue [#301](https://github.com/Tiflit/DXVK-Companion/issues/301) and amended under Issue [#304](https://github.com/Tiflit/DXVK-Companion/issues/304). It is **NOT adopted** by this task.
+> This candidate profile is prepared under Issue [#301](https://github.com/Tiflit/DXVK-Companion/issues/301), amended under Issue [#304](https://github.com/Tiflit/DXVK-Companion/issues/304), and updated to post-discovery-repair Companion pins under Issue [#311](https://github.com/Tiflit/DXVK-Companion/issues/311). It is **NOT adopted** by this task.
 > Execution on the owner's workstation or laptop remains **NOT RUN (pending human authorization)**.
 > Only a subsequent separately adopted FINAL execution profile plus current laptop readiness can activate the actual trial. Human alone merges.
 
@@ -110,12 +110,12 @@ All binaries, archives, and tools must match the following frozen identities exa
 
 | Asset / Component | Source Revision / Identity | Artifact / Release ID | Size (Bytes) | SHA-256 Digest |
 |---|---|---|---:|---|
-| Trial Script (`ProcessLifecycleTrial.ps1`) | Current PR (`tools/validation/ProcessLifecycleTrial.ps1`) | N/A (in-repo) | 221,331 | `40745c1d8fd759c7d1ff4bcabdf5c719eb01d4e100de5c1b2b2cf196427d5c13` |
+| Trial Script (`ProcessLifecycleTrial.ps1`) | Current PR (`tools/validation/ProcessLifecycleTrial.ps1`, LF, no BOM) | N/A (in-repo) | 221,331 | `1b0fc609fc80637168616f4c92f0544fbd58879d6401b6a25df70a65a1aec0fc` |
 | Helper Archive (`process-lifecycle-helper-x64`) | Checkout `a62356d0acb918aec957463a0b670747763ae544`, Tree `4ebbd76b0f30ca7768d737361ea8b540da5a8a2e` | Run `40220299641`, Artifact `12609386490` | 81,717 | `f75ec55738e6ca3c1a0cd0a342aefeaa0fb3addd03538f03f2ac7a43295750de` |
 | Helper Executable (`QueueFixture.exe`) | Source SHA256 `19229f59a4ab2504634cf9cd1bfff131a89a68e539808ab68c5459451e6ce0cc` | Extracted from `12609386490` | 138,240 | `f720cecae0f13eeef6d9b5e2d259b51df97b37bc3347b241071e25e8c1548d70` |
-| Companion Application Archive | Commit `46e6f22363cddcfa88d805b588b6ac30173bc9dc` | Run `40025768457`, Artifact `12532606945` | 66,410,238 | `32660fd3e3ed87385e47940d490db2e6ab93daad7e993fe4225dd157232b3b14` |
-| Companion Executable (`DXVK-Companion.exe`) | Built from `46e6f22363cddcfa88d805b588b6ac30173bc9dc` | Extracted from `12532606945` | 71,772,524 | `25012c67ade281e0d4585282bf485e4783a1f7c486018f8d1a038c5f2dc18ca4` |
-| Companion Provenance Manifest | Run `40025768457` provenance JSON | Artifact `12531339870` | 323 | `c9b46817bc60e89b3848ecf2705cb929b718cf950689a15071c65933d2a0537d` |
+| Companion Application Archive | Commit `1bc6eab56f678c44159a39a5327b5b5329580fa3` | Run `40425446883`, Artifact `12699816316` | 66,410,332 | `a824946d6ed68850b8fae29e34596d82f8115057aa26e0071c66708bd0ae39c9` |
+| Companion Executable (`DXVK-Companion.exe`) | Built from `1bc6eab56f678c44159a39a5327b5b5329580fa3` | Extracted from `12699816316` | 71,772,767 | `f600b07d2d09c1300054db8beea8e1930582c3fbdd0a85aff92cf3d31b52ae2b` |
+| Companion Provenance Manifest | Run `40425446883` provenance archive (`build-provenance.zip`; payload: 276 bytes, SHA-256 `7150ddfe5d260ffcbb092c00ae5b286d92e0507629db35529734faecba369e28`) | Artifact `12699801248` | 324 | `3d60d599740dbfcefb9b06fd824385bae5e8de2d520520cd9488309c636f74a4` |
 | Official DXVK v3.1.1 Archive | Upstream `doitsujin/dxvk` tag `v3.1.1` | Release `381956359`, Asset `566164743` | 18,041,512 | `40565b4a724aadc4433fa4e010b4b23916d9b1f1baeee64e17186db94f54e608` |
 | Official DXVK v3.1 Archive | Upstream `doitsujin/dxvk` tag `v3.1` | Release `357524779`, Asset `534051057` | 18,056,721 | `30f9cc326874be344285582275446968cfa4c069db31ce56df312d6644179154` |
 
@@ -166,7 +166,7 @@ $AdoptionToken = "ADOPTED-PROCESS-LIFECYCLE-V1"
 
 #### Step 1: Verification of Prerequisites and Readiness
 1. Confirm the human owner has adopted this profile and verified that no games or other Companion instances are running.
-2. Confirm downloaded helper archive `process-lifecycle-helper-x64.zip`, companion archive `DXVK-Companion-win-x64.zip`, and provenance match frozen pins.
+2. Confirm downloaded helper archive `process-lifecycle-helper-x64.zip`, companion archive `DXVK-Companion-win-x64.zip`, and provenance archive `build-provenance.zip` match frozen pins.
 3. Confirm `<FIXTURE_ROOT>` does not exist (fresh absent destination).
 
 #### Step 2: Bounded Fixture Setup
@@ -176,7 +176,7 @@ Execute setup to initialize directory structure, extract binaries safely (create
     -FixtureRoot $FixtureRoot `
     -HelperZipPath "path\to\process-lifecycle-helper-x64.zip" `
     -CompanionZipPath "path\to\DXVK-Companion-win-x64.zip" `
-    -CompanionProvenancePath "path\to\provenance.json" `
+    -CompanionProvenancePath "path\to\build-provenance.zip" `
     -Dxvk31TarGzPath "path\to\dxvk-3.1.tar.gz" `
     -Dxvk311TarGzPath "path\to\dxvk-3.1.1.tar.gz"
 ```
