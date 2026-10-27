@@ -230,9 +230,9 @@ public sealed class ProcessLifecycleTrialPreparationTests
         Assert.Contains("f75ec55738e6ca3c1a0cd0a342aefeaa0fb3addd03538f03f2ac7a43295750de", text);
         Assert.Contains("f720cecae0f13eeef6d9b5e2d259b51df97b37bc3347b241071e25e8c1548d70", text);
         Assert.Contains("19229f59a4ab2504634cf9cd1bfff131a89a68e539808ab68c5459451e6ce0cc", text);
-        Assert.Contains("32660fd3e3ed87385e47940d490db2e6ab93daad7e993fe4225dd157232b3b14", text);
-        Assert.Contains("c9b46817bc60e89b3848ecf2705cb929b718cf950689a15071c65933d2a0537d", text);
-        Assert.Contains("25012c67ade281e0d4585282bf485e4783a1f7c486018f8d1a038c5f2dc18ca4", text);
+        Assert.Contains("a824946d6ed68850b8fae29e34596d82f8115057aa26e0071c66708bd0ae39c9", text);
+        Assert.Contains("3d60d599740dbfcefb9b06fd824385bae5e8de2d520520cd9488309c636f74a4", text);
+        Assert.Contains("f600b07d2d09c1300054db8beea8e1930582c3fbdd0a85aff92cf3d31b52ae2b", text);
         Assert.Contains("40565b4a724aadc4433fa4e010b4b23916d9b1f1baeee64e17186db94f54e608", text);
         Assert.Contains("30f9cc326874be344285582275446968cfa4c069db31ce56df312d6644179154", text);
     }
