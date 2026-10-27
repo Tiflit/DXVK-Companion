@@ -2193,7 +2193,7 @@ public sealed class ProcessMonitorQualificationTests
         // Assert: Excluded process MUST NOT be admitted or qualified
         Assert.Equal(0, qualifiedEvents);
         Assert.Null(libraryStore.FindInstallationForExecutable(exePath));
-        Assert.Null(profileStore.Get(exePath));
+        Assert.Empty(profileStore.GetAll());
         Assert.False(monitor.TryGetQualifiedSnapshot(pid, out _));
         Assert.False(monitor.IsExitWatcherAttached(pid));
     }
@@ -2309,7 +2309,8 @@ public sealed class ProcessMonitorQualificationTests
         // Assert: Process is qualified and admitted as a genuine game
         Assert.Equal(1, qualifiedEvents);
         Assert.True(monitor.TryGetQualifiedSnapshot(pid, out var snapshot));
-        Assert.Equal(GraphicsApi.DX11, snapshot.Classification.PrimaryApi);
+        Assert.NotNull(snapshot);
+        Assert.Equal(GraphicsApi.DX11, snapshot!.Classification.PrimaryApi);
         Assert.NotNull(libraryStore.FindInstallationForExecutable(exePath));
     }
 }

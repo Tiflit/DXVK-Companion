@@ -109,11 +109,27 @@ In strict accordance with the kernel rules and Issue #309's mandate:
 
 ---
 
-## 6. Cryptographic and File Identifiers
+## 6. Hosted CI Failure, Root Cause, and Repair History
+
+### Initial Hosted CI Run (Run 40423295173, Commit `8447ceac445049d06ad126991750155e84909ad9`)
+- **Outcome:** `Build and Test` failed at `Build Phase A tests` step (Job 121922732747).
+- **Diagnostics:**
+  - `error CS1061: 'ProfileStore' does not contain a definition for 'Get'` in `ProcessMonitorQualificationTests.cs(2196,34)`.
+  - `warning CS8602: Dereference of a possibly null reference` in `ProcessMonitorQualificationTests.cs(2312,40)`.
+- **Root Cause:**
+  - `ProfileStore` exposes `GetAll()`, `GetOrCreate(...)`, and `Save(...)`, but does not define an individual `Get(exePath)` method. The assertion `Assert.Null(profileStore.Get(exePath))` was written assuming a dictionary-like `Get` accessor.
+  - In `ProcessMonitor_SimilarNames_AdmittedToNewDiscovery_AsPositiveControls`, `snapshot` is an `out ProcessQualificationSnapshot?`. Dereferencing `snapshot.Classification.PrimaryApi` without an explicit non-null assertion or null-suppression triggered compiler warning CS8602.
+- **Repair:**
+  - Replaced `Assert.Null(profileStore.Get(exePath))` with `Assert.Empty(profileStore.GetAll())`, confirming no profile was created.
+  - Added `Assert.NotNull(snapshot)` and evaluated `snapshot!.Classification.PrimaryApi` cleanly.
+
+---
+
+## 7. Cryptographic and File Identifiers
 
 | File Path | Byte Length | Line Ending | SHA-256 Hash |
 |---|---|---|---|
 | `src/DXVKCompanion/Monitoring/GameDetector.cs` | 6,308 bytes | LF | `74D999410A01C26CE2D195869B0F244A41C8CE5E7E7E9402640FC248FCCD6108` |
 | `tests/DXVKCompanion.PhaseA.Tests/GameDetectorExclusionTests.cs` | 4,539 bytes | LF | `FCA57393E2EDE451E41C6134D7A5C26740482135CC502D9B5C23204F09518E38` |
-| `tests/DXVKCompanion.PhaseA.Tests/ProcessMonitorQualificationTests.cs` | 98,963 bytes | LF | `5DC97890CCEB7330133F0ECA2A3F5F2DD465C98402A3F39158DC7F40F1D301C7` |
+| `tests/DXVKCompanion.PhaseA.Tests/ProcessMonitorQualificationTests.cs` | 98,995 bytes | LF | `0D5043C7F8D2466D75C7A50844C70809CB04506E7915FE9B2D2AE296EC7B6678` |
 | `docs/ai-journal/2026-10-26-discovery-nongame-exclusions-gemini-session-1.md` | (computed at commit) | LF | (computed at commit) |
