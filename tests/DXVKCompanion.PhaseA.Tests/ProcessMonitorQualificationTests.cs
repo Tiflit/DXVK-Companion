@@ -2145,4 +2145,172 @@ public sealed class ProcessMonitorQualificationTests
         // Assert: Live attached process was preserved across async yield and not prematurely disposed
         Assert.True(monitor.IsExitWatcherAttached(expectedPid));
     }
+
+    [Theory]
+    [InlineData("TextInputHost.exe", "TextInputHost")]
+    [InlineData("Nahimic3.exe", "Nahimic3")]
+    public void ProcessMonitor_ExcludedNames_TextInputHostAndNahimic3_NotAdmittedToNewDiscovery_EvenWithWindowAndApi(string exeFileName, string processName)
+    {
+        using var tempDir = new SyntheticTestDirectory();
+        string gamesPath = Path.Combine(tempDir.RootPath, "games.json");
+        string libraryPath = Path.Combine(tempDir.RootPath, "game-library.json");
+        string backupsPath = Path.Combine(tempDir.RootPath, "backups");
+        var libraryStore = new GameLibraryStore(libraryPath, backupsPath);
+        var profileStore = new ProfileStore(gamesPath);
+
+        var detector = new GameDetector();
+        detector.ProcessNameResolver = _ => processName;
+
+        var exitHandler = new FakeProcessExitHandler();
+        var scanner = new DynamicModuleScanner(_ => ModuleScanResult.Complete(new HashSet<string> { "d3d11.dll" }));
+        var parser = new FakePeParser();
+        var classifier = new ApiClassifier(scanner, parser);
+
+        using var currentProc = Process.GetCurrentProcess();
+        int pid = currentProc.Id;
+        string exePath = Path.Combine(@"C:\Tools", exeFileName);
+        var startTime = new DateTime(2026, 10, 15, 12, 0, 0, DateTimeKind.Utc);
+
+        using var monitor = new ProcessMonitor(
+            detector,
+            exitHandler,
+            classifier,
+            libraryStore,
+            clock: () => TimeSpan.Zero,
+            processEnumerator: () => new[] { currentProc },
+            startTimer: false);
+        monitor.ProfileStore = profileStore;
+        monitor.WindowFilter = _ => true;
+        monitor.StartTimeResolver = _ => startTime;
+        monitor.ExePathResolver = _ => exePath;
+
+        int qualifiedEvents = 0;
+        monitor.OnQualifiedGameDetected += (_, _) => qualifiedEvents++;
+
+        // Act: Poll processes. Process has window and DX11, but its name is excluded by GameDetector.
+        monitor.PollProcessesOnce();
+
+        // Assert: Excluded process MUST NOT be admitted or qualified
+        Assert.Equal(0, qualifiedEvents);
+        Assert.Null(libraryStore.FindInstallationForExecutable(exePath));
+        Assert.Empty(profileStore.GetAll());
+        Assert.False(monitor.TryGetQualifiedSnapshot(pid, out _));
+        Assert.False(monitor.IsExitWatcherAttached(pid));
+    }
+
+    [Theory]
+    [InlineData("TextInputHost.exe", "TextInputHost")]
+    [InlineData("Nahimic3.exe", "Nahimic3")]
+    public void ProcessMonitor_ExcludedNames_KnownPendingAction_ExitWatcherAttachedBeforeNameExclusion(string exeFileName, string processName)
+    {
+        using var tempDir = new SyntheticTestDirectory();
+        string gamesPath = Path.Combine(tempDir.RootPath, "games.json");
+        string libraryPath = Path.Combine(tempDir.RootPath, "game-library.json");
+        string backupsPath = Path.Combine(tempDir.RootPath, "backups");
+        var libraryStore = new GameLibraryStore(libraryPath, backupsPath);
+        var profileStore = new ProfileStore(gamesPath);
+
+        var detector = new GameDetector();
+        detector.ProcessNameResolver = _ => processName;
+
+        var exitHandler = new FakeProcessExitHandler();
+        var scanner = new DynamicModuleScanner(_ => ModuleScanResult.Complete(new HashSet<string> { "d3d11.dll" }));
+        var parser = new FakePeParser();
+        var classifier = new ApiClassifier(scanner, parser);
+
+        using var currentProc = Process.GetCurrentProcess();
+        int pid = currentProc.Id;
+        string installDir = Path.Combine(@"C:\Apps", processName);
+        string exePath = Path.Combine(installDir, exeFileName);
+        var startTime = new DateTime(2026, 10, 15, 12, 0, 0, DateTimeKind.Utc);
+
+        // Pre-seed library store with known installation and a pending action
+        var inst = libraryStore.GetOrCreateInstallation(installDir, processName);
+        inst.GetOrAddExecutable(exeFileName, exeFileName);
+        inst.PendingAction = PendingAction.Restore("Queued restore for known installation");
+        libraryStore.Save(inst);
+
+        using var monitor = new ProcessMonitor(
+            detector,
+            exitHandler,
+            classifier,
+            libraryStore,
+            clock: () => TimeSpan.Zero,
+            processEnumerator: () => new[] { currentProc },
+            startTimer: false);
+        monitor.ProfileStore = profileStore;
+        monitor.WindowFilter = _ => true;
+        monitor.StartTimeResolver = _ => startTime;
+        monitor.ExePathResolver = _ => exePath;
+
+        int qualifiedEvents = 0;
+        monitor.OnQualifiedGameDetected += (_, _) => qualifiedEvents++;
+
+        // Act: Poll processes.
+        monitor.PollProcessesOnce();
+
+        // Assert: Known installation with pending action MUST have exit watcher attached before classification
+        Assert.True(monitor.IsExitWatcherAttached(pid), "Exit watcher must be attached for known installation with pending action.");
+        Assert.Single(exitHandler.AttachedRegistrations);
+
+        // But it MUST NOT be admitted as a new qualified game discovery
+        Assert.Equal(0, qualifiedEvents);
+        Assert.False(monitor.TryGetQualifiedSnapshot(pid, out _));
+
+        // Act 2: Simulate process exit to verify exit handler fires cleanly
+        exitHandler.SimulateInstanceExit(pid, exePath);
+        Assert.False(monitor.IsExitWatcherAttached(pid));
+    }
+
+    [Theory]
+    [InlineData("TextInputHostGame.exe", "TextInputHostGame")]
+    [InlineData("Nahimic3Game.exe", "Nahimic3Game")]
+    public void ProcessMonitor_SimilarNames_AdmittedToNewDiscovery_AsPositiveControls(string exeFileName, string processName)
+    {
+        using var tempDir = new SyntheticTestDirectory();
+        string gamesPath = Path.Combine(tempDir.RootPath, "games.json");
+        string libraryPath = Path.Combine(tempDir.RootPath, "game-library.json");
+        string backupsPath = Path.Combine(tempDir.RootPath, "backups");
+        var libraryStore = new GameLibraryStore(libraryPath, backupsPath);
+        var profileStore = new ProfileStore(gamesPath);
+
+        var detector = new GameDetector();
+        detector.ProcessNameResolver = _ => processName;
+
+        var exitHandler = new FakeProcessExitHandler();
+        var scanner = new DynamicModuleScanner(_ => ModuleScanResult.Complete(new HashSet<string> { "d3d11.dll" }));
+        var parser = new FakePeParser();
+        var classifier = new ApiClassifier(scanner, parser);
+
+        using var currentProc = Process.GetCurrentProcess();
+        int pid = currentProc.Id;
+        string exePath = Path.Combine(@"C:\Games", processName, exeFileName);
+        var startTime = new DateTime(2026, 10, 15, 12, 0, 0, DateTimeKind.Utc);
+
+        using var monitor = new ProcessMonitor(
+            detector,
+            exitHandler,
+            classifier,
+            libraryStore,
+            clock: () => TimeSpan.Zero,
+            processEnumerator: () => new[] { currentProc },
+            startTimer: false);
+        monitor.ProfileStore = profileStore;
+        monitor.WindowFilter = _ => true;
+        monitor.StartTimeResolver = _ => startTime;
+        monitor.ExePathResolver = _ => exePath;
+
+        int qualifiedEvents = 0;
+        monitor.OnQualifiedGameDetected += (_, _) => qualifiedEvents++;
+
+        // Act: Poll processes. Similar names must NOT be rejected by overbroad substring matching.
+        monitor.PollProcessesOnce();
+
+        // Assert: Process is qualified and admitted as a genuine game
+        Assert.Equal(1, qualifiedEvents);
+        Assert.True(monitor.TryGetQualifiedSnapshot(pid, out var snapshot));
+        Assert.NotNull(snapshot);
+        Assert.Equal(GraphicsApi.DX11, snapshot!.Classification.PrimaryApi);
+        Assert.NotNull(libraryStore.FindInstallationForExecutable(exePath));
+    }
 }
